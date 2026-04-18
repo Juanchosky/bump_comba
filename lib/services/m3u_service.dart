@@ -1636,7 +1636,7 @@ class M3UService extends ChangeNotifier {
         }
       }
     }
-    
+
     return episodes;
   }
 
@@ -1660,7 +1660,7 @@ class M3UService extends ChangeNotifier {
     // 1. Direct URL match (Movies, Live, or M3U non-grouped items)
     final item = getItemByUrl(progress.url);
     if (item != null) {
-      // If we found the specific episode, but it has a series name, 
+      // If we found the specific episode, but it has a series name,
       // climb to the series shell for better UI grouping.
       if (item.seriesName != null && item.seriesName!.isNotEmpty) {
         final shell = getSeriesByName(item.seriesName!);
@@ -2030,12 +2030,21 @@ class M3UService extends ChangeNotifier {
       }
 
       if (url.isEmpty || !isSignificant) continue;
-      
+
       // FIX: Use centralized resolution to handle Xtream series episodes
-      final item = resolveItemFromProgress(entry is Map 
-          ? WatchProgress.fromJson(url, Map<String, dynamic>.from(entry))
-          : (entry is WatchProgress ? entry : WatchProgress(url: url, positionSeconds: 0, durationSeconds: 0, timestamp: 0)));
-          
+      final item = resolveItemFromProgress(
+        entry is Map
+            ? WatchProgress.fromJson(url, Map<String, dynamic>.from(entry))
+            : (entry is WatchProgress
+                ? entry
+                : WatchProgress(
+                  url: url,
+                  positionSeconds: 0,
+                  durationSeconds: 0,
+                  timestamp: 0,
+                )),
+      );
+
       if (item != null) {
         watchedSet.add(url);
         significantHistoryCount++;
@@ -3025,7 +3034,9 @@ List<M3UItem> _groupSeries(List<M3UItem> flatItems, List<String> favorites) {
 
     if (seriesName != null && seriesName.isNotEmpty) {
       final sanitizedName = seriesName.replaceAll(regexTrim, '').trim();
-      final normalizedPart = NormalizationUtils.normalizeSeriesName(sanitizedName);
+      final normalizedPart = NormalizationUtils.normalizeSeriesName(
+        sanitizedName,
+      );
       final capSig = capSignature(sanitizedName);
       final groupKey = '${normalizedPart}_$capSig';
 

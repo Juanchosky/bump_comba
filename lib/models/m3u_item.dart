@@ -133,10 +133,10 @@ class FilterRule {
   });
 
   factory FilterRule.fromJson(Map<String, dynamic> json) => FilterRule(
-        category: json['category'] ?? '',
-        regexPattern: json['regex_pattern'] ?? '',
-        priority: json['priority'] ?? 0,
-      );
+    category: json['category'] ?? '',
+    regexPattern: json['regex_pattern'] ?? '',
+    priority: json['priority'] ?? 0,
+  );
 }
 
 /// Model for cloud-based IPTV sources
@@ -154,11 +154,12 @@ class CloudSource {
   });
 
   factory CloudSource.fromJson(Map<String, dynamic> json) => CloudSource(
-        id: json['id']?.toString() ?? '',
-        name: json['name'] ?? '',
-        url: json['url'] ?? '',
-        visibleUntil: json['visible_until'] != null 
-          ? DateTime.tryParse(json['visible_until']) 
-          : null,
-      );
+    id: json['id']?.toString() ?? '',
+    name: json['name'] ?? '',
+    url: json['url'] ?? '',
+    visibleUntil:
+        json['visible_until'] != null
+            ? DateTime.tryParse(json['visible_until'])
+            : null,
+  );
 }
