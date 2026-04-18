@@ -511,7 +511,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             bufferSize: 256 * 1024 * 1024,
             title: 'Bump Comba Player',
             logLevel: MPVLogLevel.error,
-            libass: false,
+            libass: true, // ← Renderizador nativo, mucho más eficiente
           ),
         );
         // -- CRITICAL SILENCING --
@@ -612,6 +612,27 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                   : _userAgents[_userAgentIndex % _userAgents.length];
           await mpv.setProperty('user-agent', selectedUA);
 
+          // -- SUBTÍTULOS: Renderizado eficiente --
+          await mpv.setProperty(
+            'sub-ass-override',
+            'force',
+          ); // Fuerza estilos ASS sin recalcular
+          await mpv.setProperty(
+            'sub-ass-hinting',
+            'none',
+          ); // Evita hinting costoso
+          await mpv.setProperty(
+            'sub-rendering-align-pixels',
+            'yes',
+          ); // Alinea a píxeles enteros
+          await mpv.setProperty(
+            'sub-bitmap-max-size',
+            '4096',
+          ); // Cache de bitmaps de subs
+          await mpv.setProperty('sub-pos', '95'); // Posición estándar
+          await mpv.setProperty('sub-scale', '0.9'); // Tamaño moderado
+          await mpv.setProperty('sub-ass-scale-with-window', 'yes');
+
           // -- HARDWARE ACCELERATION OPTIMIZATION --
           // 'mediacodec' is zero-copy (fastest). 'mediacodec-copy' is a safe fallback.
           bool useDirectHwdec = true;
@@ -634,8 +655,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
           // Threading and error detection
           await mpv.setProperty('vd-lavc-threads', '0');
-          await mpv.setProperty('vd-lavc-skiploopfilter', 'nonref');
-          await mpv.setProperty('framedrop', 'decoder+vo');
+          await mpv.setProperty(
+            'vd-lavc-skiploopfilter',
+            PerformanceService().isLowPerformance ? 'nonref' : 'none',
+          );
+          await mpv.setProperty('framedrop', 'vo');
           await mpv.setProperty('vd-lavc-o', 'err_detect=ignore_err');
 
           // Audio Sync
