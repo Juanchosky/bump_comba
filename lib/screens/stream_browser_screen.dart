@@ -876,7 +876,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     Widget loadingContent = const _HiddenMoviesShimmer();
 
     if (!_showSlowLoadingMessage && _downloadDetail == null) {
-      return loadingContent;
+      return SizedBox.expand(
+        child: Align(alignment: Alignment.topCenter, child: loadingContent),
+      );
     }
 
     return Stack(
@@ -4998,7 +5000,7 @@ class _HiddenMoviesShimmer extends StatelessWidget {
         children: [
           // Shimmer Hero
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+            padding: const EdgeInsets.fromLTRB(16, 37, 16, 20),
             child: _ShimmerBox(
               height: 480, // Match Hero height
               width: double.infinity,

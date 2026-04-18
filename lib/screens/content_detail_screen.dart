@@ -1244,7 +1244,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                     label: Text(
                       isCasting
                           ? 'Reproducir en TV'
-                          : (_isLoadingEpisodes ? 'Cargando...' : 'Ver'),
+                          : (_isLoadingEpisodes ? 'Ver' : 'Ver'),
                       style: const TextStyle(
                         color: Color(0xFF0a0a0a),
                         fontSize: 15,

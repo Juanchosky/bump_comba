@@ -114,6 +114,8 @@ class M3UService extends ChangeNotifier {
   static const String _favoritesKey = 'm3u_favorites';
   static const String _cacheTimestampKey = 'm3u_cache_timestamp';
   static const String _cacheFileName = 'm3u_cache.txt';
+  static const String _customCacheTimestampKey = 'm3u_custom_cache_timestamp';
+  static const String _customCacheFileName = 'm3u_custom_cache.json';
   static const String _unifiedCacheTimestampKey = 'm3u_unified_cache_timestamp';
   static const String _unifiedCachePrefix = 'm3u_cache_unified_';
   static const String _m3uUrlKey = 'local_m3u_url';
@@ -310,6 +312,11 @@ class M3UService extends ChangeNotifier {
     final dir = await getApplicationDocumentsDirectory();
     final suffix = _isUnifiedMode ? 'unified' : 'single_$_activeSourceIndex';
     return File('${dir.path}/m3u_parsed_cache_$suffix.json');
+  }
+
+  Future<File> _getCustomCacheFile() async {
+    final dir = await getApplicationDocumentsDirectory();
+    return File('${dir.path}/$_customCacheFileName');
   }
 
   Future<void> _saveJsonCache(List<M3UItem> items) async {
@@ -852,8 +859,32 @@ class M3UService extends ChangeNotifier {
   }
 
   /// Fetch personal content (movies/series) from Supabase.
-  Future<List<M3UItem>> fetchCustomContent() async {
+  Future<List<M3UItem>> fetchCustomContent({bool forceRefresh = false}) async {
     if (_supabase == null) return [];
+
+    // Local Cache evaluation
+    if (!forceRefresh) {
+      final cacheTimestamp = _prefs?.getInt(_customCacheTimestampKey);
+      if (cacheTimestamp != null &&
+          DateTime.now().millisecondsSinceEpoch - cacheTimestamp <
+              _cacheDuration.inMilliseconds) {
+        try {
+          final file = await _getCustomCacheFile();
+          if (await file.exists()) {
+            final raw = await file.readAsString();
+            final jsonStr = SecurityUtils.deobfuscate(raw);
+            final cachedItems = await compute(_decodeJsonCacheInBackground, jsonStr);
+            if (cachedItems.isNotEmpty) {
+              debugPrint('Loaded ${cachedItems.length} custom items from local cache');
+              return cachedItems;
+            }
+          }
+        } catch (e) {
+          debugPrint('Error loading custom cache: $e');
+        }
+      }
+    }
+
     try {
       final List<dynamic> list = [];
       bool hasMore = true;
@@ -990,6 +1021,17 @@ class M3UService extends ChangeNotifier {
       }
 
       debugPrint('Loaded ${finalItems.length} custom items from Supabase');
+
+      // Save custom items to JSON Cache
+      try {
+        final file = await _getCustomCacheFile();
+        final jsonStr = await compute(_encodeJsonCacheInBackground, finalItems);
+        await file.writeAsString(SecurityUtils.obfuscate(jsonStr));
+        await _prefs?.setInt(_customCacheTimestampKey, DateTime.now().millisecondsSinceEpoch);
+      } catch (e) {
+        debugPrint('Error saving custom cache: $e');
+      }
+
       return finalItems;
     } catch (e, stack) {
       debugPrint('Error fetching custom content: $e\n$stack');
@@ -1134,7 +1176,7 @@ class M3UService extends ChangeNotifier {
     if (hasValidUnifiedCache) {
       final cachedItems = await _loadJsonCache();
       if (cachedItems != null && cachedItems.isNotEmpty) {
-        final custom = await fetchCustomContent();
+        final custom = await fetchCustomContent(forceRefresh: forceRefresh);
         await _indexItems([...custom, ...cachedItems]);
         return true;
       }
@@ -1196,7 +1238,7 @@ class M3UService extends ChangeNotifier {
     );
 
     // 1. Fetch custom content and merge
-    final customItems = await fetchCustomContent();
+    final customItems = await fetchCustomContent(forceRefresh: forceRefresh);
     final allItems = [...customItems, ...allRawItems];
 
     // 2. Full background indexing
@@ -1222,7 +1264,7 @@ class M3UService extends ChangeNotifier {
       if (!forceRefresh) {
         final cachedItems = await _loadJsonCache();
         if (cachedItems != null && cachedItems.isNotEmpty) {
-          final custom = await fetchCustomContent();
+          final custom = await fetchCustomContent(forceRefresh: forceRefresh);
           await _indexItems([...custom, ...cachedItems]);
           return true;
         }
@@ -1233,7 +1275,7 @@ class M3UService extends ChangeNotifier {
         forceRefresh,
         onProgress: onProgress,
       );
-      final custom = await fetchCustomContent();
+      final custom = await fetchCustomContent(forceRefresh: forceRefresh);
       await _indexItems([...custom, ...items]);
 
       // Guardar en cache para la próxima vez
@@ -1250,7 +1292,7 @@ class M3UService extends ChangeNotifier {
         // Try JSON cache (MUCH faster)
         final cachedItems = await _loadJsonCache();
         if (cachedItems != null && cachedItems.isNotEmpty) {
-          final custom = await fetchCustomContent();
+          final custom = await fetchCustomContent(forceRefresh: forceRefresh);
           await _indexItems([...custom, ...cachedItems]);
           return true;
         }
@@ -1259,7 +1301,7 @@ class M3UService extends ChangeNotifier {
         if (await cacheFile.exists()) {
           final cachedBytes = await cacheFile.readAsBytes();
           final sourceName = _activeSourceName();
-          final custom = await fetchCustomContent();
+          final custom = await fetchCustomContent(forceRefresh: forceRefresh);
           return _processOutput(
             await compute(
               parseM3UInBackground,
@@ -1292,7 +1334,7 @@ class M3UService extends ChangeNotifier {
       DateTime.now().millisecondsSinceEpoch,
     );
 
-    final custom = await fetchCustomContent();
+    final custom = await fetchCustomContent(forceRefresh: forceRefresh);
     return _processOutput(
       await compute(
         parseM3UInBackground,
