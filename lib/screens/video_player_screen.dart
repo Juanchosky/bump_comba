@@ -97,6 +97,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool _isDragging = false;
   bool _hasError = false;
   bool _isSeeking = false;
+  Duration _lastPosition = Duration.zero;
+  int _noMovementSeconds = 0;
   double _dragValue = 0.0;
   Timer? _hideControlsTimer;
 
@@ -550,34 +552,36 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
           // -- BUFFER & CACHE STRATEGY (Optimization for Stuttering) --
           await mpv.setProperty('cache', 'yes');
-          await mpv.setProperty(
-            'cache-pause',
-            'yes',
-          ); // Allow pause to refill buffer (Prevents choppiness)
+          await mpv.setProperty('cache-pause', 'yes');
           await mpv.setProperty('cache-on-disk', 'no');
+          await mpv.setProperty('cache-pause-wait', _isLiveContent ? '1' : '3');
+          await mpv.setProperty('cache-pause-initial', 'yes');
           await mpv.setProperty(
-            'cache-pause-wait',
-            '3',
-          ); // Wait for 3 seconds of buffer before resuming
+            'stream-buffer-size',
+            '4194304',
+          ); // 4MB buffer for network
+          await mpv.setProperty('network-timeout', '60');
 
           if (_isLiveContent) {
-            await mpv.setProperty('cache-secs', '120');
+            await mpv.setProperty('cache-secs', '60');
             await mpv.setProperty(
               'demuxer-max-bytes',
-              '134217728',
-            ); // 128MB (Balanced for Live)
-            await mpv.setProperty('cache-back-buffer-size', '67108864');
-            await mpv.setProperty(
-              'hls-bitrate',
-              'auto',
-            ); // Use adaptive bitrate for Live
-            await mpv.setProperty('hls-forward-cache-secs', '60');
-            await mpv.setProperty('hls-back-cache-secs', '30');
+              '67108864',
+            ); // 64MB for Live
+            await mpv.setProperty('demuxer-max-back-bytes', '33554432');
+            await mpv.setProperty('demuxer-readahead-secs', '20');
+            await mpv.setProperty('hls-bitrate', 'auto');
+            await mpv.setProperty('hls-forward-cache-secs', '30');
+            await mpv.setProperty('hls-back-cache-secs', '10');
             await mpv.setProperty('demuxer-lavf-hacks', 'yes');
             await mpv.setProperty('demuxer-cache-wait', 'no');
             await mpv.setProperty(
+              'deinterlace',
+              'auto',
+            ); // Critical for Live TV
+            await mpv.setProperty(
               'demuxer-lavf-o',
-              'protocol_whitelist=file,http,https,tcp,tls,crypto,hls,data',
+              'protocol_whitelist=file,http,https,tcp,tls,crypto,hls,data,concat',
             );
           } else {
             // VOD Content (Movies/Series)
@@ -600,10 +604,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           // -- NETWORK & COMPATIBILITY --
           await mpv.setProperty('http-reconnect', 'yes');
           await mpv.setProperty('http-reconnect-sleep', '1');
-          await mpv.setProperty(
-            'tls-verify',
-            'no',
-          ); // Avoid hangups on bad certs
+          await mpv.setProperty('http-reconnect-timeout', '10');
+          await mpv.setProperty('tls-verify', 'no');
 
           // User-Agent Rotation: Use a modern browser UA for VOD to avoid throttling
           final selectedUA =
@@ -660,7 +662,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             PerformanceService().isLowPerformance ? 'nonref' : 'none',
           );
           await mpv.setProperty('framedrop', 'vo');
-          await mpv.setProperty('vd-lavc-o', 'err_detect=ignore_err');
+          await mpv.setProperty('vd-lavc-fast-decoding', 'yes');
+          await mpv.setProperty(
+            'vd-lavc-o',
+            'err_detect=ignore_err,flags2=+fast',
+          );
 
           // Audio Sync
           await mpv.setProperty('video-sync', 'audio');
@@ -957,27 +963,49 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       if (!mounted || _player == null) return;
 
       final playerState = _player!.state;
+      final currentPos = playerState.position;
 
       _bufferedDuration.value = playerState.buffer;
 
-      // ── Detección de stall con umbrales generosos ─────────────
+      // ── Detección de stall y congelamiento silencioso ─────────────
+      bool showingSpinner = _isBuffering;
+
       if (playerState.buffering) {
         _stallSeconds++;
+        showingSpinner = true;
 
-        // VOD: 15s (antes 45s, demasiado lento)
-        // Live: 10s (streams en vivo deben recargar rápido)
         final int threshold = _isLiveContent ? 10 : 15;
-
         if (_stallSeconds >= threshold && !_isVideoLoading) {
           debugPrint('Stall persistente (${_stallSeconds}s). Recargando...');
           _stallSeconds = 0;
           _reloadVideo();
         }
       } else {
+        // Detector de "congelamiento" (playing pero no avanza)
+        if (playerState.playing && !_isSeeking && !_isDragging) {
+          if (currentPos == _lastPosition && currentPos != Duration.zero) {
+            _noMovementSeconds++;
+            if (_noMovementSeconds >= 3) {
+              showingSpinner = true;
+            }
+          } else {
+            _noMovementSeconds = 0;
+          }
+        } else {
+          _noMovementSeconds = 0;
+        }
+
         if (_stallSeconds > 5) {
           debugPrint('Buffer recuperado tras $_stallSeconds s.');
         }
         _stallSeconds = 0;
+      }
+
+      _lastPosition = currentPos;
+
+      // Actualizar UI solo si cambió el estado del spinner
+      if (mounted && _isBuffering != showingSpinner) {
+        setState(() => _isBuffering = showingSpinner);
       }
     });
 
@@ -2208,42 +2236,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                   );
                                 },
                               ),
-                              if (_isVideoLoading || _isBuffering)
+                              if (_isVideoLoading || _isBuffering || _isSeeking)
                                 _buildVideoLoading(
                                   showBackground: _isVideoLoading,
                                 )
                               else
-                                ValueListenableBuilder<VideoController?>(
-                                  valueListenable: _videoControllerNotifier,
-                                  builder: (context, controller, _) {
-                                    if (controller == null) {
-                                      return const SizedBox.shrink();
-                                    }
-                                    return StreamBuilder<bool>(
-                                      stream:
-                                          controller.player.stream.buffering,
-                                      builder: (context, snapshot) {
-                                        final isExhausted =
-                                            _bufferedDuration
-                                                .value
-                                                .inMilliseconds <
-                                            500;
-                                        final isBuffering =
-                                            snapshot.data == true;
-                                        if (((isBuffering &&
-                                                    (isExhausted ||
-                                                        _isDragging)) ||
-                                                _isSeeking) &&
-                                            _seekFeedbackSeconds == null) {
-                                          return _buildVideoLoading(
-                                            showBackground: false,
-                                          );
-                                        }
-                                        return const SizedBox.shrink();
-                                      },
-                                    );
-                                  },
-                                ),
+                                const SizedBox.shrink(),
                             ],
                           ),
                         ),
