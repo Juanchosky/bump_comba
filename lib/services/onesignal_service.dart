@@ -1,12 +1,14 @@
 import 'package:onesignal_flutter/onesignal_flutter.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 class OneSignalService {
   static final OneSignalService _instance = OneSignalService._internal();
   factory OneSignalService() => _instance;
   OneSignalService._internal();
 
-  static const String appId = "9c7ffe17-59fe-4e76-9c9e-3e1b8046a125";
+  static String get appId =>
+      dotenv.env['ONESIGNAL_APP_ID'] ?? "9c7ffe17-59fe-4e76-9c9e-3e1b8046a125";
 
   Future<void> initialize() async {
     if (kIsWeb ||

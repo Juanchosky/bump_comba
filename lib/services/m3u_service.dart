@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import '../services/premium_service.dart';
 import '../services/dynamic_scraper_service.dart';
 import '../services/xtream_service.dart';
@@ -98,13 +99,12 @@ class M3USource {
 ///   FEAT-4  — DownloadProgress typed class instead of raw Function params
 class M3UService extends ChangeNotifier {
   // ── Supabase credentials ─────────────────────────────────────────────────
-  // SECURITY NOTE: Move these to --dart-define or a .env solution so they
-  // are not committed in plain text to version control.
-  static const String _supabaseUrl = String.fromEnvironment(
+  // SECURITY NOTE: Keys moved to .env file
+  static String get _supabaseUrl => dotenv.env['SUPABASE_URL'] ?? const String.fromEnvironment(
     'SUPABASE_URL',
     defaultValue: 'https://inukqboqdvwtmmthjwrl.supabase.co',
   );
-  static const String _supabaseAnonKey = String.fromEnvironment(
+  static String get _supabaseAnonKey => dotenv.env['SUPABASE_ANON_KEY'] ?? const String.fromEnvironment(
     'SUPABASE_ANON_KEY',
     defaultValue:
         'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImludWtxYm9xZHZ3dG1tdGhqd3JsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzkyMzM3NDIsImV4cCI6MjA1NDgwOTc0Mn0.bWNkWIErT71tXchtxN9D83w-I--UIGOIzZKff3-X5V8',

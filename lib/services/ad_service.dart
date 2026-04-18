@@ -6,6 +6,7 @@ import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'premium_service.dart';
 import '../utils/snack_bar_utils.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ALGORITMO ADAPTATIVO v2 — Anti-fatiga + Anti-adblocker + Revenue floor
@@ -76,13 +77,14 @@ class AdService {
   SharedPreferences? _prefs;
 
   // ── IDs ───────────────────────────────────────────────────────────────────
-  static const String _realInterstitialId =
-      'ca-app-pub-4239841158013104/9278645985';
-  static const String _realRewardedId =
-      'ca-app-pub-4239841158013104/9987208522';
-  static const String _realRewardedInterstitialId =
-      'ca-app-pub-4239841158013104/1766987477';
-  static const String _realNativeId = 'ca-app-pub-4239841158013104/9574791316';
+  static String get _realInterstitialId =>
+      dotenv.env['ADMOB_INTERSTITIAL_ID'] ?? 'ca-app-pub-4239841158013104/9278645985';
+  static String get _realRewardedId =>
+      dotenv.env['ADMOB_REWARDED_ID'] ?? 'ca-app-pub-4239841158013104/9987208522';
+  static String get _realRewardedInterstitialId =>
+      dotenv.env['ADMOB_REWARDED_INTERSTITIAL_ID'] ?? 'ca-app-pub-4239841158013104/1766987477';
+  static String get _realNativeId => 
+      dotenv.env['ADMOB_NATIVE_ID'] ?? 'ca-app-pub-4239841158013104/9574791316';
 
   static const String _testInterstitialId =
       'ca-app-pub-3940256099942544/1033173712';

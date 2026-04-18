@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:purchases_flutter/purchases_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'm3u_service.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 
@@ -18,8 +19,11 @@ class PremiumService {
   // ═══════════════════════════════════════════════════════════════════════════
 
   // RevenueCat API keys
-  static const String _androidApiKey = 'goog_choPIwxbmFDjcTSaglVwWRsEGYR';
-  static const String _iosApiKey =
+  static String get _androidApiKey =>
+      dotenv.env['REVENUECAT_ANDROID_KEY'] ??
+      'goog_choPIwxbmFDjcTSaglVwWRsEGYR';
+  static String get _iosApiKey =>
+      dotenv.env['REVENUECAT_IOS_KEY'] ??
       'goog_choPIwxbmFDjcTSaglVwWRsEGYR'; // Use same key if no iOS version yet
 
   // Product identifiers (configure these in RevenueCat dashboard and store)
