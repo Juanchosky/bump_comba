@@ -36,7 +36,6 @@ import 'stream_browser_config_screen.dart';
 import 'settings_screen.dart';
 import '../services/dynamic_scraper_service.dart';
 import '../services/social_rewards_service.dart';
-import '../services/xtream_service.dart';
 import '../widgets/rate_dialog.dart';
 
 class ExitFullscreenIntent extends Intent {
