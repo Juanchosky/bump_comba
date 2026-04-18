@@ -541,21 +541,36 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       _startStallMonitor();
 
       Future.microtask(() async {
+        final activePlayer = _player;
+        if (activePlayer == null) return;
+
         try {
-          final activePlayer = _player;
-          if (activePlayer == null) return;
           final mpv = activePlayer.platform as dynamic;
           if (mpv == null) return;
 
+          // -- BUFFER & CACHE STRATEGY (Optimization for Stuttering) --
           await mpv.setProperty('cache', 'yes');
-          await mpv.setProperty('cache-pause', 'no');
+          await mpv.setProperty(
+            'cache-pause',
+            'yes',
+          ); // Allow pause to refill buffer (Prevents choppiness)
           await mpv.setProperty('cache-on-disk', 'no');
+          await mpv.setProperty(
+            'cache-pause-wait',
+            '3',
+          ); // Wait for 3 seconds of buffer before resuming
 
           if (_isLiveContent) {
             await mpv.setProperty('cache-secs', '120');
-            await mpv.setProperty('demuxer-max-bytes', '536870912');
-            await mpv.setProperty('cache-back-buffer-size', '134217728');
-            await mpv.setProperty('hls-bitrate', 'max');
+            await mpv.setProperty(
+              'demuxer-max-bytes',
+              '134217728',
+            ); // 128MB (Balanced for Live)
+            await mpv.setProperty('cache-back-buffer-size', '67108864');
+            await mpv.setProperty(
+              'hls-bitrate',
+              'auto',
+            ); // Use adaptive bitrate for Live
             await mpv.setProperty('hls-forward-cache-secs', '60');
             await mpv.setProperty('hls-back-cache-secs', '30');
             await mpv.setProperty('demuxer-lavf-hacks', 'yes');
@@ -565,41 +580,72 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               'protocol_whitelist=file,http,https,tcp,tls,crypto,hls,data',
             );
           } else {
-            await mpv.setProperty('cache-secs', '240');
-            await mpv.setProperty('demuxer-max-bytes', '536870912');
-            await mpv.setProperty('demuxer-max-back-bytes', '134217728');
-            await mpv.setProperty('demuxer-readahead-secs', '120');
+            // VOD Content (Movies/Series)
+            await mpv.setProperty(
+              'cache-secs',
+              '300',
+            ); // Increase buffer seconds
+            await mpv.setProperty(
+              'demuxer-max-bytes',
+              '268435456',
+            ); // 256MB (Safe limit for VOD)
+            await mpv.setProperty('demuxer-max-back-bytes', '67108864');
+            await mpv.setProperty('demuxer-readahead-secs', '180');
             await mpv.setProperty('cache-pause-initial', 'yes');
             await mpv.setProperty('cache-pause-wait', '5');
             await mpv.setProperty('stream-buffer-size', '16777216');
-            await mpv.setProperty('network-timeout', '40');
+            await mpv.setProperty('network-timeout', '60');
           }
 
+          // -- NETWORK & COMPATIBILITY --
           await mpv.setProperty('http-reconnect', 'yes');
           await mpv.setProperty('http-reconnect-sleep', '1');
-          await mpv.setProperty('user-agent', 'VLC/3.0.20 LibVLC/3.0.20');
+          await mpv.setProperty(
+            'tls-verify',
+            'no',
+          ); // Avoid hangups on bad certs
 
-          // Force mediacodec-copy for Android to ensure stability on Motorola/Android 15
+          // User-Agent Rotation: Use a modern browser UA for VOD to avoid throttling
+          final selectedUA =
+              _isLiveContent
+                  ? 'VLC/3.0.20 LibVLC/3.0.20'
+                  : _userAgents[_userAgentIndex % _userAgents.length];
+          await mpv.setProperty('user-agent', selectedUA);
+
+          // -- HARDWARE ACCELERATION OPTIMIZATION --
+          // 'mediacodec' is zero-copy (fastest). 'mediacodec-copy' is a safe fallback.
+          bool useDirectHwdec = true;
           if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
-            await mpv.setProperty('hwdec', 'mediacodec-copy');
+            // Avoid tunnel/direct on Motorola or known low-end
+            if (PerformanceService().isLowPerformance ||
+                PerformanceService().allowVideoPrewarm == false) {
+              useDirectHwdec = false;
+            }
+          }
+
+          if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+            await mpv.setProperty(
+              'hwdec',
+              useDirectHwdec ? 'mediacodec' : 'mediacodec-copy',
+            );
           } else {
             await mpv.setProperty('hwdec', 'auto-safe');
           }
 
+          // Threading and error detection
           await mpv.setProperty('vd-lavc-threads', '0');
           await mpv.setProperty('vd-lavc-skiploopfilter', 'nonref');
           await mpv.setProperty('framedrop', 'decoder+vo');
           await mpv.setProperty('vd-lavc-o', 'err_detect=ignore_err');
+
+          // Audio Sync
+          await mpv.setProperty('video-sync', 'audio');
           await mpv.setProperty('audio-buffer', '0.5');
           await mpv.setProperty('audio-stream-silence', 'yes');
           await mpv.setProperty('audio-fallback-to-null', 'yes');
 
-          // Motorola specifics
-          if (PerformanceService().isLowPerformance ||
-              PerformanceService().allowVideoPrewarm == false) {
-            // Force surface release and avoid tunneled playback
+          if (PerformanceService().isLowPerformance) {
             await mpv.setProperty('vd-lavc-dr', 'no');
-            await mpv.setProperty('hwdec', 'mediacodec-copy');
           }
 
           if (!_isLiveContent) {
