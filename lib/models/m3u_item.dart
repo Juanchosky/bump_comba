@@ -79,7 +79,7 @@ class M3UItem {
   Map<String, dynamic> toMap() {
     return {
       'n': name,
-      'u': SecurityUtils.obfuscate(url),
+      'u': url,
       'l': logo,
       'c': category,
       'f': isFavorite ? 1 : 0,
@@ -98,7 +98,7 @@ class M3UItem {
   factory M3UItem.fromMap(Map<String, dynamic> map) {
     return M3UItem(
       name: map['n'] ?? '',
-      url: SecurityUtils.deobfuscate(map['u'] ?? ''),
+      url: map['u'] ?? '',
       logo: map['l'],
       category:
           map['c'] != null && (map['c'] as String).isNotEmpty

@@ -345,30 +345,60 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       // Crucial: Initialize Premium Service immediately so the PC License is loaded
       // BEFORE we drop the `_isLoading` flag and evaluate the Desktop Premium Gate
       await PremiumService().initialize();
-
       await _m3uService.init();
-      final success = await _m3uService.loadM3UContent(
-        useRetry: true,
-        retryAttempts: 3,
-        onProgress: (progress) {
-          if (mounted) {
-            setState(() {
-              if (progress.totalBytes != null && progress.totalBytes! > 0) {
-                _downloadProgress =
-                    progress.receivedBytes / progress.totalBytes!;
-                _downloadDetail =
-                    '${(progress.receivedBytes / 1024 / 1024).toStringAsFixed(1)} MB / ${(progress.totalBytes! / 1024 / 1024).toStringAsFixed(1)} MB';
-              } else {
-                _downloadProgress = null;
-                _downloadDetail =
-                    '${(progress.receivedBytes / 1024 / 1024).toStringAsFixed(1)} MB descargados...';
-              }
-            });
-          }
-        },
-      );
 
-      _slowLoadingTimer?.cancel();
+      bool success = false;
+
+      // FastBoot: Intentar cargar del caché instantáneamente para restaurar la UI
+      final cachedOk = await _m3uService.loadFromCache();
+      if (cachedOk && mounted) {
+        success = true;
+        setState(() => _isLoading = false);
+        // Si cargamos de caché, refrescamos en background silenciosamente
+        unawaited(
+          _m3uService.loadM3UContent(useRetry: false).then((refreshSuccess) {
+            if (refreshSuccess && mounted) {
+              // Re-pick hero si cambió algo importante
+              if (_heroItem == null || !_m3uService.items.contains(_heroItem)) {
+                _pickHeroItem(_m3uService.latestItems);
+              }
+              setState(() {});
+            }
+          }),
+        );
+      }
+
+      if (_isLoading) {
+        // Solo si NO pudimos cargar del caché, procedemos con la carga normal bloqueante
+        success = await _m3uService.loadM3UContent(
+          useRetry: true,
+          retryAttempts: 3,
+          onProgress: (progress) {
+            if (mounted) {
+              setState(() {
+                if (progress.totalBytes != null && progress.totalBytes! > 0) {
+                  _downloadProgress =
+                      progress.receivedBytes / progress.totalBytes!;
+                  _downloadDetail =
+                      '${(progress.receivedBytes / 1024 / 1024).toStringAsFixed(1)} MB / ${(progress.totalBytes! / 1024 / 1024).toStringAsFixed(1)} MB';
+                } else {
+                  _downloadProgress = null;
+                  _downloadDetail =
+                      '${(progress.receivedBytes / 1024 / 1024).toStringAsFixed(1)} MB descargados...';
+                }
+              });
+            }
+          },
+        );
+
+        _slowLoadingTimer?.cancel();
+        if (success && mounted) {
+          setState(() => _isLoading = false);
+        }
+      } else {
+        // Si ya no estamos cargando (FastBoot), solo cancelamos el timer
+        _slowLoadingTimer?.cancel();
+      }
 
       if (success) {
         // Pick Hero Item once on load, only if it hasn't been picked yet (e.g. app start)
@@ -3818,54 +3848,58 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       child: Row(
         children: [
           Expanded(
-            child: GestureDetector(
-              onTap: () {
-                if (_isNavigating) return;
-                setState(() => _isNavigating = true);
-                Navigator.of(context)
-                    .push(
-                      PageRouteBuilder(
-                        pageBuilder: (context, animation, secondaryAnimation) {
-                          return FadeTransition(
-                            opacity: animation,
-                            child: _SearchPage(
-                              m3uService: _m3uService,
-                              itemBuilder: (ctx, item) => _buildGridCard(item),
-                            ),
-                          );
-                        },
-                        transitionDuration: const Duration(milliseconds: 300),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(24),
+                onTap: () {
+                  if (_isNavigating) return;
+                  setState(() => _isNavigating = true);
+                  Navigator.of(context)
+                      .push(
+                        PageRouteBuilder(
+                          pageBuilder: (context, animation, secondaryAnimation) {
+                            return FadeTransition(
+                              opacity: animation,
+                              child: _SearchPage(
+                                m3uService: _m3uService,
+                                itemBuilder: (ctx, item) => _buildGridCard(item),
+                              ),
+                            );
+                          },
+                          transitionDuration: const Duration(milliseconds: 300),
+                        ),
+                      )
+                      .then((_) {
+                        if (mounted) setState(() => _isNavigating = false);
+                      });
+                },
+                child: Hero(
+                  tag: 'search_bar',
+                  child: Material(
+                    color: Colors.transparent,
+                    child: Container(
+                      height: 43,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF2B2B2B),
+                        borderRadius: BorderRadius.circular(24),
                       ),
-                    )
-                    .then((_) {
-                      if (mounted) setState(() => _isNavigating = false);
-                    });
-              },
-              child: Hero(
-                tag: 'search_bar',
-                child: Material(
-                  color: Colors.transparent,
-                  child: Container(
-                    height: 43,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF2B2B2B),
-                      borderRadius: BorderRadius.circular(24),
-                    ),
-                    child: Row(
-                      children: [
-                        const SizedBox(width: 12),
-                        const Icon(
-                          Icons.search,
-                          color: Colors.white54,
-                          size: 22,
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: _AnimatedSearchPlaceholder(
-                            suggestions: _getDynamicSearchSuggestions(),
+                      child: Row(
+                        children: [
+                          const SizedBox(width: 12),
+                          const Icon(
+                            Icons.search,
+                            color: Colors.white54,
+                            size: 22,
                           ),
-                        ),
-                      ],
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: _AnimatedSearchPlaceholder(
+                              suggestions: _getDynamicSearchSuggestions(),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
@@ -5862,6 +5896,15 @@ class _SearchPageState extends State<_SearchPage> {
     // Fetch popular items
     _popularItems = widget.m3uService.getPopularSearchItems();
     widget.m3uService.addListener(_onServiceUpdate);
+
+    // Explicit focus request after transition to fix Android responsiveness
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Future.delayed(const Duration(milliseconds: 400), () {
+        if (mounted && !_searchFocusNode.hasFocus) {
+          _searchFocusNode.requestFocus();
+        }
+      });
+    });
   }
 
   void _onServiceUpdate() {
@@ -5998,49 +6041,56 @@ class _SearchPageState extends State<_SearchPage> {
                 tag: 'search_bar',
                 child: Material(
                   color: Colors.transparent,
-                  child: Container(
-                    height: 43,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF2B2B2B),
-                      borderRadius: BorderRadius.circular(24),
-                    ),
-                    child: Row(
-                      children: [
-                        const SizedBox(width: 12),
-                        const Icon(
-                          Icons.search,
-                          color: Colors.white54,
-                          size: 22,
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: TextField(
-                            controller: _searchController,
-                            focusNode: _searchFocusNode,
-                            autofocus: true,
-                            style: const TextStyle(color: Colors.white),
-                            decoration: const InputDecoration(
-                              hintText: 'Buscar...',
-                              hintStyle: TextStyle(color: Colors.white54),
-                              border: InputBorder.none,
-                              isDense: true,
-                              contentPadding: EdgeInsets.zero,
-                            ),
-                            onChanged: _onSearchChanged,
+                  child: GestureDetector(
+                    onTap: () {
+                      if (!_searchFocusNode.hasFocus) {
+                        _searchFocusNode.requestFocus();
+                      }
+                    },
+                    child: Container(
+                      height: 43,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF2B2B2B),
+                        borderRadius: BorderRadius.circular(24),
+                      ),
+                      child: Row(
+                        children: [
+                          const SizedBox(width: 12),
+                          const Icon(
+                            Icons.search,
+                            color: Colors.white54,
+                            size: 22,
                           ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.close, color: Colors.white54),
-                          onPressed: () {
-                            if (_searchController.text.isNotEmpty) {
-                              _searchController.clear();
-                              _onSearchChanged('');
-                            } else {
-                              Navigator.pop(context);
-                            }
-                          },
-                        ),
-                      ],
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: TextField(
+                              controller: _searchController,
+                              focusNode: _searchFocusNode,
+                              autofocus: true,
+                              style: const TextStyle(color: Colors.white),
+                              decoration: const InputDecoration(
+                                hintText: 'Buscar...',
+                                hintStyle: TextStyle(color: Colors.white54),
+                                border: InputBorder.none,
+                                isDense: true,
+                                contentPadding: EdgeInsets.zero,
+                              ),
+                              onChanged: _onSearchChanged,
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close, color: Colors.white54),
+                            onPressed: () {
+                              if (_searchController.text.isNotEmpty) {
+                                _searchController.clear();
+                                _onSearchChanged('');
+                              } else {
+                                Navigator.pop(context);
+                              }
+                            },
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),

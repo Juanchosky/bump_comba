@@ -100,15 +100,19 @@ class M3USource {
 class M3UService extends ChangeNotifier {
   // ── Supabase credentials ─────────────────────────────────────────────────
   // SECURITY NOTE: Keys moved to .env file
-  static String get _supabaseUrl => dotenv.env['SUPABASE_URL'] ?? const String.fromEnvironment(
-    'SUPABASE_URL',
-    defaultValue: 'https://inukqboqdvwtmmthjwrl.supabase.co',
-  );
-  static String get _supabaseAnonKey => dotenv.env['SUPABASE_ANON_KEY'] ?? const String.fromEnvironment(
-    'SUPABASE_ANON_KEY',
-    defaultValue:
-        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImludWtxYm9xZHZ3dG1tdGhqd3JsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzkyMzM3NDIsImV4cCI6MjA1NDgwOTc0Mn0.bWNkWIErT71tXchtxN9D83w-I--UIGOIzZKff3-X5V8',
-  );
+  static String get _supabaseUrl =>
+      dotenv.env['SUPABASE_URL'] ??
+      const String.fromEnvironment(
+        'SUPABASE_URL',
+        defaultValue: 'https://inukqboqdvwtmmthjwrl.supabase.co',
+      );
+  static String get _supabaseAnonKey =>
+      dotenv.env['SUPABASE_ANON_KEY'] ??
+      const String.fromEnvironment(
+        'SUPABASE_ANON_KEY',
+        defaultValue:
+            'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImludWtxYm9xZHZ3dG1tdGhqd3JsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzkyMzM3NDIsImV4cCI6MjA1NDgwOTc0Mn0.bWNkWIErT71tXchtxN9D83w-I--UIGOIzZKff3-X5V8',
+      );
 
   // ── SharedPreferences keys ───────────────────────────────────────────────
   static const String _favoritesKey = 'm3u_favorites';
@@ -127,7 +131,7 @@ class M3UService extends ChangeNotifier {
   static const String _favoriteTipKey = 'show_favorite_tip';
   static const String _isUnifiedModeKey = 'is_unified_mode';
   static const String _logicVersionKey = 'm3u_logic_version';
-  static const int _currentLogicVersion = 10;
+  static const int _currentLogicVersion = 11;
   // FEAT-2: key prefix for liked content deduplication
   static const String _likedUrlsKey = 'm3u_liked_urls';
   static const String _failedLogosKey = 'm3u_failed_logos';
@@ -322,8 +326,12 @@ class M3UService extends ChangeNotifier {
   Future<void> _saveJsonCache(List<M3UItem> items) async {
     try {
       final file = await _getJsonCacheFile();
-      final jsonStr = await compute(_encodeJsonCacheInBackground, items);
-      final obfuscated = SecurityUtils.obfuscate(jsonStr);
+      final securityKey =
+          dotenv.env['SECURITY_KEY'] ?? 'bump_comba_v1_secure_layer_2026';
+      final obfuscated = await compute(_encodeJsonCacheInBackground, {
+        'items': items,
+        'key': securityKey,
+      });
       await file.writeAsString(obfuscated);
       await _prefs?.setInt(_logicVersionKey, _currentLogicVersion);
     } catch (e) {
@@ -332,31 +340,49 @@ class M3UService extends ChangeNotifier {
   }
 
   @pragma('vm:entry-point')
-  static String _encodeJsonCacheInBackground(List<M3UItem> items) {
-    return json.encode(items.map((i) => i.toMap()).toList());
+  static String _encodeJsonCacheInBackground(Map<String, dynamic> data) {
+    final items = data['items'] as List<M3UItem>;
+    final key = data['key'] as String;
+    final jsonStr = json.encode(items.map((i) => i.toMap()).toList());
+
+    // Manual obfuscation to avoid dotenv dependency in isolate
+    final bytes = utf8.encode(jsonStr);
+    final keyBytes = utf8.encode(key);
+    final result = List<int>.generate(bytes.length, (i) {
+      return bytes[i] ^ keyBytes[i % keyBytes.length];
+    });
+    return 'obf:${base64.encode(result)}';
   }
 
-  Future<List<M3UItem>?> _loadJsonCache() async {
+  Future<List<M3UItem>?> _loadJsonCache({bool ignoreExpiration = false}) async {
     try {
       final savedVersion = _prefs?.getInt(_logicVersionKey) ?? 0;
       if (savedVersion < _currentLogicVersion) return null;
+
+      if (!ignoreExpiration) {
+        final cacheTimestamp = _prefs?.getInt(_cacheTimestampKey);
+        if (cacheTimestamp == null ||
+            DateTime.now().millisecondsSinceEpoch - cacheTimestamp >
+                _cacheDuration.inMilliseconds) {
+          // If expired and not ignoring expiration, return null to trigger network update
+          return null;
+        }
+      }
 
       final file = await _getJsonCacheFile();
       if (!await file.exists()) return null;
 
       final raw = await file.readAsString();
-      final jsonStr = SecurityUtils.deobfuscate(raw);
-      return await compute(_decodeJsonCacheInBackground, jsonStr);
+      final securityKey =
+          dotenv.env['SECURITY_KEY'] ?? 'bump_comba_v1_secure_layer_2026';
+      return await compute(_decodeJsonCacheInBackground, {
+        'raw': raw,
+        'key': securityKey,
+      });
     } catch (e) {
       debugPrint('Error loading JSON cache: $e');
       return null;
     }
-  }
-
-  @pragma('vm:entry-point')
-  static List<M3UItem> _decodeJsonCacheInBackground(String jsonStr) {
-    final List<dynamic> list = json.decode(jsonStr);
-    return list.map((e) => M3UItem.fromMap(e as Map<String, dynamic>)).toList();
   }
 
   // ===========================================================================
@@ -872,10 +898,16 @@ class M3UService extends ChangeNotifier {
           final file = await _getCustomCacheFile();
           if (await file.exists()) {
             final raw = await file.readAsString();
-            final jsonStr = SecurityUtils.deobfuscate(raw);
-            final cachedItems = await compute(_decodeJsonCacheInBackground, jsonStr);
+            final securityKey =
+                dotenv.env['SECURITY_KEY'] ?? 'bump_comba_v1_secure_layer_2026';
+            final cachedItems = await compute(_decodeJsonCacheInBackground, {
+              'raw': raw,
+              'key': securityKey,
+            });
             if (cachedItems.isNotEmpty) {
-              debugPrint('Loaded ${cachedItems.length} custom items from local cache');
+              debugPrint(
+                'Loaded ${cachedItems.length} custom items from local cache',
+              );
               return cachedItems;
             }
           }
@@ -1025,9 +1057,17 @@ class M3UService extends ChangeNotifier {
       // Save custom items to JSON Cache
       try {
         final file = await _getCustomCacheFile();
-        final jsonStr = await compute(_encodeJsonCacheInBackground, finalItems);
-        await file.writeAsString(SecurityUtils.obfuscate(jsonStr));
-        await _prefs?.setInt(_customCacheTimestampKey, DateTime.now().millisecondsSinceEpoch);
+        final securityKey =
+            dotenv.env['SECURITY_KEY'] ?? 'bump_comba_v1_secure_layer_2026';
+        final obfuscated = await compute(_encodeJsonCacheInBackground, {
+          'items': finalItems,
+          'key': securityKey,
+        });
+        await file.writeAsString(obfuscated);
+        await _prefs?.setInt(
+          _customCacheTimestampKey,
+          DateTime.now().millisecondsSinceEpoch,
+        );
       } catch (e) {
         debugPrint('Error saving custom cache: $e');
       }
@@ -1087,6 +1127,49 @@ class M3UService extends ChangeNotifier {
   // ===========================================================================
   // CONTENT LOADING
   // ===========================================================================
+
+  /// Forces loading from local cache only, ignoring the expiration timestamp — PERF-2.
+  /// Used for near-instant UI restoration (Netflix style).
+  Future<bool> loadFromCache() async {
+    final filtersMap =
+        _filterRules
+            .map((f) => {'category': f.category, 'regex': f.regexPattern})
+            .toList();
+
+    // 1. Try JSON cache first (best case)
+    final cachedItems = await _loadJsonCache(ignoreExpiration: true);
+    if (cachedItems != null && cachedItems.isNotEmpty) {
+      final custom = await fetchCustomContent(forceRefresh: false);
+      await _indexItems([...custom, ...cachedItems]);
+      return true;
+    }
+
+    // 2. Try raw M3U cache file (fallback)
+    final cacheFile = await _getCacheFile();
+    if (await cacheFile.exists()) {
+      try {
+        final cachedBytes = await cacheFile.readAsBytes();
+        final sourceName = _activeSourceName();
+        final custom = await fetchCustomContent(forceRefresh: false);
+        return _processOutput(
+          await compute(
+            parseM3UInBackground,
+            IsolateInput(
+              cachedBytes,
+              _favorites.toList(),
+              filtersMap,
+              sourceName,
+            ),
+          ),
+          custom,
+        );
+      } catch (e) {
+        debugPrint('Error loading raw cache: $e');
+      }
+    }
+
+    return false;
+  }
 
   /// Load and parse M3U content.
   ///
@@ -1759,71 +1842,6 @@ class M3UService extends ChangeNotifier {
     return _cachedRecentItems ?? [];
   }
 
-  // FEAT: Calculate recent items in background to prevent ANRs
-  @pragma('vm:entry-point')
-  static List<M3UItem> _computeRecentItemsInBackground(List<M3UItem> items) {
-    final regexYear = RegExp(r'\((\d{4})\)');
-    final regexKeywords = RegExp(
-      r'\b(estreno|cam|ts|screener|nuevo|new|2024|2025|2026)\b',
-      caseSensitive: false,
-    );
-
-    int maxYear = 0;
-    for (var item in items) {
-      final match = regexYear.firstMatch(item.name);
-      if (match != null) {
-        final year = int.tryParse(match.group(1) ?? '');
-        if (year != null && year > maxYear && year < 2100) maxYear = year;
-      }
-    }
-
-    final targetYears =
-        maxYear > 0 ? [maxYear, maxYear - 1] : [DateTime.now().year];
-
-    final recent =
-        items.where((item) {
-          final match = regexYear.firstMatch(item.name);
-          if (match != null) {
-            final year = int.tryParse(match.group(1) ?? '');
-            if (year != null && targetYears.contains(year)) return true;
-          }
-          if (regexKeywords.hasMatch(item.name) ||
-              regexKeywords.hasMatch(item.category)) {
-            return true;
-          }
-          return false;
-        }).toList();
-
-    recent.sort((a, b) {
-      final yearA =
-          int.tryParse(regexYear.firstMatch(a.name)?.group(1) ?? '0') ?? 0;
-      final yearB =
-          int.tryParse(regexYear.firstMatch(b.name)?.group(1) ?? '0') ?? 0;
-      if (yearA != yearB) return yearB.compareTo(yearA);
-
-      final isEstrenoA =
-          a.name.toLowerCase().contains('estreno') ||
-          a.name.toLowerCase().contains('cam');
-      final isEstrenoB =
-          b.name.toLowerCase().contains('estreno') ||
-          b.name.toLowerCase().contains('cam');
-      if (isEstrenoA && !isEstrenoB) return -1;
-      if (!isEstrenoA && isEstrenoB) return 1;
-      return a.name.compareTo(b.name);
-    });
-
-    final seenNames = <String>{};
-    final uniqueRecent = <M3UItem>[];
-    for (var item in recent) {
-      final normalizedName = item.name.trim().toLowerCase();
-      if (!seenNames.contains(normalizedName)) {
-        seenNames.add(normalizedName);
-        uniqueRecent.add(item);
-      }
-    }
-    return uniqueRecent;
-  }
-
   List<M3UItem> getPopularSearchItems() {
     // Si el caché async aún no está listo, calcular síncronamente con los primeros items
     if (_cachedRecentItems == null && _items.isNotEmpty) {
@@ -2303,8 +2321,98 @@ class M3UService extends ChangeNotifier {
   }
 }
 
+@pragma('vm:entry-point')
+String _encodeJsonCacheInBackground(Map<String, dynamic> data) {
+  try {
+    final items = data['items'] as List<M3UItem>;
+    final secureKey = data['key'] as String;
+    final jsonStr = json.encode(items.map((i) => i.toMap()).toList());
+
+    // Manual XOR for isolate purity
+    final bytes = utf8.encode(jsonStr);
+    final keyBytes = utf8.encode(secureKey);
+    final obfuscated = List<int>.generate(bytes.length, (i) {
+      return bytes[i] ^ keyBytes[i % keyBytes.length];
+    });
+    return 'obf:${base64.encode(obfuscated)}';
+  } catch (e) {
+    return '';
+  }
+}
+
+@pragma('vm:entry-point')
+List<M3UItem> _decodeJsonCacheInBackground(Map<String, dynamic> data) {
+  try {
+    final String raw = data['raw'];
+    final String secureKey = data['key'];
+
+    if (!raw.startsWith('obf:')) return [];
+
+    // Manual XOR for isolate purity
+    final actualData = raw.substring(4);
+    final bytes = base64.decode(actualData);
+    final keyBytes = utf8.encode(secureKey);
+    final decodedBytes = List<int>.generate(bytes.length, (i) {
+      return bytes[i] ^ keyBytes[i % keyBytes.length];
+    });
+    final jsonStr = utf8.decode(decodedBytes);
+
+    final List<dynamic> decoded = json.decode(jsonStr);
+    return decoded
+        .map((item) => M3UItem.fromMap(item as Map<String, dynamic>))
+        .toList();
+  } catch (e) {
+    return [];
+  }
+}
+
+@pragma('vm:entry-point')
+List<M3UItem> _computeRecentItemsInBackground(List<M3UItem> items) {
+  final regexYear = RegExp(r'\((\d{4})\)');
+  final regexKeywords = RegExp(
+    r'\b(estreno|cam|ts|screener|nuevo|new|2024|2025|2026)\b',
+    caseSensitive: false,
+  );
+
+  int maxYear = 0;
+  for (var item in items) {
+    final match = regexYear.firstMatch(item.name);
+    if (match != null) {
+      final year = int.tryParse(match.group(1) ?? '');
+      if (year != null && year > maxYear && year < 2100) maxYear = year;
+    }
+  }
+
+  final targetYears =
+      maxYear > 0 ? [maxYear, maxYear - 1] : [DateTime.now().year];
+
+  final recent =
+      items.where((item) {
+        final match = regexYear.firstMatch(item.name);
+        if (match != null) {
+          final year = int.tryParse(match.group(1) ?? '');
+          if (year != null && targetYears.contains(year)) return true;
+        }
+        if (regexKeywords.hasMatch(item.name) ||
+            regexKeywords.hasMatch(item.category)) {
+          return true;
+        }
+        return false;
+      }).toList();
+
+  recent.sort((a, b) {
+    final yearA =
+        int.tryParse(regexYear.firstMatch(a.name)?.group(1) ?? '0') ?? 0;
+    final yearB =
+        int.tryParse(regexYear.firstMatch(b.name)?.group(1) ?? '0') ?? 0;
+    return yearB.compareTo(yearA);
+  });
+
+  return recent.take(60).toList();
+}
+
 // ===========================================================================
-// FEAT-3: ContentStats value object
+// MODELS & VALUE OBJECTS
 // ===========================================================================
 
 /// Aggregate statistics about loaded M3U content.
@@ -2338,7 +2446,7 @@ class ContentStats {
 }
 
 // ===========================================================================
-// ISOLATE SUPPORT
+// ISOLATE SUPPORT - VO & INPUTS
 // ===========================================================================
 
 class IsolateInput {
@@ -2374,151 +2482,6 @@ class IsolateOutput {
     required this.urlIndex,
     required this.seriesNameIndex,
   });
-}
-
-class IndexingInput {
-  final List<M3UItem> items;
-  final List<String> favorites;
-  final List<M3UItem> favoriteItems;
-
-  IndexingInput({
-    required this.items,
-    required this.favorites,
-    required this.favoriteItems,
-  });
-}
-
-class IndexingOutput {
-  final List<M3UItem> items;
-  final List<M3UItem> movies;
-  final List<M3UItem> series;
-  final List<String> categories;
-  final List<M3UItem> latestItems;
-  final Map<String, List<M3UItem>> categoryIndex;
-  final Map<String, M3UItem> urlIndex;
-  final Map<String, M3UItem> seriesNameIndex;
-  final List<M3UItem> favoriteItems;
-  final List<M3UItem> recentItems;
-
-  IndexingOutput({
-    required this.items,
-    required this.movies,
-    required this.series,
-    required this.categories,
-    required this.latestItems,
-    required this.categoryIndex,
-    required this.urlIndex,
-    required this.seriesNameIndex,
-    required this.favoriteItems,
-    required this.recentItems,
-  });
-}
-
-@pragma('vm:entry-point')
-IndexingOutput _computeIndexingInBackground(IndexingInput input) {
-  final List<M3UItem> items = List.from(input.items);
-  final List<M3UItem> favoriteItems = List.from(input.favoriteItems);
-  final Set<String> favorites = Set.from(input.favorites);
-
-  // 1. Re-apply favorites
-  for (int i = 0; i < items.length; i++) {
-    final String key =
-        items[i].isSeries
-            ? '${items[i].name}_'
-            : '${items[i].name}_${items[i].url}';
-    if (favorites.contains(key)) {
-      items[i] = items[i].copyWith(isFavorite: true);
-    } else {
-      items[i] = items[i].copyWith(isFavorite: false);
-    }
-  }
-
-  final movies = items.where((i) => !i.isSeries && !i.isLive).toList();
-  final series = items.where((i) => i.isSeries && !i.isLive).toList();
-
-  final Map<String, M3UItem> currentItemsMap = {
-    for (var i in items) (i.isSeries ? '${i.name}_' : '${i.name}_${i.url}'): i,
-  };
-
-  for (int i = 0; i < favoriteItems.length; i++) {
-    final fav = favoriteItems[i];
-    final key = fav.isSeries ? '${fav.name}_' : '${fav.name}_${fav.url}';
-    if (currentItemsMap.containsKey(key)) {
-      favoriteItems[i] = currentItemsMap[key]!.copyWith(isFavorite: true);
-    }
-  }
-
-  final Set<String> existingFavKeys = {
-    for (var f in favoriteItems)
-      (f.isSeries ? '${f.name}_' : '${f.name}_${f.url}'),
-  };
-
-  for (var item in items) {
-    if (item.isFavorite) {
-      final key = item.isSeries ? '${item.name}_' : '${item.name}_${item.url}';
-      if (!existingFavKeys.contains(key)) {
-        favoriteItems.add(item);
-        existingFavKeys.add(key);
-      }
-    }
-  }
-
-  final Map<String, List<M3UItem>> catIndex = {};
-  final Set<String> catSet = {};
-  final Map<String, M3UItem> urlIndex = {};
-  final Map<String, M3UItem> seriesNameIndex = {};
-
-  for (final item in items) {
-    catIndex.putIfAbsent(item.category, () => []).add(item);
-    catSet.add(item.category);
-    if (item.url.isNotEmpty) urlIndex[item.url] = item;
-
-    if (item.isSeries) {
-      seriesNameIndex[item.name.trim().toLowerCase()] = item;
-    }
-
-    for (final ep in item.episodes) {
-      if (ep.url.isNotEmpty) urlIndex[ep.url] = ep;
-    }
-  }
-
-  final categories = _sortCategoriesByPriority(catSet);
-  _addSagaCategories(movies, catIndex, categories);
-
-  final recentItems = M3UService._computeRecentItemsInBackground(items);
-
-  return IndexingOutput(
-    items: items,
-    movies: movies,
-    series: series,
-    categories: categories,
-    latestItems: items.take(50).toList(),
-    categoryIndex: catIndex,
-    urlIndex: urlIndex,
-    seriesNameIndex: seriesNameIndex,
-    favoriteItems: favoriteItems,
-    recentItems: recentItems,
-  );
-}
-
-class SearchInput {
-  final List<M3UItem> items;
-  final String query;
-  SearchInput(this.items, this.query);
-}
-
-// PERF-2: top-level function kept for compute() if needed in the future
-@pragma('vm:entry-point')
-List<M3UItem> _searchInBackground(SearchInput input) {
-  final query = input.query.toLowerCase();
-  final results = <M3UItem>[];
-  for (final item in input.items) {
-    if (item.name.toLowerCase().contains(query)) {
-      results.add(item);
-      if (results.length >= 100) break;
-    }
-  }
-  return results;
 }
 
 @pragma('vm:entry-point')
