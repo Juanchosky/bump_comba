@@ -2666,19 +2666,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                     const BoxConstraints(),
                                                 onPressed: _showAudioSelection,
                                               ),
-                                              const SizedBox(width: 12),
-                                              IconButton(
-                                                icon: const Icon(
-                                                  Icons.closed_caption,
-                                                  color: Colors.white,
-                                                  size: 20,
-                                                ),
-                                                padding: EdgeInsets.zero,
-                                                constraints:
-                                                    const BoxConstraints(),
-                                                onPressed:
-                                                    _showSubtitleSelection,
-                                              ),
+
                                               if (_playlist.length > 1) ...[
                                                 const SizedBox(width: 12),
                                                 IconButton(
