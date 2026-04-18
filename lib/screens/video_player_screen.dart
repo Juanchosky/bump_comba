@@ -602,6 +602,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             await mpv.setProperty('hwdec', 'mediacodec-copy');
           }
 
+          if (!_isLiveContent) {
+            await mpv.setProperty('sid', 'no');
+          }
+
           if (GameConfigService().volumeNormalize) {
             await mpv.setProperty('af', 'dynaudnorm');
           }
