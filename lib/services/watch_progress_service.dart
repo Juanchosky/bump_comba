@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'premium_service.dart';
 import '../utils/security_utils.dart';
+import 'package:flutter/foundation.dart';
 
 /// Model for storing watch progress
 class WatchProgress {
@@ -60,7 +61,7 @@ class WatchProgress {
 }
 
 /// Service to manage watch progress for videos
-class WatchProgressService {
+class WatchProgressService with ChangeNotifier {
   static final WatchProgressService _instance =
       WatchProgressService._internal();
   factory WatchProgressService() => _instance;
@@ -140,6 +141,7 @@ class WatchProgressService {
 
     final jsonStr = jsonEncode(allProgress);
     await _prefs!.setString(_progressKey, SecurityUtils.obfuscate(jsonStr));
+    notifyListeners();
     return true;
   }
 
@@ -161,9 +163,9 @@ class WatchProgressService {
 
     final allProgress = await _getAllProgress();
     allProgress.remove(videoUrl);
-
     final jsonStr = jsonEncode(allProgress);
     await _prefs!.setString(_progressKey, SecurityUtils.obfuscate(jsonStr));
+    notifyListeners();
   }
 
   /// Get all progress data
@@ -244,6 +246,7 @@ class WatchProgressService {
   Future<void> clearAllProgress() async {
     await _ensureInitialized();
     await _prefs!.remove(_progressKey);
+    notifyListeners();
   }
 
   /// Ensure SharedPreferences is initialized

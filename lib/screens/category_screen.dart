@@ -129,6 +129,7 @@ class _CategoryScreenState extends State<CategoryScreen> {
             borderRadius: BorderRadius.circular(8),
             child: FastThumbnail(
               url: item.logo,
+              title: item.name,
               width: double.infinity,
               height: double.infinity,
               fit: BoxFit.cover,

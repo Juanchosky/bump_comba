@@ -11,214 +11,18 @@ import '../services/premium_service.dart';
 import '../services/dynamic_scraper_service.dart';
 import '../services/xtream_service.dart';
 import '../utils/security_utils.dart';
+import '../models/m3u_item.dart';
+import '../models/download_progress.dart';
+import '../utils/normalization_utils.dart';
+import '../services/watch_progress_service.dart';
+
+export '../models/m3u_item.dart';
+export '../models/download_progress.dart';
+export '../utils/normalization_utils.dart';
 
 // ===========================================================================
-// MODELS
+// SERVICE
 // ===========================================================================
-
-/// Model for an M3U channel/movie
-class M3UItem {
-  final String name;
-  final String url;
-  final String? logo;
-  final String category;
-  bool isFavorite;
-
-  // Series support
-  final List<M3UItem> episodes;
-  final String? seriesName;
-  final int? seasonNumber;
-  final int? episodeNumber;
-  final bool isLive;
-  final bool isDynamic;
-
-  // Alternatives support
-  final List<M3UItem> alternatives;
-  final String? sourceName;
-
-  bool get isSeries => episodes.isNotEmpty;
-  bool get hasAlternatives => alternatives.isNotEmpty;
-
-  M3UItem({
-    required this.name,
-    required this.url,
-    this.logo,
-    required this.category,
-    this.isFavorite = false,
-    this.episodes = const [],
-    this.seriesName,
-    this.seasonNumber,
-    this.episodeNumber,
-    this.isLive = false,
-    this.isDynamic = false,
-    this.alternatives = const [],
-    this.sourceName,
-  });
-
-  M3UItem copyWith({
-    String? name,
-    String? url,
-    String? logo,
-    String? category,
-    bool? isFavorite,
-    List<M3UItem>? episodes,
-    String? seriesName,
-    int? seasonNumber,
-    int? episodeNumber,
-    bool? isLive,
-    bool? isDynamic,
-    List<M3UItem>? alternatives,
-    String? sourceName,
-  }) {
-    return M3UItem(
-      name: name ?? this.name,
-      url: url ?? this.url,
-      logo: logo ?? this.logo,
-      category: category ?? this.category,
-      isFavorite: isFavorite ?? this.isFavorite,
-      episodes: episodes ?? this.episodes,
-      seriesName: seriesName ?? this.seriesName,
-      seasonNumber: seasonNumber ?? this.seasonNumber,
-      episodeNumber: episodeNumber ?? this.episodeNumber,
-      isLive: isLive ?? this.isLive,
-      isDynamic: isDynamic ?? this.isDynamic,
-      alternatives: alternatives ?? this.alternatives,
-      sourceName: sourceName ?? this.sourceName,
-    );
-  }
-
-  Map<String, dynamic> toMap() {
-    return {
-      'n': name,
-      'u': url,
-      'l': logo,
-      'c': category,
-      'f': isFavorite ? 1 : 0,
-      'e': episodes.map((e) => e.toMap()).toList(),
-      'sn': seriesName,
-      's': seasonNumber,
-      'ep': episodeNumber,
-      'lv': isLive ? 1 : 0,
-      'dy': isDynamic ? 1 : 0,
-      'a': alternatives.map((a) => a.toMap()).toList(),
-      'src': sourceName,
-    };
-  }
-
-  /// Limpia una URL de fragmentos de tiempo (#t=...) y parámetros de búsqueda comunes.
-  static String cleanUrl(String url) {
-    if (url.isEmpty) return url;
-    try {
-      final uri = Uri.parse(url);
-      if (!uri.hasQuery && !uri.hasFragment) return url;
-
-      String cleaned = url.split('#')[0]; // Quitar fragmento
-      final innerUri = Uri.parse(cleaned);
-
-      if (innerUri.queryParameters.isEmpty) return cleaned;
-
-      // Filtrar parámetros de tiempo conocidos
-      final Map<String, String> newParams = Map<String, String>.from(
-        innerUri.queryParameters,
-      );
-      const timeParams = ['t', 'time', 'start', 'at', 'position'];
-      for (final p in timeParams) {
-        newParams.remove(p);
-      }
-
-      if (newParams.isEmpty) {
-        return innerUri.replace(query: '').toString().replaceAll('?', '');
-      }
-
-      return innerUri.replace(queryParameters: newParams).toString();
-    } catch (_) {
-      // Fallback regex si Uri.parse falla
-      return url.replaceFirst(
-        RegExp(r'[#&?](t|time|start|at|position)=\d+[smh]?.*$'),
-        '',
-      );
-    }
-  }
-
-  factory M3UItem.fromMap(Map<String, dynamic> map) {
-    return M3UItem(
-      name: map['n'] ?? '',
-      url: map['u'] ?? '',
-      logo: map['l'],
-      category:
-          map['c'] != null && (map['c'] as String).isNotEmpty
-              ? (map['c'] as String)[0].toUpperCase() +
-                  (map['c'] as String).substring(1).toLowerCase()
-              : 'Sin categoría',
-      isFavorite: map['f'] == 1,
-      episodes:
-          (map['e'] as List? ?? []).map((e) => M3UItem.fromMap(e)).toList(),
-      seriesName: map['sn'],
-      seasonNumber: map['s'],
-      episodeNumber: map['ep'],
-      isLive: map['lv'] == 1,
-      isDynamic: map['dy'] == 1,
-      alternatives:
-          (map['a'] as List? ?? []).map((a) => M3UItem.fromMap(a)).toList(),
-      sourceName: map['src'],
-    );
-  }
-}
-
-/// Model for a dynamic filter rule
-class FilterRule {
-  final String category;
-  final String regexPattern;
-  final int priority;
-
-  FilterRule({
-    required this.category,
-    required this.regexPattern,
-    required this.priority,
-  });
-
-  factory FilterRule.fromJson(Map<String, dynamic> json) {
-    return FilterRule(
-      category: json['category'] ?? 'Sin categoría',
-      regexPattern: json['regex_pattern'] ?? '',
-      priority: json['priority'] ?? 10,
-    );
-  }
-}
-
-/// Model for a cloud-hosted M3U source
-class CloudSource {
-  final String name;
-  final String url;
-  final String description;
-  final String? iconUrl;
-  final int minCoins;
-  final DateTime? visibleUntil;
-
-  CloudSource({
-    required this.name,
-    required this.url,
-    required this.description,
-    this.iconUrl,
-    this.minCoins = 0,
-    this.visibleUntil,
-  });
-
-  factory CloudSource.fromJson(Map<String, dynamic> json) {
-    DateTime? visibleUntil;
-    if (json['visible_until'] != null) {
-      visibleUntil = DateTime.tryParse(json['visible_until']);
-    }
-    return CloudSource(
-      name: json['name'] ?? 'Fuente desconocida',
-      url: json['url'] ?? '',
-      description: json['description'] ?? '',
-      iconUrl: json['icon_url'],
-      minCoins: json['min_coins'] ?? 0,
-      visibleUntil: visibleUntil,
-    );
-  }
-}
 
 /// Model for a user-defined IPTV source (M3U or Xtream)
 class M3USource {
@@ -226,7 +30,7 @@ class M3USource {
   final String url; // Host or M3U URL
   final bool isCode;
   final String? originalInput;
-  
+
   // Xtream Codes fields
   final String? username;
   final String? password;
@@ -244,39 +48,33 @@ class M3USource {
 
   Map<String, dynamic> toJson() => {
     'name': name,
-    'url': url,
+    'url': SecurityUtils.obfuscate(url),
     'isCode': isCode,
-    'originalInput': originalInput,
-    'username': username,
-    'password': password,
+    'originalInput':
+        originalInput != null ? SecurityUtils.obfuscate(originalInput!) : null,
+    'username': username != null ? SecurityUtils.obfuscate(username!) : null,
+    'password': password != null ? SecurityUtils.obfuscate(password!) : null,
     'type': type,
   };
 
   factory M3USource.fromJson(Map<String, dynamic> json) => M3USource(
     name: json['name'] ?? '',
-    url: json['url'] ?? '',
+    url: SecurityUtils.deobfuscate(json['url'] ?? ''),
     isCode: json['isCode'] ?? false,
-    originalInput: json['originalInput'],
-    username: json['username'],
-    password: json['password'],
+    originalInput:
+        json['originalInput'] != null
+            ? SecurityUtils.deobfuscate(json['originalInput'])
+            : null,
+    username:
+        json['username'] != null
+            ? SecurityUtils.deobfuscate(json['username'])
+            : null,
+    password:
+        json['password'] != null
+            ? SecurityUtils.deobfuscate(json['password'])
+            : null,
     type: json['type'] ?? 'm3u',
   );
-}
-
-// ===========================================================================
-// DOWNLOAD PROGRESS — nueva clase para progreso tipado
-// ===========================================================================
-
-/// Typed download progress to avoid raw callbacks with multiple nullable args.
-class DownloadProgress {
-  final int receivedBytes;
-  final int? totalBytes;
-  double get percentage =>
-      (totalBytes != null && totalBytes! > 0)
-          ? (receivedBytes / totalBytes! * 100).clamp(0, 100)
-          : -1;
-
-  DownloadProgress(this.receivedBytes, this.totalBytes);
 }
 
 // ===========================================================================
@@ -286,7 +84,7 @@ class DownloadProgress {
 /// Service for M3U parsing and Supabase integration.
 ///
 /// CHANGES vs original:
-///   PERF-1  — BytesBuilder replaces List<int> accumulation in download
+///   PERF-1  — BytesBuilder replaces List-int accumulation in download
 ///   PERF-2  — search() moved to compute() isolate (unblocks UI thread)
 ///   PERF-3  — getRecentItems() result cached and invalidated on reload
 ///   PERF-4  — getSimilarItems() uses shuffle instead of random-attempt loop
@@ -319,12 +117,15 @@ class M3UService extends ChangeNotifier {
   static const String _unifiedCacheTimestampKey = 'm3u_unified_cache_timestamp';
   static const String _unifiedCachePrefix = 'm3u_cache_unified_';
   static const String _m3uUrlKey = 'local_m3u_url';
+  static const String _m3uUserKey = 'local_m3u_user';
+  static const String _m3uPassKey = 'local_m3u_pass';
+  static const String _m3uTypeKey = 'local_m3u_type';
   static const String _m3uSourcesKey = 'm3u_sources_list';
   static const String _activeSourceIndexKey = 'active_m3u_source_index';
   static const String _favoriteTipKey = 'show_favorite_tip';
   static const String _isUnifiedModeKey = 'is_unified_mode';
   static const String _logicVersionKey = 'm3u_logic_version';
-  static const int _currentLogicVersion = 9;
+  static const int _currentLogicVersion = 10;
   // FEAT-2: key prefix for liked content deduplication
   static const String _likedUrlsKey = 'm3u_liked_urls';
   static const String _failedLogosKey = 'm3u_failed_logos';
@@ -359,6 +160,7 @@ class M3UService extends ChangeNotifier {
   List<M3UItem>? _cachedLatestItems;
   Map<String, List<M3UItem>>? _categoryIndex;
   Map<String, M3UItem>? _urlIndex;
+  Map<String, M3UItem>? _seriesNameIndex;
   // PERF-3: cache for getRecentItems() — invalidated on every content reload
   List<M3UItem>? _cachedRecentItems;
   // Session-level cache for recommendations — stays stable during session
@@ -393,10 +195,10 @@ class M3UService extends ChangeNotifier {
     _initCompleter = Completer<void>();
     try {
       _prefs = await SharedPreferences.getInstance();
-      
+
       // Perform automated migration before loading data
       await _migrateToObfuscatedStorage();
-      
+
       _loadFavorites();
       _loadLikedUrls(); // FEAT-2
       _loadFailedLogos();
@@ -470,6 +272,16 @@ class M3UService extends ChangeNotifier {
         SecurityUtils.obfuscate(favItems),
       );
     }
+
+    // 5. Migrate new Xtream keys (Defense in depth)
+    final user = _prefs!.getString(_m3uUserKey);
+    if (user != null && !SecurityUtils.isObfuscated(user)) {
+      await _prefs!.setString(_m3uUserKey, SecurityUtils.obfuscate(user));
+    }
+    final pass = _prefs!.getString(_m3uPassKey);
+    if (pass != null && !SecurityUtils.isObfuscated(pass)) {
+      await _prefs!.setString(_m3uPassKey, SecurityUtils.obfuscate(pass));
+    }
   }
 
   // ===========================================================================
@@ -512,6 +324,7 @@ class M3UService extends ChangeNotifier {
     }
   }
 
+  @pragma('vm:entry-point')
   static String _encodeJsonCacheInBackground(List<M3UItem> items) {
     return json.encode(items.map((i) => i.toMap()).toList());
   }
@@ -533,6 +346,7 @@ class M3UService extends ChangeNotifier {
     }
   }
 
+  @pragma('vm:entry-point')
   static List<M3UItem> _decodeJsonCacheInBackground(String jsonStr) {
     final List<dynamic> list = json.decode(jsonStr);
     return list.map((e) => M3UItem.fromMap(e as Map<String, dynamic>)).toList();
@@ -566,7 +380,8 @@ class M3UService extends ChangeNotifier {
 
   Future<void> _saveFavorites() async {
     // Obfuscate the list of keys
-    final obfuscatedFavs = _favorites.map((f) => SecurityUtils.obfuscate(f)).toList();
+    final obfuscatedFavs =
+        _favorites.map((f) => SecurityUtils.obfuscate(f)).toList();
     await _prefs?.setStringList(_favoritesKey, obfuscatedFavs);
 
     try {
@@ -678,7 +493,7 @@ class M3UService extends ChangeNotifier {
 
     final rawUrl = _prefs?.getString(_m3uUrlKey);
     final oldUrl = rawUrl != null ? SecurityUtils.deobfuscate(rawUrl) : null;
-    
+
     if (_sources.isEmpty && oldUrl != null && oldUrl.isNotEmpty) {
       _sources.add(M3USource(name: 'Mi Fuente', url: oldUrl));
       await _saveSources();
@@ -686,10 +501,11 @@ class M3UService extends ChangeNotifier {
   }
 
   Future<void> _saveSources() async {
-    final sourcesJson = _sources.map((s) {
-      final encoded = json.encode(s.toJson());
-      return SecurityUtils.obfuscate(encoded);
-    }).toList();
+    final sourcesJson =
+        _sources.map((s) {
+          final encoded = json.encode(s.toJson());
+          return SecurityUtils.obfuscate(encoded);
+        }).toList();
     await _prefs?.setStringList(_m3uSourcesKey, sourcesJson);
     await _prefs?.setInt(_activeSourceIndexKey, _activeSourceIndex);
   }
@@ -746,6 +562,15 @@ class M3UService extends ChangeNotifier {
     await clearCache();
   }
 
+  M3USource? getActiveSource() {
+    if (_sources.isNotEmpty &&
+        _activeSourceIndex >= 0 &&
+        _activeSourceIndex < _sources.length) {
+      return _sources[_activeSourceIndex];
+    }
+    return null;
+  }
+
   Future<String?> getM3UUrl() async {
     if (_sources.isNotEmpty &&
         _activeSourceIndex >= 0 &&
@@ -764,18 +589,31 @@ class M3UService extends ChangeNotifier {
     String? password,
     String type = 'm3u',
   }) async {
-    final obfuscatedUrl = SecurityUtils.obfuscate(url);
-    await _prefs?.setString(_m3uUrlKey, obfuscatedUrl);
+    await _prefs?.setString(_m3uUrlKey, SecurityUtils.obfuscate(url));
+    await _prefs?.setString(_m3uTypeKey, type);
+    if (username != null) {
+      await _prefs?.setString(_m3uUserKey, SecurityUtils.obfuscate(username));
+    } else {
+      await _prefs?.remove(_m3uUserKey);
+    }
+    if (password != null) {
+      await _prefs?.setString(_m3uPassKey, SecurityUtils.obfuscate(password));
+    } else {
+      await _prefs?.remove(_m3uPassKey);
+    }
+
     if (_sources.isEmpty) {
-      _sources.add(M3USource(
-        name: 'Mi Fuente',
-        url: url,
-        isCode: isCode,
-        originalInput: originalInput,
-        username: username,
-        password: password,
-        type: type,
-      ));
+      _sources.add(
+        M3USource(
+          name: 'Mi Fuente',
+          url: url,
+          isCode: isCode,
+          originalInput: originalInput,
+          username: username,
+          password: password,
+          type: type,
+        ),
+      );
       _activeSourceIndex = 0;
     } else {
       if (_sources.length == 1 || _sources[0].name == 'Mi Fuente') {
@@ -789,15 +627,17 @@ class M3UService extends ChangeNotifier {
           type: type,
         );
       } else {
-        _sources.add(M3USource(
-          name: 'Nueva Fuente',
-          url: url,
-          isCode: isCode,
-          originalInput: originalInput,
-          username: username,
-          password: password,
-          type: type,
-        ));
+        _sources.add(
+          M3USource(
+            name: 'Nueva Fuente',
+            url: url,
+            isCode: isCode,
+            originalInput: originalInput,
+            username: username,
+            password: password,
+            type: type,
+          ),
+        );
         _activeSourceIndex = _sources.length - 1;
       }
     }
@@ -835,7 +675,8 @@ class M3UService extends ChangeNotifier {
           (data as List).map((e) => CloudSource.fromJson(e)).toList();
       final now = DateTime.now();
       return allSources.where((s) {
-        if (s.visibleUntil != null && s.visibleUntil!.isBefore(now)) {
+        final visibleUntil = s.visibleUntil;
+        if (visibleUntil != null && visibleUntil.isBefore(now)) {
           return false;
         }
         return true;
@@ -867,12 +708,50 @@ class M3UService extends ChangeNotifier {
 
   /// ROBUST-4: resolveM3UInput validates constructed URLs before returning.
   /// Result contains the resolved URL and whether it was a code match.
-  Future<({String? url, bool isCode})> resolveM3UInput(String input) async {
+  Future<
+    ({
+      String? url,
+      bool isCode,
+      String? username,
+      String? password,
+      String type,
+    })
+  >
+  resolveM3UInput(String input) async {
     final trimmed = input.trim();
-    if (trimmed.isEmpty) return (url: null, isCode: false);
+    if (trimmed.isEmpty) {
+      return (
+        url: null,
+        isCode: false,
+        username: null,
+        password: null,
+        type: 'm3u',
+      );
+    }
 
     if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-      return (url: trimmed, isCode: false);
+      try {
+        final uri = Uri.parse(trimmed);
+        if (uri.queryParameters.containsKey('username') &&
+            uri.queryParameters.containsKey('password')) {
+          final host =
+              '${uri.scheme}://${uri.host}${uri.hasPort ? ':${uri.port}' : ''}';
+          return (
+            url: host,
+            isCode: false,
+            username: uri.queryParameters['username'],
+            password: uri.queryParameters['password'],
+            type: 'xtream',
+          );
+        }
+      } catch (_) {}
+      return (
+        url: trimmed,
+        isCode: false,
+        username: null,
+        password: null,
+        type: 'm3u',
+      );
     }
 
     if (trimmed.endsWith('.m3u') ||
@@ -888,9 +767,21 @@ class M3UService extends ChangeNotifier {
       final candidate = 'http://$trimmed';
       final uri = Uri.tryParse(candidate);
       if (uri != null && uri.hasAuthority && uri.host.isNotEmpty) {
-        return (url: candidate, isCode: false);
+        return (
+          url: candidate,
+          isCode: false,
+          username: null,
+          password: null,
+          type: 'm3u',
+        );
       }
-      return (url: null, isCode: false);
+      return (
+        url: null,
+        isCode: false,
+        username: null,
+        password: null,
+        type: 'm3u',
+      );
     }
 
     // 1. Check Load Balancer first
@@ -898,7 +789,9 @@ class M3UService extends ChangeNotifier {
       if (_supabase != null) {
         final List<dynamic> balancerData = await _supabase!
             .from('m3u_load_balancer')
-            .select('id, value, current_connections, max_connections')
+            .select(
+              'id, value, current_connections, max_connections, type, username, password',
+            )
             .eq('key', trimmed)
             .eq('is_active', true);
 
@@ -914,8 +807,34 @@ class M3UService extends ChangeNotifier {
           final bestMatch = balancerData.first;
           final String bestUrl = bestMatch['value'] as String;
           final String bestId = bestMatch['id'] as String;
+          final String bestType =
+              (bestMatch['type'] ?? 'm3u').toString().toLowerCase();
+
           _incrementLoadBalancerConnection(bestId);
-          return (url: bestUrl, isCode: true);
+
+          // Second-pass: If it's a code but the 'value' contains a composite URL
+          // like http://host:port/get.php?username=XXX... parse it.
+          if (bestUrl.startsWith('http') && bestUrl.contains('username=')) {
+            try {
+              final uri = Uri.parse(bestUrl);
+              return (
+                url:
+                    '${uri.scheme}://${uri.host}${uri.hasPort ? ':${uri.port}' : ''}',
+                isCode: true,
+                username: uri.queryParameters['username'],
+                password: uri.queryParameters['password'],
+                type: 'xtream',
+              );
+            } catch (_) {}
+          }
+
+          return (
+            url: bestUrl,
+            isCode: true,
+            username: bestMatch['username']?.toString(),
+            password: bestMatch['password']?.toString(),
+            type: bestType,
+          );
         }
       }
     } catch (e) {
@@ -923,7 +842,13 @@ class M3UService extends ChangeNotifier {
     }
 
     final remoteUrl = await fetchRemoteConfiguration(trimmed);
-    return (url: remoteUrl, isCode: remoteUrl != null);
+    return (
+      url: remoteUrl,
+      isCode: remoteUrl != null,
+      username: null,
+      password: null,
+      type: 'm3u',
+    );
   }
 
   /// Fetch personal content (movies/series) from Supabase.
@@ -1209,7 +1134,8 @@ class M3UService extends ChangeNotifier {
     if (hasValidUnifiedCache) {
       final cachedItems = await _loadJsonCache();
       if (cachedItems != null && cachedItems.isNotEmpty) {
-        await _indexItems(cachedItems);
+        final custom = await fetchCustomContent();
+        await _indexItems([...custom, ...cachedItems]);
         return true;
       }
     }
@@ -1218,6 +1144,17 @@ class M3UService extends ChangeNotifier {
 
     for (int i = 0; i < _sources.length; i++) {
       final source = _sources[i];
+
+      if (source.type == 'xtream') {
+        final xtreamItems = await _fetchXtreamItems(
+          source,
+          forceRefresh,
+          onProgress: onProgress,
+        );
+        allRawItems.addAll(xtreamItems);
+        continue;
+      }
+
       Uint8List? sourceBytes;
 
       if (hasValidUnifiedCache) {
@@ -1265,7 +1202,8 @@ class M3UService extends ChangeNotifier {
     // 2. Full background indexing
     await _indexItems(allItems);
 
-    // ROBUST-2: always rebuild search index
+    // 3. Save to JSON cache for future instant loads
+    _saveJsonCache(allRawItems);
 
     return true;
   }
@@ -1275,14 +1213,31 @@ class M3UService extends ChangeNotifier {
     bool forceRefresh,
     void Function(DownloadProgress)? onProgress,
   ) async {
-    final activeSource = _sources.isNotEmpty && _activeSourceIndex < _sources.length 
-        ? _sources[_activeSourceIndex] 
-        : null;
+    final activeSource =
+        _sources.isNotEmpty && _activeSourceIndex < _sources.length
+            ? _sources[_activeSourceIndex]
+            : null;
 
     if (activeSource?.type == 'xtream') {
-      final items = await _fetchXtreamItems(activeSource!, forceRefresh);
+      if (!forceRefresh) {
+        final cachedItems = await _loadJsonCache();
+        if (cachedItems != null && cachedItems.isNotEmpty) {
+          final custom = await fetchCustomContent();
+          await _indexItems([...custom, ...cachedItems]);
+          return true;
+        }
+      }
+
+      final items = await _fetchXtreamItems(
+        activeSource!,
+        forceRefresh,
+        onProgress: onProgress,
+      );
       final custom = await fetchCustomContent();
       await _indexItems([...custom, ...items]);
+
+      // Guardar en cache para la próxima vez
+      _saveJsonCache(items);
       return true;
     }
 
@@ -1352,33 +1307,73 @@ class M3UService extends ChangeNotifier {
     );
   }
 
-  Future<List<M3UItem>> _fetchXtreamItems(M3USource source, bool forceRefresh) async {
+  Future<List<M3UItem>> _fetchXtreamItems(
+    M3USource source,
+    bool forceRefresh, {
+    void Function(DownloadProgress)? onProgress,
+  }) async {
     try {
       final host = source.url;
       final user = source.username ?? '';
       final pass = source.password ?? '';
-      
+
       if (user.isEmpty || pass.isEmpty) return [];
 
       final xtream = XtreamService();
-      
-      // Parallel fetch for Live, VOD and Series
+
+      int liveBytes = 0;
+      int vodBytes = 0;
+      int seriesBytes = 0;
+
+      void notify() {
+        onProgress?.call(
+          DownloadProgress(liveBytes + vodBytes + seriesBytes, null),
+        );
+      }
+
+      // Parallel fetch for Live, VOD and Series with tracking
       final results = await Future.wait([
-        xtream.fetchLiveStreams(host, user, pass),
-        xtream.fetchVodStreams(host, user, pass),
-        xtream.fetchSeries(host, user, pass),
+        xtream.fetchLiveStreams(
+          host,
+          user,
+          pass,
+          onProgress: (p) {
+            liveBytes = p.receivedBytes;
+            notify();
+          },
+        ),
+        xtream.fetchVodStreams(
+          host,
+          user,
+          pass,
+          onProgress: (p) {
+            vodBytes = p.receivedBytes;
+            notify();
+          },
+        ),
+        xtream.fetchSeries(
+          host,
+          user,
+          pass,
+          onProgress: (p) {
+            seriesBytes = p.receivedBytes;
+            notify();
+          },
+        ),
       ]);
 
       final allItems = results.expand((x) => x).toList();
-      
-      // Update favorites status
+
+      // EFFICIENCY: Pre-index existing favorites for O(1) lookup
+      final existingFavUrls = _favoriteItems.map((f) => f.url).toSet();
+
       for (var item in allItems) {
         final key = '${item.name}_${item.url}';
         if (_favorites.contains(key)) {
           item.isFavorite = true;
-          // Ensure it's in _favoriteItems if missing
-          if (!_favoriteItems.any((f) => f.url == item.url && f.name == item.name)) {
+          if (!existingFavUrls.contains(item.url)) {
             _favoriteItems.add(item);
+            existingFavUrls.add(item.url);
           }
         }
       }
@@ -1402,9 +1397,6 @@ class M3UService extends ChangeNotifier {
   // ===========================================================================
 
   /// Download bytes from [url] using BytesBuilder (avoids repeated List copies).
-  ///
-  /// PERF-1: BytesBuilder.add() does O(1) appends; the previous List<int> +
-  /// addAll() was O(n) per chunk, causing significant GC pressure on large lists.
   Future<Uint8List?> _fetchSourceBytes(
     String url,
     void Function(DownloadProgress)? onProgress,
@@ -1566,49 +1558,21 @@ class M3UService extends ChangeNotifier {
     _cachedRecentItems = null;
 
     try {
-      final Map<String, List<M3UItem>> catIndex = {};
-      final Set<String> catSet = {};
-      final Map<String, M3UItem> urlIndex = {};
-      final List<M3UItem> movies = [];
-      final List<M3UItem> series = [];
+      final result = await compute(_indexItemsInBackground, {
+        'items': items,
+        'hasSagas': true, // Logic to include saga detection
+      });
 
-      for (final item in items) {
-        // Index by category
-        catIndex.putIfAbsent(item.category, () => []).add(item);
-        catSet.add(item.category);
-
-        // Individual item maps for search/lookup
-        if (item.url.isNotEmpty) urlIndex[item.url] = item;
-
-        // Deep indexing for series episodes and alternatives
-        for (final ep in item.episodes) {
-          if (ep.url.isNotEmpty) urlIndex[ep.url] = ep;
-          for (final alt in ep.alternatives) {
-            if (alt.url.isNotEmpty) urlIndex[alt.url] = ep; // link to episode
-          }
-        }
-        for (final alt in item.alternatives) {
-          if (alt.url.isNotEmpty) urlIndex[alt.url] = item;
-        }
-
-        // Categorize by type
-        if (!item.isLive) {
-          if (item.isSeries) {
-            series.add(item);
-          } else {
-            movies.add(item);
-          }
-        }
-      }
-
-      _movies = movies;
-      _series = series;
-      _categoryIndex = catIndex;
-      _urlIndex = urlIndex;
-      _cachedCategories = _sortCategoriesByPriority(catSet);
-
-      // Auto-detect Collections (Sagas)
-      _addSagaCategories(_movies, _categoryIndex!, _cachedCategories!);
+      _movies = (result['movies'] as List?)?.cast<M3UItem>() ?? [];
+      _series = (result['series'] as List?)?.cast<M3UItem>() ?? [];
+      _categoryIndex = Map<String, List<M3UItem>>.from(
+        result['catIndex'] ?? {},
+      );
+      _urlIndex = Map<String, M3UItem>.from(result['urlIndex'] ?? {});
+      _seriesNameIndex = Map<String, M3UItem>.from(
+        result['seriesNameIndex'] ?? {},
+      );
+      _cachedCategories = List<String>.from(result['sortedCats']);
 
       notifyListeners();
 
@@ -1633,6 +1597,49 @@ class M3UService extends ChangeNotifier {
     }
   }
 
+  /// Fetches episodes for a series shell (specifically for Xtream Codes).
+  Future<List<M3UItem>> fetchEpisodesForItem(M3UItem item) async {
+    if (!item.isSeries) return [];
+    if (item.episodes.isNotEmpty) return item.episodes;
+
+    M3USource? source;
+    try {
+      if (item.sourceName != null) {
+        source = _sources.firstWhere(
+          (s) => s.name == item.sourceName,
+          orElse: () => _sources[_activeSourceIndex],
+        );
+      } else {
+        source = _sources[_activeSourceIndex];
+      }
+    } catch (_) {
+      if (_sources.isNotEmpty) source = _sources[_activeSourceIndex];
+    }
+
+    if (source == null || source.type != 'xtream') return [];
+
+    final xtream = XtreamService();
+    final episodes = await xtream.fetchSeriesEpisodes(
+      source.url,
+      source.username ?? '',
+      source.password ?? '',
+      item.url, // series_id
+      item.name,
+    );
+
+    // Dynamic indexing: add newly fetched episodes to the global URL index
+    // so resolveItemFromProgress can find them immediately via URL.
+    if (episodes.isNotEmpty) {
+      for (final ep in episodes) {
+        if (ep.url.isNotEmpty) {
+          _urlIndex?[ep.url] = ep;
+        }
+      }
+    }
+    
+    return episodes;
+  }
+
   // ===========================================================================
   // QUERY HELPERS
   // ===========================================================================
@@ -1643,6 +1650,33 @@ class M3UService extends ChangeNotifier {
   }
 
   M3UItem? getItemByUrl(String url) => _urlIndex?[url];
+
+  M3UItem? getSeriesByName(String name) =>
+      _seriesNameIndex?[NormalizationUtils.normalizeSeriesName(name)];
+
+  /// Resolves an M3UItem from a WatchProgress entry using URL match or series fallback.
+  /// Always attempts to return the "Series Shell" if the item is a series episode.
+  M3UItem? resolveItemFromProgress(WatchProgress progress) {
+    // 1. Direct URL match (Movies, Live, or M3U non-grouped items)
+    final item = getItemByUrl(progress.url);
+    if (item != null) {
+      // If we found the specific episode, but it has a series name, 
+      // climb to the series shell for better UI grouping.
+      if (item.seriesName != null && item.seriesName!.isNotEmpty) {
+        final shell = getSeriesByName(item.seriesName!);
+        if (shell != null) return shell;
+      }
+      return item;
+    }
+
+    // 2. Name-based resolution for series episodes (Xtream fallback)
+    if (progress.seriesName != null && progress.seriesName!.isNotEmpty) {
+      final shell = getSeriesByName(progress.seriesName!);
+      if (shell != null) return shell;
+    }
+
+    return null;
+  }
 
   /// Search items by name (synchronous for instant results).
   List<M3UItem> search(String query) {
@@ -1684,6 +1718,7 @@ class M3UService extends ChangeNotifier {
   }
 
   // FEAT: Calculate recent items in background to prevent ANRs
+  @pragma('vm:entry-point')
   static List<M3UItem> _computeRecentItemsInBackground(List<M3UItem> items) {
     final regexYear = RegExp(r'\((\d{4})\)');
     final regexKeywords = RegExp(
@@ -1978,6 +2013,12 @@ class M3UService extends ChangeNotifier {
 
       if (entry is String) {
         url = entry;
+      } else if (entry is Map) {
+        url = entry['url']?.toString() ?? '';
+        final progress =
+            double.tryParse(entry['progressPercentage']?.toString() ?? '0') ??
+            0.0;
+        if (progress < 10) isSignificant = false;
       } else {
         try {
           url = (entry as dynamic).url;
@@ -1989,8 +2030,12 @@ class M3UService extends ChangeNotifier {
       }
 
       if (url.isEmpty || !isSignificant) continue;
-
-      final item = getItemByUrl(url);
+      
+      // FIX: Use centralized resolution to handle Xtream series episodes
+      final item = resolveItemFromProgress(entry is Map 
+          ? WatchProgress.fromJson(url, Map<String, dynamic>.from(entry))
+          : (entry is WatchProgress ? entry : WatchProgress(url: url, positionSeconds: 0, durationSeconds: 0, timestamp: 0)));
+          
       if (item != null) {
         watchedSet.add(url);
         significantHistoryCount++;
@@ -2266,6 +2311,7 @@ class IsolateOutput {
   final List<M3UItem> latestItems;
   final Map<String, List<M3UItem>> categoryIndex;
   final Map<String, M3UItem> urlIndex;
+  final Map<String, M3UItem> seriesNameIndex;
 
   IsolateOutput({
     required this.items,
@@ -2275,6 +2321,7 @@ class IsolateOutput {
     required this.latestItems,
     required this.categoryIndex,
     required this.urlIndex,
+    required this.seriesNameIndex,
   });
 }
 
@@ -2298,6 +2345,7 @@ class IndexingOutput {
   final List<M3UItem> latestItems;
   final Map<String, List<M3UItem>> categoryIndex;
   final Map<String, M3UItem> urlIndex;
+  final Map<String, M3UItem> seriesNameIndex;
   final List<M3UItem> favoriteItems;
   final List<M3UItem> recentItems;
 
@@ -2309,6 +2357,7 @@ class IndexingOutput {
     required this.latestItems,
     required this.categoryIndex,
     required this.urlIndex,
+    required this.seriesNameIndex,
     required this.favoriteItems,
     required this.recentItems,
   });
@@ -2366,11 +2415,17 @@ IndexingOutput _computeIndexingInBackground(IndexingInput input) {
   final Map<String, List<M3UItem>> catIndex = {};
   final Set<String> catSet = {};
   final Map<String, M3UItem> urlIndex = {};
+  final Map<String, M3UItem> seriesNameIndex = {};
 
   for (final item in items) {
     catIndex.putIfAbsent(item.category, () => []).add(item);
     catSet.add(item.category);
     if (item.url.isNotEmpty) urlIndex[item.url] = item;
+
+    if (item.isSeries) {
+      seriesNameIndex[item.name.trim().toLowerCase()] = item;
+    }
+
     for (final ep in item.episodes) {
       if (ep.url.isNotEmpty) urlIndex[ep.url] = ep;
     }
@@ -2389,6 +2444,7 @@ IndexingOutput _computeIndexingInBackground(IndexingInput input) {
     latestItems: items.take(50).toList(),
     categoryIndex: catIndex,
     urlIndex: urlIndex,
+    seriesNameIndex: seriesNameIndex,
     favoriteItems: favoriteItems,
     recentItems: recentItems,
   );
@@ -2414,6 +2470,7 @@ List<M3UItem> _searchInBackground(SearchInput input) {
   return results;
 }
 
+@pragma('vm:entry-point')
 IsolateOutput parseM3UInBackground(IsolateInput input) {
   final content = utf8.decode(input.contentBytes, allowMalformed: true);
   const int maxItems = 100000;
@@ -2505,12 +2562,9 @@ IsolateOutput parseM3UInBackground(IsolateInput input) {
       final categoryMatch = categoryRegex.firstMatch(line);
       String rawCategory = categoryMatch?.group(1) ?? 'Sin categoría';
 
-      // Format category title: First letter uppercase, rest lowercase
-      String currentCategory =
-          rawCategory.isNotEmpty
-              ? rawCategory[0].toUpperCase() +
-                  rawCategory.substring(1).toLowerCase()
-              : rawCategory;
+      String currentCategory = NormalizationUtils.normalizeCategory(
+        rawCategory,
+      );
 
       final commaIndex = line.lastIndexOf(',');
       if (commaIndex == -1) continue;
@@ -2557,11 +2611,7 @@ IsolateOutput parseM3UInBackground(IsolateInput input) {
             shouldInclude = true;
             final targetCat = filter['category'] as String;
             if (targetCat != 'Sin categoría' && targetCat.isNotEmpty) {
-              currentCategory =
-                  targetCat.length > 1
-                      ? targetCat[0].toUpperCase() +
-                          targetCat.substring(1).toLowerCase()
-                      : targetCat.toUpperCase();
+              currentCategory = NormalizationUtils.normalizeCategory(targetCat);
             }
             break;
           }
@@ -2598,12 +2648,7 @@ IsolateOutput parseM3UInBackground(IsolateInput input) {
         }
       }
 
-      if (shouldInclude &&
-          (currentLogo == null ||
-              currentLogo.trim().isEmpty ||
-              !currentLogo.startsWith('http'))) {
-        shouldInclude = false;
-      }
+      // Logo filtering removed to allow TMDB fallback to work for all items
 
       if (shouldInclude) {
         final isFav =
@@ -2653,11 +2698,16 @@ IsolateOutput parseM3UInBackground(IsolateInput input) {
   final Map<String, List<M3UItem>> catIndex = {};
   final Set<String> catSet = {};
   final Map<String, M3UItem> urlIndex = {};
+  final Map<String, M3UItem> seriesNameIndex = {};
 
   for (final item in sortedGrouped) {
     catIndex.putIfAbsent(item.category, () => []).add(item);
     catSet.add(item.category);
     if (item.url.isNotEmpty) urlIndex[item.url] = item;
+
+    if (item.isSeries) {
+      seriesNameIndex[item.name.trim().toLowerCase()] = item;
+    }
     for (final ep in item.episodes) {
       if (ep.url.isNotEmpty) urlIndex[ep.url] = ep;
       for (final alt in ep.alternatives) {
@@ -2680,6 +2730,7 @@ IsolateOutput parseM3UInBackground(IsolateInput input) {
     latestItems: sortedGrouped.take(50).toList(),
     categoryIndex: catIndex,
     urlIndex: urlIndex,
+    seriesNameIndex: seriesNameIndex,
   );
 }
 
@@ -2864,10 +2915,11 @@ List<M3UItem> _calculateLatestItems(List<M3UItem> items) {
       if (year != null) {
         if (year == currentYear) {
           score += 1000;
-        } else if (year == previousYear)
+        } else if (year == previousYear) {
           score += 500;
-        else
+        } else {
           score += (year - 1900);
+        }
       }
     }
     if (item.name.toLowerCase().contains('nuevo') ||
@@ -2941,13 +2993,7 @@ List<M3UItem> _groupSeries(List<M3UItem> flatItems, List<String> favorites) {
     return 'mixed';
   }
 
-  String normalizeSeriesName(String name) {
-    return name
-        .toLowerCase()
-        .replaceAll(RegExp(r'\(\d{4}\)'), '')
-        .replaceAll(RegExp(r'[^a-z0-9]'), '')
-        .trim();
-  }
+  // Replaced local normalizeSeriesName with central NormalizationUtils.normalizeSeriesName
 
   for (final item in flatItems) {
     final catLower = item.category.toLowerCase();
@@ -2979,7 +3025,7 @@ List<M3UItem> _groupSeries(List<M3UItem> flatItems, List<String> favorites) {
 
     if (seriesName != null && seriesName.isNotEmpty) {
       final sanitizedName = seriesName.replaceAll(regexTrim, '').trim();
-      final normalizedPart = normalizeSeriesName(sanitizedName);
+      final normalizedPart = NormalizationUtils.normalizeSeriesName(sanitizedName);
       final capSig = capSignature(sanitizedName);
       final groupKey = '${normalizedPart}_$capSig';
 
@@ -2999,7 +3045,10 @@ List<M3UItem> _groupSeries(List<M3UItem> flatItems, List<String> favorites) {
 
   final List<M3UItem> result = [...standaloneItems];
   seriesMap.forEach((key, eps) {
-    eps.sort((a, b) => b.seriesName!.length.compareTo(a.seriesName!.length));
+    eps.sort(
+      (a, b) =>
+          (b.seriesName ?? '').length.compareTo((a.seriesName ?? '').length),
+    );
     final displayName = eps.first.seriesName!;
     eps.sort((a, b) {
       if (a.seasonNumber != b.seasonNumber) {
@@ -3389,4 +3438,62 @@ void _addSagaCategories(
     catIndex[catName] = uniqueItems;
     if (!categories.contains(catName)) categories.add(catName);
   });
+}
+
+@pragma('vm:entry-point')
+Map<String, dynamic> _indexItemsInBackground(Map<String, dynamic> input) {
+  final List<M3UItem> items = List<M3UItem>.from(input['items']);
+  final bool hasSagas = input['hasSagas'] ?? true;
+
+  final Map<String, List<M3UItem>> catIndex = {};
+  final Set<String> catSet = {};
+  final Map<String, M3UItem> urlIndex = {};
+  final Map<String, M3UItem> seriesNameIndex = {};
+  final List<M3UItem> movies = [];
+  final List<M3UItem> series = [];
+
+  for (final item in items) {
+    // Index by category
+    catIndex.putIfAbsent(item.category, () => []).add(item);
+    catSet.add(item.category);
+
+    // Individual item maps for search/lookup
+    if (item.url.isNotEmpty) urlIndex[item.url] = item;
+
+    // Deep indexing for series episodes and alternatives
+    for (final ep in item.episodes) {
+      if (ep.url.isNotEmpty) urlIndex[ep.url] = ep;
+      for (final alt in ep.alternatives) {
+        if (alt.url.isNotEmpty) urlIndex[alt.url] = ep;
+      }
+    }
+    for (final alt in item.alternatives) {
+      if (alt.url.isNotEmpty) urlIndex[alt.url] = item;
+    }
+
+    // Categorize by type
+    if (!item.isLive) {
+      if (item.isSeries) {
+        series.add(item);
+        seriesNameIndex[NormalizationUtils.normalizeSeriesName(item.name)] =
+            item;
+      } else {
+        movies.add(item);
+      }
+    }
+  }
+
+  final sortedCats = _sortCategoriesByPriority(catSet);
+  if (hasSagas) {
+    _addSagaCategories(movies, catIndex, sortedCats);
+  }
+
+  return {
+    'movies': movies,
+    'series': series,
+    'catIndex': catIndex,
+    'urlIndex': urlIndex,
+    'seriesNameIndex': seriesNameIndex,
+    'sortedCats': sortedCats,
+  };
 }

@@ -7,6 +7,8 @@ import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import '../models/m3u_item.dart';
+import '../utils/normalization_utils.dart';
 import '../services/m3u_service.dart';
 import '../services/watch_progress_service.dart';
 import '../services/ad_service.dart';
@@ -221,7 +223,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     final pToStop = _player;
 
     // 2. Silence the native MPV engine and KILL video output IMMEDIATELY.
-    // Setting 'vid' to 'no' and 'vo' to 'null' forces mpv to release the 
+    // Setting 'vid' to 'no' and 'vo' to 'null' forces mpv to release the
     // Android Surface/BufferQueue BEFORE we call stop or dispose.
     try {
       final mpv = pToStop?.platform as dynamic;
@@ -389,12 +391,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   String _videoKey = '';
   Future<void> _initializePlayer(M3UItem item, {Duration? startFrom}) async {
     // Limpieza de URL para evitar fragmentos de tiempo (#t=...)
-    final cleanedUrl = M3UItem.cleanUrl(item.url);
+    final cleanedUrl = NormalizationUtils.cleanUrl(item.url);
     item = item.copyWith(url: cleanedUrl);
 
     // 1. Manejo de Scraping (enlaces dinámicos)
     if (DynamicScraperService().isSupported(item.url)) {
-
       setState(() {
         _isScraping = true;
         _isVideoLoading = true;
@@ -514,7 +515,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           ),
         );
         // -- CRITICAL SILENCING --
-        // Mute native engine IMMEDIATELY after creation to prevent callbacks 
+        // Mute native engine IMMEDIATELY after creation to prevent callbacks
         // that could survive a Hot Restart.
         try {
           final mpv = currentPlayer.platform as dynamic;
@@ -574,11 +575,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             await mpv.setProperty('network-timeout', '40');
           }
 
-
           await mpv.setProperty('http-reconnect', 'yes');
           await mpv.setProperty('http-reconnect-sleep', '1');
           await mpv.setProperty('user-agent', 'VLC/3.0.20 LibVLC/3.0.20');
-          
+
           // Force mediacodec-copy for Android to ensure stability on Motorola/Android 15
           if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
             await mpv.setProperty('hwdec', 'mediacodec-copy');
@@ -2097,7 +2097,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                     16) /
                                                 (videoController
                                                         .player
-                                                        .state.height ??
+                                                        .state
+                                                        .height ??
                                                     9);
                                             final screenAspect =
                                                 constraints.maxWidth /

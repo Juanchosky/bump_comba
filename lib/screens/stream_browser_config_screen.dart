@@ -672,7 +672,6 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
         );
       },
     );
-
     if (confirm == true) {
       await _m3uService.removeSource(index);
       setState(() {});
@@ -706,11 +705,13 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
                     autofocus: true,
                   ),
                   const SizedBox(height: 12),
+
                   _buildSheetTextField(
                     controller: urlController,
                     label: 'URL M3U',
                     icon: CupertinoIcons.link,
                   ),
+
                   const SizedBox(height: 20),
                   Row(
                     children: [
@@ -728,38 +729,42 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
                           onTap: () async {
                             final name = nameController.text.trim();
                             final input = urlController.text.trim();
-                            if (name.isNotEmpty && input.isNotEmpty) {
-                              Navigator.pop(dialogContext);
-                              setState(() => _isLoading = true);
-                              final result = await _m3uService.resolveM3UInput(
-                                input,
+                            if (name.isEmpty || input.isEmpty) return;
+
+                            Navigator.pop(dialogContext);
+                            setState(() => _isLoading = true);
+
+                            // Resolve input (Code or URL)
+                            final result = await _m3uService.resolveM3UInput(
+                              input,
+                            );
+
+                            if (result.url != null) {
+                              await _m3uService.addSource(
+                                name,
+                                result.url!,
+                                isCode: result.isCode,
+                                originalInput: result.isCode ? input : null,
+                                username: result.username,
+                                password: result.password,
+                                type: result.type,
                               );
-                              if (result.url != null) {
-                                await _m3uService.addSource(
-                                  name,
-                                  result.url!,
-                                  isCode: result.isCode,
-                                  originalInput: result.isCode ? input : null,
-                                );
-                                await _m3uService.setActiveSource(
-                                  _m3uService.sources.length - 1,
-                                );
-                                setState(() => _isLoading = false);
+                              await _m3uService.setActiveSource(
+                                _m3uService.sources.length - 1,
+                              );
+                              setState(() => _isLoading = false);
                                 if (mounted) {
-                                  Navigator.pop(
-                                    context,
-                                  ); // Return to main screen to trigger refresh
+                                  Navigator.of(context).pop();
                                 }
                               } else {
                                 setState(() => _isLoading = false);
                                 if (mounted) {
                                   SnackBarUtils.showAppSnackBar(
                                     context,
-                                    'URL no válida',
+                                    'URL no válidos',
                                   );
                                 }
                               }
-                            }
                           },
                           isPrimary: true,
                         ),
@@ -836,6 +841,7 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
     required String label,
     required IconData icon,
     bool autofocus = false,
+    bool isPassword = false,
   }) {
     return Container(
       decoration: BoxDecoration(
@@ -849,6 +855,7 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
       child: TextField(
         controller: controller,
         autofocus: autofocus,
+        obscureText: isPassword,
         style: const TextStyle(color: Colors.white, fontSize: 15),
         decoration: InputDecoration(
           prefixIcon: Icon(icon, color: Colors.white38, size: 18),

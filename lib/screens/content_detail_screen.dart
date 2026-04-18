@@ -49,6 +49,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   List<int> _seasons = [];
   int _selectedSeason = 1;
   List<M3UItem> _otherVersions = [];
+  bool _isLoadingEpisodes = false;
+  List<M3UItem> _dynamicEpisodes = [];
 
   // TMDB Metadata
   final TMDBService _tmdbService = TMDBService();
@@ -58,6 +60,9 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   Player? _prewarmPlayer;
 
   late AnimationController _shineController;
+  late AnimationController _pulseController;
+  List<M3UItem> get _allEpisodes =>
+      _dynamicEpisodes.isNotEmpty ? _dynamicEpisodes : widget.item.episodes;
 
   @override
   void initState() {
@@ -65,7 +70,11 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
     _isFavorite = widget.item.isFavorite;
 
     if (widget.item.isSeries) {
-      _groupEpisodes();
+      if (widget.item.episodes.isEmpty) {
+        _loadEpisodes();
+      } else {
+        _groupEpisodes();
+      }
     }
     _findOtherVersions();
 
@@ -74,6 +83,11 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
       vsync: this,
       duration: const Duration(milliseconds: 1500),
     )..repeat(period: const Duration(seconds: 3));
+
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1000),
+    )..repeat(reverse: true);
 
     CastService().addListener(_onCastChanged);
     AdService().recordDetailsVisit();
@@ -116,10 +130,10 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   }
 
   void _initPrewarm() {
-    // CRITICAL: Disable video pre-warming on Android to prevent 
+    // CRITICAL: Disable video pre-warming on Android to prevent
     // BLASTBufferQueue surface exhaustion and fatal callbacks.
     if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) return;
-    
+
     if (!PerformanceService().allowVideoPrewarm) return;
 
     // Solo pre-calentar si no es Live (los live gastan mucho ancho de banda)
@@ -146,7 +160,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
         );
 
         // -- CRITICAL SILENCING --
-        // Mute native engine IMMEDIATELY to prevent callbacks 
+        // Mute native engine IMMEDIATELY to prevent callbacks
         // that could survive a Hot Restart.
         try {
           final mpvPlatform = _prewarmPlayer!.platform as dynamic;
@@ -198,6 +212,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   @override
   void dispose() {
     _shineController.dispose();
+    _pulseController.dispose();
     CastService().removeListener(_onCastChanged);
 
     // -- CRITICAL DISPOSAL SEQUENCE FOR MOTOROLA/ANDROID 15 --
@@ -558,13 +573,37 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
     return 'mixed';
   }
 
+  Future<void> _loadEpisodes() async {
+    if (!mounted) return;
+    setState(() => _isLoadingEpisodes = true);
+
+    try {
+      final episodes = await _m3uService.fetchEpisodesForItem(widget.item);
+      if (mounted) {
+        setState(() {
+          _dynamicEpisodes = episodes;
+          _isLoadingEpisodes = false;
+          _groupEpisodes();
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoadingEpisodes = false);
+        debugPrint('Error loading episodes: $e');
+      }
+    }
+  }
+
   void _groupEpisodes() {
     // Determinar la firma de capitalización del nombre de la serie padre,
     // para excluir episodios que pertenecen a OTRA versión con distinto estilo.
     // Ej: "ONE PIECE" (upper) ≠ "One Piece" (title)
     final parentCapSig = _capSignature(widget.item.name);
 
-    final filteredEpisodes = _m3uService.filterValidItems(widget.item.episodes);
+    final episodesToGroup =
+        _dynamicEpisodes.isNotEmpty ? _dynamicEpisodes : widget.item.episodes;
+
+    final filteredEpisodes = _m3uService.filterValidItems(episodesToGroup);
     for (var ep in filteredEpisodes) {
       // Filtrar episodios cuya serie tenga diferente estilo de capitalización
       if (ep.seriesName != null && ep.seriesName!.isNotEmpty) {
@@ -612,7 +651,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   }
 
   Future<void> _handleSeriesPlay() async {
-    final episodes = widget.item.episodes;
+    final episodes = _allEpisodes;
     final urls = episodes.map((e) => e.url).toList();
 
     // Check for watch history
@@ -624,26 +663,20 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
     if (lastWatched != null) {
       // Find the episode object
-      final episodeIndex = episodes.indexWhere((e) => e.url == lastWatched.url);
-
+      final episodeIndex = _allEpisodes.indexWhere(
+        (e) => e.url == lastWatched.url,
+      );
       if (episodeIndex != -1) {
-        M3UItem targetEpisode = episodes[episodeIndex];
+        M3UItem targetEpisode = _allEpisodes[episodeIndex];
         String dialogTitle = "Continuar viendo";
         String dialogBody = "Te quedaste en: ${targetEpisode.name}";
-
         // If completed, propose next episode
-        if (lastWatched.isCompleted && episodeIndex < episodes.length - 1) {
-          targetEpisode = episodes[episodeIndex + 1];
+        if (lastWatched.isCompleted && episodeIndex < _allEpisodes.length - 1) {
+          targetEpisode = _allEpisodes[episodeIndex + 1];
           dialogTitle = "Siguiente episodio";
           dialogBody = "Continuar con: ${targetEpisode.name}";
         } else if (lastWatched.isCompleted) {
-          // Completed last episode, start over or stay?
-          // Let's just default to start over if everything is done,
-          // or maybe show the last one again.
-          // For now, if completed last ep, just play first one?
-          // Or let user decide.
-          // "Volver a ver la serie"
-          _playContent(episodes.first, playlist: episodes);
+          _playContent(_allEpisodes.first, playlist: _allEpisodes);
           return;
         }
 
@@ -721,7 +754,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
     }
 
     // Default: Play first episode
-    _playContent(episodes.first, playlist: episodes);
+    _playContent(_allEpisodes.first, playlist: _allEpisodes);
   }
 
   Widget _buildContinueDialogContent(
@@ -991,21 +1024,19 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
           fit: StackFit.expand,
           children: [
             // Background Image
-            if (widget.item.logo != null && widget.item.logo!.isNotEmpty)
-              FastThumbnail(
-                url: widget.item.logo,
-                width: double.infinity,
-                height: double.infinity,
-                fit: BoxFit.cover,
-                cacheWidth: null, // resolución completa para el hero
-                onError: () {
-                  if (widget.item.logo != null) {
-                    _m3uService.reportFailedLogo(widget.item.logo!);
-                  }
-                },
-              )
-            else
-              Container(color: const Color(0xFF1a1a1a)),
+            FastThumbnail(
+              url: widget.item.logo,
+              title: widget.item.name,
+              width: double.infinity,
+              height: double.infinity,
+              fit: BoxFit.cover,
+              cacheWidth: null, // resolución completa para el hero
+              onError: () {
+                if (widget.item.logo != null && widget.item.logo!.isNotEmpty) {
+                  _m3uService.reportFailedLogo(widget.item.logo!);
+                }
+              },
+            ),
 
             // Gradient Overlay
             Container(
@@ -1129,7 +1160,9 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
             if (widget.item.isSeries) ...[
               const SizedBox(width: 12),
               Text(
-                '${widget.item.episodes.length} Episodios',
+                _isLoadingEpisodes && _allEpisodes.isEmpty
+                    ? ''
+                    : '${_allEpisodes.length} Episodios',
                 style: const TextStyle(color: Colors.white70, fontSize: 14),
               ),
             ],
@@ -1141,7 +1174,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
   Future<WatchProgress?> _getButtonProgress() async {
     if (widget.item.isSeries) {
-      final urls = widget.item.episodes.map((e) => e.url).toList();
+      final episodes = _allEpisodes;
+      final urls = episodes.map((e) => e.url).toList();
       return await WatchProgressService().getLastWatchedFromList(urls);
     } else {
       return await WatchProgressService().getProgress(widget.item.url);
@@ -1186,26 +1220,31 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                 // Main Button
                 Positioned.fill(
                   child: ElevatedButton.icon(
-                    onPressed: () async {
-                      if (isCasting) {
-                        _handleCast(widget.item);
-                        return;
-                      }
+                    onPressed:
+                        (_isLoadingEpisodes)
+                            ? null
+                            : () async {
+                              if (isCasting) {
+                                _handleCast(widget.item);
+                                return;
+                              }
 
-                      if (widget.item.isSeries &&
-                          widget.item.episodes.isNotEmpty) {
-                        _handleSeriesPlay();
-                      } else {
-                        _playContent(widget.item);
-                      }
-                    },
+                              if (widget.item.isSeries &&
+                                  _allEpisodes.isNotEmpty) {
+                                _handleSeriesPlay();
+                              } else {
+                                _playContent(widget.item);
+                              }
+                            },
                     icon: Icon(
                       isCasting ? Icons.cast : Icons.play_arrow,
                       color: const Color(0xFF0a0a0a),
                       size: 22,
                     ),
                     label: Text(
-                      isCasting ? 'Reproducir en TV' : 'Ver',
+                      isCasting
+                          ? 'Reproducir en TV'
+                          : (_isLoadingEpisodes ? 'Cargando...' : 'Ver'),
                       style: const TextStyle(
                         color: Color(0xFF0a0a0a),
                         fontSize: 15,
@@ -1540,6 +1579,63 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
     );
   }
 
+  Widget _buildEpisodePulse() {
+    return AnimatedBuilder(
+      animation: _pulseController,
+      builder: (context, child) {
+        return Opacity(
+          opacity:
+              0.4 + (_pulseController.value * 0.4), // Pulse between 0.4 and 0.8
+          child: Column(
+            children: List.generate(
+              3,
+              (index) => Container(
+                margin: const EdgeInsets.only(bottom: 16),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 120,
+                      height: 70,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.08),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Container(
+                            width: double.infinity,
+                            height: 12,
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.08),
+                              borderRadius: BorderRadius.circular(2),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Container(
+                            width: 100,
+                            height: 10,
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.08),
+                              borderRadius: BorderRadius.circular(2),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   Widget _buildEpisodesList() {
     final episodes = _seasonMap[_selectedSeason] ?? [];
 
@@ -1601,237 +1697,244 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
           ],
         ),
         const SizedBox(height: 33),
-        ListView.builder(
-          padding: EdgeInsets.zero,
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          itemCount: episodes.length,
-          itemBuilder: (context, index) {
-            final episode = episodes[index];
-            return InkWell(
-              onTap: () {
-                final castService = CastService();
-                if (castService.connectedDevice != null) {
-                  AdService().showRewardedAdWithConfirmation(
-                    context,
-                    message:
-                        '¡Casi listo! Mira un breve anuncio para proyectar este episodio en tu TV.',
-                    onUserEarnedReward: () async {
-                      String urlToLoad = episode.url;
+        if (_isLoadingEpisodes)
+          _buildEpisodePulse()
+        else
+          ListView.builder(
+            padding: EdgeInsets.zero,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: episodes.length,
+            itemBuilder: (context, index) {
+              final episode = episodes[index];
+              return InkWell(
+                onTap: () {
+                  final castService = CastService();
+                  if (castService.connectedDevice != null) {
+                    AdService().showRewardedAdWithConfirmation(
+                      context,
+                      message:
+                          '¡Casi listo! Mira un breve anuncio para proyectar este episodio en tu TV.',
+                      onUserEarnedReward: () async {
+                        String urlToLoad = episode.url;
 
-                      if (episode.isDynamic) {
-                        try {
-                          final videoUrl = await DynamicScraperService()
-                              .extractVideoSource(episode.url);
-                          if (!mounted) return;
-                          if (videoUrl != null) {
-                            urlToLoad = videoUrl;
-                          } else {
-                            SnackBarUtils.showAppSnackBar(
-                              context,
-                              'No se pudo obtener el enlace para TV. Inténtalo de nuevo.',
-                            );
-                            return;
-                          }
-                        } catch (e) {
-                          if (mounted) {
-                            SnackBarUtils.showAppSnackBar(
-                              context,
-                              'Error de conexión: $e',
-                            );
-                          }
-                          return;
-                        }
-                      }
-
-                      castService.loadMedia(
-                        urlToLoad,
-                        title: "${widget.item.name} - ${episode.name}",
-                        subtitle: widget.item.category,
-                      );
-                      SnackBarUtils.showAppSnackBar(
-                        context,
-                        'Reproduciendo ${episode.name} en TV...',
-                      );
-                    },
-                    onAdFailed: () {
-                      if (mounted) {
-                        SnackBarUtils.showAppSnackBar(
-                          context,
-                          'Hubo un error de comunicación al cargar el medio. Inténtalo más tarde. (Código de error: 1008)',
-                        );
-                      }
-                    },
-                  );
-                } else {
-                  _playContent(episode, playlist: episodes);
-                }
-              },
-              child: Container(
-                margin: const EdgeInsets.only(bottom: 16),
-                child: Row(
-                  children: [
-                    // Episode Thumbnail
-                    SizedBox(
-                      width: 120,
-                      height: 70,
-                      child: Stack(
-                        children: [
-                          FastThumbnail(
-                            url:
-                                (episode.logo != null &&
-                                        episode.logo!.isNotEmpty)
-                                    ? episode.logo!
-                                    : (widget.item.logo ?? ''),
-                            title: episode.name,
-                            width: 120,
-                            height: 70,
-                            fit: BoxFit.cover,
-                            borderRadius: BorderRadius.circular(8),
-                            cacheWidth:
-                                PerformanceService().lowMemoryLimit ? 150 : 300,
-                            onError: () {
-                              final logo =
-                                  (episode.logo != null &&
-                                          episode.logo!.isNotEmpty)
-                                      ? episode.logo
-                                      : widget.item.logo;
-                              if (logo != null) {
-                                _m3uService.reportFailedLogo(logo);
-                              }
-                            },
-                          ),
-                          Center(
-                            child: Icon(
-                              Icons.play_circle_outline,
-                              color: Colors.white.withValues(alpha: 0.8),
-                              size: 32,
-                            ),
-                          ),
-                          // Progress Indicator (Timeline)
-                          FutureBuilder<WatchProgress?>(
-                            future: WatchProgressService().getProgress(
-                              episode.url,
-                            ),
-                            builder: (context, snapshot) {
-                              if (snapshot.hasData && snapshot.data != null) {
-                                final progress =
-                                    snapshot.data!.progressPercentage;
-                                if (progress > 5) {
-                                  return Positioned(
-                                    bottom: 0,
-                                    left: 0,
-                                    right: 0,
-                                    child: Container(
-                                      height: 3,
-                                      color: Colors.white24,
-                                      child: FractionallySizedBox(
-                                        alignment: Alignment.centerLeft,
-                                        widthFactor: progress / 100,
-                                        child: Container(color: Colors.red),
-                                      ),
-                                    ),
-                                  );
-                                }
-                              }
-                              return const SizedBox.shrink();
-                            },
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            episode.name,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 14,
-                              fontWeight: FontWeight.bold,
-                            ),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            'Episodio ${episode.episodeNumber ?? (index + 1)}',
-                            style: const TextStyle(
-                              color: Colors.white54,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const SizedBox(width: 8),
-                        IconButton(
-                          icon: const Icon(
-                            Icons.cast,
-                            color: Colors.white54,
-                            size: 20,
-                          ),
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(),
-                          onPressed: () async {
-                            final castService = CastService();
-                            if (castService.connectedDevice != null) {
-                              String urlToLoad = episode.url;
-
-                              if (episode.isDynamic) {
-                                try {
-                                  final videoUrl = await DynamicScraperService()
-                                      .extractVideoSource(episode.url);
-                                  if (!mounted) return;
-                                  if (videoUrl != null) {
-                                    urlToLoad = videoUrl;
-                                  } else {
-                                    SnackBarUtils.showAppSnackBar(
-                                      context,
-                                      'No se pudo obtener el enlace para TV. Inténtalo de nuevo.',
-                                    );
-                                    return;
-                                  }
-                                } catch (e) {
-                                  if (mounted) {
-                                    SnackBarUtils.showAppSnackBar(
-                                      context,
-                                      'Error de conexión: $e',
-                                    );
-                                  }
-                                  return;
-                                }
-                              }
-
-                              castService.loadMedia(
-                                urlToLoad,
-                                title: "${widget.item.name} - ${episode.name}",
-                                subtitle: widget.item.category,
-                              );
+                        if (episode.isDynamic) {
+                          try {
+                            final videoUrl = await DynamicScraperService()
+                                .extractVideoSource(episode.url);
+                            if (!mounted) return;
+                            if (videoUrl != null) {
+                              urlToLoad = videoUrl;
+                            } else {
                               SnackBarUtils.showAppSnackBar(
                                 context,
-                                'Reproduciendo ${episode.name} en TV...',
+                                'No se pudo obtener el enlace para TV. Inténtalo de nuevo.',
                               );
-                              // Show interstitial ad when casting
-                              AdService().showInterstitialAd();
-                            } else {
-                              _showCastDialog();
+                              return;
                             }
-                          },
+                          } catch (e) {
+                            if (mounted) {
+                              SnackBarUtils.showAppSnackBar(
+                                context,
+                                'Error de conexión: $e',
+                              );
+                            }
+                            return;
+                          }
+                        }
+
+                        castService.loadMedia(
+                          urlToLoad,
+                          title: "${widget.item.name} - ${episode.name}",
+                          subtitle: widget.item.category,
+                        );
+                        SnackBarUtils.showAppSnackBar(
+                          context,
+                          'Reproduciendo ${episode.name} en TV...',
+                        );
+                      },
+                      onAdFailed: () {
+                        if (mounted) {
+                          SnackBarUtils.showAppSnackBar(
+                            context,
+                            'Hubo un error de comunicación al cargar el medio. Inténtalo más tarde. (Código de error: 1008)',
+                          );
+                        }
+                      },
+                    );
+                  } else {
+                    _playContent(episode, playlist: episodes);
+                  }
+                },
+                child: Container(
+                  margin: const EdgeInsets.only(bottom: 16),
+                  child: Row(
+                    children: [
+                      // Episode Thumbnail
+                      SizedBox(
+                        width: 120,
+                        height: 70,
+                        child: Stack(
+                          children: [
+                            FastThumbnail(
+                              url:
+                                  (episode.logo != null &&
+                                          episode.logo!.isNotEmpty)
+                                      ? episode.logo!
+                                      : (widget.item.logo ?? ''),
+                              title: episode.name,
+                              width: 120,
+                              height: 70,
+                              fit: BoxFit.cover,
+                              borderRadius: BorderRadius.circular(8),
+                              cacheWidth:
+                                  PerformanceService().lowMemoryLimit
+                                      ? 150
+                                      : 300,
+                              onError: () {
+                                final logo =
+                                    (episode.logo != null &&
+                                            episode.logo!.isNotEmpty)
+                                        ? episode.logo
+                                        : widget.item.logo;
+                                if (logo != null) {
+                                  _m3uService.reportFailedLogo(logo);
+                                }
+                              },
+                            ),
+                            Center(
+                              child: Icon(
+                                Icons.play_circle_outline,
+                                color: Colors.white.withValues(alpha: 0.8),
+                                size: 32,
+                              ),
+                            ),
+                            // Progress Indicator (Timeline)
+                            FutureBuilder<WatchProgress?>(
+                              future: WatchProgressService().getProgress(
+                                episode.url,
+                              ),
+                              builder: (context, snapshot) {
+                                if (snapshot.hasData && snapshot.data != null) {
+                                  final progress =
+                                      snapshot.data!.progressPercentage;
+                                  if (progress > 5) {
+                                    return Positioned(
+                                      bottom: 0,
+                                      left: 0,
+                                      right: 0,
+                                      child: Container(
+                                        height: 3,
+                                        color: Colors.white24,
+                                        child: FractionallySizedBox(
+                                          alignment: Alignment.centerLeft,
+                                          widthFactor: progress / 100,
+                                          child: Container(color: Colors.red),
+                                        ),
+                                      ),
+                                    );
+                                  }
+                                }
+                                return const SizedBox.shrink();
+                              },
+                            ),
+                          ],
                         ),
-                      ],
-                    ),
-                  ],
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              episode.name,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                              ),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Episodio ${episode.episodeNumber ?? (index + 1)}',
+                              style: const TextStyle(
+                                color: Colors.white54,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const SizedBox(width: 8),
+                          IconButton(
+                            icon: const Icon(
+                              Icons.cast,
+                              color: Colors.white54,
+                              size: 20,
+                            ),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(),
+                            onPressed: () async {
+                              final castService = CastService();
+                              if (castService.connectedDevice != null) {
+                                String urlToLoad = episode.url;
+
+                                if (episode.isDynamic) {
+                                  try {
+                                    final videoUrl =
+                                        await DynamicScraperService()
+                                            .extractVideoSource(episode.url);
+                                    if (!mounted) return;
+                                    if (videoUrl != null) {
+                                      urlToLoad = videoUrl;
+                                    } else {
+                                      SnackBarUtils.showAppSnackBar(
+                                        context,
+                                        'No se pudo obtener el enlace para TV. Inténtalo de nuevo.',
+                                      );
+                                      return;
+                                    }
+                                  } catch (e) {
+                                    if (mounted) {
+                                      SnackBarUtils.showAppSnackBar(
+                                        context,
+                                        'Error de conexión: $e',
+                                      );
+                                    }
+                                    return;
+                                  }
+                                }
+
+                                castService.loadMedia(
+                                  urlToLoad,
+                                  title:
+                                      "${widget.item.name} - ${episode.name}",
+                                  subtitle: widget.item.category,
+                                );
+                                SnackBarUtils.showAppSnackBar(
+                                  context,
+                                  'Reproduciendo ${episode.name} en TV...',
+                                );
+                                // Show interstitial ad when casting
+                                AdService().showInterstitialAd();
+                              } else {
+                                _showCastDialog();
+                              }
+                            },
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            );
-          },
-        ),
+              );
+            },
+          ),
       ],
     );
   }

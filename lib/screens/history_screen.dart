@@ -14,35 +14,56 @@ class HistoryScreen extends StatefulWidget {
   State<HistoryScreen> createState() => _HistoryScreenState();
 }
 
+class _HistoryEntry {
+  final M3UItem item;
+  final WatchProgress progress;
+  _HistoryEntry(this.item, this.progress);
+}
+
 class _HistoryScreenState extends State<HistoryScreen> {
   final M3UService _m3uService = M3UService();
   final WatchProgressService _watchProgressService = WatchProgressService();
 
-  List<M3UItem> _historyItems = [];
+  List<_HistoryEntry> _historyEntries = [];
   bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
     _loadHistory();
+    _watchProgressService.addListener(_loadHistory);
+  }
+
+  @override
+  void dispose() {
+    _watchProgressService.removeListener(_loadHistory);
+    super.dispose();
   }
 
   Future<void> _loadHistory() async {
     setState(() => _isLoading = true);
 
-    final urls = await _watchProgressService.getHistoryUrls();
+    final history = await _watchProgressService.getHistory();
 
-    final List<M3UItem> items = [];
-    for (final url in urls) {
-      final item = _m3uService.getItemByUrl(url);
+    final List<_HistoryEntry> entries = [];
+    final Set<String> processedSeries = {};
+
+    for (final progress in history) {
+      final item = _m3uService.resolveItemFromProgress(progress);
+
       if (item != null) {
-        items.add(item);
+        // Prevent duplicate series shells in the list
+        if (item.isSeries) {
+          if (processedSeries.contains(item.name)) continue;
+          processedSeries.add(item.name);
+        }
+        entries.add(_HistoryEntry(item, progress));
       }
     }
 
     if (mounted) {
       setState(() {
-        _historyItems = items;
+        _historyEntries = entries;
         _isLoading = false;
       });
     }
@@ -189,7 +210,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
           ),
         ),
         actions: [
-          if (_historyItems.isNotEmpty)
+          if (_historyEntries.isNotEmpty)
             IconButton(
               icon: const Icon(CupertinoIcons.trash, color: Colors.white70),
               onPressed: _clearHistory,
@@ -202,7 +223,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
               ? const Center(
                 child: CircularProgressIndicator(color: Colors.red),
               )
-              : _historyItems.isEmpty
+              : _historyEntries.isEmpty
               ? _buildEmptyState()
               : _buildHistoryGrid(),
     );
@@ -243,26 +264,24 @@ class _HistoryScreenState extends State<HistoryScreen> {
         crossAxisSpacing: 12,
         mainAxisSpacing: 12,
       ),
-      itemCount: _historyItems.length,
+      itemCount: _historyEntries.length,
       itemBuilder: (context, index) {
-        final item = _historyItems[index];
-        return _buildGridCard(item);
+        final entry = _historyEntries[index];
+        return _buildGridCard(entry);
       },
     );
   }
 
-  Widget _buildGridCard(M3UItem item) {
+  Widget _buildGridCard(_HistoryEntry entry) {
+    final item = entry.item;
+    final progress = entry.progress;
+
     return GestureDetector(
       onTap: () async {
         var targetItem = item;
 
-        if (item.seriesName != null && item.seriesName!.isNotEmpty) {
-          try {
-            final parentSeries = _m3uService.series.firstWhere(
-              (s) => s.name == item.seriesName,
-            );
-            targetItem = parentSeries;
-          } catch (_) {}
+        if (item.isSeries) {
+          targetItem = item; // It's already the shell
         }
 
         final similarItems = _m3uService.getSimilarItems(targetItem);
@@ -314,21 +333,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
             overflow: TextOverflow.ellipsis,
           ),
           const SizedBox(height: 4),
-          FutureBuilder<WatchProgress?>(
-            future: _watchProgressService.getProgress(item.url),
-            builder: (context, snapshot) {
-              if (!snapshot.hasData) return const SizedBox.shrink();
-              final progress = snapshot.data!;
-              return ClipRRect(
-                borderRadius: BorderRadius.circular(2),
-                child: LinearProgressIndicator(
-                  value: progress.progressPercentage / 100,
-                  backgroundColor: Colors.white10,
-                  color: Colors.red,
-                  minHeight: 2,
-                ),
-              );
-            },
+          ClipRRect(
+            borderRadius: BorderRadius.circular(2),
+            child: LinearProgressIndicator(
+              value: progress.progressPercentage / 100,
+              backgroundColor: Colors.white10,
+              color: Colors.red,
+              minHeight: 2,
+            ),
           ),
         ],
       ),

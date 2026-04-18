@@ -36,6 +36,7 @@ import 'stream_browser_config_screen.dart';
 import 'settings_screen.dart';
 import '../services/dynamic_scraper_service.dart';
 import '../services/social_rewards_service.dart';
+import '../services/xtream_service.dart';
 import '../widgets/rate_dialog.dart';
 
 class ExitFullscreenIntent extends Intent {
@@ -77,6 +78,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   // bool _isSearching = false; // REMOVED
   // final TextEditingController _searchController = TextEditingController(); // REMOVED
   final TextEditingController _sourceUrlController = TextEditingController();
+
   // final FocusNode _searchFocusNode = FocusNode(); // REMOVED
   // Timer? _debounce; // REMOVED
   // List<M3UItem> _searchResults = []; // REMOVED
@@ -234,6 +236,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     // FIX: Escuchar al M3UService para cuando el cómputo async de items
     // recientes termine y así actualizar las secciones del home.
     _m3uService.addListener(_onM3UServiceUpdated);
+    WatchProgressService().addListener(_onWatchProgressUpdated);
     _checkRateDialog();
   }
 
@@ -269,16 +272,16 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   @override
   void dispose() {
     _watchProgressVersion.dispose();
-    _homeScrollController.dispose();
     CastService().removeListener(_onCastChanged);
-    AdService.isAdInProgress.removeListener(_handleAdStateChange);
-    _m3uService.removeListener(_onM3UServiceUpdated); // FIX
+    _m3uService.removeListener(_onM3UServiceUpdated);
+    WatchProgressService().removeListener(_onWatchProgressUpdated);
     _disposeLivePlayer();
     _slowLoadingTimer?.cancel();
     _liveSearchController.dispose();
     _inlineControlsTimer?.cancel();
     _pcLicenseController.dispose();
     _sourceUrlController.dispose();
+
     WakelockPlus.disable();
     SystemChrome.setPreferredOrientations([
       DeviceOrientation.portraitUp,
@@ -292,6 +295,12 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   /// FIX: Llamado por M3UService.notifyListeners() cuando el cómputo async
   /// de items recientes termina (sea porque se cargó desde caché o fresco).
   /// Recarga _recommendedItems si aún están vacíos y dispara un rebuild.
+  void _onWatchProgressUpdated() {
+    if (mounted) {
+      _watchProgressVersion.value++;
+    }
+  }
+
   void _onM3UServiceUpdated() {
     if (!mounted || _isLoading) return;
     final recentItems = _m3uService.getRecentItems();
@@ -1225,16 +1234,22 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                   width: 120,
                   child: GestureDetector(
                     onTap: () {
-                      List<M3UItem>? playlist;
-                      if (item.seriesName != null) {
-                        try {
-                          final parentSeries = _m3uService.series.firstWhere(
-                            (s) => s.name == item.seriesName,
-                          );
-                          playlist = parentSeries.episodes;
-                        } catch (_) {}
+                      if (item.isSeries) {
+                        Navigator.push(
+                          context,
+                          MaterialFadePageRoute(
+                            page: ContentDetailScreen(
+                              item: item,
+                              onToggleFavorite:
+                                  (it) => _m3uService.toggleFavorite(it),
+                            ),
+                          ),
+                        ).then((_) {
+                          if (mounted) _watchProgressVersion.value++;
+                        });
+                      } else {
+                        _playItem(item);
                       }
-                      _playItem(item, playlist: playlist);
                     },
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1578,8 +1593,10 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                   final processedSeries = <String>{};
 
                   for (var progress in history) {
-                    final item = _m3uService.getItemByUrl(progress.url);
+                    final item = _m3uService.resolveItemFromProgress(progress);
+
                     if (item == null) continue;
+
                     if (item.seriesName != null &&
                         item.seriesName!.isNotEmpty) {
                       if (processedSeries.contains(item.seriesName)) continue;
@@ -3576,21 +3593,28 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             ),
             const SizedBox(height: 8),
             const Text(
-              'Pega tu enlace M3U para empezar a ver películas y series.',
+              'Pega tu enlace M3u para empezar a ver películas y series.',
               style: TextStyle(color: Colors.white60, fontSize: 14),
             ),
             const SizedBox(height: 24),
+
+            // Host / URL TextField
             TextField(
               controller: _sourceUrlController,
               style: const TextStyle(color: Colors.white, fontSize: 16.1),
               decoration: InputDecoration(
-                hintText: 'Paste Source URL',
+                hintText: 'Configura tu fuente',
                 hintStyle: const TextStyle(
                   color: Colors.white24,
                   fontSize: 16.1,
                 ),
                 filled: true,
                 fillColor: Colors.black26,
+                prefixIcon: const Icon(
+                  CupertinoIcons.link,
+                  color: Colors.white38,
+                  size: 20,
+                ),
                 suffixIcon: IconButton(
                   icon: const Icon(Icons.explore, color: Colors.red),
                   tooltip: 'Ver recompensas especiales',
@@ -3602,6 +3626,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                 ),
               ),
             ),
+
             const SizedBox(height: 24),
             SizedBox(
               width: double.infinity,
@@ -3620,6 +3645,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                         result.url!,
                         isCode: result.isCode,
                         originalInput: inputSource,
+                        username: result.username,
+                        password: result.password,
+                        type: result.type,
                       );
                       await _initService();
                     } else {
@@ -4177,22 +4205,21 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                   fit: StackFit.expand,
                   children: [
                     // Background Image (Poster)
-                    if (item.logo != null && item.logo!.isNotEmpty)
-                      FastThumbnail(
-                        url: item.logo,
-                        title: item.name,
-                        width: double.infinity,
-                        height: double.infinity,
-                        fit: BoxFit.cover,
-                        cacheWidth: null, // resolución completa para el hero
-                        onError: () {
-                          if (item.logo != null) {
-                            _m3uService.reportFailedLogo(item.logo!);
-                          }
-                        },
-                      )
-                    else
-                      _buildPlaceholderImage(),
+                    FastThumbnail(
+                      url: item.logo,
+                      title: item.name,
+                      width: double.infinity,
+                      height: double.infinity,
+                      fit: BoxFit.cover,
+                      cacheWidth: null, // resolución completa para el hero
+                      isSeries: item.isSeries,
+                      useTMDBFallback: !item.isLive,
+                      onError: () {
+                        if (item.logo != null && item.logo!.isNotEmpty) {
+                          _m3uService.reportFailedLogo(item.logo!);
+                        }
+                      },
+                    ),
 
                     // Gradient Overlay (Bottom only for text legibility)
                     Container(
@@ -4382,10 +4409,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         ),
       ),
     );
-  }
-
-  Widget _buildPlaceholderImage() {
-    return Container(color: const Color(0xFF141414));
   }
 
   Widget _buildCategoryRow(String title, List<M3UItem> items) {
@@ -4615,6 +4638,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                             height: double.infinity,
                             fit: BoxFit.cover,
                             cacheWidth: 300,
+                            isSeries: item.isSeries,
+                            useTMDBFallback: !item.isLive,
                             onError: () {
                               if (item.logo != null) {
                                 _m3uService.reportFailedLogo(item.logo!);
@@ -4687,26 +4712,23 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                     ),
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(8),
-                      child:
-                          item.logo != null && item.logo!.isNotEmpty
-                              ? FastThumbnail(
-                                url: item.logo,
-                                title: item.name,
-                                width: double.infinity,
-                                height: double.infinity,
-                                fit: BoxFit.cover,
-                                borderRadius: BorderRadius.circular(8),
-                                cacheWidth:
-                                    PerformanceService().lowMemoryLimit
-                                        ? 150
-                                        : 300,
-                                onError: () {
-                                  if (item.logo != null) {
-                                    _m3uService.reportFailedLogo(item.logo!);
-                                  }
-                                },
-                              )
-                              : const SizedBox.shrink(),
+                      child: FastThumbnail(
+                        url: item.logo,
+                        title: item.name,
+                        width: double.infinity,
+                        height: double.infinity,
+                        fit: BoxFit.cover,
+                        borderRadius: BorderRadius.circular(8),
+                        isSeries: item.isSeries,
+                        useTMDBFallback: !item.isLive,
+                        cacheWidth:
+                            PerformanceService().lowMemoryLimit ? 150 : 300,
+                        onError: () {
+                          if (item.logo != null && item.logo!.isNotEmpty) {
+                            _m3uService.reportFailedLogo(item.logo!);
+                          }
+                        },
+                      ),
                     ),
                   ),
                 ],
@@ -4769,26 +4791,23 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                     ),
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(10),
-                      child:
-                          item.logo != null && item.logo!.isNotEmpty
-                              ? FastThumbnail(
-                                url: item.logo,
-                                title: item.name,
-                                width: double.infinity,
-                                height: double.infinity,
-                                fit: BoxFit.cover,
-                                borderRadius: BorderRadius.circular(10),
-                                cacheWidth:
-                                    PerformanceService().lowMemoryLimit
-                                        ? 150
-                                        : 300,
-                                onError: () {
-                                  if (item.logo != null) {
-                                    _m3uService.reportFailedLogo(item.logo!);
-                                  }
-                                },
-                              )
-                              : const SizedBox.shrink(),
+                      child: FastThumbnail(
+                        url: item.logo,
+                        title: item.name,
+                        width: double.infinity,
+                        height: double.infinity,
+                        fit: BoxFit.cover,
+                        borderRadius: BorderRadius.circular(10),
+                        isSeries: item.isSeries,
+                        useTMDBFallback: !item.isLive,
+                        cacheWidth:
+                            PerformanceService().lowMemoryLimit ? 150 : 300,
+                        onError: () {
+                          if (item.logo != null) {
+                            _m3uService.reportFailedLogo(item.logo!);
+                          }
+                        },
+                      ),
                     ),
                   ),
                   if (_bottomNavIndex == 1)

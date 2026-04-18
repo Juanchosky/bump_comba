@@ -143,6 +143,12 @@ class TMDBService {
       }
     }
 
+    // Construct image URL helper
+    String getImageUrl(String? path) {
+      if (path == null || path.isEmpty) return '';
+      return 'https://image.tmdb.org/t/p/w500$path';
+    }
+
     // Extract Cast and Director/Creator
     String? cast;
     String? director;
@@ -185,6 +191,8 @@ class TMDBService {
     return {
       'overview': overview,
       'trailer_url': trailerUrl,
+      'poster_url': getImageUrl(details['poster_path']),
+      'backdrop_url': getImageUrl(details['backdrop_path']),
       'release_date':
           searchType == 'tv'
               ? details['first_air_date']

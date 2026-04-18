@@ -5,6 +5,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:http/io_client.dart';
 import 'performance_service.dart';
+import 'metadata_fallback_service.dart';
 
 // FIX 1: Headers completos — evita 403 en CDNs de logos IPTV
 const Map<String, String> _kImageHeaders = {
@@ -169,6 +170,8 @@ class FastThumbnail extends StatefulWidget {
   final BorderRadius? borderRadius;
   final int? cacheWidth;
   final String? title;
+  final bool isSeries;
+  final bool useTMDBFallback;
   final VoidCallback? onError;
 
   const FastThumbnail({
@@ -180,6 +183,8 @@ class FastThumbnail extends StatefulWidget {
     this.fit = BoxFit.cover,
     this.borderRadius,
     this.cacheWidth,
+    this.isSeries = false,
+    this.useTMDBFallback = false,
     this.onError,
   });
 
@@ -193,6 +198,8 @@ class _FastThumbnailState extends State<FastThumbnail>
   late Animation<double> _fadeAnimation;
   ImageProvider? _cachedProvider;
   int? _effectiveCacheWidth;
+  String? _fallbackUrl;
+  bool _isResolvingFallback = false;
 
   @override
   void initState() {
@@ -206,6 +213,25 @@ class _FastThumbnailState extends State<FastThumbnail>
       curve: Curves.easeOut,
     );
     _effectiveCacheWidth = _computeCacheWidth();
+    _checkAndResolveFallback();
+  }
+
+  void _checkAndResolveFallback() async {
+    if (!widget.useTMDBFallback || widget.title == null) return;
+    if (FastImageService.isValidImageUrl(widget.url)) return;
+    if (_fallbackUrl != null || _isResolvingFallback) return;
+
+    setState(() => _isResolvingFallback = true);
+    final url = await MetadataFallbackService().getFallbackPoster(
+      widget.title!,
+      isSeries: widget.isSeries,
+    );
+    if (mounted) {
+      setState(() {
+        _fallbackUrl = url;
+        _isResolvingFallback = false;
+      });
+    }
   }
 
   int? _computeCacheWidth() {
@@ -225,8 +251,10 @@ class _FastThumbnailState extends State<FastThumbnail>
     // FIX 3: solo resetear si la URL cambió — cacheWidth es estable en runtime
     if (oldWidget.url != widget.url) {
       _cachedProvider = null;
+      _fallbackUrl = null;
       _effectiveCacheWidth = _computeCacheWidth();
       _fadeController.reset();
+      _checkAndResolveFallback();
     }
   }
 
@@ -239,8 +267,13 @@ class _FastThumbnailState extends State<FastThumbnail>
   ImageProvider _getProvider() {
     if (_cachedProvider != null) return _cachedProvider!;
 
+    final String? imageTarget =
+        FastImageService.isValidImageUrl(widget.url) ? widget.url : _fallbackUrl;
+
+    if (imageTarget == null) return const AssetImage('assets/placeholder.png');
+
     ImageProvider provider = CachedNetworkImageProvider(
-      widget.url!,
+      imageTarget,
       headers: _kImageHeaders, // FIX 1
       cacheManager: AppCacheManager.instance,
     );
@@ -293,7 +326,10 @@ class _FastThumbnailState extends State<FastThumbnail>
   Widget build(BuildContext context) {
     Widget content;
 
-    if (!FastImageService.isValidImageUrl(widget.url)) {
+    final bool hasValidPrimary = FastImageService.isValidImageUrl(widget.url);
+    final bool hasValidFallback = FastImageService.isValidImageUrl(_fallbackUrl);
+
+    if (!hasValidPrimary && !hasValidFallback) {
       content = _placeholder();
     } else {
       content = Stack(

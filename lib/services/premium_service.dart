@@ -56,7 +56,7 @@ class PremiumService {
   Stream<bool> get premiumStream => _premiumStatusController.stream;
 
   /// Get current premium status (cached, fast access)
-  ///  bool get isPremium => _isPremium;
+  ///   bool get isPremium => _isPremium;
 
   /// Check if user has any active premium entitlement
   ///  bool get hasActiveSubscription => _isPremium;

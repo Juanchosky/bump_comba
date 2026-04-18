@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
-import '../services/m3u_service.dart';
+import '../utils/normalization_utils.dart';
 
 
 class WebViewPlayerScreen extends StatefulWidget {
@@ -49,7 +49,7 @@ class _WebViewPlayerScreenState extends State<WebViewPlayerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final cleanedUrl = M3UItem.cleanUrl(widget.url);
+    final cleanedUrl = NormalizationUtils.cleanUrl(widget.url);
 
     return Scaffold(
       backgroundColor: Colors.black,
