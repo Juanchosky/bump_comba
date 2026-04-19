@@ -203,4 +203,29 @@ class TMDBService {
       'director': director,
     };
   }
+
+  Future<List<Map<String, String>>> getTrendingTitles() async {
+    try {
+      final response = await http.get(
+        Uri.parse('$_baseUrl/trending/all/week?api_key=$_apiKey&language=es-ES'),
+      );
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        final results = data['results'] as List;
+        return results.map((item) {
+          final title = item['title'] ?? item['name'] ?? '';
+          final date = item['release_date'] ?? item['first_air_date'] ?? '';
+          String year = '';
+          if (date.toString().length >= 4) {
+            year = date.toString().substring(0, 4);
+          }
+          return {'title': title.toString(), 'year': year};
+        }).toList();
+      }
+    } catch (e) {
+      print('Error fetching trending titles: $e');
+    }
+    return [];
+  }
 }

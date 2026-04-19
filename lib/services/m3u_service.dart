@@ -16,6 +16,7 @@ import '../models/m3u_item.dart';
 import '../models/download_progress.dart';
 import '../utils/normalization_utils.dart';
 import '../services/watch_progress_service.dart';
+import 'tmdb_service.dart';
 
 export '../models/m3u_item.dart';
 export '../models/download_progress.dart';
@@ -171,6 +172,9 @@ class M3UService extends ChangeNotifier {
   List<M3UItem>? _cachedRecentItems;
   // Session-level cache for recommendations — stays stable during session
   List<M3UItem>? _sessionRecommendedItems;
+  // Cache for TMDB popular search matches
+  List<M3UItem>? _cachedPopularTMDB;
+  bool _isFetchingPopularTMDB = false;
 
   // ROBUST-1: Completer-based init guard (prevents concurrent double-init)
   Completer<void>? _initCompleter;
@@ -1847,7 +1851,19 @@ class M3UService extends ChangeNotifier {
   }
 
   List<M3UItem> getPopularSearchItems() {
-    // Si el caché async aún no está listo, calcular síncronamente con los primeros items
+    // If we already have TMDB matches, return them
+    if (_cachedPopularTMDB != null && _cachedPopularTMDB!.isNotEmpty) {
+      return _cachedPopularTMDB!;
+    }
+
+    // Trigger async fetch from TMDB if not already in progress
+    if (_cachedPopularTMDB == null &&
+        !_isFetchingPopularTMDB &&
+        _items.isNotEmpty) {
+      _fetchPopularFromTMDB();
+    }
+
+    // Fallback: Si el caché async aún no está listo, calcular síncronamente con los primeros items
     if (_cachedRecentItems == null && _items.isNotEmpty) {
       // Fallback rápido: tomar los últimos 9 items que no sean live
       final fallback =
@@ -1868,6 +1884,61 @@ class M3UService extends ChangeNotifier {
         .where((i) => !i.isLive && i.sourceName != 'Supabase')
         .take(9)
         .toList();
+  }
+
+  Future<void> _fetchPopularFromTMDB() async {
+    if (_isFetchingPopularTMDB) return;
+    _isFetchingPopularTMDB = true;
+
+    try {
+      final trends = await TMDBService().getTrendingTitles();
+      if (trends.isEmpty) {
+        _cachedPopularTMDB = [];
+        _isFetchingPopularTMDB = false;
+        return;
+      }
+
+      final List<M3UItem> matches = [];
+      final Set<String> matchedNames = {};
+
+      for (var trend in trends) {
+        final trendTitle = trend['title']?.toLowerCase() ?? '';
+        final trendYear = trend['year'] ?? '';
+        if (trendTitle.isEmpty) continue;
+
+        // Fast search in local library
+        for (var item in _items) {
+          if (item.isLive || item.sourceName == 'Supabase') continue;
+          if (matchedNames.contains(item.name)) continue;
+
+          final itemName = item.name.toLowerCase();
+
+          // Basic title match
+          if (itemName.contains(trendTitle) || trendTitle.contains(itemName)) {
+            // Year verification for accuracy
+            if (trendYear.isNotEmpty && item.name.contains(trendYear)) {
+              matches.add(item);
+              matchedNames.add(item.name);
+              break;
+            } else if (trendYear.isEmpty) {
+              matches.add(item);
+              matchedNames.add(item.name);
+              break;
+            }
+          }
+        }
+        if (matches.length >= 9) break;
+      }
+
+      _cachedPopularTMDB = matches;
+      if (matches.isNotEmpty) {
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('Error fetching TMDB popular trends: $e');
+    } finally {
+      _isFetchingPopularTMDB = false;
+    }
   }
 
   /// PERF-4: getSimilarItems uses List.shuffle instead of random-attempt loop.
