@@ -23,6 +23,7 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
   final GameConfigService _gameConfigService = GameConfigService();
   final PerformanceService _performanceService = PerformanceService();
   bool _isLoading = false;
+  bool _wasDataChanged = false;
 
   @override
   void initState() {
@@ -43,23 +44,29 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
     final sources = _m3uService.sources;
     final activeIndex = _m3uService.activeSourceIndex;
 
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      appBar: AppBar(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        Navigator.pop(context, _wasDataChanged);
+      },
+      child: Scaffold(
         backgroundColor: AppColors.background,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(CupertinoIcons.chevron_back, color: Colors.white),
-          onPressed: () => Navigator.pop(context),
-        ),
-        title: const Text(
-          'Configuración',
-          style: TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.bold,
-            fontSize: 20,
+        appBar: AppBar(
+          backgroundColor: AppColors.background,
+          elevation: 0,
+          leading: IconButton(
+            icon: const Icon(CupertinoIcons.chevron_back, color: Colors.white),
+            onPressed: () => Navigator.pop(context, _wasDataChanged),
           ),
-        ),
+          title: const Text(
+            'Configuración',
+            style: TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.bold,
+              fontSize: 20,
+            ),
+          ),
         actions: [
           IconButton(
             icon: const Icon(CupertinoIcons.add_circled, color: Colors.red),
@@ -139,10 +146,12 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
                       return;
                     }
                     await _m3uService.setUnifiedMode(val);
+                    _wasDataChanged = true;
                     setState(() {});
                     if (mounted) {
                       Navigator.pop(
                         context,
+                        true,
                       ); // Close config screen to trigger auto-refresh
                     }
                   },
@@ -177,8 +186,9 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
             ),
         ],
       ),
-    );
-  }
+    ),
+  );
+}
 
   // -- SECTION HEADER ----------------------------------------------------------
 
@@ -371,6 +381,7 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
           );
           Navigator.pop(
             context,
+            true,
           ); // Return to main screen to trigger auto-refresh
         }
       },
@@ -674,6 +685,7 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
     );
     if (confirm == true) {
       await _m3uService.removeSource(index);
+      _wasDataChanged = true;
       setState(() {});
     }
   }
@@ -754,7 +766,7 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
                               );
                               setState(() => _isLoading = false);
                                 if (mounted) {
-                                  Navigator.of(context).pop();
+                                  Navigator.pop(context, true);
                                 }
                               } else {
                                 setState(() => _isLoading = false);

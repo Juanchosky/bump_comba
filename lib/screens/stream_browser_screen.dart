@@ -350,7 +350,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           _m3uService.loadM3UContent(useRetry: false).then((refreshSuccess) {
             if (refreshSuccess && mounted) {
               // Re-pick hero si cambió algo importante
-              if (_heroItem == null || !_m3uService.items.contains(_heroItem)) {
+              // Solo elegir el héroe una vez por sesión al entrar en la pestaña "Inicio"
+              if (_heroItem == null) {
                 _pickHeroItem(_m3uService.latestItems);
               }
               setState(() {});
@@ -397,7 +398,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
       if (success) {
         // Pick Hero Item once on load, only if it hasn't been picked yet (e.g. app start)
-        if (_heroItem == null || !_m3uService.items.contains(_heroItem)) {
+        if (_heroItem == null) {
           _pickHeroItem(_m3uService.latestItems);
         }
 
@@ -1123,67 +1124,95 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
   void _pickHeroItem(List<M3UItem> items) {
     if (items.isEmpty) return;
-    
-    // Only pick a new hero item if it's not already set.
-    // This makes the banner persistent during the session as requested.
+
+    // Solo elegir un nuevo ítem si no está establecido (persistencia por sesión).
     if (_heroItem != null) return;
 
-    // First try with recentItems from service (already filtered roughly)
-    final recentItems = _m3uService.getRecentItems();
-    final rawPool = recentItems.isNotEmpty ? recentItems : items;
-    
-    // STRICT FILTER: No live streams in banner, no Supabase custom content, must be movies/content
-    final pool = _m3uService.filterValidItems(rawPool)
-        .where((item) {
+    // 1. Obtener un pool base de películas y series recientes.
+    final List<M3UItem> moviePool = _m3uService.movies.take(100).toList();
+    final List<M3UItem> seriesPool = _m3uService.series.take(100).toList();
+    final List<M3UItem> combinedPool = [...moviePool, ...seriesPool];
+
+    // Si los pools están vacíos, usamos el fallback de items.
+    final rawPool =
+        combinedPool.isNotEmpty
+            ? combinedPool
+            : items.where((i) => !i.isLive).toList();
+
+    // 2. Filtrado inicial de validez.
+    final validPool =
+        _m3uService.filterValidItems(rawPool).where((item) {
           if (item.isLive || item.sourceName == 'Supabase') return false;
           final n = item.name.toLowerCase();
-          // SAFETY: Check for words that definitely indicate a live channel
-          if (n.contains('canal ') || n.contains('tv ') || n.contains('en vivo')) return false;
+          if (n.contains('canal ') ||
+              n.contains('tv ') ||
+              n.contains('en vivo'))
+            return false;
           return true;
-        })
-        .toList();
+        }).toList();
 
-    if (pool.isEmpty) return;
+    if (validPool.isEmpty) return;
 
-    // Improved year regex: catches 2024, (2024), etc.
-    final regexYear = RegExp(r'\b(202[0-9]|19[0-9]{2})\b');
+    // 3. Agrupar películas por año detectado.
+    final Map<int, List<M3UItem>> moviesByYear = {};
+    // Regex más flexible para capturar años incluso pegados a paréntesis o corchetes.
+    final yearRegex = RegExp(r'(\d{4})');
 
-    // 1. Find max year in the current pool
-    int maxYear = 0;
-    for (var item in pool) {
-      final match = regexYear.firstMatch(item.name);
-      if (match != null) {
-        final yearStr = match.group(1) ?? '';
+    for (var item in validPool) {
+      final matches = yearRegex.allMatches(item.name);
+      if (matches.isNotEmpty) {
+        // Tomamos el último año mencionado en el nombre para evitar falsos positivos
+        // (ej: "48 Horas (1982) [Resampled 2024]") -> Selecciona 2024.
+        final yearStr = matches.last.group(1) ?? '';
         final year = int.tryParse(yearStr);
-        if (year != null && year > maxYear && year < 2100) {
-          maxYear = year;
+        if (year != null && year >= 1950 && year <= 2100) {
+          moviesByYear.putIfAbsent(year, () => []).add(item);
         }
       }
     }
 
-    // 2. Filter pool strictly by that max year
-    List<M3UItem> filteredPool = pool;
-    if (maxYear > 0) {
-      filteredPool =
-          pool.where((item) {
-            final match = regexYear.firstMatch(item.name);
-            if (match != null) {
-              final yearStr = match.group(1) ?? '';
-              final year = int.tryParse(yearStr);
-              return year == maxYear;
-            }
-            return false;
-          }).toList();
+    if (moviesByYear.isEmpty) {
+      // Fallback si no detectamos años: usar pool válido tal cual.
+      _setHeroRandomly(validPool);
+      return;
     }
 
-    // Fallback if filtering removed everything (unlikely)
-    if (filteredPool.isEmpty) filteredPool = pool;
+    // 4. ALGORITMO ADAPTATIVO CON PESOS: Priorizar año más reciente (3x de probabilidad).
+    final sortedYears =
+        moviesByYear.keys.toList()..sort((a, b) => b.compareTo(a));
+    final List<M3UItem> finalPool = [];
+    int uniqueCount = 0;
 
-    // Random selection from strictly filtered pool
-    final randomIndex = DateTime.now().microsecond % filteredPool.length;
+    for (int i = 0; i < sortedYears.length; i++) {
+      final year = sortedYears[i];
+      final itemsForYear = moviesByYear[year]!;
+      uniqueCount += itemsForYear.length;
 
+      if (i == 0) {
+        // CAPA 1 (ESTRENOS): Les damos peso triple (3x) para que dominen el banner.
+        for (var item in itemsForYear) {
+          finalPool.add(item);
+          finalPool.add(item);
+          finalPool.add(item);
+        }
+      } else {
+        // CAPAS DE VARIEDAD: Probabilidad normal (1x).
+        finalPool.addAll(itemsForYear);
+      }
+
+      // Si ya tenemos al menos 10 títulos únicos, paramos para mantener la relevancia.
+      if (uniqueCount >= 10) break;
+    }
+
+    // 5. Selección final.
+    _setHeroRandomly(finalPool.isNotEmpty ? finalPool : validPool);
+  }
+
+  void _setHeroRandomly(List<M3UItem> pool) {
+    if (pool.isEmpty) return;
+    final randomIndex = DateTime.now().microsecond % pool.length;
     setState(() {
-      _heroItem = filteredPool[randomIndex];
+      _heroItem = pool[randomIndex];
     });
   }
 
@@ -1662,13 +1691,20 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                   homeSections.add(_buildScrollableHeader());
 
                   // 1. Hero
-                  homeSections.add(
-                    _buildHeroRandomLatest(
-                      recentItems.isNotEmpty
-                          ? recentItems
-                          : _m3uService.latestItems,
-                    ),
-                  );
+                  final List<M3UItem> heroPool = [];
+                  if (_m3uService.movies.isNotEmpty ||
+                      _m3uService.series.isNotEmpty) {
+                    heroPool.addAll(_m3uService.movies.take(100));
+                    heroPool.addAll(_m3uService.series.take(100));
+                  } else {
+                    final fallback =
+                        (recentItems.isNotEmpty
+                            ? recentItems
+                            : _m3uService.latestItems);
+                    heroPool.addAll(fallback.where((i) => !i.isLive));
+                  }
+
+                  homeSections.add(_buildHeroRandomLatest(heroPool));
 
                   // 2. Últimamente nuevo
                   if (hasRecent) {
@@ -3587,40 +3623,83 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   }
 
   void _showStreamBrowserConfig() async {
-    await Navigator.push(
+    final result = await Navigator.push<bool>(
       context,
       MaterialPageRoute(
         builder: (context) => const StreamBrowserConfigScreen(),
       ),
     );
-    // Refresh when coming back in case sources changed
-    setState(() => _isLoading = true);
-    await _initService();
+
+    if (result == true) {
+      // Refresh when coming back if significant sources/mode changed
+      setState(() => _isLoading = true);
+      await _initService();
+    } else {
+      // Just rebuild UI to pick up any non-data settings changes
+      setState(() {});
+    }
   }
 
   Widget _buildHeroRandomLatest(List<M3UItem> items) {
     if (items.isEmpty) return const SizedBox.shrink();
     if (_heroItem != null) return _buildHeroBanner(_heroItem!);
 
-    // Fallback logic if _heroItem isn't ready:
-    // Filter out lives and supabase content even in this random picker
-    final validVods =
-        items
-            .where((i) => !i.isLive && i.sourceName != 'Supabase')
-            .where((i) {
-              final n = i.name.toLowerCase();
-              return !n.contains('canal ') &&
-                  !n.contains('tv ') &&
-                  !n.contains('en vivo');
-            })
-            .toList();
+    // Fallback logic filtrando películas y series
+    final validContent =
+        items.where((i) => !i.isLive && i.sourceName != 'Supabase').where((i) {
+          final n = i.name.toLowerCase();
+          return !n.contains('canal ') &&
+              !n.contains('tv ') &&
+              !n.contains('en vivo');
+        }).toList();
 
-    if (validVods.isEmpty) {
-      // Show shimmer instead of risking a live channel display
+    if (validContent.isEmpty) {
       return const _HiddenMoviesShimmer();
     }
 
-    final random = validVods[DateTime.now().millisecond % validVods.length];
+    // Algoritmo adaptativo también en el fallback
+    final Map<int, List<M3UItem>> itemsByYear = {};
+    final yearRegex = RegExp(r'(\d{4})');
+
+    for (var item in validContent) {
+      final matches = yearRegex.allMatches(item.name);
+      if (matches.isNotEmpty) {
+        final yearStr = matches.last.group(1) ?? '';
+        final year = int.tryParse(yearStr);
+        if (year != null && year >= 1950 && year <= 2100) {
+          itemsByYear.putIfAbsent(year, () => []).add(item);
+        }
+      }
+    }
+
+    List<M3UItem> pool = validContent;
+    if (itemsByYear.isNotEmpty) {
+      final sortedYears =
+          itemsByYear.keys.toList()..sort((a, b) => b.compareTo(a));
+      final List<M3UItem> adaptivePool = [];
+      int uniqueCount = 0;
+
+      for (int i = 0; i < sortedYears.length; i++) {
+        final year = sortedYears[i];
+        final itemsForYear = itemsByYear[year]!;
+        uniqueCount += itemsForYear.length;
+
+        if (i == 0) {
+          // Peso 3x para el año más reciente incluso en el fallback
+          for (var item in itemsForYear) {
+            adaptivePool.add(item);
+            adaptivePool.add(item);
+            adaptivePool.add(item);
+          }
+        } else {
+          adaptivePool.addAll(itemsForYear);
+        }
+        if (uniqueCount >= 10) break;
+      }
+      pool = adaptivePool.isNotEmpty ? adaptivePool : validContent;
+    }
+
+    final random = pool[DateTime.now().microsecond % pool.length];
     return _buildHeroBanner(random);
   }
 
@@ -5764,12 +5843,35 @@ class _AnimatedSearchPlaceholderState
   }
 
   void _startTimer() {
+    _timer?.cancel();
+    if (widget.suggestions.length <= 1) return;
+
     _timer = Timer.periodic(widget.interval, (timer) {
       if (!mounted) return;
+      if (widget.suggestions.isEmpty) {
+        _timer?.cancel();
+        return;
+      }
       setState(() {
         _currentIndex = (_currentIndex + 1) % widget.suggestions.length;
       });
     });
+  }
+
+  @override
+  void didUpdateWidget(_AnimatedSearchPlaceholder oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.suggestions != oldWidget.suggestions) {
+      if (widget.suggestions.isEmpty) {
+        _timer?.cancel();
+        _currentIndex = 0;
+      } else {
+        if (_currentIndex >= widget.suggestions.length) {
+          _currentIndex = 0;
+        }
+        _startTimer();
+      }
+    }
   }
 
   @override
@@ -5781,6 +5883,11 @@ class _AnimatedSearchPlaceholderState
   @override
   Widget build(BuildContext context) {
     if (widget.suggestions.isEmpty) return const SizedBox.shrink();
+
+    // Final safety bounds check before build
+    final int safeIndex =
+        _currentIndex < widget.suggestions.length ? _currentIndex : 0;
+    final String currentSuggestion = widget.suggestions[safeIndex];
 
     return ClipRect(
       child: AnimatedSwitcher(
@@ -5802,18 +5909,18 @@ class _AnimatedSearchPlaceholderState
 
           return SlideTransition(
             position:
-                child.key == ValueKey<String>(widget.suggestions[_currentIndex])
+                child.key == ValueKey<String>(currentSuggestion)
                     ? inAnimation
                     : outAnimation,
             child: child,
           );
         },
         child: Container(
-          key: ValueKey<String>(widget.suggestions[_currentIndex]),
+          key: ValueKey<String>(currentSuggestion),
           height: 20, // constrain height to text size to prevent overflow
           alignment: Alignment.centerLeft,
           child: Text(
-            widget.suggestions[_currentIndex],
+            currentSuggestion,
             style: const TextStyle(color: Colors.white54, fontSize: 14),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
@@ -6251,6 +6358,89 @@ class _SearchPageState extends State<_SearchPage> {
   }
 
   Widget _buildPopularGrid() {
+    // If empty but fetching, show shimmer to avoid blank space and flickering
+    if (_popularItems.isEmpty && widget.m3uService.isFetchingPopularTMDB) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+            child: Row(
+              children: [
+                const Icon(Icons.trending_up, color: Colors.red, size: 20),
+                const SizedBox(width: 8),
+                const Text(
+                  'Búsqueda popular',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 16.2,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          ListView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            itemCount: 5,
+            itemBuilder: (context, index) {
+              return Shimmer.fromColors(
+                baseColor: const Color(0xFF0F0F0F), // Deep Netflix-style black
+                highlightColor: const Color(
+                  0xFF1E1E1E,
+                ), // Subtle dark grey highlight
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 45,
+                        height: 65,
+                        decoration: BoxDecoration(
+                          color: Colors.black,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Container(
+                              width: double.infinity,
+                              height: 14,
+                              decoration: BoxDecoration(
+                                color: Colors.black,
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Container(
+                              width: 100,
+                              height: 10,
+                              decoration: BoxDecoration(
+                                color: Colors.black,
+                                borderRadius: BorderRadius.circular(3),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ],
+      );
+    }
+
     if (_popularItems.isEmpty) return const SizedBox.shrink();
 
     return Column(

@@ -123,6 +123,16 @@ class M3UItem {
       duration: map['dur'],
     );
   }
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is M3UItem &&
+          runtimeType == other.runtimeType &&
+          name == other.name &&
+          url == other.url;
+
+  @override
+  int get hashCode => name.hashCode ^ url.hashCode;
 }
 
 /// Model for remote filter rules

@@ -175,6 +175,7 @@ class M3UService extends ChangeNotifier {
   // Cache for TMDB popular search matches
   List<M3UItem>? _cachedPopularTMDB;
   bool _isFetchingPopularTMDB = false;
+  bool get isFetchingPopularTMDB => _isFetchingPopularTMDB;
 
   // ROBUST-1: Completer-based init guard (prevents concurrent double-init)
   Completer<void>? _initCompleter;
@@ -1676,6 +1677,8 @@ class M3UService extends ChangeNotifier {
         _computeRecentItemsInBackground,
         _items,
       );
+      // Pre-warm popular search TMDB matches cache
+      _fetchPopularFromTMDB();
       notifyListeners();
     });
 
@@ -1863,27 +1866,9 @@ class M3UService extends ChangeNotifier {
       _fetchPopularFromTMDB();
     }
 
-    // Fallback: Si el caché async aún no está listo, calcular síncronamente con los primeros items
-    if (_cachedRecentItems == null && _items.isNotEmpty) {
-      // Fallback rápido: tomar los últimos 9 items que no sean live
-      final fallback =
-          _items
-              .where(
-                (i) =>
-                    !i.isLive &&
-                    i.sourceName != 'Supabase' &&
-                    i.logo != null &&
-                    i.logo!.isNotEmpty,
-              )
-              .take(9)
-              .toList();
-      return fallback;
-    }
-    final recent = getRecentItems();
-    return recent
-        .where((i) => !i.isLive && i.sourceName != 'Supabase')
-        .take(9)
-        .toList();
+    // Si está en proceso de carga o no hay caché, devolvemos vacío para evitar parpadeo.
+    // La UI mostrará un shimmer si está cargando.
+    return [];
   }
 
   Future<void> _fetchPopularFromTMDB() async {
