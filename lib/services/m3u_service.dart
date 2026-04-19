@@ -1891,47 +1891,80 @@ class M3UService extends ChangeNotifier {
     _isFetchingPopularTMDB = true;
 
     try {
+      final List<M3UItem> finalResults = [];
       final trends = await TMDBService().getTrendingTitles();
-      if (trends.isEmpty) {
-        _cachedPopularTMDB = [];
-        _isFetchingPopularTMDB = false;
-        return;
-      }
 
-      final List<M3UItem> matches = [];
-      final Set<String> matchedNames = {};
+      if (trends.isNotEmpty) {
+        final Set<String> matchedNames = {};
+        for (var trend in trends) {
+          final trendTitle = trend['title']?.toLowerCase() ?? '';
+          final trendYear = trend['year'] ?? '';
+          if (trendTitle.isEmpty) continue;
 
-      for (var trend in trends) {
-        final trendTitle = trend['title']?.toLowerCase() ?? '';
-        final trendYear = trend['year'] ?? '';
-        if (trendTitle.isEmpty) continue;
+          // Fast search in local library
+          for (var item in _items) {
+            if (item.isLive || item.sourceName == 'Supabase') continue;
+            if (matchedNames.contains(item.name)) continue;
 
-        // Fast search in local library
-        for (var item in _items) {
-          if (item.isLive || item.sourceName == 'Supabase') continue;
-          if (matchedNames.contains(item.name)) continue;
+            final itemName = item.name.toLowerCase();
 
-          final itemName = item.name.toLowerCase();
-
-          // Basic title match
-          if (itemName.contains(trendTitle) || trendTitle.contains(itemName)) {
-            // Year verification for accuracy
-            if (trendYear.isNotEmpty && item.name.contains(trendYear)) {
-              matches.add(item);
-              matchedNames.add(item.name);
-              break;
-            } else if (trendYear.isEmpty) {
-              matches.add(item);
-              matchedNames.add(item.name);
-              break;
+            // Basic title match
+            if (itemName.contains(trendTitle) ||
+                trendTitle.contains(itemName)) {
+              // Year verification for accuracy
+              if (trendYear.isNotEmpty && item.name.contains(trendYear)) {
+                finalResults.add(item);
+                matchedNames.add(item.name);
+                break;
+              } else if (trendYear.isEmpty) {
+                finalResults.add(item);
+                matchedNames.add(item.name);
+                break;
+              }
             }
           }
+          if (finalResults.length >= 9) break;
         }
-        if (matches.length >= 9) break;
       }
 
-      _cachedPopularTMDB = matches;
-      if (matches.isNotEmpty) {
+      // SMART FALLBACK: If no trends matched or matched nothing, pick recent/random items
+      if (finalResults.isEmpty && _items.isNotEmpty) {
+        final vods =
+            _items
+                .where((i) => !i.isLive && i.sourceName != 'Supabase')
+                .toList();
+
+        if (vods.isNotEmpty) {
+          final regexYear = RegExp(r'\b(202[0-9]|19[0-9]{2})\b');
+          int maxYear = 0;
+          final Map<int, List<M3UItem>> yearGroups = {};
+
+          for (var v in vods) {
+            final match = regexYear.firstMatch(v.name);
+            if (match != null) {
+              final y = int.tryParse(match.group(1) ?? '0') ?? 0;
+              if (y > 1900 && y < 2100) {
+                if (y > maxYear) maxYear = y;
+                yearGroups.putIfAbsent(y, () => []).add(v);
+              }
+            }
+          }
+
+          if (maxYear > 0) {
+            // Content from the most recent year found
+            final bestYearItems = yearGroups[maxYear]!;
+            bestYearItems.shuffle();
+            finalResults.addAll(bestYearItems.take(9));
+          } else {
+            // No years found, just random VODs (shuffled)
+            vods.shuffle();
+            finalResults.addAll(vods.take(9));
+          }
+        }
+      }
+
+      _cachedPopularTMDB = finalResults;
+      if (finalResults.isNotEmpty) {
         notifyListeners();
       }
     } catch (e) {
