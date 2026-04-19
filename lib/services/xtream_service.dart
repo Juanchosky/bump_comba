@@ -247,6 +247,7 @@ class XtreamService {
                   episodeNumber:
                       int.tryParse(ep['episode_num']?.toString() ?? '0') ?? 0,
                   logo: _fixLogo(rawLogo, epName, host),
+                  duration: ep['info']?['duration']?.toString() ?? ep['duration']?.toString(),
                 ),
               );
             }
@@ -315,6 +316,7 @@ List<M3UItem> parseVodStreamsInBackground(Map<String, dynamic> input) {
       logo: XtreamService()._fixLogo(rawLogo, name, host),
       category: categoryMap[categoryId] ?? 'Películas',
       isLive: false,
+      duration: s['duration']?.toString() ?? s['duration_secs']?.toString(),
     );
   }).toList();
 }

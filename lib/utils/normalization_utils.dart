@@ -91,6 +91,95 @@ class NormalizationUtils {
     return result;
   }
 
+  /// Extrae el título específico de un episodio eliminando el nombre de la serie
+  /// y los marcadores de temporada/episodio (S01E01, etc).
+  /// Retorna un String vacío si no se detecta el formato esperado para limpieza.
+  static String extractEpisodeTitle(String fullName) {
+    if (fullName.isEmpty) return '';
+
+    // 1. Intentar encontrar marcadores comunes SXXEXX o NXN
+    final epRegex = RegExp(
+      r'\b(S\d+E\d+|S\d+\s+E\d+|\d+x\d+|Capitulo\s*\d+|Episodio\s*\d+|Episode\s*\d+|Ep\.\s*\d+|Cap\s*\d+|E\d+|Cap.\s*\d+)\b',
+      caseSensitive: false,
+    );
+
+    final match = epRegex.firstMatch(fullName);
+    if (match != null) {
+      String titlePart = fullName.substring(match.end).trim();
+      // Limpiar separadores líderes como " - ", ": ", etc.
+      titlePart = titlePart.replaceFirst(RegExp(r'^[:\s\-–—|]+'), '').trim();
+      if (titlePart.isNotEmpty) return titlePart;
+    }
+
+    // No se detectó marcador o no hay título después, retornamos vacío para
+    // indicar que no hubo limpieza y se debe usar el nombre original.
+    return '';
+  }
+
+  /// Tenta extraer el número de episodio de un nombre de string si el objeto
+  /// no lo tiene definido.
+  static int? parseEpisodeNumber(String fullName) {
+    if (fullName.isEmpty) return null;
+
+    // Patrones comunes: E16, Cap 16, Episodio 16, 1x16, etc.
+    final patterns = [
+      RegExp(r'\bS\d+E(\d+)\b', caseSensitive: false),
+      RegExp(r'\bE(\d+)\b', caseSensitive: false),
+      RegExp(r'\b(?:Cap|Capitulo|Episodio|Episode|Cap\.|Ep\.)\s*(\d+)\b', caseSensitive: false),
+      RegExp(r'\d+x(\d+)\b', caseSensitive: false),
+    ];
+
+    for (final pattern in patterns) {
+      final match = pattern.firstMatch(fullName);
+      if (match != null && match.groupCount >= 1) {
+        final val = int.tryParse(match.group(1)!);
+        if (val != null) return val;
+      }
+    }
+    return null;
+  }
+
+  /// Formatea una duración (en segundos o formato HH:MM:SS) a un formato amigable (ej: 44m, 1h 20m).
+  static String formatDuration(dynamic rawDuration) {
+    if (rawDuration == null) return '';
+
+    int totalSeconds = 0;
+
+    if (rawDuration is int) {
+      totalSeconds = rawDuration;
+    } else if (rawDuration is String) {
+      if (rawDuration.isEmpty) return '';
+      // Manejar "HH:MM:SS"
+      final parts = rawDuration.split(':');
+      if (parts.length == 3) {
+        final h = int.tryParse(parts[0]) ?? 0;
+        final m = int.tryParse(parts[1]) ?? 0;
+        final s = int.tryParse(parts[2]) ?? 0;
+        totalSeconds = h * 3600 + m * 60 + s;
+      } else if (parts.length == 2) {
+        final m = int.tryParse(parts[0]) ?? 0;
+        final s = int.tryParse(parts[1]) ?? 0;
+        totalSeconds = m * 60 + s;
+      } else {
+        totalSeconds = int.tryParse(rawDuration) ?? 0;
+      }
+    }
+
+    if (totalSeconds <= 0) return '';
+
+    final h = totalSeconds ~/ 3600;
+    final m = (totalSeconds % 3600) ~/ 60;
+
+    if (h > 0) {
+      if (m > 0) {
+        return '${h}h ${m}m';
+      }
+      return '${h}h';
+    } else {
+      return '${m}m';
+    }
+  }
+
   static String _removeDiacritics(String str) {
     const withDia =
         'ÀÁÂÃÄÅàáâãäåÒÓÔÕÕÖØòóôõöøÈÉÊËèéêëðÇçÐÌÍÎÏìíîïÙÚÛÜùúûüÑñŠšŸÿýŽž';

@@ -7,8 +7,6 @@ import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
-import '../models/m3u_item.dart';
-import '../utils/normalization_utils.dart';
 import '../services/m3u_service.dart';
 import '../services/watch_progress_service.dart';
 import '../services/ad_service.dart';
@@ -1717,17 +1715,41 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                             ),
                           ),
                         ),
-                        title: Text(
-                          episode.name,
-                          style: TextStyle(
-                            color: isCurrentEpisode ? Colors.red : Colors.white,
-                            fontWeight:
-                                isCurrentEpisode
-                                    ? FontWeight.bold
-                                    : FontWeight.normal,
-                          ),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
+                        title: Builder(
+                          builder: (context) {
+                            final cleanTitle = NormalizationUtils.extractEpisodeTitle(episode.name);
+                            if (cleanTitle.isEmpty) {
+                              return Text(
+                                episode.name,
+                                style: TextStyle(
+                                  color: isCurrentEpisode ? Colors.red : Colors.white,
+                                  fontWeight:
+                                      isCurrentEpisode
+                                          ? FontWeight.bold
+                                          : FontWeight.normal,
+                                ),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              );
+                            }
+
+                            final epNum = episode.episodeNumber ?? 
+                                         NormalizationUtils.parseEpisodeNumber(episode.name) ?? 
+                                         (index + 1);
+
+                            return Text(
+                              '$epNum. $cleanTitle',
+                              style: TextStyle(
+                                color: isCurrentEpisode ? Colors.red : Colors.white,
+                                fontWeight:
+                                    isCurrentEpisode
+                                        ? FontWeight.bold
+                                        : FontWeight.normal,
+                              ),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            );
+                          },
                         ),
                         trailing:
                             isCurrentEpisode
@@ -2407,16 +2429,38 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
                                   Flexible(
-                                    child: Text(
-                                      _currentItem.name,
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                      textAlign: TextAlign.center,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
+                                    child: Builder(
+                                      builder: (context) {
+                                        final clean = NormalizationUtils.extractEpisodeTitle(_currentItem.name);
+                                        if (clean.isEmpty) {
+                                          return Text(
+                                            _currentItem.name,
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 18,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                            textAlign: TextAlign.center,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          );
+                                        }
+                                        
+                                        final epNum = _currentItem.episodeNumber ?? 
+                                                     NormalizationUtils.parseEpisodeNumber(_currentItem.name);
+                                        
+                                        return Text(
+                                          epNum != null ? '$epNum. $clean' : clean,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 18,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                          textAlign: TextAlign.center,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        );
+                                      },
                                     ),
                                   ),
                                 ],

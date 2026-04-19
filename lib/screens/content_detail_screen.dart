@@ -3,13 +3,13 @@ import 'package:bump_comba/services/watch_progress_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'dart:ui';
+import 'dart:math' as math;
 import 'package:media_kit/media_kit.dart';
-import '../services/cast_service.dart';
-import 'package:cast/device.dart';
+
 import '../utils/transitions.dart';
 import '../utils/snack_bar_utils.dart';
-
 import '../services/ad_service.dart';
+import 'package:share_plus/share_plus.dart';
 import '../services/tmdb_service.dart';
 import '../services/performance_service.dart';
 import '../services/fast_image_service.dart';
@@ -17,6 +17,7 @@ import 'video_player_screen.dart';
 import 'subscription_screen.dart';
 import '../utils/colors.dart';
 import '../services/dynamic_scraper_service.dart';
+import '../utils/normalization_utils.dart';
 
 class ContentDetailScreen extends StatefulWidget {
   final M3UItem item;
@@ -89,7 +90,6 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
       duration: const Duration(milliseconds: 1000),
     )..repeat(reverse: true);
 
-    CastService().addListener(_onCastChanged);
     AdService().recordDetailsVisit();
     _fetchMetadata();
     _initPrewarm();
@@ -205,15 +205,10 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
     }..removeWhere((k, v) => v.isEmpty);
   }
 
-  void _onCastChanged() {
-    if (mounted) setState(() {});
-  }
-
   @override
   void dispose() {
     _shineController.dispose();
     _pulseController.dispose();
-    CastService().removeListener(_onCastChanged);
 
     // -- CRITICAL DISPOSAL SEQUENCE FOR MOTOROLA/ANDROID 15 --
     final p = _prewarmPlayer;
@@ -309,7 +304,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
       context: context,
       barrierDismissible: true,
       barrierLabel: '',
-      barrierColor: AppColors.background.withOpacity(0.85),
+      barrierColor: AppColors.background.withValues(alpha: 0.85),
       transitionDuration: const Duration(milliseconds: 300),
       pageBuilder: (context, anim1, anim2) {
         return Stack(
@@ -685,7 +680,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
           context: context,
           barrierDismissible: true,
           barrierLabel: '',
-          barrierColor: AppColors.background.withOpacity(0.4),
+          barrierColor: AppColors.background.withValues(alpha: 0.4),
           transitionDuration: const Duration(milliseconds: 300),
           pageBuilder: (context, anim1, anim2) {
             return Center(
@@ -700,10 +695,12 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                             child: Container(
                               padding: const EdgeInsets.all(24),
                               decoration: BoxDecoration(
-                                color: AppColors.background.withOpacity(0.7),
+                                color: AppColors.background.withValues(
+                                  alpha: 0.7,
+                                ),
                                 borderRadius: BorderRadius.circular(16),
                                 border: Border.all(
-                                  color: Colors.white.withOpacity(0.1),
+                                  color: Colors.white.withValues(alpha: 0.1),
                                   width: 1,
                                 ),
                               ),
@@ -721,7 +718,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                               color: const Color(0xFF1a1a1a),
                               borderRadius: BorderRadius.circular(16),
                               border: Border.all(
-                                color: Colors.white.withOpacity(0.1),
+                                color: Colors.white.withValues(alpha: 0.1),
                                 width: 1,
                               ),
                             ),
@@ -893,68 +890,6 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
         setState(() {});
       }
     });
-  }
-
-  void _handleCast(M3UItem item) async {
-    final castService = CastService();
-    String urlToLoad = item.url;
-    String titleToLoad = item.name;
-
-    if (item.isSeries && item.episodes.isNotEmpty) {
-      final firstEp = item.episodes.first;
-      urlToLoad = firstEp.url;
-      titleToLoad = "${item.name} - ${firstEp.name}";
-    }
-
-    final isDynamic = DynamicScraperService().isSupported(urlToLoad);
-
-    if (isDynamic) {
-      try {
-        final scraper = DynamicScraperService();
-        final videoUrl = await scraper.extractVideoSource(urlToLoad);
-
-        if (!mounted) return;
-
-        if (videoUrl != null) {
-          urlToLoad = videoUrl;
-        } else {
-          SnackBarUtils.showAppSnackBar(
-            context,
-            'No se pudo obtener el enlace para TV. Inténtalo de nuevo.',
-          );
-          return;
-        }
-      } catch (e) {
-        if (mounted) {
-          SnackBarUtils.showAppSnackBar(context, 'Error de conexión: $e');
-        }
-        return;
-      }
-    }
-
-    if (!mounted) return;
-
-    AdService().showRewardedAdWithConfirmation(
-      context,
-      message:
-          '¡La pantalla grande te espera! Mira un breve anuncio para proyectar en tu TV y disfrutar al máximo.',
-      onUserEarnedReward: () {
-        castService.loadMedia(
-          urlToLoad,
-          title: titleToLoad,
-          subtitle: item.category,
-        );
-        SnackBarUtils.showAppSnackBar(context, 'Reproduciendo en TV...');
-      },
-      onAdFailed: () {
-        if (mounted) {
-          SnackBarUtils.showAppSnackBar(
-            context,
-            'Lo sentimos, no pudimos completar la conexión. (Código: 1007)',
-          );
-        }
-      },
-    );
   }
 
   @override
@@ -1183,33 +1118,9 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   }
 
   Widget _buildPlayButton() {
-    final castService = CastService();
-    // Watch the connectedDevice property to rebuild when it changes
-    final isCasting = castService.connectedDevice != null;
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (isCasting)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: Row(
-              children: [
-                const Icon(Icons.cast_connected, color: Colors.red, size: 16),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    'Reproduciendo en ${castService.connectedDevice!.name}',
-                    style: const TextStyle(
-                      color: Colors.red,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 14,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
         SizedBox(
           width: double.infinity,
           height: 50, // Fixed height for proper shine alignment
@@ -1224,11 +1135,6 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                         (_isLoadingEpisodes)
                             ? null
                             : () async {
-                              if (isCasting) {
-                                _handleCast(widget.item);
-                                return;
-                              }
-
                               if (widget.item.isSeries &&
                                   _allEpisodes.isNotEmpty) {
                                 _handleSeriesPlay();
@@ -1236,15 +1142,13 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                                 _playContent(widget.item);
                               }
                             },
-                    icon: Icon(
-                      isCasting ? Icons.cast : Icons.play_arrow,
-                      color: const Color(0xFF0a0a0a),
+                    icon: const Icon(
+                      Icons.play_arrow,
+                      color: Color(0xFF0a0a0a),
                       size: 22,
                     ),
                     label: Text(
-                      isCasting
-                          ? 'Reproducir en TV'
-                          : (_isLoadingEpisodes ? 'Ver' : 'Ver'),
+                      _isLoadingEpisodes ? 'Cargando' : 'Ver',
                       style: const TextStyle(
                         color: Color(0xFF0a0a0a),
                         fontSize: 15,
@@ -1285,11 +1189,11 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                             decoration: BoxDecoration(
                               gradient: LinearGradient(
                                 colors: [
-                                  Colors.white.withOpacity(0.0),
-                                  Colors.white.withOpacity(
-                                    0.4,
+                                  Colors.white.withValues(alpha: 0.0),
+                                  Colors.white.withValues(
+                                    alpha: 0.4,
                                   ), // Stronger shine
-                                  Colors.white.withOpacity(0.0),
+                                  Colors.white.withValues(alpha: 0.0),
                                 ],
                                 stops: const [0.0, 0.5, 1.0],
                               ),
@@ -1396,42 +1300,44 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
     );
   }
 
+  void _shareContent() {
+    final String text =
+        'Mira "${widget.item.name}" en Bump Comba 🎬\n\nDownload: https://play.google.com/store/apps/details?id=com.juanchosky.bumpcomba';
+    Share.share(text);
+  }
+
+  void _shareEpisode(M3UItem episode) {
+    final String text =
+        'Mira el episodio "${episode.name}" de "${widget.item.name}" en Bump Comba 🎬\n\nDownload: https://play.google.com/store/apps/details?id=com.juanchosky.bumpcomba';
+    Share.share(text);
+  }
+
   Widget _buildSocialButtons() {
-    final isCasting = CastService().connectedDevice != null;
     return Row(
       children: [
         // 1. Like
-        Container(
-          height: 44,
-          width: 44,
-          decoration: BoxDecoration(
-            color: Colors.transparent,
-            borderRadius: BorderRadius.circular(4),
-            shape: BoxShape.rectangle,
-          ),
-          child: IconButton(
-            iconSize: 22,
-            padding: EdgeInsets.zero,
-            icon:
-                _isLiking
-                    ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
-                      ),
-                    )
-                    : Icon(
-                      _isLiked ? Icons.thumb_up : Icons.thumb_up_outlined,
-                      color: Colors.white,
-                    ),
-            onPressed: _isLiking ? null : _toggleLike,
-            tooltip: 'Me gusta',
-          ),
+        _PremiumSocialButton(
+          icon: Icons.thumb_up_outlined,
+          activeIcon: Icons.thumb_up,
+          isActive: _isLiked,
+          isLoading: _isLiking,
+          onPressed: _isLiking ? null : _toggleLike,
+          tooltip: 'Me gusta',
+          withConfetti: true,
         ),
-        const SizedBox(width: 14),
+        const SizedBox(width: 10),
         // 2. Dislike
+        _PremiumSocialButton(
+          icon: Icons.thumb_down_outlined,
+          activeIcon: Icons.thumb_down,
+          isActive: _isDisliked,
+          isLoading: _isDisliking,
+          onPressed: _isDisliking ? null : _toggleDislike,
+          tooltip: 'No me gusta',
+          jumpDown: true,
+        ),
+        const SizedBox(width: 10),
+        // 3. Report
         Container(
           height: 44,
           width: 44,
@@ -1442,62 +1348,6 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
           ),
           child: IconButton(
             iconSize: 22,
-            padding: EdgeInsets.zero,
-            icon:
-                _isDisliking
-                    ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
-                      ),
-                    )
-                    : Icon(
-                      _isDisliked
-                          ? Icons.thumb_down
-                          : Icons.thumb_down_outlined,
-                      color: Colors.white,
-                    ),
-            onPressed: _isDisliking ? null : _toggleDislike,
-            tooltip: 'No me gusta',
-          ),
-        ),
-        const SizedBox(width: 14),
-        // 3. Cast
-        Container(
-          height: 44,
-          width: 44,
-          decoration: BoxDecoration(
-            color: Colors.transparent,
-            borderRadius: BorderRadius.circular(4),
-            shape: BoxShape.rectangle,
-          ),
-          child: IconButton(
-            iconSize: 21.5,
-            padding: EdgeInsets.zero,
-            icon: Icon(
-              isCasting ? Icons.cast_connected : Icons.cast,
-              color: isCasting ? Colors.red : Colors.white,
-            ),
-            onPressed: () {
-              _showCastDialog();
-            },
-            tooltip: 'Transmitir a TV',
-          ),
-        ),
-        const SizedBox(width: 14),
-        // 4. Report
-        Container(
-          height: 44,
-          width: 44,
-          decoration: BoxDecoration(
-            color: Colors.transparent,
-            borderRadius: BorderRadius.circular(4),
-            shape: BoxShape.rectangle,
-          ),
-          child: IconButton(
-            iconSize: 23.5,
             padding: EdgeInsets.zero,
             icon:
                 _isReporting
@@ -1512,6 +1362,24 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                     : const Icon(Icons.flag_outlined, color: Colors.white),
             onPressed: _isReporting ? null : _showReportOptions,
             tooltip: 'Reportar problema',
+          ),
+        ),
+        const SizedBox(width: 10),
+        // 4. Share
+        Container(
+          height: 44,
+          width: 44,
+          decoration: BoxDecoration(
+            color: Colors.transparent,
+            borderRadius: BorderRadius.circular(4),
+            shape: BoxShape.rectangle,
+          ),
+          child: IconButton(
+            iconSize: 22,
+            padding: EdgeInsets.zero,
+            icon: const Icon(Icons.share_outlined, color: Colors.white),
+            onPressed: _shareContent,
+            tooltip: 'Compartir',
           ),
         ),
       ],
@@ -1568,7 +1436,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
               Text(
                 'Datos proporcionados por TMDB',
                 style: TextStyle(
-                  color: Colors.white.withOpacity(0.3),
+                  color: Colors.white.withValues(alpha: 0.3),
                   fontSize: 10,
                 ),
               ),
@@ -1597,7 +1465,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                       width: 120,
                       height: 70,
                       decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.08),
+                        color: Colors.white.withValues(alpha: 0.08),
                         borderRadius: BorderRadius.circular(4),
                       ),
                     ),
@@ -1610,7 +1478,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                             width: double.infinity,
                             height: 12,
                             decoration: BoxDecoration(
-                              color: Colors.white.withOpacity(0.08),
+                              color: Colors.white.withValues(alpha: 0.08),
                               borderRadius: BorderRadius.circular(2),
                             ),
                           ),
@@ -1619,7 +1487,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                             width: 100,
                             height: 10,
                             decoration: BoxDecoration(
-                              color: Colors.white.withOpacity(0.08),
+                              color: Colors.white.withValues(alpha: 0.08),
                               borderRadius: BorderRadius.circular(2),
                             ),
                           ),
@@ -1709,62 +1577,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
               final episode = episodes[index];
               return InkWell(
                 onTap: () {
-                  final castService = CastService();
-                  if (castService.connectedDevice != null) {
-                    AdService().showRewardedAdWithConfirmation(
-                      context,
-                      message:
-                          '¡Casi listo! Mira un breve anuncio para proyectar este episodio en tu TV.',
-                      onUserEarnedReward: () async {
-                        String urlToLoad = episode.url;
-
-                        if (episode.isDynamic) {
-                          try {
-                            final videoUrl = await DynamicScraperService()
-                                .extractVideoSource(episode.url);
-                            if (!mounted) return;
-                            if (videoUrl != null) {
-                              urlToLoad = videoUrl;
-                            } else {
-                              SnackBarUtils.showAppSnackBar(
-                                context,
-                                'No se pudo obtener el enlace para TV. Inténtalo de nuevo.',
-                              );
-                              return;
-                            }
-                          } catch (e) {
-                            if (mounted) {
-                              SnackBarUtils.showAppSnackBar(
-                                context,
-                                'Error de conexión: $e',
-                              );
-                            }
-                            return;
-                          }
-                        }
-
-                        castService.loadMedia(
-                          urlToLoad,
-                          title: "${widget.item.name} - ${episode.name}",
-                          subtitle: widget.item.category,
-                        );
-                        SnackBarUtils.showAppSnackBar(
-                          context,
-                          'Reproduciendo ${episode.name} en TV...',
-                        );
-                      },
-                      onAdFailed: () {
-                        if (mounted) {
-                          SnackBarUtils.showAppSnackBar(
-                            context,
-                            'Hubo un error de comunicación al cargar el medio. Inténtalo más tarde. (Código de error: 1008)',
-                          );
-                        }
-                      },
-                    );
-                  } else {
-                    _playContent(episode, playlist: episodes);
-                  }
+                  _playContent(episode, playlist: episodes);
                 },
                 child: Container(
                   margin: const EdgeInsets.only(bottom: 16),
@@ -1846,23 +1659,114 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              episode.name,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 14,
-                                fontWeight: FontWeight.bold,
-                              ),
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              'Episodio ${episode.episodeNumber ?? (index + 1)}',
-                              style: const TextStyle(
-                                color: Colors.white54,
-                                fontSize: 12,
-                              ),
+                            Builder(
+                              builder: (context) {
+                                final cleanTitle =
+                                    NormalizationUtils.extractEpisodeTitle(
+                                      episode.name,
+                                    );
+                                final isCleaned = cleanTitle.isNotEmpty;
+
+                                if (!isCleaned) {
+                                  return Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        episode.name,
+                                        style: const TextStyle(
+                                          color: Color.fromRGBO(
+                                            255,
+                                            255,
+                                            255,
+                                            1,
+                                          ),
+                                          fontSize: 15,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        'Episodio ${episode.episodeNumber ?? (index + 1)}',
+                                        style: const TextStyle(
+                                          color: Colors.white54,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                      if (episode.duration != null &&
+                                          NormalizationUtils.formatDuration(
+                                            episode.duration,
+                                          ).isNotEmpty)
+                                        Padding(
+                                          padding: const EdgeInsets.only(
+                                            top: 2,
+                                          ),
+                                          child: Text(
+                                            NormalizationUtils.formatDuration(
+                                              episode.duration,
+                                            ),
+                                            style: const TextStyle(
+                                              color: Colors.white54,
+                                              fontSize: 12,
+                                            ),
+                                          ),
+                                        ),
+                                    ],
+                                  );
+                                }
+
+                                final epNum =
+                                    episode.episodeNumber ??
+                                    NormalizationUtils.parseEpisodeNumber(
+                                      episode.name,
+                                    ) ??
+                                    (index + 1);
+
+                                return Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      '$epNum. $cleanTitle',
+                                      style: const TextStyle(
+                                        color: Color(0xFFF2F2F2),
+                                        fontSize: 14.4,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    if (episode.duration != null &&
+                                        NormalizationUtils.formatDuration(
+                                          episode.duration,
+                                        ).isNotEmpty)
+                                      Padding(
+                                        padding: const EdgeInsets.only(top: 2),
+                                        child: Text(
+                                          NormalizationUtils.formatDuration(
+                                            episode.duration,
+                                          ),
+                                          style: const TextStyle(
+                                            color: Colors.white54,
+                                            fontSize: 12.3,
+                                          ),
+                                        ),
+                                      )
+                                    else
+                                      Padding(
+                                        padding: const EdgeInsets.only(top: 2),
+                                        child: Text(
+                                          'Episodio $epNum',
+                                          style: const TextStyle(
+                                            color: Colors.white54,
+                                            fontSize: 12.3,
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                );
+                              },
                             ),
                           ],
                         ),
@@ -1870,62 +1774,16 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                       Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const SizedBox(width: 8),
                           IconButton(
                             icon: const Icon(
-                              Icons.cast,
+                              Icons.share_outlined,
                               color: Colors.white54,
-                              size: 20,
+                              size: 18,
                             ),
                             padding: EdgeInsets.zero,
                             constraints: const BoxConstraints(),
-                            onPressed: () async {
-                              final castService = CastService();
-                              if (castService.connectedDevice != null) {
-                                String urlToLoad = episode.url;
-
-                                if (episode.isDynamic) {
-                                  try {
-                                    final videoUrl =
-                                        await DynamicScraperService()
-                                            .extractVideoSource(episode.url);
-                                    if (!mounted) return;
-                                    if (videoUrl != null) {
-                                      urlToLoad = videoUrl;
-                                    } else {
-                                      SnackBarUtils.showAppSnackBar(
-                                        context,
-                                        'No se pudo obtener el enlace para TV. Inténtalo de nuevo.',
-                                      );
-                                      return;
-                                    }
-                                  } catch (e) {
-                                    if (mounted) {
-                                      SnackBarUtils.showAppSnackBar(
-                                        context,
-                                        'Error de conexión: $e',
-                                      );
-                                    }
-                                    return;
-                                  }
-                                }
-
-                                castService.loadMedia(
-                                  urlToLoad,
-                                  title:
-                                      "${widget.item.name} - ${episode.name}",
-                                  subtitle: widget.item.category,
-                                );
-                                SnackBarUtils.showAppSnackBar(
-                                  context,
-                                  'Reproduciendo ${episode.name} en TV...',
-                                );
-                                // Show interstitial ad when casting
-                                AdService().showInterstitialAd();
-                              } else {
-                                _showCastDialog();
-                              }
-                            },
+                            onPressed: () => _shareEpisode(episode),
+                            tooltip: 'Compartir episodio',
                           ),
                         ],
                       ),
@@ -2117,202 +1975,204 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
       ],
     );
   }
+}
 
-  void _showCastDialog() {
-    final castService = CastService();
-    castService.startDiscovery();
+// ===========================================================================
+// ANIMATED UI COMPONENTS
+// ===========================================================================
 
-    showDialog(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          backgroundColor: const Color(0xFF1a1a1a),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-          titlePadding: const EdgeInsets.only(top: 28, left: 22, right: 16),
-          title: const Text(
-            'Dispositivos disponibles',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 19.6,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Padding(
-                padding: EdgeInsets.only(bottom: 12),
-                child: Text(
-                  'Es posible que en algunos dispositivos, el audio del contenido tenga problemas.',
-                  textAlign: TextAlign.left,
-                  style: TextStyle(color: Colors.white54, fontSize: 13),
-                ),
-              ),
-              SizedBox(
-                width: double.maxFinite,
-                height: 200,
-                child: StreamBuilder<List<CastDevice>>(
-                  stream: castService.deviceStream,
-                  builder: (context, snapshot) {
-                    if (snapshot.hasError) {
-                      return Center(
-                        child: Text(
-                          'Error: ${snapshot.error}',
-                          style: const TextStyle(color: Colors.red),
-                        ),
-                      );
-                    }
+class _PremiumSocialButton extends StatefulWidget {
+  final IconData icon;
+  final IconData activeIcon;
+  final bool isActive;
+  final bool isLoading;
+  final VoidCallback? onPressed;
+  final String tooltip;
+  final bool jumpDown;
+  final bool withConfetti;
 
-                    if (!snapshot.hasData || snapshot.data!.isEmpty) {
-                      // If scanning is active but list empty
-                      return const Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            CircularProgressIndicator(color: Colors.white),
-                            SizedBox(height: 16),
-                            Text(
-                              'Buscando dispositivos...',
-                              style: TextStyle(color: Colors.white70),
-                            ),
-                          ],
-                        ),
-                      );
-                    }
+  const _PremiumSocialButton({
+    required this.icon,
+    required this.activeIcon,
+    required this.isActive,
+    this.isLoading = false,
+    this.onPressed,
+    required this.tooltip,
+    this.jumpDown = false,
+    this.withConfetti = false,
+  });
 
-                    final devices = snapshot.data!;
-                    return ListView.builder(
-                      itemCount: devices.length,
-                      itemBuilder: (context, index) {
-                        final device = devices[index];
-                        final isConnected =
-                            castService.connectedDevice?.host == device.host;
+  @override
+  State<_PremiumSocialButton> createState() => _PremiumSocialButtonState();
+}
 
-                        return ListTile(
-                          leading: Icon(
-                            isConnected ? Icons.tv_off : Icons.tv,
-                            color: isConnected ? Colors.red : Colors.white,
-                          ),
-                          title: Text(
-                            device.name,
-                            style: TextStyle(
-                              color: isConnected ? Colors.red : Colors.white,
-                              fontWeight:
-                                  isConnected
-                                      ? FontWeight.bold
-                                      : FontWeight.normal,
-                            ),
-                          ),
-                          subtitle: Text(
-                            isConnected ? 'Conectado' : device.host,
-                            style: TextStyle(
-                              color:
-                                  isConnected
-                                      ? Colors.red.withValues(alpha: 0.7)
-                                      : Colors.white54,
-                            ),
-                          ),
-                          trailing:
-                              isConnected
-                                  ? const Icon(
-                                    Icons.check_circle,
-                                    color: Colors.red,
-                                  )
-                                  : null,
-                          onTap: () async {
-                            final navigator = Navigator.of(context);
+class _PremiumSocialButtonState extends State<_PremiumSocialButton>
+    with TickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<double> _scaleAnimation;
+  late Animation<double> _jumpAnimation;
+  late AnimationController _confettiController;
 
-                            try {
-                              if (isConnected) {
-                                await castService.disconnect();
-                                if (context.mounted) {
-                                  SnackBarUtils.showAppSnackBar(
-                                    context,
-                                    'Desconectado de ${device.name}',
-                                  );
-                                }
-                              } else {
-                                // SHOW REWARDED AD WITH CONFIRMATION BEFORE CASTING
-                                AdService().showRewardedAdWithConfirmation(
-                                  context,
-                                  message:
-                                      '¡Excelente elección! Mira un anuncio corto para disfrutar esta película en tu TV.',
-                                  onUserEarnedReward: () async {
-                                    if (castService.connectedDevice != null) {
-                                      await castService.disconnect();
-                                    }
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 500),
+    );
 
-                                    await castService.connect(device);
-                                    if (context.mounted) {
-                                      SnackBarUtils.showAppSnackBar(
-                                        context,
-                                        'Conectado a ${device.name}',
-                                      );
-                                    }
+    _confettiController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    );
 
-                                    await Future.delayed(
-                                      const Duration(seconds: 1),
-                                    );
+    _scaleAnimation = TweenSequence<double>([
+      TweenSequenceItem(
+        tween: Tween<double>(
+          begin: 1.0,
+          end: 1.25,
+        ).chain(CurveTween(curve: Curves.easeOut)),
+        weight: 40,
+      ),
+      TweenSequenceItem(
+        tween: Tween<double>(
+          begin: 1.25,
+          end: 1.0,
+        ).chain(CurveTween(curve: Curves.bounceOut)),
+        weight: 60,
+      ),
+    ]).animate(_controller);
 
-                                    String urlToLoad = widget.item.url;
-                                    String titleToLoad = widget.item.name;
-
-                                    if (widget.item.isSeries &&
-                                        widget.item.episodes.isNotEmpty) {
-                                      // For series, load the first episode
-                                      urlToLoad =
-                                          widget.item.episodes.first.url;
-                                      titleToLoad =
-                                          "${widget.item.name} - ${widget.item.episodes.first.name}";
-                                    }
-
-                                    await castService.loadMedia(
-                                      urlToLoad,
-                                      title: titleToLoad,
-                                      subtitle: widget.item.category,
-                                    );
-                                    // Show interstitial ad when casting
-                                    AdService().showInterstitialAd();
-                                  },
-                                );
-                              }
-                            } catch (e) {
-                              if (context.mounted) {
-                                SnackBarUtils.showAppSnackBar(
-                                  context,
-                                  'Error: $e',
-                                );
-                              }
-                            } finally {
-                              if (mounted && navigator.canPop()) {
-                                navigator.pop();
-                              }
-                            }
-                          },
-                        );
-                      },
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                castService.stopDiscovery();
-                Navigator.pop(context);
-              },
-              child: const Text(
-                'Cerrar',
-                style: TextStyle(color: Colors.white70),
-              ),
-            ),
-          ],
-        );
-      },
-    ).then((_) => castService.stopDiscovery());
+    // Jump logic (White-space between icon and particles)
+    final double jumpDist = widget.jumpDown ? 10.0 : -10.0;
+    _jumpAnimation = TweenSequence<double>([
+      TweenSequenceItem(
+        tween: Tween<double>(
+          begin: 0.0,
+          end: jumpDist,
+        ).chain(CurveTween(curve: Curves.easeOut)),
+        weight: 40,
+      ),
+      TweenSequenceItem(
+        tween: Tween<double>(
+          begin: jumpDist,
+          end: 0.0,
+        ).chain(CurveTween(curve: Curves.bounceOut)),
+        weight: 60,
+      ),
+    ]).animate(_controller);
   }
+
+  @override
+  void didUpdateWidget(covariant _PremiumSocialButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // ONLY animate when transitioning to active - fixes "both move" bug
+    if (widget.isActive && !oldWidget.isActive) {
+      _controller.forward(from: 0.0);
+      if (widget.withConfetti) {
+        _confettiController.forward(from: 0.0);
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _confettiController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      alignment: Alignment.center,
+      clipBehavior: Clip.none,
+      children: [
+        if (widget.withConfetti)
+          Positioned(
+            child: AnimatedBuilder(
+              animation: _confettiController,
+              builder: (context, child) {
+                return CustomPaint(
+                  size: const Size(60, 60),
+                  painter: _ConfettiPainter(
+                    progress: _confettiController.value,
+                  ),
+                );
+              },
+            ),
+          ),
+        Container(
+          height: 44,
+          width: 44,
+          decoration: const BoxDecoration(color: Colors.transparent),
+          child:
+              widget.isLoading
+                  ? const Center(
+                    child: SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    ),
+                  )
+                  : AnimatedBuilder(
+                    animation: _controller,
+                    builder: (context, child) {
+                      return Transform.translate(
+                        offset: Offset(0, _jumpAnimation.value),
+                        child: Transform.scale(
+                          scale: _scaleAnimation.value,
+                          child: IconButton(
+                            iconSize: 22,
+                            padding: EdgeInsets.zero,
+                            icon: Icon(
+                              widget.isActive ? widget.activeIcon : widget.icon,
+                              color: Colors.white,
+                            ),
+                            onPressed: widget.onPressed,
+                            tooltip: widget.tooltip,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ConfettiPainter extends CustomPainter {
+  final double progress;
+  _ConfettiPainter({required this.progress});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (progress == 0 || progress == 1) return;
+
+    final center = Offset(size.width / 2, size.height / 2);
+    final paint = Paint()..style = PaintingStyle.fill;
+
+    // 8 particles in a circle
+    for (int i = 0; i < 8; i++) {
+      final double angle = (i * 45) * 3.14159 / 180;
+      final double radius = 12 + (progress * 28);
+      final double opacity = 1.0 - progress;
+
+      final particlePos = Offset(
+        center.dx + radius * math.cos(angle),
+        center.dy + radius * math.sin(angle),
+      );
+
+      paint.color = Colors.white.withValues(alpha: opacity * 0.8);
+      canvas.drawCircle(particlePos, 2.0 * (1.0 - progress), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ConfettiPainter oldDelegate) =>
+      oldDelegate.progress != progress;
 }

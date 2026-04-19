@@ -17,7 +17,6 @@ import '../utils/transitions.dart';
 import '../services/performance_service.dart';
 import '../services/fast_image_service.dart';
 import '../utils/snack_bar_utils.dart';
-import '../services/cast_service.dart';
 import 'history_screen.dart';
 import 'package:shimmer/shimmer.dart';
 import '../services/watch_progress_service.dart';
@@ -34,7 +33,6 @@ import '../utils/colors.dart';
 import '../widgets/native_ad_widget.dart';
 import 'stream_browser_config_screen.dart';
 import 'settings_screen.dart';
-import '../services/dynamic_scraper_service.dart';
 import '../services/social_rewards_service.dart';
 import '../widgets/rate_dialog.dart';
 
@@ -228,8 +226,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     _initService();
     _initSearchHistory();
     _detectCountry();
-
-    CastService().addListener(_onCastChanged);
     // Listen to global ad state to pause live player
     AdService.isAdInProgress.addListener(_handleAdStateChange);
     // FIX: Escuchar al M3UService para cuando el cómputo async de items
@@ -264,14 +260,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     }
   }
 
-  void _onCastChanged() {
-    if (mounted) setState(() {});
-  }
-
   @override
   void dispose() {
     _watchProgressVersion.dispose();
-    CastService().removeListener(_onCastChanged);
     _m3uService.removeListener(_onM3UServiceUpdated);
     WatchProgressService().removeListener(_onWatchProgressUpdated);
     _disposeLivePlayer();
@@ -4287,119 +4278,32 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                         children: [
                           // Play Button
                           Expanded(
-                            child: Builder(
-                              builder: (context) {
-                                final castService = CastService();
-                                final isCasting =
-                                    castService.connectedDevice != null;
-
-                                return ElevatedButton.icon(
-                                  onPressed: () async {
-                                    if (isCasting) {
-                                      String urlToLoad = item.url;
-                                      String titleToLoad = item.name;
-
-                                      if (item.isSeries &&
-                                          item.episodes.isNotEmpty) {
-                                        final firstEp = item.episodes.first;
-                                        urlToLoad = firstEp.url;
-                                        titleToLoad =
-                                            "${item.name} - ${firstEp.name}";
-                                        // Check if episode is dynamic
-                                        if (firstEp.isDynamic) {
-                                          try {
-                                            final videoUrl =
-                                                await DynamicScraperService()
-                                                    .extractVideoSource(
-                                                      firstEp.url,
-                                                    );
-                                            if (videoUrl != null) {
-                                              urlToLoad = videoUrl;
-                                            } else {
-                                              if (mounted) {
-                                                SnackBarUtils.showAppSnackBar(
-                                                  context,
-                                                  'No se pudo obtener el enlace para TV.',
-                                                );
-                                              }
-                                              return;
-                                            }
-                                          } catch (e) {
-                                            if (mounted) {
-                                              SnackBarUtils.showAppSnackBar(
-                                                context,
-                                                'Error de conexión: $e',
-                                              );
-                                            }
-                                            return;
-                                          }
-                                        }
-                                      } else if (item.isDynamic) {
-                                        try {
-                                          final videoUrl =
-                                              await DynamicScraperService()
-                                                  .extractVideoSource(item.url);
-                                          if (videoUrl != null) {
-                                            urlToLoad = videoUrl;
-                                          } else {
-                                            if (mounted) {
-                                              SnackBarUtils.showAppSnackBar(
-                                                context,
-                                                'No se pudo obtener el enlace para TV.',
-                                              );
-                                            }
-                                            return;
-                                          }
-                                        } catch (e) {
-                                          if (mounted) {
-                                            SnackBarUtils.showAppSnackBar(
-                                              context,
-                                              'Error de conexión: $e',
-                                            );
-                                          }
-                                          return;
-                                        }
-                                      }
-
-                                      castService.loadMedia(
-                                        urlToLoad,
-                                        title: titleToLoad,
-                                        subtitle: item.category,
-                                      );
-                                      SnackBarUtils.showAppSnackBar(
-                                        context,
-                                        'Reproduciendo en TV...',
-                                      );
-                                      // Show interstitial ad when casting
-                                      AdService().showInterstitialAd();
-                                      return;
-                                    }
-                                    _playItem(item);
-                                  },
-                                  icon: Icon(
-                                    isCasting ? Icons.cast : Icons.play_arrow,
-                                    color: AppColors.background,
-                                  ),
-                                  label: Text(
-                                    isCasting ? 'En TV' : 'Reproducir',
-                                    style: const TextStyle(
-                                      color: AppColors.background,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors.white,
-                                    foregroundColor: AppColors.background,
-                                    padding: const EdgeInsets.symmetric(
-                                      vertical: 12,
-                                    ),
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(4),
-                                    ),
-                                    elevation: 0,
-                                  ),
-                                );
+                            child: ElevatedButton.icon(
+                              onPressed: () {
+                                _playItem(item);
                               },
+                              icon: const Icon(
+                                Icons.play_arrow,
+                                color: AppColors.background,
+                              ),
+                              label: const Text(
+                                'Reproducir',
+                                style: TextStyle(
+                                  color: AppColors.background,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.white,
+                                foregroundColor: AppColors.background,
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 12,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                elevation: 0,
+                              ),
                             ),
                           ),
                           const SizedBox(width: 12),

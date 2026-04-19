@@ -8,6 +8,7 @@ class M3UItem {
   final String? logo;
   final String category;
   bool isFavorite;
+  final String? duration;
 
   // Series support
   final List<M3UItem> episodes;
@@ -40,6 +41,7 @@ class M3UItem {
     this.isDynamic = false,
     this.alternatives = const [],
     this.sourceName,
+    this.duration,
   }) : _isSeries = isSeries;
 
   M3UItem copyWith({
@@ -68,11 +70,12 @@ class M3UItem {
       seriesName: seriesName ?? this.seriesName,
       seasonNumber: seasonNumber ?? this.seasonNumber,
       episodeNumber: episodeNumber ?? this.episodeNumber,
-      isSeries: isSeries ?? this._isSeries,
+      isSeries: isSeries ?? _isSeries,
       isLive: isLive ?? this.isLive,
       isDynamic: isDynamic ?? this.isDynamic,
       alternatives: alternatives ?? this.alternatives,
       sourceName: sourceName ?? this.sourceName,
+      duration: duration ?? duration,
     );
   }
 
@@ -92,6 +95,7 @@ class M3UItem {
       'dy': isDynamic ? 1 : 0,
       'a': alternatives.map((a) => a.toMap()).toList(),
       'src': sourceName,
+      'dur': duration,
     };
   }
 
@@ -116,6 +120,7 @@ class M3UItem {
       alternatives:
           (map['a'] as List? ?? []).map((a) => M3UItem.fromMap(a)).toList(),
       sourceName: map['src'],
+      duration: map['dur'],
     );
   }
 }
