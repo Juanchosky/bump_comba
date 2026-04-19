@@ -18,6 +18,7 @@ import '../services/dynamic_scraper_service.dart';
 import '../services/performance_service.dart';
 
 import '../utils/snack_bar_utils.dart';
+import '../utils/normalization_utils.dart';
 import 'subscription_screen.dart';
 
 class ExitFullscreenIntent extends Intent {
@@ -77,7 +78,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool _midRollNoticeShown = false;
   late M3UItem _currentItem;
   late List<M3UItem> _playlist;
-  bool _showControls = true;
+  bool _showControls = false;
   bool _isLandscape = true;
   final ValueNotifier<BoxFit> _videoFitNotifier = ValueNotifier(BoxFit.contain);
   bool _isScaling = false;
@@ -139,6 +140,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool _seekFeedbackForward = true;
   Timer? _seekFeedbackTimer;
 
+  // Visual Notice system
+  String? _noticeMessage;
+  Timer? _noticeTimer;
+  late AnimationController _noticeAnimController;
+  late Animation<double> _noticeAnim;
+
   @override
   void initState() {
     super.initState();
@@ -154,20 +161,24 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _controlsAnimController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 250),
-      value: 1.0,
     );
     _controlsAnim = CurvedAnimation(
       parent: _controlsAnimController,
-      curve: Curves.easeOutCubic,
-      reverseCurve: Curves.easeInCubic,
+      curve: Curves.easeInOut,
+    );
+    // Comienza oculto, se mostrará cuando inicie el video o el usuario interactúe
+    // _controlsAnimController.forward();
+
+    _noticeAnimController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 300),
+    );
+    _noticeAnim = CurvedAnimation(
+      parent: _noticeAnimController,
+      curve: Curves.easeOut,
     );
 
-    SystemChrome.setPreferredOrientations([
-      DeviceOrientation.portraitUp,
-      DeviceOrientation.portraitDown,
-      DeviceOrientation.landscapeLeft,
-      DeviceOrientation.landscapeRight,
-    ]);
+    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     _isLandscape =
         MediaQueryData.fromView(
           WidgetsBinding.instance.platformDispatcher.views.first,
@@ -255,13 +266,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _videoFitNotifier.dispose();
     _videoControllerNotifier.dispose();
     _bufferedDuration.dispose();
+    _noticeAnimController.dispose();
 
-    SystemChrome.setPreferredOrientations([
-      DeviceOrientation.portraitUp,
-      DeviceOrientation.portraitDown,
-      DeviceOrientation.landscapeLeft,
-      DeviceOrientation.landscapeRight,
-    ]);
+    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     WakelockPlus.disable();
 
@@ -1242,7 +1249,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                   borderRadius: BorderRadius.circular(20),
 
                   border: Border.all(
-                    color: Colors.white.withValues(alpha: 0.08),
+                    color: Colors.white.withOpacity(0.08),
                     width: 1.0,
                   ),
                 ),
@@ -1271,9 +1278,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                   ),
                                 ),
                               ),
-                              Container(
-                                color: Colors.black.withValues(alpha: 0.6),
-                              ),
+                              Container(color: Colors.black.withOpacity(0.6)),
                             ],
                           ),
                         ),
@@ -1433,8 +1438,17 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     if (_showControls) _startHideControlsTimer();
   }
 
-  void _startHideControlsTimer() {
+  void _startHideControlsTimer({bool showIfHidden = true}) {
     _hideControlsTimer?.cancel();
+
+    // Asegurarse de que los controles sean visibles al iniciar el timer sí se solicita
+    if (showIfHidden && !_showControls && mounted) {
+      setState(() {
+        _showControls = true;
+        _controlsAnimController.forward();
+      });
+    }
+
     _hideControlsTimer = Timer(const Duration(seconds: 5), () {
       if (mounted &&
           _showControls &&
@@ -1523,30 +1537,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   Future<void> _toggleOrientation() async {
-    if (kIsWeb ||
-        defaultTargetPlatform == TargetPlatform.windows ||
-        defaultTargetPlatform == TargetPlatform.macOS ||
-        defaultTargetPlatform == TargetPlatform.linux) {
-      if (_isLandscape) {
-        await defaultExitNativeFullscreen();
-        setState(() => _isLandscape = false);
-      } else {
-        await defaultEnterNativeFullscreen();
-        setState(() => _isLandscape = true);
-      }
-      return;
-    }
+    setState(() {
+      _isLandscape = !_isLandscape;
+    });
 
-    setState(() => _isLandscape = !_isLandscape);
     if (_isLandscape) {
-      await SystemChrome.setPreferredOrientations([
-        DeviceOrientation.landscapeLeft,
-        DeviceOrientation.landscapeRight,
-      ]);
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     } else {
-      await SystemChrome.setPreferredOrientations([
-        DeviceOrientation.portraitUp,
-      ]);
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     }
   }
 
@@ -1591,34 +1589,49 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   void _showAudioSelection() {
     if (_player == null) return;
     final tracks = _player!.state.tracks.audio;
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
+    _showVisualBottomSheet(
       builder:
           (context) => Container(
+            width: _isLandscape ? 400 : double.infinity,
+            margin: _isLandscape ? const EdgeInsets.all(24) : EdgeInsets.zero,
             decoration: BoxDecoration(
               color: const Color.fromARGB(255, 27, 27, 27),
-              borderRadius: const BorderRadius.vertical(
-                top: Radius.circular(20),
-              ),
+              borderRadius:
+                  _isLandscape
+                      ? BorderRadius.circular(24)
+                      : const BorderRadius.vertical(top: Radius.circular(20)),
+              border:
+                  _isLandscape
+                      ? Border.all(color: Colors.white12, width: 1)
+                      : null,
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Padding(
-                  padding: EdgeInsets.all(16),
-                  child: Text(
-                    'Audio / Idioma',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Audio / Idioma',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.pop(context),
+                        icon: const Icon(Icons.close, color: Colors.white70),
+                      ),
+                    ],
                   ),
                 ),
-                const Divider(color: Colors.white24, height: 1),
+                const Divider(color: Colors.white10, height: 1),
                 Flexible(
                   child: ListView.builder(
+                    padding: EdgeInsets.zero,
                     shrinkWrap: true,
                     itemCount: tracks.length,
                     itemBuilder: (context, index) {
@@ -1657,38 +1670,55 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   void _showEpisodeSelection() {
     if (_playlist.isEmpty) return;
 
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
+    _showVisualBottomSheet(
       builder:
           (context) => Container(
+            width: _isLandscape ? 500 : double.infinity,
+            margin: _isLandscape ? const EdgeInsets.all(24) : EdgeInsets.zero,
             constraints: BoxConstraints(
-              maxHeight: MediaQuery.of(context).size.height * 0.6,
+              maxHeight:
+                  _isLandscape
+                      ? MediaQuery.of(context).size.width * 0.85
+                      : MediaQuery.of(context).size.height * 0.6,
             ),
             decoration: BoxDecoration(
               color: const Color.fromARGB(255, 27, 27, 27),
-              borderRadius: const BorderRadius.vertical(
-                top: Radius.circular(20),
-              ),
+              borderRadius:
+                  _isLandscape
+                      ? BorderRadius.circular(24)
+                      : const BorderRadius.vertical(top: Radius.circular(20)),
+              border:
+                  _isLandscape
+                      ? Border.all(color: Colors.white12, width: 1)
+                      : null,
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Padding(
-                  padding: EdgeInsets.all(16),
-                  child: Text(
-                    'Capítulos',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Capítulos',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.pop(context),
+                        icon: const Icon(Icons.close, color: Colors.white70),
+                      ),
+                    ],
                   ),
                 ),
-                const Divider(color: Colors.white24, height: 1),
+                const Divider(color: Colors.white10, height: 1),
                 Flexible(
                   child: ListView.builder(
+                    padding: EdgeInsets.zero,
                     shrinkWrap: true,
                     itemCount: _playlist.length,
                     itemBuilder: (context, index) {
@@ -1717,12 +1747,18 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                         ),
                         title: Builder(
                           builder: (context) {
-                            final cleanTitle = NormalizationUtils.extractEpisodeTitle(episode.name);
+                            final cleanTitle =
+                                NormalizationUtils.extractEpisodeTitle(
+                                  episode.name,
+                                );
                             if (cleanTitle.isEmpty) {
                               return Text(
                                 episode.name,
                                 style: TextStyle(
-                                  color: isCurrentEpisode ? Colors.red : Colors.white,
+                                  color:
+                                      isCurrentEpisode
+                                          ? Colors.red
+                                          : Colors.white,
                                   fontWeight:
                                       isCurrentEpisode
                                           ? FontWeight.bold
@@ -1733,14 +1769,20 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                               );
                             }
 
-                            final epNum = episode.episodeNumber ?? 
-                                         NormalizationUtils.parseEpisodeNumber(episode.name) ?? 
-                                         (index + 1);
+                            final epNum =
+                                episode.episodeNumber ??
+                                NormalizationUtils.parseEpisodeNumber(
+                                  episode.name,
+                                ) ??
+                                (index + 1);
 
                             return Text(
                               '$epNum. $cleanTitle',
                               style: TextStyle(
-                                color: isCurrentEpisode ? Colors.red : Colors.white,
+                                color:
+                                    isCurrentEpisode
+                                        ? Colors.red
+                                        : Colors.white,
                                 fontWeight:
                                     isCurrentEpisode
                                         ? FontWeight.bold
@@ -1808,48 +1850,53 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     final speeds = [1.0, 1.25, 1.5, 2.0];
     final isPremium = PremiumService().isPremium;
 
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
+    _showVisualBottomSheet(
       builder:
           (context) => Container(
+            width: _isLandscape ? 380 : double.infinity,
+            margin: _isLandscape ? const EdgeInsets.all(24) : EdgeInsets.zero,
             constraints: BoxConstraints(
-              maxHeight: MediaQuery.of(context).size.height * 0.8,
+              maxHeight:
+                  _isLandscape
+                      ? MediaQuery.of(context).size.width * 0.8
+                      : MediaQuery.of(context).size.height * 0.8,
             ),
             decoration: BoxDecoration(
               color: const Color.fromARGB(255, 27, 27, 27),
-              borderRadius: const BorderRadius.vertical(
-                top: Radius.circular(20),
-              ),
-              border: const Border(
-                top: BorderSide(color: Colors.white10, width: 1),
-              ),
+              borderRadius:
+                  _isLandscape
+                      ? BorderRadius.circular(24)
+                      : const BorderRadius.vertical(top: Radius.circular(20)),
+              border:
+                  _isLandscape
+                      ? Border.all(color: Colors.white12, width: 1)
+                      : const Border(
+                        top: BorderSide(color: Colors.white10, width: 1),
+                      ),
             ),
             child: SingleChildScrollView(
+              padding: EdgeInsets.zero,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const SizedBox(height: 12),
-                  Center(
-                    child: Container(
-                      width: 40,
-                      height: 4,
-                      decoration: BoxDecoration(
-                        color: Colors.white24,
-                        borderRadius: BorderRadius.circular(2),
-                      ),
-                    ),
-                  ),
-                  const Padding(
-                    padding: EdgeInsets.all(16),
-                    child: Text(
-                      'Velocidad de reproducción',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Velocidad',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(Icons.close, color: Colors.white70),
+                        ),
+                      ],
                     ),
                   ),
                   const Divider(color: Colors.white10, height: 1),
@@ -2020,6 +2067,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                   _currentItem.url,
                   position,
                   duration,
+                  name: _currentItem.name,
+                  seriesName: _currentItem.seriesName,
+                  seasonNumber: _currentItem.seasonNumber,
+                  episodeNumber: _currentItem.episodeNumber,
                 );
               }
             }
@@ -2027,240 +2078,241 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           },
           child: Scaffold(
             backgroundColor: Colors.black,
-            body: Listener(
-              onPointerDown: (_) => _activePointers++,
-              onPointerUp: (_) => _activePointers--,
-              onPointerCancel: (_) => _activePointers--,
-              child: GestureDetector(
-                onTap: _handleMainTap,
-                onLongPressStart: (_) {
-                  if (_player != null && !_isVideoLoading) {
-                    HapticFeedback.vibrate();
-                    _player!.setRate(2.0);
-                    setState(() => _isFastForwarding = true);
-                  }
-                },
-                onLongPressEnd: (_) {
-                  if (_player != null) {
-                    _player!.setRate(1.0);
-                    setState(() => _isFastForwarding = false);
-                  }
-                },
-                onDoubleTapDown: (details) {
-                  if (_isScaling) return; // mutex
-                  final screenWidth = MediaQuery.of(context).size.width;
-                  if (details.localPosition.dx < screenWidth / 3) {
-                    setState(() {
-                      _seekFeedbackForward = false;
-                      _seekFeedbackSeconds = 10;
-                    });
-                    _seekBackward();
-                  } else if (details.localPosition.dx > screenWidth * 2 / 3) {
-                    setState(() {
-                      _seekFeedbackForward = true;
-                      _seekFeedbackSeconds = 10;
-                    });
-                    _seekForward();
-                  } else {
-                    _videoFitNotifier.value =
-                        _videoFitNotifier.value == BoxFit.cover
-                            ? BoxFit.contain
-                            : BoxFit.cover;
-                    SnackBarUtils.showAppSnackBar(
-                      context,
-                      _videoFitNotifier.value == BoxFit.cover
-                          ? 'Se ajustó el contenido a la pantalla'
-                          : 'Original',
-                    );
-                  }
-                },
-                onVerticalDragStart: _onSwipeDragStart,
-                onVerticalDragUpdate: _onSwipeDragUpdate,
-                onVerticalDragEnd: _onSwipeDragEnd,
-                onScaleStart: (details) {
-                  if (details.pointerCount >= 2) _isScaling = true;
-                },
-                onScaleEnd: (details) {
-                  _isScaling = false;
-                },
-                onScaleUpdate: (details) {
-                  if (details.pointerCount < 2) return;
-                  if (details.scale > 1.1 &&
-                      _videoFitNotifier.value != BoxFit.cover) {
-                    _videoFitNotifier.value = BoxFit.cover;
-                    SnackBarUtils.showAppSnackBar(
-                      context,
-                      'Se ajustó el contenido a la pantalla',
-                    );
-                  } else if (details.scale < 0.9 &&
-                      _videoFitNotifier.value != BoxFit.contain) {
-                    _videoFitNotifier.value = BoxFit.contain;
-                    SnackBarUtils.showAppSnackBar(context, 'Original');
-                  }
-                },
-                child: AnimatedBuilder(
-                  animation: _swipeAnimController,
-                  builder: (context, child) {
-                    final offset =
-                        (_swipeAnimController.isAnimating &&
-                                _swipeSnapAnim != null)
-                            ? _swipeSnapAnim!.value
-                            : _swipeDragOffset;
-                    final progress = (offset.abs() / 160.0).clamp(0.0, 1.0);
-                    final scale = 1.0 - (progress * 0.05);
-                    final radius = progress * 16.0;
-
-                    return Transform(
-                      alignment: Alignment.center,
-                      transform:
-                          Matrix4.identity()
-                            ..translate(0.0, offset * 0.15)
-                            ..scale(scale),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(radius),
-                        child: child!,
-                      ),
-                    );
+            body: RotatedBox(
+              quarterTurns: (_isLandscape && !isPiP) ? 1 : 0,
+              child: Listener(
+                onPointerDown: (_) => _activePointers++,
+                onPointerUp: (_) => _activePointers--,
+                onPointerCancel: (_) => _activePointers--,
+                child: GestureDetector(
+                  onTap: _handleMainTap,
+                  onLongPressStart: (_) {
+                    if (_player != null && !_isVideoLoading) {
+                      HapticFeedback.vibrate();
+                      _player!.setRate(2.0);
+                      setState(() => _isFastForwarding = true);
+                    }
                   },
-                  child: Stack(
-                    children: [
-                      if (_hasError)
-                        _buildErrorUI()
-                      else ...[
-                        Center(
-                          child: Stack(
-                            alignment: Alignment.center,
-                            children: [
-                              ValueListenableBuilder<VideoController?>(
-                                valueListenable: _videoControllerNotifier,
-                                builder: (context, controller, _) {
-                                  if (controller == null) {
-                                    return const SizedBox.shrink();
-                                  }
-                                  return ValueListenableBuilder<BoxFit>(
-                                    valueListenable: _videoFitNotifier,
-                                    builder: (context, fit, child) {
-                                      if (fit == BoxFit.cover) {
-                                        return LayoutBuilder(
-                                          builder: (context, constraints) {
-                                            final videoController = controller;
-                                            final aspectRatio =
-                                                (videoController
-                                                        .player
-                                                        .state
-                                                        .width ??
-                                                    16) /
-                                                (videoController
-                                                        .player
-                                                        .state
-                                                        .height ??
-                                                    9);
-                                            final screenAspect =
-                                                constraints.maxWidth /
-                                                constraints.maxHeight;
-                                            double scale = 1.0;
-                                            if (aspectRatio > screenAspect) {
-                                              scale =
-                                                  constraints.maxHeight *
-                                                  aspectRatio /
-                                                  constraints.maxWidth;
-                                            } else {
-                                              scale =
-                                                  constraints.maxWidth /
-                                                  (constraints.maxHeight *
-                                                      aspectRatio);
-                                            }
-                                            return Transform.scale(
-                                              scale: scale.clamp(1.0, 3.0),
-                                              child: child!,
-                                            );
-                                          },
-                                        );
-                                      }
-                                      return child!;
-                                    },
-                                    child: Video(
-                                      key: ValueKey(_videoKey),
-                                      controller: controller,
-                                      fill: Colors.black,
-                                      fit: BoxFit.contain,
-                                      controls: NoVideoControls,
-                                    ),
-                                  );
-                                },
-                              ),
-                              if (_isVideoLoading || _isBuffering || _isSeeking)
-                                _buildVideoLoading(
-                                  showBackground: _isVideoLoading,
-                                )
-                              else
-                                const SizedBox.shrink(),
-                            ],
-                          ),
+                  onLongPressEnd: (_) {
+                    if (_player != null) {
+                      _player!.setRate(1.0);
+                      setState(() => _isFastForwarding = false);
+                    }
+                  },
+                  onDoubleTapDown: (details) {
+                    if (_isScaling) return; // mutex
+                    final size = MediaQuery.of(context).size;
+                    final visualWidth = _isLandscape ? size.height : size.width;
+                    if (details.localPosition.dx < visualWidth / 3) {
+                      setState(() {
+                        _seekFeedbackForward = false;
+                        _seekFeedbackSeconds = 10;
+                      });
+                      _seekBackward(showControls: false);
+                    } else if (details.localPosition.dx > visualWidth * 2 / 3) {
+                      setState(() {
+                        _seekFeedbackForward = true;
+                        _seekFeedbackSeconds = 10;
+                      });
+                      _seekForward(showControls: false);
+                    } else {
+                      _videoFitNotifier.value =
+                          _videoFitNotifier.value == BoxFit.cover
+                              ? BoxFit.contain
+                              : BoxFit.cover;
+                      _showVisualNotice(
+                        _videoFitNotifier.value == BoxFit.cover
+                            ? 'Se ajustó el contenido a la pantalla'
+                            : 'Original',
+                      );
+                    }
+                  },
+                  onVerticalDragStart: _onSwipeDragStart,
+                  onVerticalDragUpdate: _onSwipeDragUpdate,
+                  onVerticalDragEnd: _onSwipeDragEnd,
+                  onScaleStart: (details) {
+                    if (details.pointerCount >= 2) _isScaling = true;
+                  },
+                  onScaleEnd: (details) {
+                    _isScaling = false;
+                  },
+                  onScaleUpdate: (details) {
+                    if (details.pointerCount < 2) return;
+                    if (details.scale > 1.1 &&
+                        _videoFitNotifier.value != BoxFit.cover) {
+                      _videoFitNotifier.value = BoxFit.cover;
+                      _showVisualNotice('Se ajustó el contenido a la pantalla');
+                    } else if (details.scale < 0.9 &&
+                        _videoFitNotifier.value != BoxFit.contain) {
+                      _videoFitNotifier.value = BoxFit.contain;
+                      _showVisualNotice('Original');
+                    }
+                  },
+                  child: AnimatedBuilder(
+                    animation: _swipeAnimController,
+                    builder: (context, child) {
+                      final offset =
+                          (_swipeAnimController.isAnimating &&
+                                  _swipeSnapAnim != null)
+                              ? _swipeSnapAnim!.value
+                              : _swipeDragOffset;
+                      final progress = (offset.abs() / 160.0).clamp(0.0, 1.0);
+                      final scale = 1.0 - (progress * 0.05);
+                      final radius = progress * 16.0;
+
+                      return Transform(
+                        alignment: Alignment.center,
+                        transform:
+                            Matrix4.identity()
+                              ..translate(0.0, offset * 0.15)
+                              ..scale(scale),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(radius),
+                          child: child!,
                         ),
-
-                        if (_nextEpisodeCountdown != null)
-                          Positioned.fill(child: _buildAutoPlayOverlay()),
-
-                        if (_showLikePrompt)
-                          Positioned.fill(child: _buildLikePromptOverlay()),
-
-                        if (_adCountdown != null)
-                          Positioned(
-                            top: 60,
-                            right: 24,
-                            child: _buildAdCountdownOverlay(),
+                      );
+                    },
+                    child: Stack(
+                      children: [
+                        if (_hasError)
+                          _buildErrorUI()
+                        else ...[
+                          Center(
+                            child: Stack(
+                              alignment: Alignment.center,
+                              children: [
+                                ValueListenableBuilder<VideoController?>(
+                                  valueListenable: _videoControllerNotifier,
+                                  builder: (context, controller, _) {
+                                    if (controller == null) {
+                                      return const SizedBox.shrink();
+                                    }
+                                    return ValueListenableBuilder<BoxFit>(
+                                      valueListenable: _videoFitNotifier,
+                                      builder: (context, fit, child) {
+                                        if (fit == BoxFit.cover) {
+                                          return LayoutBuilder(
+                                            builder: (context, constraints) {
+                                              final videoController =
+                                                  controller;
+                                              final aspectRatio =
+                                                  (videoController
+                                                          .player
+                                                          .state
+                                                          .width ??
+                                                      16) /
+                                                  (videoController
+                                                          .player
+                                                          .state
+                                                          .height ??
+                                                      9);
+                                              final screenAspect =
+                                                  constraints.maxWidth /
+                                                  constraints.maxHeight;
+                                              double scale = 1.0;
+                                              if (aspectRatio > screenAspect) {
+                                                scale =
+                                                    constraints.maxHeight *
+                                                    aspectRatio /
+                                                    constraints.maxWidth;
+                                              } else {
+                                                scale =
+                                                    constraints.maxWidth /
+                                                    (constraints.maxHeight *
+                                                        aspectRatio);
+                                              }
+                                              return Transform.scale(
+                                                scale: scale.clamp(1.0, 3.0),
+                                                child: child!,
+                                              );
+                                            },
+                                          );
+                                        }
+                                        return child!;
+                                      },
+                                      child: Video(
+                                        key: ValueKey(_videoKey),
+                                        controller: controller,
+                                        fill: Colors.black,
+                                        fit: BoxFit.contain,
+                                        controls: NoVideoControls,
+                                      ),
+                                    );
+                                  },
+                                ),
+                                if (_isVideoLoading ||
+                                    _isBuffering ||
+                                    _isSeeking)
+                                  _buildVideoLoading(
+                                    showBackground: _isVideoLoading,
+                                  )
+                                else
+                                  const SizedBox.shrink(),
+                              ],
+                            ),
                           ),
 
-                        if (isPiP) _buildPiPUI(),
+                          if (_nextEpisodeCountdown != null)
+                            Positioned.fill(child: _buildAutoPlayOverlay()),
 
-                        if (_seekFeedbackSeconds != null && !_showControls)
-                          _buildSeekFeedback(),
+                          if (_showLikePrompt)
+                            Positioned.fill(child: _buildLikePromptOverlay()),
 
-                        if (_showControls &&
-                            !_isVideoLoading &&
-                            !(MediaQuery.of(context).size.height < 300))
+                          if (_adCountdown != null)
+                            Positioned(
+                              top: 60,
+                              right: 24,
+                              child: _buildAdCountdownOverlay(),
+                            ),
+
+                          if (isPiP) _buildPiPUI(),
+
+                          if (_seekFeedbackSeconds != null && !_showControls)
+                            _buildSeekFeedback(),
+
                           _buildControls(),
+                          _buildVisualNotice(),
 
-                        if (_isFastForwarding)
-                          Positioned(
-                            top: 40,
-                            left: 0,
-                            right: 0,
-                            child: Center(
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 16,
-                                  vertical: 7,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: Colors.black54,
-                                  borderRadius: BorderRadius.circular(20),
-                                ),
-                                child: const Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Text(
-                                      '2 Veces más rápido',
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 13.5,
-                                        fontWeight: FontWeight.w500,
+                          if (_isFastForwarding)
+                            Positioned(
+                              top: 40,
+                              left: 0,
+                              right: 0,
+                              child: Center(
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 16,
+                                    vertical: 7,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Colors.black54,
+                                    borderRadius: BorderRadius.circular(20),
+                                  ),
+                                  child: const Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        '2 Veces más rápido',
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 13.5,
+                                          fontWeight: FontWeight.w500,
+                                        ),
                                       ),
-                                    ),
-                                    SizedBox(width: 8),
-                                    Icon(
-                                      Icons.fast_forward_rounded,
-                                      color: Colors.white,
-                                      size: 18,
-                                    ),
-                                  ],
+                                      SizedBox(width: 8),
+                                      Icon(
+                                        Icons.fast_forward_rounded,
+                                        color: Colors.white,
+                                        size: 18,
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               ),
                             ),
-                          ),
+                        ],
                       ],
-                    ],
+                    ),
                   ),
                 ),
               ),
@@ -2326,20 +2378,37 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   Widget _buildControls() {
+    final size = MediaQuery.of(context).size;
+    final isPiP = size.height < 300 || size.width < 300;
+    if (isPiP) return const SizedBox.shrink();
+
     return Positioned.fill(
       child: AnimatedBuilder(
         animation: _controlsAnim,
-        builder:
-            (context, child) =>
-                Opacity(opacity: _controlsAnim.value, child: child),
+        builder: (context, child) {
+          final isVisible = _controlsAnim.value > 0;
+          return IgnorePointer(
+            ignoring: !isVisible,
+            child: Opacity(opacity: _controlsAnim.value, child: child),
+          );
+        },
         child: Container(
           color: Colors.black.withOpacity(0.3),
           child: SafeArea(
+            top: !_isLandscape,
+            bottom: !_isLandscape,
             child: Stack(
               children: [
                 Align(
-                  alignment: const Alignment(0, -0.05),
+                  alignment:
+                      _isLandscape
+                          ? const Alignment(0, -0.12)
+                          : const Alignment(
+                            0,
+                            -0.02,
+                          ), // 2% más arriba del centro
                   child: Row(
+                    mainAxisSize: MainAxisSize.min,
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       if (!_currentItem.isLive) ...[
@@ -2351,7 +2420,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                           ),
                           onPressed: _seekBackward,
                         ),
-                        const SizedBox(width: 40),
+                        SizedBox(width: _isLandscape ? 20 : 40),
                       ],
                       StreamBuilder<bool>(
                         stream: _player?.stream.playing,
@@ -2371,7 +2440,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                         },
                       ),
                       if (!_currentItem.isLive) ...[
-                        const SizedBox(width: 40),
+                        SizedBox(width: _isLandscape ? 20 : 40),
                         IconButton(
                           iconSize: 42,
                           icon: const Icon(
@@ -2390,9 +2459,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                   left: 0,
                   right: 0,
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(
+                    padding: EdgeInsets.symmetric(
                       horizontal: 16,
-                      vertical: 8,
+                      vertical: _isLandscape ? 12 : 8,
                     ),
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
@@ -2401,6 +2470,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                         Row(
                           children: [
                             IconButton(
+                              padding:
+                                  _isLandscape
+                                      ? EdgeInsets.zero
+                                      : const EdgeInsets.all(8),
+                              constraints:
+                                  _isLandscape ? const BoxConstraints() : null,
                               icon: const Icon(
                                 Icons.arrow_back_ios_new,
                                 color: Colors.white,
@@ -2431,7 +2506,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                   Flexible(
                                     child: Builder(
                                       builder: (context) {
-                                        final clean = NormalizationUtils.extractEpisodeTitle(_currentItem.name);
+                                        final clean =
+                                            NormalizationUtils.extractEpisodeTitle(
+                                              _currentItem.name,
+                                            );
                                         if (clean.isEmpty) {
                                           return Text(
                                             _currentItem.name,
@@ -2445,12 +2523,17 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                             overflow: TextOverflow.ellipsis,
                                           );
                                         }
-                                        
-                                        final epNum = _currentItem.episodeNumber ?? 
-                                                     NormalizationUtils.parseEpisodeNumber(_currentItem.name);
-                                        
+
+                                        final epNum =
+                                            _currentItem.episodeNumber ??
+                                            NormalizationUtils.parseEpisodeNumber(
+                                              _currentItem.name,
+                                            );
+
                                         return Text(
-                                          epNum != null ? '$epNum. $clean' : clean,
+                                          epNum != null
+                                              ? '$epNum. $clean'
+                                              : clean,
                                           style: const TextStyle(
                                             color: Colors.white,
                                             fontSize: 18,
@@ -2468,6 +2551,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                             ),
                             if (!_currentItem.isLive)
                               IconButton(
+                                padding:
+                                    _isLandscape
+                                        ? EdgeInsets.zero
+                                        : const EdgeInsets.all(8),
+                                constraints:
+                                    _isLandscape
+                                        ? const BoxConstraints()
+                                        : null,
                                 icon: const Icon(
                                   Icons.speed_rounded,
                                   color: Colors.white,
@@ -2475,6 +2566,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                 onPressed: _showSpeedSelection,
                               ),
                             IconButton(
+                              padding:
+                                  _isLandscape
+                                      ? EdgeInsets.zero
+                                      : const EdgeInsets.all(8),
+                              constraints:
+                                  _isLandscape ? const BoxConstraints() : null,
                               icon: const Icon(
                                 Icons.picture_in_picture_alt_rounded,
                                 color: Colors.white,
@@ -2482,6 +2579,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                               onPressed: _togglePiP,
                             ),
                             IconButton(
+                              padding:
+                                  _isLandscape
+                                      ? EdgeInsets.zero
+                                      : const EdgeInsets.all(8),
+                              constraints:
+                                  _isLandscape ? const BoxConstraints() : null,
                               iconSize: 24,
                               icon: Icon(
                                 _isLandscape
@@ -2553,100 +2656,95 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                   max > 0 ? max : 0.0,
                                                 );
 
-                                    return Column(
-                                      children: [
-                                        SliderTheme(
-                                          data: SliderThemeData(
-                                            trackHeight: 2,
-                                            activeTrackColor: Colors.white,
-                                            inactiveTrackColor: Colors.white24,
-                                            thumbColor: Colors.white,
-                                            thumbShape:
-                                                const RoundSliderThumbShape(
-                                                  enabledThumbRadius: 6,
-                                                ),
-                                            overlayShape:
-                                                const RoundSliderOverlayShape(
-                                                  overlayRadius: 14,
-                                                ),
-                                          ),
-                                          child: Slider(
-                                            min: 0,
-                                            max: max > 0 ? max : 1,
-                                            value: value,
-                                            onChangeStart: (newValue) {
-                                              setState(() {
-                                                _isDragging = true;
-                                                _dragValue = newValue;
-                                              });
-                                            },
-                                            onChanged: (newValue) {
-                                              setState(
-                                                () => _dragValue = newValue,
-                                              );
-                                            },
-                                            onChangeEnd: (newValue) {
-                                              _player?.seek(
-                                                Duration(
-                                                  milliseconds:
-                                                      newValue.toInt(),
-                                                ),
-                                              );
-                                              setState(() {
-                                                _isDragging = false;
-                                                _isSeeking = true;
-                                              });
-                                              Future.delayed(
-                                                const Duration(
-                                                  milliseconds: 1000,
-                                                ),
-                                                () {
-                                                  if (mounted && _isSeeking) {
-                                                    setState(
-                                                      () => _isSeeking = false,
-                                                    );
-                                                  }
-                                                },
-                                              );
-                                            },
-                                          ),
-                                        ),
-                                        Padding(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 8,
-                                          ),
-                                          child: Row(
-                                            children: [
-                                              Text(
-                                                WatchProgressService.formatDuration(
+                                    return GestureDetector(
+                                      behavior: HitTestBehavior.opaque,
+                                      onHorizontalDragUpdate: (_) {
+                                        // Esto asegura que la linea de tiempo gane la arena de gestos
+                                        // frente al GestureDetector padre que detecta swipes verticales.
+                                      },
+                                      child: Column(
+                                        children: [
+                                          SliderTheme(
+                                            data: SliderThemeData(
+                                              trackHeight: 2,
+                                              activeTrackColor: Colors.white,
+                                              inactiveTrackColor:
+                                                  Colors.white24,
+                                              thumbColor: Colors.white,
+                                              thumbShape:
+                                                  const RoundSliderThumbShape(
+                                                    enabledThumbRadius: 6,
+                                                  ),
+                                              overlayShape:
+                                                  const RoundSliderOverlayShape(
+                                                    overlayRadius: 14,
+                                                  ),
+                                            ),
+                                            child: Slider(
+                                              min: 0,
+                                              max: max > 0 ? max : 1,
+                                              value: value,
+                                              onChangeStart: (newValue) {
+                                                setState(() {
+                                                  _isDragging = true;
+                                                  _dragValue = newValue;
+                                                });
+                                              },
+                                              onChanged: (newValue) {
+                                                setState(
+                                                  () => _dragValue = newValue,
+                                                );
+                                              },
+                                              onChangeEnd: (newValue) {
+                                                _player?.seek(
                                                   Duration(
-                                                    milliseconds: value.toInt(),
+                                                    milliseconds:
+                                                        newValue.toInt(),
+                                                  ),
+                                                );
+                                                setState(() {
+                                                  _isDragging = false;
+                                                  _isSeeking = true;
+                                                });
+                                                Future.delayed(
+                                                  const Duration(
+                                                    milliseconds: 1000,
+                                                  ),
+                                                  () {
+                                                    if (mounted && _isSeeking) {
+                                                      setState(
+                                                        () =>
+                                                            _isSeeking = false,
+                                                      );
+                                                    }
+                                                  },
+                                                );
+                                              },
+                                            ),
+                                          ),
+                                          Padding(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 8,
+                                            ),
+                                            child: Row(
+                                              children: [
+                                                Text(
+                                                  WatchProgressService.formatDuration(
+                                                    Duration(
+                                                      milliseconds:
+                                                          value.toInt(),
+                                                    ),
+                                                  ),
+                                                  style: const TextStyle(
+                                                    color: Colors.white70,
+                                                    fontSize: 12,
+                                                    fontWeight: FontWeight.w500,
                                                   ),
                                                 ),
-                                                style: const TextStyle(
-                                                  color: Colors.white70,
-                                                  fontSize: 12,
-                                                  fontWeight: FontWeight.w500,
-                                                ),
-                                              ),
-                                              const Spacer(),
-                                              IconButton(
-                                                icon: const Icon(
-                                                  Icons.audiotrack,
-                                                  color: Colors.white,
-                                                  size: 20,
-                                                ),
-                                                padding: EdgeInsets.zero,
-                                                constraints:
-                                                    const BoxConstraints(),
-                                                onPressed: _showAudioSelection,
-                                              ),
-
-                                              if (_playlist.length > 1) ...[
-                                                const SizedBox(width: 12),
+                                                const Spacer(),
                                                 IconButton(
                                                   icon: const Icon(
-                                                    Icons.list_alt,
+                                                    Icons.audiotrack,
                                                     color: Colors.white,
                                                     size: 20,
                                                   ),
@@ -2654,24 +2752,40 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                   constraints:
                                                       const BoxConstraints(),
                                                   onPressed:
-                                                      _showEpisodeSelection,
+                                                      _showAudioSelection,
+                                                ),
+
+                                                if (_playlist.length > 1) ...[
+                                                  const SizedBox(width: 12),
+                                                  IconButton(
+                                                    icon: const Icon(
+                                                      Icons.list_alt,
+                                                      color: Colors.white,
+                                                      size: 20,
+                                                    ),
+                                                    padding: EdgeInsets.zero,
+                                                    constraints:
+                                                        const BoxConstraints(),
+                                                    onPressed:
+                                                        _showEpisodeSelection,
+                                                  ),
+                                                ],
+                                                const SizedBox(width: 12),
+                                                Text(
+                                                  WatchProgressService.formatDuration(
+                                                    duration,
+                                                  ),
+                                                  style: const TextStyle(
+                                                    color: Colors.white70,
+                                                    fontSize: 12,
+                                                    fontWeight: FontWeight.w500,
+                                                  ),
                                                 ),
                                               ],
-                                              const SizedBox(width: 12),
-                                              Text(
-                                                WatchProgressService.formatDuration(
-                                                  duration,
-                                                ),
-                                                style: const TextStyle(
-                                                  color: Colors.white70,
-                                                  fontSize: 12,
-                                                  fontWeight: FontWeight.w500,
-                                                ),
-                                              ),
-                                            ],
+                                            ),
                                           ),
-                                        ),
-                                      ],
+                                        ],
+                                      ),
                                     );
                                   },
                                 );
@@ -2687,7 +2801,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     );
   }
 
-  void _seekBackward() {
+  void _seekBackward({bool showControls = true}) {
     if (_player == null) return;
     setState(() {
       _isSeeking = true;
@@ -2696,11 +2810,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     });
     final pos = _player!.state.position - const Duration(seconds: 10);
     _player!.seek(pos < Duration.zero ? Duration.zero : pos);
-    _startHideControlsTimer();
+    _startHideControlsTimer(showIfHidden: showControls);
     _resetSeekFeedback();
   }
 
-  void _seekForward() {
+  void _seekForward({bool showControls = true}) {
     if (_player == null) return;
     setState(() {
       _isSeeking = true;
@@ -2710,7 +2824,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     final pos = _player!.state.position + const Duration(seconds: 10);
     final dur = _player!.state.duration;
     _player!.seek(pos > dur ? dur : pos);
-    _startHideControlsTimer();
+    _startHideControlsTimer(showIfHidden: showControls);
     _resetSeekFeedback();
   }
 
@@ -3155,6 +3269,97 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           ),
         );
       },
+    );
+  }
+
+  void _showVisualNotice(String message) {
+    _noticeTimer?.cancel();
+    setState(() {
+      _noticeMessage = message;
+    });
+    _noticeAnimController.forward(from: 0.0);
+    _noticeTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) _noticeAnimController.reverse();
+    });
+  }
+
+  void _showVisualBottomSheet({
+    required Widget Function(BuildContext) builder,
+  }) {
+    showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'VisualBottomSheet',
+      barrierColor: Colors.black87,
+      transitionDuration: const Duration(milliseconds: 300),
+      pageBuilder: (context, anim1, anim2) {
+        return Align(
+          alignment: _isLandscape ? Alignment.center : Alignment.bottomCenter,
+          child: RotatedBox(
+            quarterTurns: _isLandscape ? 1 : 0,
+            child: Material(color: Colors.transparent, child: builder(context)),
+          ),
+        );
+      },
+      transitionBuilder: (context, anim1, anim2, child) {
+        if (_isLandscape) {
+          return FadeTransition(
+            opacity: anim1,
+            child: ScaleTransition(
+              scale: Tween<double>(begin: 0.9, end: 1.0).animate(
+                CurvedAnimation(parent: anim1, curve: Curves.easeOutCubic),
+              ),
+              child: child,
+            ),
+          );
+        }
+
+        final begin = const Offset(0.0, 1.0);
+        return SlideTransition(
+          position: Tween<Offset>(
+            begin: begin,
+            end: Offset.zero,
+          ).animate(CurvedAnimation(parent: anim1, curve: Curves.easeOutCubic)),
+          child: child,
+        );
+      },
+    );
+  }
+
+  Widget _buildVisualNotice() {
+    return Positioned(
+      bottom: 80,
+      left: 0,
+      right: 0,
+      child: IgnorePointer(
+        child: FadeTransition(
+          opacity: _noticeAnim,
+          child: Center(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF262626).withOpacity(0.9),
+                borderRadius: BorderRadius.circular(25),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.3),
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Text(
+                _noticeMessage ?? '',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
