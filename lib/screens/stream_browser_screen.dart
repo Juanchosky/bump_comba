@@ -2153,8 +2153,11 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   }
 
   Future<void> _playLiveChannel(M3UItem item) async {
-    // Same channel already playing, do nothing
-    if (_currentLiveChannel?.url == item.url && _livePlayer != null) return;
+    // Same channel already playing, reload it and return
+    if (_currentLiveChannel?.url == item.url && _livePlayer != null) {
+      _reloadLiveSignal();
+      return;
+    }
 
     // Guard: don't start a new player while the previous one is draining.
     // The user tapped quickly — try again after the drain window completes.
