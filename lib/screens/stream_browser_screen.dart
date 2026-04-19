@@ -392,8 +392,12 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         );
 
         _slowLoadingTimer?.cancel();
-        if (success && mounted) {
-          setState(() => _isLoading = false);
+        if (mounted) {
+          setState(() {
+            _downloadProgress = null;
+            _downloadDetail = null;
+            if (success) _isLoading = false;
+          });
         }
       } else {
         // Si ya no estamos cargando (FastBoot), solo cancelamos el timer
@@ -646,7 +650,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       decoration: BoxDecoration(
         color: AppColors.background,
         image: DecorationImage(
-          image: const AssetImage('assets/images/background.png'),
+          image: const AssetImage('assets/images/background.jpg'),
           fit: BoxFit.cover,
           colorFilter: ColorFilter.mode(
             AppColors.background.withOpacity(0.9),
@@ -929,8 +933,10 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                     color: Colors.red,
                   ),
                 ),
-                const SizedBox(height: 24),
-                const _AnimatedLoadingMessages(),
+                if (_downloadDetail != null) ...[
+                  const SizedBox(height: 24),
+                  const _AnimatedLoadingMessages(),
+                ],
               ],
             ),
           ),

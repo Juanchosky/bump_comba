@@ -2,7 +2,7 @@ name: bump_comba
 description: "A new Flutter project."
 publish_to: "none"
 
-version: 1.0.0+19
+version: 1.0.0+20
 
 environment:
   sdk: ^3.7.2
@@ -76,5 +76,5 @@ flutter:
 
   assets:
     - assets/images/logo.png
-    - assets/images/background.png
+    - assets/images/background.jpg
     - .env

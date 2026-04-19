@@ -98,7 +98,7 @@ class _SettingsScreenState extends State<SettingsScreen>
               child: Container(
                 decoration: BoxDecoration(
                   image: DecorationImage(
-                    image: const AssetImage('assets/images/background.png'),
+                    image: const AssetImage('assets/images/background.jpg'),
                     fit: BoxFit.cover,
                     colorFilter: ColorFilter.mode(
                       const Color(

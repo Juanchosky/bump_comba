@@ -105,7 +105,7 @@ class _MainMenuScreenState extends State<MainMenuScreen>
         body: Container(
           decoration: BoxDecoration(
             image: const DecorationImage(
-              image: AssetImage('assets/images/background.png'),
+              image: AssetImage('assets/images/background.jpg'),
               fit: BoxFit.cover,
             ),
             color: const Color(0xFF0a0a0a).withOpacity(0.1),
