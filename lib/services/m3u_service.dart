@@ -986,6 +986,7 @@ class M3UService extends ChangeNotifier {
             isFavorite: _favorites.contains('${name}_$url'),
             isLive: false,
             isDynamic: isDynamic,
+            sourceName: 'Supabase',
           ),
         );
       }
@@ -1025,6 +1026,7 @@ class M3UService extends ChangeNotifier {
               episodeNumber: int.tryParse(ep['episode']?.toString() ?? ''),
               isLive: false,
               isDynamic: epIsDynamic,
+              sourceName: 'Supabase',
             ),
           );
         }
@@ -1046,8 +1048,10 @@ class M3UService extends ChangeNotifier {
             isFavorite: _favorites.contains('${name}_'),
             episodes: sEpisodes,
             seriesName: name,
+            isSeries: true,
             isLive: false,
             isDynamic: isDynamic,
+            sourceName: 'Supabase',
           ),
         );
       }
@@ -1679,7 +1683,7 @@ class M3UService extends ChangeNotifier {
     bool scheduleRecentCompute = true,
   }) async {
     _items = items;
-    _cachedLatestItems = items.take(50).toList();
+    _cachedLatestItems = _calculateLatestItems(items).take(50).toList();
     _cachedRecentItems = null;
 
     try {
@@ -1848,13 +1852,22 @@ class M3UService extends ChangeNotifier {
       // Fallback rápido: tomar los últimos 9 items que no sean live
       final fallback =
           _items
-              .where((i) => !i.isLive && i.logo != null && i.logo!.isNotEmpty)
+              .where(
+                (i) =>
+                    !i.isLive &&
+                    i.sourceName != 'Supabase' &&
+                    i.logo != null &&
+                    i.logo!.isNotEmpty,
+              )
               .take(9)
               .toList();
       return fallback;
     }
     final recent = getRecentItems();
-    return recent.where((i) => !i.isLive).take(9).toList();
+    return recent
+        .where((i) => !i.isLive && i.sourceName != 'Supabase')
+        .take(9)
+        .toList();
   }
 
   /// PERF-4: getSimilarItems uses List.shuffle instead of random-attempt loop.
@@ -2368,7 +2381,7 @@ List<M3UItem> _decodeJsonCacheInBackground(Map<String, dynamic> data) {
 
 @pragma('vm:entry-point')
 List<M3UItem> _computeRecentItemsInBackground(List<M3UItem> items) {
-  final regexYear = RegExp(r'\((\d{4})\)');
+  final regexYear = RegExp(r'\b(202[0-9]|19[0-9]{2})\b');
   final regexKeywords = RegExp(
     r'\b(estreno|cam|ts|screener|nuevo|new|2024|2025|2026)\b',
     caseSensitive: false,
@@ -2376,6 +2389,7 @@ List<M3UItem> _computeRecentItemsInBackground(List<M3UItem> items) {
 
   int maxYear = 0;
   for (var item in items) {
+    if (item.sourceName == 'Supabase') continue;
     final match = regexYear.firstMatch(item.name);
     if (match != null) {
       final year = int.tryParse(match.group(1) ?? '');
@@ -2388,6 +2402,7 @@ List<M3UItem> _computeRecentItemsInBackground(List<M3UItem> items) {
 
   final recent =
       items.where((item) {
+        if (item.isLive || item.sourceName == 'Supabase') return false;
         final match = regexYear.firstMatch(item.name);
         if (match != null) {
           final year = int.tryParse(match.group(1) ?? '');
@@ -2919,25 +2934,35 @@ List<M3UItem> _calculateLatestItems(List<M3UItem> items) {
   final currentYear = now.year;
   final previousYear = currentYear - 1;
   final Map<M3UItem, double> itemScores = {};
-  final regexYear = RegExp(r'\((\d{4})\)');
+  final regexYear = RegExp(r'\b(202[0-9]|19[0-9]{2})\b');
 
   for (var item in items) {
+    // STRICT FILTER: No live streams or Supabase content in "latest" calculations
+    if (item.isLive || item.sourceName == 'Supabase') {
+      itemScores[item] = -1000.0;
+      continue;
+    }
+
     double score = 0;
     final match = regexYear.firstMatch(item.name);
     if (match != null) {
-      final year = int.tryParse(match.group(1) ?? '');
+      final yearStr = match.group(1) ?? '';
+      final year = int.tryParse(yearStr);
       if (year != null) {
         if (year == currentYear) {
-          score += 1000;
+          score += 2000; // Increased priority for current year
         } else if (year == previousYear) {
-          score += 500;
+          score += 1000;
         } else {
           score += (year - 1900);
         }
       }
     }
-    if (item.name.toLowerCase().contains('nuevo') ||
-        item.name.toLowerCase().contains('reciente')) {
+
+    final n = item.name.toLowerCase();
+    if (n.contains('nuevo') ||
+        n.contains('reciente') ||
+        n.contains('estreno')) {
       score += 500;
     }
     if (item.isFavorite) score += 100;

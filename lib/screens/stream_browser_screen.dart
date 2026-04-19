@@ -1123,20 +1123,38 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
   void _pickHeroItem(List<M3UItem> items) {
     if (items.isEmpty) return;
+    
+    // Only pick a new hero item if it's not already set.
+    // This makes the banner persistent during the session as requested.
+    if (_heroItem != null) return;
 
     // First try with recentItems from service (already filtered roughly)
     final recentItems = _m3uService.getRecentItems();
     final rawPool = recentItems.isNotEmpty ? recentItems : items;
-    final pool = _m3uService.filterValidItems(rawPool);
+    
+    // STRICT FILTER: No live streams in banner, no Supabase custom content, must be movies/content
+    final pool = _m3uService.filterValidItems(rawPool)
+        .where((item) {
+          if (item.isLive || item.sourceName == 'Supabase') return false;
+          final n = item.name.toLowerCase();
+          // SAFETY: Check for words that definitely indicate a live channel
+          if (n.contains('canal ') || n.contains('tv ') || n.contains('en vivo')) return false;
+          return true;
+        })
+        .toList();
 
-    final regexYear = RegExp(r'\((\d{4})\)');
+    if (pool.isEmpty) return;
+
+    // Improved year regex: catches 2024, (2024), etc.
+    final regexYear = RegExp(r'\b(202[0-9]|19[0-9]{2})\b');
 
     // 1. Find max year in the current pool
     int maxYear = 0;
     for (var item in pool) {
       final match = regexYear.firstMatch(item.name);
       if (match != null) {
-        final year = int.tryParse(match.group(1) ?? '');
+        final yearStr = match.group(1) ?? '';
+        final year = int.tryParse(yearStr);
         if (year != null && year > maxYear && year < 2100) {
           maxYear = year;
         }
@@ -1150,7 +1168,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           pool.where((item) {
             final match = regexYear.firstMatch(item.name);
             if (match != null) {
-              final year = int.tryParse(match.group(1) ?? '');
+              final yearStr = match.group(1) ?? '';
+              final year = int.tryParse(yearStr);
               return year == maxYear;
             }
             return false;
@@ -3582,7 +3601,26 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   Widget _buildHeroRandomLatest(List<M3UItem> items) {
     if (items.isEmpty) return const SizedBox.shrink();
     if (_heroItem != null) return _buildHeroBanner(_heroItem!);
-    final random = items[DateTime.now().millisecond % items.length];
+
+    // Fallback logic if _heroItem isn't ready:
+    // Filter out lives and supabase content even in this random picker
+    final validVods =
+        items
+            .where((i) => !i.isLive && i.sourceName != 'Supabase')
+            .where((i) {
+              final n = i.name.toLowerCase();
+              return !n.contains('canal ') &&
+                  !n.contains('tv ') &&
+                  !n.contains('en vivo');
+            })
+            .toList();
+
+    if (validVods.isEmpty) {
+      // Show shimmer instead of risking a live channel display
+      return const _HiddenMoviesShimmer();
+    }
+
+    final random = validVods[DateTime.now().millisecond % validVods.length];
     return _buildHeroBanner(random);
   }
 
@@ -3855,12 +3893,17 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                   Navigator.of(context)
                       .push(
                         PageRouteBuilder(
-                          pageBuilder: (context, animation, secondaryAnimation) {
+                          pageBuilder: (
+                            context,
+                            animation,
+                            secondaryAnimation,
+                          ) {
                             return FadeTransition(
                               opacity: animation,
                               child: _SearchPage(
                                 m3uService: _m3uService,
-                                itemBuilder: (ctx, item) => _buildGridCard(item),
+                                itemBuilder:
+                                    (ctx, item) => _buildGridCard(item),
                               ),
                             );
                           },
@@ -5989,7 +6032,10 @@ class _SearchPageState extends State<_SearchPage> {
                             ),
                           ),
                           IconButton(
-                            icon: const Icon(Icons.close, color: Colors.white54),
+                            icon: const Icon(
+                              Icons.close,
+                              color: Colors.white54,
+                            ),
                             onPressed: () {
                               if (_searchController.text.isNotEmpty) {
                                 _searchController.clear();

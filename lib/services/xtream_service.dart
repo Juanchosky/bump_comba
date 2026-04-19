@@ -247,7 +247,9 @@ class XtreamService {
                   episodeNumber:
                       int.tryParse(ep['episode_num']?.toString() ?? '0') ?? 0,
                   logo: _fixLogo(rawLogo, epName, host),
-                  duration: ep['info']?['duration']?.toString() ?? ep['duration']?.toString(),
+                  duration:
+                      ep['info']?['duration']?.toString() ??
+                      ep['duration']?.toString(),
                 ),
               );
             }
