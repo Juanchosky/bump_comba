@@ -1,5 +1,4 @@
 import '../utils/normalization_utils.dart';
-import '../utils/security_utils.dart';
 
 /// Model for an M3U channel/movie
 class M3UItem {
