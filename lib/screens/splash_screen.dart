@@ -32,10 +32,9 @@ class _SplashScreenState extends State<SplashScreen>
       duration: const Duration(seconds: 2),
     );
 
-    _scaleAnimation = Tween<double>(
-      begin: 1.0,
-      end: 1.05,
-    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOutExpo));
+    _scaleAnimation = Tween<double>(begin: 1.0, end: 1.05).animate(
+      CurvedAnimation(parent: _controller, curve: Curves.easeInOutExpo),
+    );
 
     // Fade animation — start opaque to match native splash
     _fadeAnimation = const AlwaysStoppedAnimation(1.0);
@@ -64,9 +63,10 @@ class _SplashScreenState extends State<SplashScreen>
 
       // Non-critical background init
       unawaited(
-        rewardsService.init().then(
-          (_) => rewardsService.incrementLaunchCount(),
-        ).catchError((e) => debugPrint('Rewards init error: $e')),
+        rewardsService
+            .init()
+            .then((_) => rewardsService.incrementLaunchCount())
+            .catchError((e) => debugPrint('Rewards init error: $e')),
       );
 
       await minDelay;
@@ -76,7 +76,6 @@ class _SplashScreenState extends State<SplashScreen>
       if (mounted) _navigateToNext();
     }
   }
-
 
   void _navigateToNext() {
     final config = GameConfigService();

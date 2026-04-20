@@ -1,32 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Modify this file to customize your launch splash screen -->
+<!-- Minimalist black splash screen with the App Icon -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- Background color -->
     <item android:drawable="@android:color/black" />
 
-    <!-- Background image with opacity (0.3 = 77 hex alpha) -->
-    <item>
-        <bitmap
-            android:alpha="0.3"
-            android:gravity="fill"
-            android:src="@drawable/splash_background" />
-    </item>
-
-    <!-- Gradient overlay (Vertical) -->
-    <item android:drawable="@drawable/splash_gradient" />
-
-    <!-- Centered Logo -->
-    <item>
-        <bitmap
-            android:gravity="center"
-            android:src="@drawable/splash_logo" />
-    </item>
-
-    <!-- "By Juan" Text at the bottom -->
+    <!-- App Icon - Using direct drawable to support Adaptive Icons -->
     <item
-        android:bottom="60dp">
-        <bitmap
-            android:gravity="bottom"
-            android:src="@drawable/splash_text" />
-    </item>
+        android:drawable="@mipmap/ic_launcher"
+        android:gravity="center"
+        android:width="120dp"
+        android:height="120dp" />
 </layer-list>
