@@ -1857,15 +1857,19 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                 ),
                                 title: Row(
                                   children: [
-                                    Text(
-                                      label,
-                                      style: TextStyle(
-                                        color:
-                                            isDamaged
-                                                ? Colors.white24
-                                                : (isSelected
-                                                    ? Colors.red
-                                                    : Colors.white),
+                                    Flexible(
+                                      child: Text(
+                                        label,
+                                        style: TextStyle(
+                                          color:
+                                              isDamaged
+                                                  ? Colors.white24
+                                                  : (isSelected
+                                                      ? Colors.red
+                                                      : Colors.white),
+                                        ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
                                       ),
                                     ),
                                     if (isDamaged) ...[
@@ -3456,7 +3460,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       color: const Color.fromARGB(255, 240, 240, 240),
-                      fontSize: 15.2 * scale,
+                      fontSize: 15.1 * scale,
                       height: 1.1,
                       fontWeight: FontWeight.w500,
                       letterSpacing: 0.1,
