@@ -137,6 +137,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool _seekFeedbackForward = true;
   Timer? _seekFeedbackTimer;
 
+  // Subtitles state
+  bool _subtitlesEnabled = false;
+  List<String> _currentSubtitleText = [];
+  final Set<String> _damagedSubtitleTracks =
+      {}; // Pistas detectadas como dañadas
+  SubtitleTrack? _lastSelectedTrack;
+  DateTime? _lastTrackChangeTime;
+
   // Visual Notice system
   String? _noticeMessage;
   Timer? _noticeTimer;
@@ -211,7 +219,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   @override
   void dispose() {
-    // 1. Synchronous Dart-side cleanup.
+    // 1. Synchronous Dart-side cleanup (cancel all listeners FIRST).
     _hideControlsTimer?.cancel();
     _stallTimer?.cancel();
     _seekFeedbackTimer?.cancel();
@@ -227,33 +235,35 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     AdService.isAdInProgress.removeListener(_handleAdStateChange);
 
     final pToStop = _player;
-    _player = null; // Detach immediately
+    _player = null; // Detach immediately so no more Dart code touches it
 
-    // 2. Immediate Native silencing to prevent new FFI callbacks.
+    // 2. Unmount video widget BEFORE touching native player.
+    _videoControllerNotifier.value = null;
+
+    // 3. Aggressive native silencing sequence to prevent FFI callbacks
+    //    from firing after the Dart isolate is destroyed.
     if (pToStop != null) {
       try {
+        // Pause first — stops the decoder from producing new frames
+        pToStop.pause();
+      } catch (_) {}
+      try {
         final mpv = pToStop.platform as dynamic;
+        // Disable ALL outputs so MPV stops calling back into Flutter
         mpv?.setProperty('msg-level', 'all=no');
         mpv?.setProperty('log-level', 'no');
-        mpv?.setProperty('vid', 'no');
-        mpv?.setProperty('vo', 'null');
+        mpv?.setProperty('aid', 'no'); // disable audio track
+        mpv?.setProperty('vid', 'no'); // disable video track
+        mpv?.setProperty('sid', 'no'); // disable subtitle track
+        mpv?.setProperty('ao', 'null'); // null audio output
+        mpv?.setProperty('vo', 'null'); // null video output
+      } catch (_) {}
+      try {
         pToStop.stop();
       } catch (_) {}
     }
 
-    _videoControllerNotifier.value = null;
-
-    // 3. Deferred total disposal.
-    if (pToStop != null) {
-      Future.delayed(const Duration(milliseconds: 400), () {
-        try {
-          pToStop.dispose();
-        } catch (e) {
-          debugPrint('Silent disposal error: $e');
-        }
-      });
-    }
-
+    // 4. Flutter-side animation controllers
     _swipeAnimController.dispose();
     _controlsAnimController.dispose();
     _videoFitNotifier.dispose();
@@ -270,6 +280,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+
+    // 5. Deferred total disposal — give MPV's native event queue time to drain
+    //    AFTER the Dart widget is fully gone. 1500ms is safe for Motorola.
+    if (pToStop != null) {
+      Future.delayed(const Duration(milliseconds: 1500), () {
+        try {
+          pToStop.dispose();
+        } catch (_) {}
+      });
+    }
   }
 
   @override
@@ -359,25 +379,36 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
     final p = _player;
 
-    // 2. Silence MPV and detach video output immediately.
+    // 2. Pause immediately — stops the decoder from producing frames.
+    try {
+      p?.pause();
+    } catch (_) {}
+
+    // 3. Silence MPV and detach all outputs to prevent FFI callbacks.
     try {
       final mpv = p?.platform as dynamic;
       mpv?.setProperty('msg-level', 'all=no');
       mpv?.setProperty('log-level', 'no');
-      mpv?.setProperty('vid', 'no');
-      mpv?.setProperty('vo', 'null');
+      mpv?.setProperty('aid', 'no'); // disable audio
+      mpv?.setProperty('vid', 'no'); // disable video
+      mpv?.setProperty('sid', 'no'); // disable subtitles
+      mpv?.setProperty('ao', 'null'); // null audio output
+      mpv?.setProperty('vo', 'null'); // null video output
     } catch (_) {}
 
-    // 3. Unmount the Video widget from Flutter tree.
+    // 4. Unmount the Video widget from Flutter tree.
     _videoControllerNotifier.value = null;
 
-    // 4. Null our reference so microtasks see it as gone.
+    // 5. Null our reference so microtasks see it as gone.
     _player = null;
 
-    // 5. Drain native event queue before creating the next player.
-    await Future.delayed(const Duration(milliseconds: 500));
+    // 6. Stop the player and drain MPV's native event queue.
+    try {
+      p?.stop();
+    } catch (_) {}
+    await Future.delayed(const Duration(milliseconds: 1200));
 
-    // 6. Dispose the old player.
+    // 7. Dispose the old player.
     if (p != null) {
       try {
         await p.dispose();
@@ -608,26 +639,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                   : _userAgents[_userAgentIndex % _userAgents.length];
           await mpv.setProperty('user-agent', selectedUA);
 
-          // -- SUBTÍTULOS: Renderizado eficiente --
-          await mpv.setProperty(
-            'sub-ass-override',
-            'force',
-          ); // Fuerza estilos ASS sin recalcular
-          await mpv.setProperty(
-            'sub-ass-hinting',
-            'none',
-          ); // Evita hinting costoso
-          await mpv.setProperty(
-            'sub-rendering-align-pixels',
-            'yes',
-          ); // Alinea a píxeles enteros
-          await mpv.setProperty(
-            'sub-bitmap-max-size',
-            '4096',
-          ); // Cache de bitmaps de subs
-          await mpv.setProperty('sub-pos', '95'); // Posición estándar
-          await mpv.setProperty('sub-scale', '0.9'); // Tamaño moderado
-          await mpv.setProperty('sub-ass-scale-with-window', 'yes');
+          // -- SUBTÍTULOS --
+          // Desactivados por defecto. Se renderizan como Flutter widgets,
+          // no dependemos del rendering nativo de MPV (no funciona con
+          // SurfaceView en Android).
+          await mpv.setProperty('sub-forced-only', 'no');
 
           // -- HARDWARE ACCELERATION OPTIMIZATION --
           // 'mediacodec' is zero-copy (fastest). 'mediacodec-copy' is a safe fallback.
@@ -641,10 +657,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           }
 
           if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
-            await mpv.setProperty(
-              'hwdec',
-              useDirectHwdec ? 'mediacodec' : 'mediacodec-copy',
-            );
+            // Si es un reintento (_retryCount > 0), forzamos 'mediacodec-copy' para mayor estabilidad
+            // ya que el error 'Can't acquire next buffer' suele ocurrir en modo directo (mediacodec).
+            final decoder =
+                (_retryCount > 0 || !useDirectHwdec)
+                    ? 'mediacodec-copy'
+                    : 'mediacodec';
+            await mpv.setProperty('hwdec', decoder);
+            debugPrint('Decoder seleccionado: $decoder (Retry: $_retryCount)');
           } else {
             await mpv.setProperty('hwdec', 'auto-safe');
           }
@@ -672,9 +692,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             await mpv.setProperty('vd-lavc-dr', 'no');
           }
 
-          if (!_isLiveContent) {
-            await mpv.setProperty('sid', 'no');
-          }
+          // Subtítulos: desactivados por defecto, el usuario los activa desde el ícono.
+          // Forzamos visibilidad 'no' para usar nuestro overlay Flutter.
+          await mpv.setProperty('sid', 'no');
+          await mpv.setProperty('sub-visibility', 'no');
+          _subtitlesEnabled = false;
 
           if (GameConfigService().volumeNormalize) {
             await mpv.setProperty('af', 'dynaudnorm');
@@ -752,8 +774,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // Buffering stream to show/hide loading spinner
     _streamSubscriptions.add(
       _player!.stream.buffering.listen((buffering) {
-        if (mounted && _isBuffering != buffering) {
-          setState(() => _isBuffering = buffering);
+        if (mounted) setState(() => _isBuffering = buffering);
+      }),
+    );
+
+    // Subtitle text stream — renderizado Flutter, no MPV nativo
+    _streamSubscriptions.add(
+      _player!.stream.subtitle.listen((subtitleLines) {
+        if (mounted) {
+          setState(() => _currentSubtitleText = subtitleLines);
         }
       }),
     );
@@ -777,14 +806,35 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       }
     });
 
-    // Reload en error de red
+    // Reload en error de stream con detección de errores en subtítulos
     _streamSubscriptions.add(
       _player!.stream.error.listen((error) {
-        if (mounted && !_isVideoLoading) {
-          debugPrint('Error de stream: $error. Recargando en 1s...');
-          Future.delayed(const Duration(seconds: 1), () {
-            if (mounted) _reloadVideo();
-          });
+        if (mounted) {
+          final errStr = error.toString().toLowerCase();
+          // Detectar si el error es específico de subtítulos (ej: [sub/ass] error)
+          if (errStr.contains('sub') ||
+              errStr.contains('ass') ||
+              errStr.contains('subtitle')) {
+            if (_lastSelectedTrack != null && _lastSelectedTrack!.id != 'no') {
+              _damagedSubtitleTracks.add(_lastSelectedTrack!.id);
+              _showVisualNotice(
+                'Pista de subtítulos corrupta. Desactivando...',
+              );
+              _player?.setSubtitleTrack(SubtitleTrack.no());
+              setState(() {
+                _subtitlesEnabled = false;
+                _currentSubtitleText = [];
+              });
+              return; // Evitamos recargar el video completo si solo falló el subtítulo
+            }
+          }
+
+          if (!_isVideoLoading) {
+            debugPrint('Error de stream: $error. Recargando en 1s...');
+            Future.delayed(const Duration(seconds: 1), () {
+              if (mounted) _reloadVideo();
+            });
+          }
         }
       }),
     );
@@ -980,6 +1030,24 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
         final int threshold = _isLiveContent ? 10 : 15;
         if (_stallSeconds >= threshold && !_isVideoLoading) {
+          // Si el stall ocurre justo después de cambiar de subtítulo, probablemente sea esa pista
+          if (_lastSelectedTrack != null &&
+              _lastTrackChangeTime != null &&
+              DateTime.now().difference(_lastTrackChangeTime!).inSeconds < 20) {
+            final trackId = _lastSelectedTrack!.id;
+            if (trackId != 'no') {
+              _damagedSubtitleTracks.add(trackId);
+              _showVisualNotice(
+                'Pista de subtítulos dañada. Cambiando a "Desactivado"...',
+              );
+              _player?.setSubtitleTrack(SubtitleTrack.no());
+              setState(() {
+                _subtitlesEnabled = false;
+                _currentSubtitleText = [];
+              });
+            }
+          }
+
           debugPrint('Stall persistente (${_stallSeconds}s). Recargando...');
           _stallSeconds = 0;
           _reloadVideo();
@@ -1048,21 +1116,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         _retryCount++;
         debugPrint('VOD retry #$_retryCount UA: $_currentUserAgent');
         final pos = _player!.state.position;
-        try {
-          final currentUrl =
-              _serverUrls[_currentServerIndex % _serverUrls.length];
-          await _player!.open(
-            Media(currentUrl, httpHeaders: _buildHeaders(currentUrl)),
-            play: true,
-          );
-          if (pos.inSeconds > 5) {
-            await Future.delayed(const Duration(milliseconds: 800));
-            if (mounted && _player != null) await _player!.seek(pos);
-          }
-        } catch (_) {
-          _retryCount = 2;
-          _reloadVideo();
-        }
+        // Siempre re-inicializar para que los cambios en hwdec (mediacodec-copy) surtan efecto
+        await _initializePlayer(
+          _currentItem,
+          startFrom: pos.inSeconds > 5 ? pos : null,
+        );
       } else if (_currentServerIndex < _serverUrls.length - 1) {
         // Option exhausted for this server, try next alternative
         _retryCount = 0;
@@ -1653,6 +1711,199 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                         },
                       );
                     },
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
+            ),
+          ),
+    );
+  }
+
+  void _showSubtitleSelection() {
+    if (_player == null) return;
+    final tracks = _player!.state.tracks.subtitle;
+
+    _showVisualBottomSheet(
+      builder:
+          (context) => Container(
+            width: _isLandscape ? 400 : double.infinity,
+            margin: _isLandscape ? const EdgeInsets.all(24) : EdgeInsets.zero,
+            decoration: BoxDecoration(
+              color: const Color.fromARGB(255, 27, 27, 27),
+              borderRadius:
+                  _isLandscape
+                      ? BorderRadius.circular(24)
+                      : const BorderRadius.vertical(top: Radius.circular(20)),
+              border:
+                  _isLandscape
+                      ? Border.all(color: Colors.white12, width: 1)
+                      : null,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Subtítulos',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.pop(context),
+                        icon: const Icon(Icons.close, color: Colors.white70),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(color: Colors.white10, height: 1),
+                Flexible(
+                  child: ListView(
+                    padding: EdgeInsets.zero,
+                    shrinkWrap: true,
+                    children: [
+                      // Opción: Desactivar subtítulos
+                      ListTile(
+                        leading: Icon(
+                          Icons.subtitles_off,
+                          color:
+                              !_subtitlesEnabled ? Colors.red : Colors.white70,
+                        ),
+                        title: Text(
+                          'Desactivado',
+                          style: TextStyle(
+                            color:
+                                !_subtitlesEnabled ? Colors.red : Colors.white,
+                          ),
+                        ),
+                        trailing:
+                            !_subtitlesEnabled
+                                ? const Icon(Icons.check, color: Colors.red)
+                                : null,
+                        onTap: () async {
+                          Navigator.pop(context);
+                          if (_player == null) return;
+                          try {
+                            _player!.setSubtitleTrack(SubtitleTrack.no());
+                            final mpv = _player!.platform as dynamic;
+                            await mpv?.setProperty('sid', 'no');
+                            await mpv?.setProperty('sub-visibility', 'no');
+                          } catch (_) {}
+                          if (mounted) {
+                            setState(() {
+                              _subtitlesEnabled = false;
+                              _currentSubtitleText = [];
+                            });
+                          }
+                        },
+                      ),
+                      if (tracks.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 16,
+                          ),
+                          child: Text(
+                            'No hay pistas de subtítulos disponibles en este contenido.',
+                            style: TextStyle(
+                              color: Colors.white54,
+                              fontSize: 13,
+                            ),
+                          ),
+                        )
+                      else
+                        ..._player!.state.tracks.subtitle
+                            .where((t) {
+                              // Filtrar la pista 'no' (ya tenemos opción manual)
+                              // y pistas genéricas (ID 0 o 1 sin título/lenguaje) que suelen ser basura
+                              if (t.id == 'no' || t.id == 'auto') return false;
+                              if ((t.id == '0' || t.id == '1') &&
+                                  t.title == null &&
+                                  t.language == null) {
+                                return false;
+                              }
+                              return true;
+                            })
+                            .map((track) {
+                              final isDamaged = _damagedSubtitleTracks.contains(
+                                track.id,
+                              );
+                              final isSelected =
+                                  _subtitlesEnabled &&
+                                  _player!.state.track.subtitle == track;
+                              final label =
+                                  track.title ??
+                                  track.language ??
+                                  'Pista ${track.id}';
+                              return ListTile(
+                                enabled: !isDamaged,
+                                leading: Icon(
+                                  isDamaged
+                                      ? Icons.warning_amber_rounded
+                                      : Icons.subtitles,
+                                  color:
+                                      isDamaged
+                                          ? Colors.orange.withValues(alpha: 0.5)
+                                          : (isSelected
+                                              ? Colors.red
+                                              : Colors.white70),
+                                ),
+                                title: Row(
+                                  children: [
+                                    Text(
+                                      label,
+                                      style: TextStyle(
+                                        color:
+                                            isDamaged
+                                                ? Colors.white24
+                                                : (isSelected
+                                                    ? Colors.red
+                                                    : Colors.white),
+                                      ),
+                                    ),
+                                    if (isDamaged) ...[
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        '(Dañado)',
+                                        style: TextStyle(
+                                          color: Colors.orange.withValues(
+                                            alpha: 0.6,
+                                          ),
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                                trailing:
+                                    isSelected
+                                        ? const Icon(
+                                          Icons.check,
+                                          color: Colors.red,
+                                        )
+                                        : null,
+                                onTap: () async {
+                                  Navigator.pop(context);
+                                  if (_player == null) return;
+                                  try {
+                                    _lastSelectedTrack = track;
+                                    _lastTrackChangeTime = DateTime.now();
+                                    _player!.setSubtitleTrack(track);
+                                  } catch (_) {}
+                                  if (mounted) {
+                                    setState(() => _subtitlesEnabled = true);
+                                  }
+                                },
+                              );
+                            }),
+                    ],
                   ),
                 ),
                 const SizedBox(height: 16),
@@ -2284,6 +2535,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                 _buildSeekFeedback(),
 
                               _buildControls(),
+                              if (_subtitlesEnabled &&
+                                  _currentSubtitleText.isNotEmpty)
+                                _buildSubtitleOverlay(),
                               _buildVisualNotice(),
 
                               if (_isFastForwarding)
@@ -2783,6 +3037,24 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                       ),
                                                     ),
                                                     const Spacer(),
+                                                    // Botón de subtítulos
+                                                    IconButton(
+                                                      icon: Icon(
+                                                        _subtitlesEnabled
+                                                            ? Icons.subtitles
+                                                            : Icons
+                                                                .subtitles_outlined,
+                                                        color: Colors.white,
+                                                        size: 20 * scale,
+                                                      ),
+                                                      padding: EdgeInsets.zero,
+                                                      constraints:
+                                                          const BoxConstraints(),
+                                                      onPressed:
+                                                          _showSubtitleSelection,
+                                                    ),
+                                                    SizedBox(width: 12 * scale),
+                                                    // Botón de audio
                                                     IconButton(
                                                       icon: Icon(
                                                         Icons.audiotrack,
@@ -3145,6 +3417,54 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           child: child,
         );
       },
+    );
+  }
+
+  Widget _buildSubtitleOverlay() {
+    final activeLines =
+        _currentSubtitleText.where((l) => l.trim().isNotEmpty).toList();
+
+    if (activeLines.isEmpty) return const SizedBox.shrink();
+
+    final size = MediaQuery.of(context).size;
+    final double shortestSide = size.shortestSide;
+    final double scale = (shortestSide / 414.0).clamp(0.75, 1.15);
+
+    return Positioned(
+      bottom: (_showControls ? 100 : 35) * scale,
+      left: 40 * scale,
+      right: 40 * scale,
+      child: IgnorePointer(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children:
+              activeLines.map((line) {
+                return Container(
+                  margin: EdgeInsets.only(bottom: 4 * scale),
+                  padding: EdgeInsets.symmetric(
+                    horizontal: 12 * scale,
+                    vertical: 6 * scale,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color.fromARGB(139, 0, 0, 0),
+                  ),
+                  child: Text(
+                    line.trim(),
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: const Color.fromARGB(255, 240, 240, 240),
+                      fontSize: 15.2 * scale,
+                      height: 1.1,
+                      fontWeight: FontWeight.w500,
+                      letterSpacing: 0.1,
+
+                      shadows: const [], // Eliminada la sombra según petición
+                    ),
+                  ),
+                );
+              }).toList(),
+        ),
+      ),
     );
   }
 
