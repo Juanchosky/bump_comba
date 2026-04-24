@@ -1846,11 +1846,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                 enabled: !isDamaged,
                                 leading: Icon(
                                   isDamaged
-                                      ? Icons.warning_amber_rounded
+                                      ? Icons.subtitles_off
                                       : Icons.subtitles,
                                   color:
                                       isDamaged
-                                          ? Colors.orange.withValues(alpha: 0.5)
+                                          ? Colors.white70
                                           : (isSelected
                                               ? Colors.red
                                               : Colors.white70),
@@ -1871,10 +1871,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                     if (isDamaged) ...[
                                       const SizedBox(width: 8),
                                       Text(
-                                        '(Dañado)',
+                                        '(Not available)',
                                         style: TextStyle(
-                                          color: Colors.orange.withValues(
-                                            alpha: 0.6,
+                                          color: const Color.fromARGB(
+                                            157,
+                                            114,
+                                            114,
+                                            114,
                                           ),
                                           fontSize: 12,
                                         ),
