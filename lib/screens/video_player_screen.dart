@@ -3459,7 +3459,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                     line.trim(),
                     textAlign: TextAlign.center,
                     style: TextStyle(
-                      color: const Color.fromARGB(255, 240, 240, 240),
+                      color: const Color.fromARGB(255, 211, 211, 211),
                       fontSize: 15.1 * scale,
                       height: 1.1,
                       fontWeight: FontWeight.w500,
