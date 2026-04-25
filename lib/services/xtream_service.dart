@@ -13,9 +13,10 @@ class XtreamService {
 
   /// Verifica logos y aplica fallback si es necesario
   String _fixLogo(String? logo, String title, String host) {
-    if (logo == null || logo.isEmpty || logo.contains('placeholder')) {
+    if (logo == null || logo.trim().isEmpty || logo.contains('placeholder')) {
       return '';
     }
+    logo = logo.trim();
 
     if (logo.startsWith('/')) {
       return '$host$logo';

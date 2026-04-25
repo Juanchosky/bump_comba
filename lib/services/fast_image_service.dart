@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:async';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -7,14 +8,13 @@ import 'package:http/io_client.dart';
 import 'performance_service.dart';
 import 'metadata_fallback_service.dart';
 
-// FIX 1: Headers completos — evita 403 en CDNs de logos IPTV
+// FIX 1: Headers compatibles con la mayoría de CDNs IPTV
 const Map<String, String> _kImageHeaders = {
   'User-Agent':
-      'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 '
-      '(KHTML, like Gecko) Chrome/120 Mobile Safari/537.36',
-  'Accept': 'image/webp,image/avif,image/*,*/*;q=0.8',
-  'Accept-Language': 'es-419,es;q=0.9,en;q=0.8',
-  'Referer': 'https://www.google.com/',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Accept': 'image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+  'Connection': 'keep-alive',
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -30,7 +30,10 @@ class AppCacheManager {
       maxNrOfCacheObjects: 2500,
       fileService: HttpFileService(
         httpClient: IOClient(
-          HttpClient()..connectionTimeout = const Duration(seconds: 15),
+          HttpClient()
+            ..connectionTimeout = const Duration(seconds: 15)
+            ..badCertificateCallback =
+                ((X509Certificate cert, String host, int port) => true),
         ),
       ),
     ),
@@ -51,7 +54,8 @@ class FastImageService {
     if (url == null || url.isEmpty) return false;
     if (!url.startsWith('http')) return false;
 
-    if (url.contains('ejemplo.com') || url.contains('placeholder.com')) return false;
+    if (url.contains('ejemplo.com') || url.contains('placeholder.com'))
+      return false;
 
     // Rutas base de TMDB sin filename — no son imágenes válidas
     const tmdbIncompleteSuffixes = [
@@ -70,8 +74,7 @@ class FastImageService {
     final uri = Uri.tryParse(url);
     if (uri == null || !uri.hasAuthority || uri.host.isEmpty) return false;
 
-    // Debe tener al menos un path segment no vacío
-    return uri.pathSegments.any((s) => s.isNotEmpty);
+    return true;
   }
 
   // FIX 5: Limitar _queued para evitar leak de memoria en sesiones largas
@@ -200,6 +203,8 @@ class _FastThumbnailState extends State<FastThumbnail>
   int? _effectiveCacheWidth;
   String? _fallbackUrl;
   bool _isResolvingFallback = false;
+  int _retryCount = 0;
+  Timer? _retryTimer;
 
   @override
   void initState() {
@@ -254,23 +259,56 @@ class _FastThumbnailState extends State<FastThumbnail>
       _fallbackUrl = null;
       _effectiveCacheWidth = _computeCacheWidth();
       _fadeController.reset();
+      _retryCount = 0;
+      _retryTimer?.cancel();
       _checkAndResolveFallback();
+    }
+  }
+
+  void _handleError() {
+    // Retry logic: 3 attempts with increasing delay (5s, 15s, 30s)
+    if (_retryCount < 3) {
+      _retryCount++;
+      _retryTimer?.cancel();
+      _retryTimer = Timer(Duration(seconds: _retryCount * 10 - 5), () {
+        if (mounted) {
+          // Evict previous failed attempt from cache to force reload
+          if (_cachedProvider != null) {
+            _cachedProvider!.evict();
+          }
+          setState(() {
+            _cachedProvider = null;
+          });
+        }
+      });
+    } else {
+      // Only report as permanent failure after all retries
+      if (widget.onError != null) {
+        widget.onError!();
+      }
     }
   }
 
   @override
   void dispose() {
     _fadeController.dispose();
+    _retryTimer?.cancel();
     super.dispose();
   }
 
   ImageProvider _getProvider() {
     if (_cachedProvider != null) return _cachedProvider!;
 
-    final String? imageTarget =
-        FastImageService.isValidImageUrl(widget.url) ? widget.url : _fallbackUrl;
+    final String? rawImageTarget =
+        FastImageService.isValidImageUrl(widget.url)
+            ? widget.url
+            : _fallbackUrl;
 
-    if (imageTarget == null) return const AssetImage('assets/placeholder.png');
+    final String? imageTarget = rawImageTarget?.trim();
+
+    if (imageTarget == null || imageTarget.isEmpty) {
+      return const AssetImage('assets/placeholder.png');
+    }
 
     ImageProvider provider = CachedNetworkImageProvider(
       imageTarget,
@@ -327,7 +365,9 @@ class _FastThumbnailState extends State<FastThumbnail>
     Widget content;
 
     final bool hasValidPrimary = FastImageService.isValidImageUrl(widget.url);
-    final bool hasValidFallback = FastImageService.isValidImageUrl(_fallbackUrl);
+    final bool hasValidFallback = FastImageService.isValidImageUrl(
+      _fallbackUrl,
+    );
 
     if (!hasValidPrimary && !hasValidFallback) {
       content = _placeholder();
@@ -361,11 +401,9 @@ class _FastThumbnailState extends State<FastThumbnail>
                 return child;
               },
               errorBuilder: (context, error, stackTrace) {
-                if (widget.onError != null) {
-                  WidgetsBinding.instance.addPostFrameCallback(
-                    (_) => widget.onError!(),
-                  );
-                }
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (mounted) _handleError();
+                });
                 return _placeholder();
               },
             ),
@@ -408,6 +446,8 @@ class _FastChannelLogoState extends State<FastChannelLogo>
   late AnimationController _fadeController;
   late Animation<double> _fadeAnimation;
   ImageProvider? _cachedProvider;
+  int _retryCount = 0;
+  Timer? _retryTimer;
 
   @override
   void initState() {
@@ -428,12 +468,36 @@ class _FastChannelLogoState extends State<FastChannelLogo>
     if (oldWidget.url != widget.url) {
       _cachedProvider = null;
       _fadeController.reset();
+      _retryCount = 0;
+      _retryTimer?.cancel();
+    }
+  }
+
+  void _handleError() {
+    if (_retryCount < 3) {
+      _retryCount++;
+      _retryTimer?.cancel();
+      _retryTimer = Timer(Duration(seconds: _retryCount * 10 - 5), () {
+        if (mounted) {
+          if (_cachedProvider != null) {
+            _cachedProvider!.evict();
+          }
+          setState(() {
+            _cachedProvider = null;
+          });
+        }
+      });
+    } else {
+      if (widget.onError != null) {
+        widget.onError!();
+      }
     }
   }
 
   @override
   void dispose() {
     _fadeController.dispose();
+    _retryTimer?.cancel();
     super.dispose();
   }
 
@@ -441,7 +505,7 @@ class _FastChannelLogoState extends State<FastChannelLogo>
     if (_cachedProvider != null) return _cachedProvider!;
     _cachedProvider = ResizeImage(
       CachedNetworkImageProvider(
-        widget.url!,
+        widget.url!.trim(),
         headers: _kImageHeaders,
         cacheManager: AppCacheManager.instance,
       ),
@@ -491,11 +555,9 @@ class _FastChannelLogoState extends State<FastChannelLogo>
               return child;
             },
             errorBuilder: (context, error, stackTrace) {
-              if (widget.onError != null) {
-                WidgetsBinding.instance.addPostFrameCallback(
-                  (_) => widget.onError!(),
-                );
-              }
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) _handleError();
+              });
               return _placeholder();
             },
           ),

@@ -2675,7 +2675,7 @@ IsolateOutput parseM3UInBackground(IsolateInput input) {
 
     if (line.startsWith('#EXTINF:')) {
       final logoMatch = logoRegex.firstMatch(line);
-      final String? currentLogo = logoMatch?.group(1);
+      final String? currentLogo = logoMatch?.group(1)?.trim();
 
       final categoryMatch = categoryRegex.firstMatch(line);
       String rawCategory = categoryMatch?.group(1) ?? 'Sin categoría';
