@@ -35,6 +35,7 @@ import 'stream_browser_config_screen.dart';
 import 'settings_screen.dart';
 import '../services/social_rewards_service.dart';
 import '../widgets/rate_dialog.dart';
+import '../services/deep_link_service.dart';
 
 class ExitFullscreenIntent extends Intent {
   const ExitFullscreenIntent();
@@ -233,6 +234,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     _m3uService.addListener(_onM3UServiceUpdated);
     WatchProgressService().addListener(_onWatchProgressUpdated);
     _checkRateDialog();
+    // Initialize Deep Link Listener
+    DeepLinkService().init(context);
   }
 
   void _checkRateDialog() {
@@ -279,6 +282,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       DeviceOrientation.landscapeLeft,
       DeviceOrientation.landscapeRight,
     ]);
+    DeepLinkService().dispose();
     super.dispose();
   }
 
