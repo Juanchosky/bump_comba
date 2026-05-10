@@ -60,14 +60,14 @@ class PremiumService {
   Stream<bool> get premiumStream => _premiumStatusController.stream;
 
   /// Get current premium status (cached, fast access)
-  bool get isPremium => _isPremium;
+  /// bool get isPremium => _isPremium;
 
   /// Check if user has any active premium entitlement
-  bool get hasActiveSubscription => _isPremium;
+  /// bool get hasActiveSubscription => _isPremium;
 
-  ///bool get isPremium => kDebugMode ? true : _isPremium;
+  bool get isPremium => kDebugMode ? true : _isPremium;
 
-  /// bool get hasActiveSubscription => isPremium;
+  bool get hasActiveSubscription => isPremium;
 
   /// Get the expiration date of the active subscription
   String? get expirationDate {

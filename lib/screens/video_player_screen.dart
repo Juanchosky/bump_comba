@@ -507,7 +507,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   String _videoKey = '';
-  Future<void> _initializePlayer(M3UItem item, {Duration? startFrom}) async {
+  Future<void> _initializePlayer(
+    M3UItem item, {
+    Duration? startFrom,
+    bool isLocalReload = false,
+  }) async {
     // Limpieza de URL para evitar fragmentos de tiempo (#t=...)
     final cleanedUrl = NormalizationUtils.cleanUrl(item.url);
     item = item.copyWith(url: cleanedUrl);
@@ -575,7 +579,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       final isPrewarmed =
           widget.prewarmedPlayer != null &&
           widget.prewarmedPlayer!.platform != null &&
-          _retryCount == 0;
+          _retryCount == 0 &&
+          !isLocalReload;
 
       if (!isPrewarmed) {
         await _cleanupPlayer();
@@ -828,7 +833,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         }
       }
 
-      if (castService.isCasting.value) {
+      if (castService.isCasting.value && !isLocalReload) {
         castAudioHandler.setMediaItem(
           id: currentUrl,
           title: _currentItem.name,
@@ -985,12 +990,30 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             _nextEpisodeCountdown == null &&
             !_isVideoLoading &&
             !_autoPlayCancelled) {
+          final pos = _player!.state.position;
+          final dur = _player!.state.duration;
+
+          if (CastService().isCasting.value && !_localAudioDuringCast) {
+            // Si estamos transmitiendo y NO estamos escuchando localmente,
+            // ignoramos el fin del stream local (probablemente se cerró por timeout al estar pausado).
+            debugPrint('Local stream completed while casting. Ignored.');
+            return;
+          }
+
           if (_currentItem.isLive) {
             Future.delayed(const Duration(seconds: 1), () {
               if (mounted) _reloadVideo();
             });
           } else {
-            _handleVideoCompletion();
+            if (dur.inSeconds > 0 && pos.inSeconds < (dur.inSeconds - 60)) {
+              debugPrint('Stream finalizado prematuramente. Reconectando...');
+              if (pos.inSeconds > 120) {
+                _retryCount = 0; // Resetear retries si reprodujo un buen tiempo
+              }
+              _reloadVideo();
+            } else {
+              _handleVideoCompletion();
+            }
           }
         }
       }),
@@ -1078,7 +1101,29 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   void _onCastMediaFinished() {
     if (CastService().castMediaFinished.value && mounted) {
-      _handleVideoCompletion();
+      final castService = CastService();
+      final pos = castService.castPosition.value;
+      final dur = castService.castDuration.value;
+
+      if (dur.inSeconds > 0 && pos.inSeconds < (dur.inSeconds - 60)) {
+        debugPrint(
+          'Transmisión Cast finalizada prematuramente. Reconectando...',
+        );
+        if (mounted) _showAppSnackBar('Reconectando transmisión...');
+        final currentUrl =
+            _serverUrls.isNotEmpty
+                ? _serverUrls[_currentServerIndex % _serverUrls.length]
+                : _currentItem.url;
+
+        castService.loadMedia(
+          url: currentUrl,
+          title: _currentItem.name,
+          thumbnailUrl: _currentItem.logo,
+          startPosition: pos.inSeconds.toDouble(),
+        );
+      } else {
+        _handleVideoCompletion();
+      }
     }
   }
 
@@ -1270,6 +1315,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         await _initializePlayer(
           _currentItem,
           startFrom: pos.inSeconds > 5 ? pos : null,
+          isLocalReload: true,
         );
       } else if (_currentServerIndex < _serverUrls.length - 1) {
         // Option exhausted for this server, try next alternative
@@ -1285,6 +1331,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         await _initializePlayer(
           _currentItem,
           startFrom: pos.inSeconds > 5 ? pos : null,
+          isLocalReload: true,
         );
       } else {
         setState(() => _hasError = true);
@@ -1295,7 +1342,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       _retryCount++;
       setState(() => _isVideoLoading = true);
       await Future.delayed(Duration(seconds: delay));
-      if (mounted) _initializePlayer(_currentItem);
+      if (mounted) _initializePlayer(_currentItem, isLocalReload: true);
     }
   }
 
@@ -4628,17 +4675,34 @@ class _CastDeviceSelectorState extends State<_CastDeviceSelector> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Row(
+                Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.cast_rounded, color: Colors.white, size: 22),
-                    SizedBox(width: 10),
-                    Text(
+                    const Icon(Icons.cast_rounded, color: Colors.white, size: 22),
+                    const SizedBox(width: 10),
+                    const Text(
                       'Transmitir a TV',
                       style: TextStyle(
                         color: Colors.white,
                         fontSize: 18,
                         fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.blueAccent.withValues(alpha: 0.2),
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: Colors.blueAccent.withValues(alpha: 0.5)),
+                      ),
+                      child: const Text(
+                        'BETA',
+                        style: TextStyle(
+                          color: Colors.blueAccent,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
                   ],
