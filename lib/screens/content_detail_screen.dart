@@ -18,6 +18,7 @@ import 'subscription_screen.dart';
 import '../utils/colors.dart';
 import '../services/dynamic_scraper_service.dart';
 import '../utils/normalization_utils.dart';
+import '../services/cast_service.dart';
 
 class ContentDetailScreen extends StatefulWidget {
   final M3UItem item;
@@ -1381,6 +1382,41 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
             onPressed: _shareContent,
             tooltip: 'Compartir',
           ),
+        ),
+        ValueListenableBuilder<bool>(
+          valueListenable: CastService().isCasting,
+          builder: (context, isCasting, _) {
+            if (!isCasting) return const SizedBox.shrink();
+            return Padding(
+              padding: const EdgeInsets.only(left: 10),
+              child: Container(
+                height: 44,
+                width: 44,
+                decoration: BoxDecoration(
+                  color: Colors.transparent,
+                  borderRadius: BorderRadius.circular(4),
+                  shape: BoxShape.rectangle,
+                ),
+                child: IconButton(
+                  iconSize: 22,
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(
+                    Icons.cast_connected_rounded,
+                    color: Colors.white,
+                  ),
+                  onPressed: () {
+                    CastService().disconnect();
+                    SnackBarUtils.showAppSnackBar(
+                      context,
+                      'Chromecast desconectado',
+                      action: null,
+                    );
+                  },
+                  tooltip: 'Desconectar de TV',
+                ),
+              ),
+            );
+          },
         ),
       ],
     );

@@ -14,6 +14,7 @@ import 'services/performance_service.dart';
 import 'services/premium_service.dart';
 
 import 'utils/colors.dart';
+import 'services/cast_audio_handler.dart';
 
 class MyHttpOverrides extends HttpOverrides {
   @override
@@ -32,9 +33,10 @@ void main() {
   runZonedGuarded(
     () async {
       WidgetsFlutterBinding.ensureInitialized();
+      await initAudioService();
       await dotenv.load(fileName: ".env");
 
-      // ── 1. SINCRÓNICO — antes del primer frame ─────────────────────────
+      // ── 1. SINCRNICO  antes del primer frame ───────────
       GoogleFonts.config.allowRuntimeFetching = false;
 
       final originalOnError = FlutterError.onError;
@@ -60,8 +62,8 @@ void main() {
         ]);
 
         // Configuración Edge-to-Edge para Android 15+
-        // Para SDK 35 (Android 15), el sistema ignora statusBarColor si es 
-        // forzado. Usamos una configuración mínima que no active las 
+        // Para SDK 35 (Android 15), el sistema ignora statusBarColor si es
+        // forzado. Usamos una configuración mínima que no active las
         // alertas de APIs deprecadas.
         SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
         SystemChrome.setSystemUIOverlayStyle(
@@ -73,7 +75,6 @@ void main() {
           ),
         );
       }
-
 
       // ── 2. BACKGROUND — solo Supabase y Premium aquí ───────────────────
       // PerformanceService NO va aquí: device_info_plus en Android 10 con

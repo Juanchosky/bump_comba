@@ -7,8 +7,10 @@ import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:cast/cast.dart';
 import '../services/m3u_service.dart';
 import '../services/watch_progress_service.dart';
+import '../services/cast_audio_handler.dart';
 import '../services/ad_service.dart';
 import 'package:flutter/foundation.dart';
 import '../services/premium_service.dart';
@@ -16,6 +18,7 @@ import '../services/game_config_service.dart';
 import '../services/fast_image_service.dart';
 import '../services/dynamic_scraper_service.dart';
 import '../services/performance_service.dart';
+import '../services/cast_service.dart';
 
 import '../utils/snack_bar_utils.dart';
 import '../utils/normalization_utils.dart';
@@ -145,6 +148,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   SubtitleTrack? _lastSelectedTrack;
   DateTime? _lastTrackChangeTime;
 
+  // Cast local audio
+  bool _localAudioDuringCast = false;
+  double _syncOffsetMs = 0.0;
+
   // Visual Notice system
   String? _noticeMessage;
   Timer? _noticeTimer;
@@ -155,6 +162,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    CastService().castMediaFinished.addListener(_onCastMediaFinished);
+    CastService().castPosition.addListener(_syncFromCast);
+    CastService().castPlaying.addListener(_syncFromCast);
     _currentItem = widget.item;
     _playlist = widget.playlist;
 
@@ -197,19 +207,65 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
 
     AdService.isAdInProgress.addListener(_handleAdStateChange);
+    CastService().isCasting.addListener(_handleCastStateChange);
     _startPlaybackFlow();
+  }
+
+  void _handleCastStateChange() {
+    if (!mounted) return;
+    final isCasting = CastService().isCasting.value;
+
+    if (isCasting) {
+      // Si empezamos a transmitir, destruimos el controlador de video local
+      // para liberar los buffers de hardware (evita BLASTBufferQueue).
+      if (_videoControllerNotifier.value != null) {
+        debugPrint('CastService: Disposing VideoController due to active Cast');
+        _videoControllerNotifier.value = null;
+      }
+    } else {
+      // Si dejamos de transmitir, recuperamos el controlador de video si hay un player activo.
+      if (_videoControllerNotifier.value == null && _player != null) {
+        debugPrint('CastService: Restoring VideoController after Cast');
+        final currentController = VideoController(
+          _player!,
+          configuration: const VideoControllerConfiguration(
+            enableHardwareAcceleration: true,
+          ),
+        );
+        _videoControllerNotifier.value = currentController;
+      }
+    }
   }
 
   bool _wasPlayingBeforeAd = false;
 
   void _handleAdStateChange() {
     if (AdService.isAdInProgress.value) {
-      if (_player != null && _player!.state.playing) {
-        _wasPlayingBeforeAd = true;
+      if (_player != null) {
+        _wasPlayingBeforeAd = _player!.state.playing;
         _player!.pause();
-        if (mounted) setState(() => _showControls = true);
       }
+      // Liberar buffers de video durante el anuncio para evitar BLASTBufferQueue
+      if (_videoControllerNotifier.value != null) {
+        debugPrint('AdService: Disposing VideoController during Ad');
+        _videoControllerNotifier.value = null;
+      }
+      if (mounted) setState(() => _showControls = true);
     } else {
+      // Restaurar el controlador si no estamos en Cast
+      if (!CastService().isCasting.value &&
+          _videoControllerNotifier.value == null &&
+          _player != null) {
+        debugPrint('AdService: Restoring VideoController after Ad');
+        final currentController = VideoController(
+          _player!,
+          configuration: const VideoControllerConfiguration(
+            enableHardwareAcceleration: true,
+          ),
+        );
+        _videoControllerNotifier.value = currentController;
+      }
+
       if (_wasPlayingBeforeAd && _player != null) {
         _wasPlayingBeforeAd = false;
         _player!.play();
@@ -217,8 +273,39 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
   }
 
+  void _syncFromCast() {
+    if (!mounted || !CastService().isConnected || _isDragging || _isSeeking)
+      return;
+    if (!_localAudioDuringCast) return;
+
+    final isCastPlaying = CastService().castPlaying.value;
+    final localPlaying = _player?.state.playing ?? false;
+
+    // Sincronizar estado de reproducción
+    if (isCastPlaying && !localPlaying) {
+      _player?.play();
+    } else if (!isCastPlaying && localPlaying) {
+      _player?.pause();
+    }
+
+    // Sincronizar posición con tolerancia y offset personalizado
+    final castPos = CastService().castPosition.value;
+    final localPos = _player?.state.position ?? Duration.zero;
+
+    final targetPos = castPos + Duration(milliseconds: _syncOffsetMs.toInt());
+
+    if (castPos > Duration.zero &&
+        (targetPos - localPos).abs().inMilliseconds > 1500) {
+      _player?.seek(targetPos);
+    }
+  }
+
   @override
   void dispose() {
+    CastService().castMediaFinished.removeListener(_onCastMediaFinished);
+    CastService().castPosition.removeListener(_syncFromCast);
+    CastService().castPlaying.removeListener(_syncFromCast);
+    CastService().isCasting.removeListener(_handleCastStateChange);
     // 1. Synchronous Dart-side cleanup (cancel all listeners FIRST).
     _hideControlsTimer?.cancel();
     _stallTimer?.cancel();
@@ -319,6 +406,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   Future<void> _startPlaybackFlow() async {
     AdService().showRewardedAdWithConfirmation(
       context,
+      quarterTurns: _isLandscape ? 1 : 0,
       onUserEarnedReward: () async {
         if (!mounted) return;
         _retryCount = 0;
@@ -551,18 +639,29 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         } catch (_) {}
       }
 
-      final currentController = VideoController(
-        currentPlayer,
-        configuration: const VideoControllerConfiguration(
-          enableHardwareAcceleration: true,
-        ),
-      );
-
       _player = currentPlayer;
-      _videoControllerNotifier.value = null;
-      Future.microtask(() {
-        if (mounted) _videoControllerNotifier.value = currentController;
-      });
+
+      // OPTIMIZACIÓN CRÍTICA: No crear VideoController si estamos transmitiendo.
+      // El VideoController activa la aceleración por hardware y reserva buffers
+      // de video (SurfaceView) que causan el error BLASTBufferQueue en dispositivos Motorola.
+      if (!CastService().isCasting.value) {
+        final currentController = VideoController(
+          currentPlayer,
+          configuration: const VideoControllerConfiguration(
+            enableHardwareAcceleration: true,
+          ),
+        );
+        _videoControllerNotifier.value = null;
+        Future.microtask(() {
+          if (mounted) _videoControllerNotifier.value = currentController;
+        });
+      } else {
+        // Durante Cast, nos aseguramos que no haya controlador de video activo en el móvil.
+        _videoControllerNotifier.value = null;
+        debugPrint(
+          'CastService: Skipping VideoController creation during active Cast session',
+        );
+      }
 
       _setupStreamMonitor();
       _startStallMonitor();
@@ -701,19 +800,47 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           if (GameConfigService().volumeNormalize) {
             await mpv.setProperty('af', 'dynaudnorm');
           }
+
+          // Si estamos transmitiendo, desactivamos el track de video localmente
+          // para ahorrar recursos (CPU/GPU) y evitar errores de buffer.
+          if (CastService().isCasting.value) {
+            await mpv.setProperty('vid', 'no');
+          }
         } catch (e) {
           debugPrint('Error configurando MPV: $e');
         }
       });
 
       final currentUrl = _serverUrls[_currentServerIndex % _serverUrls.length];
+      final castService = CastService();
+      final shouldPlayLocally = !castService.isCasting.value;
+
       if (!isPrewarmed) {
         await _player!.open(
           Media(currentUrl, httpHeaders: _buildHeaders(currentUrl)),
-          play: true,
+          play: shouldPlayLocally,
         );
       } else {
-        _player!.play();
+        if (shouldPlayLocally) {
+          _player!.play();
+        } else {
+          _player!.pause();
+        }
+      }
+
+      if (castService.isCasting.value) {
+        castAudioHandler.setMediaItem(
+          id: currentUrl,
+          title: _currentItem.name,
+          album: 'Bump Comba',
+          artUri: _currentItem.logo,
+        );
+        castService.loadMedia(
+          url: currentUrl,
+          title: _currentItem.name,
+          thumbnailUrl: _currentItem.logo,
+          startPosition: startFrom != null ? startFrom.inSeconds.toDouble() : 0,
+        );
       }
 
       if (startFrom != null && startFrom.inSeconds > 0) {
@@ -737,19 +864,21 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         }
       }
 
-      int frameWait = 0;
-      while (frameWait < 200 && mounted && _player != null) {
-        final state = _player!.state;
-        final hasVideo = (state.width ?? 0) > 0 && (state.height ?? 0) > 0;
-        final isPlayingAndAdvanced =
-            state.playing && state.position.inMilliseconds > 200;
-        final hasBuffer = _isLiveContent || state.buffer.inSeconds >= 2;
+      if (!castService.isCasting.value) {
+        int frameWait = 0;
+        while (frameWait < 200 && mounted && _player != null) {
+          final state = _player!.state;
+          final hasVideo = (state.width ?? 0) > 0 && (state.height ?? 0) > 0;
+          final isPlayingAndAdvanced =
+              state.playing && state.position.inMilliseconds > 200;
+          final hasBuffer = _isLiveContent || state.buffer.inSeconds >= 2;
 
-        if (hasVideo && isPlayingAndAdvanced && hasBuffer) {
-          break;
+          if (hasVideo && isPlayingAndAdvanced && hasBuffer) {
+            break;
+          }
+          await Future.delayed(const Duration(milliseconds: 100));
+          frameWait++;
         }
-        await Future.delayed(const Duration(milliseconds: 100));
-        frameWait++;
       }
 
       if (mounted) {
@@ -789,20 +918,29 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
     // Guardar progreso cada 5 segundos
     _progressSaveTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-      if (_player != null && mounted) {
-        final position = _player!.state.position;
-        final duration = _player!.state.duration;
-        if (duration.inSeconds > 0) {
-          _watchProgressService.saveProgress(
-            _currentItem.url,
-            position,
-            duration,
-            name: _currentItem.name,
-            seriesName: _currentItem.seriesName,
-            seasonNumber: _currentItem.seasonNumber,
-            episodeNumber: _currentItem.episodeNumber,
-          );
-        }
+      if (!mounted) return;
+      final castService = CastService();
+      Duration position = Duration.zero;
+      Duration duration = Duration.zero;
+
+      if (castService.isCasting.value) {
+        position = castService.castPosition.value;
+        duration = castService.castDuration.value;
+      } else if (_player != null) {
+        position = _player!.state.position;
+        duration = _player!.state.duration;
+      }
+
+      if (duration.inSeconds > 0) {
+        _watchProgressService.saveProgress(
+          _currentItem.url,
+          position,
+          duration,
+          name: _currentItem.name,
+          seriesName: _currentItem.seriesName,
+          seasonNumber: _currentItem.seasonNumber,
+          episodeNumber: _currentItem.episodeNumber,
+        );
       }
     });
 
@@ -938,20 +1076,32 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     );
   }
 
+  void _onCastMediaFinished() {
+    if (CastService().castMediaFinished.value && mounted) {
+      _handleVideoCompletion();
+    }
+  }
+
   void _handleVideoCompletion() async {
-    if (_player != null) {
-      final duration = _player!.state.duration;
-      if (duration.inSeconds > 0) {
-        await _watchProgressService.saveProgress(
-          _currentItem.url,
-          duration,
-          duration,
-          name: _currentItem.name,
-          seriesName: _currentItem.seriesName,
-          seasonNumber: _currentItem.seasonNumber,
-          episodeNumber: _currentItem.episodeNumber,
-        );
-      }
+    final castService = CastService();
+    Duration duration = Duration.zero;
+
+    if (castService.isCasting.value) {
+      duration = castService.castDuration.value;
+    } else if (_player != null) {
+      duration = _player!.state.duration;
+    }
+
+    if (duration.inSeconds > 0) {
+      await _watchProgressService.saveProgress(
+        _currentItem.url,
+        duration,
+        duration,
+        name: _currentItem.name,
+        seriesName: _currentItem.seriesName,
+        seasonNumber: _currentItem.seasonNumber,
+        episodeNumber: _currentItem.episodeNumber,
+      );
     }
 
     if (_playlist.isEmpty) return;
@@ -1260,6 +1410,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _player!.pause();
     AdService().showRewardedAdWithConfirmation(
       context,
+      quarterTurns: _isLandscape ? 1 : 0,
       onUserEarnedReward: () {
         if (mounted && _player != null) _player!.play();
       },
@@ -1608,6 +1759,22 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   void _togglePlayback() {
     final activePlayer = _player;
     if (activePlayer == null) return;
+
+    final castService = CastService();
+
+    if (castService.isCasting.value) {
+      if (castService.castPlaying.value) {
+        castService.pause();
+        setState(() => _showControls = true);
+        _hideControlsTimer?.cancel();
+      } else {
+        castService.play();
+        _startHideControlsTimer();
+      }
+      if (activePlayer.state.playing) activePlayer.pause();
+      return;
+    }
+
     if (activePlayer.state.playing) {
       activePlayer.pause();
       setState(() => _showControls = true);
@@ -1707,6 +1874,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                 : null,
                         onTap: () {
                           _player!.setAudioTrack(track);
+                          final castService = CastService();
+                          if (castService.isCasting.value) {
+                            final trackId =
+                                int.tryParse(track.id) ?? (index + 1);
+                            castService.setActiveAudioTrack(trackId);
+                          }
                           Navigator.pop(context);
                         },
                       );
@@ -2094,6 +2267,100 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     );
   }
 
+  void _showSettingsMenu() {
+    _showVisualBottomSheet(
+      builder:
+          (context) => Container(
+            width: _isLandscape ? 380 : double.infinity,
+            margin: _isLandscape ? const EdgeInsets.all(24) : EdgeInsets.zero,
+            decoration: BoxDecoration(
+              color: const Color.fromARGB(255, 27, 27, 27),
+              borderRadius:
+                  _isLandscape
+                      ? BorderRadius.circular(24)
+                      : const BorderRadius.vertical(top: Radius.circular(20)),
+              border:
+                  _isLandscape
+                      ? Border.all(color: Colors.white12, width: 1)
+                      : null,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Configuración',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.white70),
+                        onPressed: () => Navigator.pop(context),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(color: Colors.white12, height: 1),
+                if (!_currentItem.isLive)
+                  ListTile(
+                    leading: const Icon(Icons.speed, color: Colors.white),
+                    title: const Text(
+                      'Velocidad',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                    trailing: const Icon(
+                      Icons.chevron_right,
+                      color: Colors.white54,
+                    ),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _showSpeedSelection();
+                    },
+                  ),
+                ListTile(
+                  leading: const Icon(Icons.subtitles, color: Colors.white),
+                  title: const Text(
+                    'Subtítulos',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                  trailing: const Icon(
+                    Icons.chevron_right,
+                    color: Colors.white54,
+                  ),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _showSubtitleSelection();
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.audiotrack, color: Colors.white),
+                  title: const Text(
+                    'Audio',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                  trailing: const Icon(
+                    Icons.chevron_right,
+                    color: Colors.white54,
+                  ),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _showAudioSelection();
+                  },
+                ),
+                const SizedBox(height: 16),
+              ],
+            ),
+          ),
+    );
+  }
+
   void _showSpeedSelection() {
     if (_player == null) return;
 
@@ -2194,6 +2461,445 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 ],
               ),
             ),
+          ),
+    );
+  }
+
+  void _showCastSelection() {
+    final castService = CastService();
+
+    // Si ya está transmitiendo, mostrar opción de desconectar
+    if (castService.isConnected) {
+      _showVisualBottomSheet(
+        builder:
+            (context) => Container(
+              width: _isLandscape ? 400 : double.infinity,
+              margin: _isLandscape ? const EdgeInsets.all(24) : EdgeInsets.zero,
+              decoration: BoxDecoration(
+                color: const Color.fromARGB(255, 27, 27, 27),
+                borderRadius:
+                    _isLandscape
+                        ? BorderRadius.circular(24)
+                        : const BorderRadius.vertical(top: Radius.circular(20)),
+                border:
+                    _isLandscape
+                        ? Border.all(color: Colors.white12, width: 1)
+                        : null,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            'Transmitiendo',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          IconButton(
+                            onPressed: () => Navigator.pop(context),
+                            icon: const Icon(
+                              Icons.close,
+                              color: Colors.white70,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Divider(color: Colors.white10, height: 1),
+                    Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        children: [
+                          const Icon(Icons.cast, color: Colors.white, size: 45),
+                          const SizedBox(height: 16),
+                          Text(
+                            'Conectado a ${castService.connectedDevice?.name ?? "TV"}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w500,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            _currentItem.name,
+                            style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.6),
+                              fontSize: 14,
+                            ),
+                            textAlign: TextAlign.center,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          const SizedBox(height: 24),
+                          AnimatedBuilder(
+                            animation: Listenable.merge([
+                              castService.castPosition,
+                              castService.castDuration,
+                              castService.castPlaying,
+                            ]),
+                            builder: (context, _) {
+                              final pos = castService.castPosition.value;
+                              final dur = castService.castDuration.value;
+                              final isPlaying = castService.castPlaying.value;
+
+                              final posStr =
+                                  WatchProgressService.formatDuration(pos);
+                              final durStr =
+                                  WatchProgressService.formatDuration(dur);
+                              final progress =
+                                  dur.inMilliseconds > 0
+                                      ? pos.inMilliseconds / dur.inMilliseconds
+                                      : 0.0;
+
+                              return Column(
+                                children: [
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      IconButton(
+                                        icon: Icon(
+                                          isPlaying
+                                              ? Icons
+                                                  .pause_circle_filled_rounded
+                                              : Icons.play_circle_fill_rounded,
+                                          size: 48,
+                                          color: Colors.white,
+                                        ),
+                                        onPressed: () {
+                                          if (isPlaying) {
+                                            castService.pause();
+                                          } else {
+                                            castService.play();
+                                          }
+                                        },
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 16),
+                                  LinearProgressIndicator(
+                                    value: progress.clamp(0.0, 1.0),
+                                    backgroundColor: Colors.white24,
+                                    valueColor:
+                                        const AlwaysStoppedAnimation<Color>(
+                                          Colors.redAccent,
+                                        ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Row(
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Text(
+                                        posStr,
+                                        style: const TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                      Text(
+                                        durStr,
+                                        style: const TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              );
+                            },
+                          ),
+                          const SizedBox(height: 16),
+                          // Toggle de audio local
+                          StatefulBuilder(
+                            builder: (context, setInnerState) {
+                              return Container(
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: 0.06),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: Column(
+                                  children: [
+                                    SwitchListTile(
+                                      contentPadding:
+                                          const EdgeInsets.symmetric(
+                                            horizontal: 16,
+                                            vertical: 2,
+                                          ),
+                                      title: const Text(
+                                        'Escuchar audio en el teléfono',
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 14,
+                                        ),
+                                      ),
+                                      subtitle: Text(
+                                        _localAudioDuringCast
+                                            ? 'Activo. Ajusta el retraso si hay eco.'
+                                            : 'Solo se reproduce en el TV',
+                                        style: TextStyle(
+                                          color: Colors.white.withValues(
+                                            alpha: 0.5,
+                                          ),
+                                          fontSize: 11,
+                                        ),
+                                      ),
+                                      secondary: Icon(
+                                        _localAudioDuringCast
+                                            ? Icons.volume_up_rounded
+                                            : Icons.volume_off_rounded,
+                                        color:
+                                            _localAudioDuringCast
+                                                ? Colors.redAccent
+                                                : Colors.white38,
+                                      ),
+                                      value: _localAudioDuringCast,
+                                      activeColor: Colors.redAccent,
+                                      onChanged: (value) {
+                                        setInnerState(() {});
+                                        setState(() {
+                                          _localAudioDuringCast = value;
+                                          if (!value)
+                                            _syncOffsetMs = 0; // Reset
+                                        });
+                                        if (value) {
+                                          final castPos =
+                                              CastService().castPosition.value;
+                                          _player?.seek(castPos);
+                                          _player?.play();
+                                        } else {
+                                          _player?.pause();
+                                        }
+                                      },
+                                    ),
+                                    Padding(
+                                      padding: const EdgeInsets.fromLTRB(
+                                        16,
+                                        0,
+                                        16,
+                                        12,
+                                      ),
+                                      child: Row(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Expanded(
+                                            child: Text(
+                                              'Recomendado para cuando no se escucha el audio en el TV, se puede reproducir con un parlante bluetooth o audífonos.',
+                                              style: TextStyle(
+                                                color: Colors.white.withValues(
+                                                  alpha: 0.6,
+                                                ),
+                                                fontSize: 11,
+                                                height: 1.2,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+                          if (_localAudioDuringCast) ...[
+                            const SizedBox(height: 16),
+                            StatefulBuilder(
+                              builder: (context, setInnerState) {
+                                return Column(
+                                  children: [
+                                    Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        const Text(
+                                          'Sincronización de audio',
+                                          style: TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 13,
+                                          ),
+                                        ),
+                                        Text(
+                                          '${_syncOffsetMs >= 0 ? '+' : ''}${_syncOffsetMs.toInt()} ms',
+                                          style: const TextStyle(
+                                            color: Colors.redAccent,
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    SliderTheme(
+                                      data: SliderThemeData(
+                                        trackHeight: 2.0,
+                                        activeTrackColor: Colors.redAccent,
+                                        inactiveTrackColor: Colors.white24,
+                                        thumbColor: Colors.redAccent,
+                                        overlayColor: Colors.redAccent
+                                            .withValues(alpha: 0.2),
+                                        thumbShape: const RoundSliderThumbShape(
+                                          enabledThumbRadius: 6,
+                                        ),
+                                      ),
+                                      child: Slider(
+                                        min: -3000,
+                                        max: 3000,
+                                        divisions: 60,
+                                        value: _syncOffsetMs,
+                                        onChanged: (val) {
+                                          setInnerState(
+                                            () => _syncOffsetMs = val,
+                                          );
+                                          setState(() => _syncOffsetMs = val);
+                                        },
+                                        onChangeEnd: (val) {
+                                          final targetPos =
+                                              CastService().castPosition.value +
+                                              Duration(
+                                                milliseconds: val.toInt(),
+                                              );
+                                          _player?.seek(targetPos);
+                                        },
+                                      ),
+                                    ),
+                                    Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Text(
+                                          'Atrasar',
+                                          style: TextStyle(
+                                            color: Colors.white.withValues(
+                                              alpha: 0.5,
+                                            ),
+                                            fontSize: 10,
+                                          ),
+                                        ),
+                                        Text(
+                                          'Adelantar',
+                                          style: TextStyle(
+                                            color: Colors.white.withValues(
+                                              alpha: 0.5,
+                                            ),
+                                            fontSize: 10,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                );
+                              },
+                            ),
+                          ],
+                          const SizedBox(height: 24),
+                          SizedBox(
+                            width: double.infinity,
+                            child: ElevatedButton.icon(
+                              icon: const Icon(Icons.cast_rounded, size: 20),
+                              label: const Text('Dejar de transmitir'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.red.withValues(
+                                  alpha: 0.2,
+                                ),
+                                foregroundColor: Colors.red,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 14,
+                                ),
+                                elevation: 0,
+                              ),
+                              onPressed: () {
+                                castService.disconnect();
+                                setState(() => _localAudioDuringCast = false);
+                                // Re-activar track de video y reanudar
+                                try {
+                                  final mpv = _player?.platform as dynamic;
+                                  mpv?.setProperty('vid', 'auto');
+                                } catch (_) {}
+                                _player?.play();
+                                Navigator.pop(context);
+                                _showVisualNotice('Transmisión finalizada');
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                ),
+              ),
+            ),
+      );
+      return;
+    }
+
+    // Si no está conectado, buscar dispositivos
+    _showVisualBottomSheet(
+      builder:
+          (context) => _CastDeviceSelector(
+            isLandscape: _isLandscape,
+            onDeviceSelected: (device) async {
+              Navigator.pop(context);
+              _showVisualNotice('Conectando a ${device.name}...');
+
+              final connected = await castService.connectToDevice(device);
+              if (!mounted) return;
+
+              if (connected) {
+                // Pausar la reproducción local ANTES de cargar en Chromecast
+                if (_player?.state.playing ?? false) {
+                  _player?.pause();
+                }
+                // Desactivar track de video local para ahorrar recursos
+                try {
+                  final mpv = _player?.platform as dynamic;
+                  mpv?.setProperty('vid', 'no');
+                } catch (_) {}
+
+                final currentUrl =
+                    _serverUrls[_currentServerIndex % _serverUrls.length];
+
+                castAudioHandler.setMediaItem(
+                  id: currentUrl,
+                  title: _currentItem.name,
+                  album: 'Bump Comba',
+                  artUri: _currentItem.logo,
+                );
+                await castService.loadMedia(
+                  url: currentUrl,
+                  title: _currentItem.name,
+                  thumbnailUrl: _currentItem.logo,
+                  startPosition:
+                      (_player?.state.position.inSeconds ?? 0).toDouble(),
+                );
+
+                _showVisualNotice('Transmitiendo a ${device.name}');
+                // Advertencia sobre compatibilidad de audio
+                Future.delayed(const Duration(seconds: 2), () {
+                  if (mounted) {
+                    _showAppSnackBar(
+                      'Algunos contenidos pueden presentar problemas de audio al reproducirse en el TV',
+                    );
+                  }
+                });
+              } else {
+                _showAppSnackBar('No se pudo conectar a ${device.name}');
+              }
+            },
           ),
     );
   }
@@ -2313,21 +3019,29 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           canPop: false,
           onPopInvokedWithResult: (didPop, result) {
             if (didPop) return;
-            if (_player != null) {
-              final position = _player!.state.position;
-              final duration = _player!.state.duration;
-              if (duration.inSeconds > 0) {
-                // Fire and forget to avoid blocking navigation (ANR prevention)
-                _watchProgressService.saveProgress(
-                  _currentItem.url,
-                  position,
-                  duration,
-                  name: _currentItem.name,
-                  seriesName: _currentItem.seriesName,
-                  seasonNumber: _currentItem.seasonNumber,
-                  episodeNumber: _currentItem.episodeNumber,
-                );
-              }
+            final castService = CastService();
+            Duration position = Duration.zero;
+            Duration duration = Duration.zero;
+
+            if (castService.isCasting.value) {
+              position = castService.castPosition.value;
+              duration = castService.castDuration.value;
+            } else if (_player != null) {
+              position = _player!.state.position;
+              duration = _player!.state.duration;
+            }
+
+            if (duration.inSeconds > 0) {
+              // Fire and forget to avoid blocking navigation (ANR prevention)
+              _watchProgressService.saveProgress(
+                _currentItem.url,
+                position,
+                duration,
+                name: _currentItem.name,
+                seriesName: _currentItem.seriesName,
+                seasonNumber: _currentItem.seasonNumber,
+                episodeNumber: _currentItem.episodeNumber,
+              );
             }
             Navigator.pop(context);
           },
@@ -2447,69 +3161,91 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                 child: Stack(
                                   alignment: Alignment.center,
                                   children: [
-                                    ValueListenableBuilder<VideoController?>(
-                                      valueListenable: _videoControllerNotifier,
-                                      builder: (context, controller, _) {
-                                        if (controller == null) {
-                                          return const SizedBox.shrink();
+                                    ValueListenableBuilder<bool>(
+                                      valueListenable: CastService().isCasting,
+                                      builder: (context, isCasting, _) {
+                                        // Si estamos transmitiendo, SIEMPRE mostramos el placeholder.
+                                        // Esto libera los recursos del SurfaceView (video) incluso si
+                                        // el usuario decide escuchar solo el audio en el teléfono.
+                                        if (isCasting) {
+                                          return _buildCastingPlaceholder();
                                         }
-                                        return ValueListenableBuilder<BoxFit>(
-                                          valueListenable: _videoFitNotifier,
-                                          builder: (context, fit, child) {
-                                            if (fit == BoxFit.cover) {
-                                              return LayoutBuilder(
-                                                builder: (
-                                                  context,
-                                                  constraints,
-                                                ) {
-                                                  final videoController =
-                                                      controller;
-                                                  final aspectRatio =
-                                                      (videoController
-                                                              .player
-                                                              .state
-                                                              .width ??
-                                                          16) /
-                                                      (videoController
-                                                              .player
-                                                              .state
-                                                              .height ??
-                                                          9);
-                                                  final screenAspect =
-                                                      constraints.maxWidth /
-                                                      constraints.maxHeight;
-                                                  double scale = 1.0;
-                                                  if (aspectRatio >
-                                                      screenAspect) {
-                                                    scale =
-                                                        constraints.maxHeight *
-                                                        aspectRatio /
-                                                        constraints.maxWidth;
-                                                  } else {
-                                                    scale =
-                                                        constraints.maxWidth /
-                                                        (constraints.maxHeight *
-                                                            aspectRatio);
-                                                  }
-                                                  return Transform.scale(
-                                                    scale: scale.clamp(
-                                                      1.0,
-                                                      3.0,
-                                                    ),
-                                                    child: child!,
-                                                  );
-                                                },
-                                              );
+
+                                        return ValueListenableBuilder<
+                                          VideoController?
+                                        >(
+                                          valueListenable:
+                                              _videoControllerNotifier,
+                                          builder: (context, controller, _) {
+                                            if (controller == null) {
+                                              return const SizedBox.shrink();
                                             }
-                                            return child!;
+                                            return ValueListenableBuilder<
+                                              BoxFit
+                                            >(
+                                              valueListenable:
+                                                  _videoFitNotifier,
+                                              builder: (context, fit, child) {
+                                                if (fit == BoxFit.cover) {
+                                                  return LayoutBuilder(
+                                                    builder: (
+                                                      context,
+                                                      constraints,
+                                                    ) {
+                                                      final videoController =
+                                                          controller;
+                                                      final aspectRatio =
+                                                          (videoController
+                                                                  .player
+                                                                  .state
+                                                                  .width ??
+                                                              16) /
+                                                          (videoController
+                                                                  .player
+                                                                  .state
+                                                                  .height ??
+                                                              9);
+                                                      final screenAspect =
+                                                          constraints.maxWidth /
+                                                          constraints.maxHeight;
+                                                      double scale = 1.0;
+                                                      if (aspectRatio >
+                                                          screenAspect) {
+                                                        scale =
+                                                            constraints
+                                                                .maxHeight *
+                                                            aspectRatio /
+                                                            constraints
+                                                                .maxWidth;
+                                                      } else {
+                                                        scale =
+                                                            constraints
+                                                                .maxWidth /
+                                                            (constraints
+                                                                    .maxHeight *
+                                                                aspectRatio);
+                                                      }
+                                                      return Transform.scale(
+                                                        scale: scale.clamp(
+                                                          1.0,
+                                                          3.0,
+                                                        ),
+                                                        child: child!,
+                                                      );
+                                                    },
+                                                  );
+                                                }
+                                                return child!;
+                                              },
+                                              child: Video(
+                                                key: ValueKey(_videoKey),
+                                                controller: controller,
+                                                fill: Colors.black,
+                                                fit: BoxFit.contain,
+                                                controls: NoVideoControls,
+                                              ),
+                                            );
                                           },
-                                          child: Video(
-                                            key: ValueKey(_videoKey),
-                                            controller: controller,
-                                            fill: Colors.black,
-                                            fit: BoxFit.contain,
-                                            controls: NoVideoControls,
-                                          ),
                                         );
                                       },
                                     ),
@@ -2671,6 +3407,157 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     );
   }
 
+  Widget _buildCastingPlaceholder() {
+    final castService = CastService();
+    final deviceName = castService.connectedDevice?.name ?? 'TV';
+    final size = MediaQuery.of(context).size;
+    final double scale = (size.shortestSide / 414.0).clamp(0.8, 1.25);
+
+    return Container(
+      color: Colors.black,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          // Fondo con Poster Desenfocado y Gradiente
+          if (_currentItem.logo != null) ...[
+            Opacity(
+              opacity: 0.35,
+              child: FastThumbnail(
+                url: _currentItem.logo!,
+                width: double.infinity,
+                height: double.infinity,
+                fit: BoxFit.cover,
+              ),
+            ),
+            BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 40, sigmaY: 40),
+              child: Container(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.black.withValues(alpha: 0.4),
+                      Colors.black.withValues(alpha: 0.8),
+                      Colors.black,
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+
+          // Contenido Central
+          Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Icono con Efecto de Resplandor (Aura)
+                TweenAnimationBuilder<double>(
+                  tween: Tween(begin: 0.0, end: 1.0),
+                  duration: const Duration(seconds: 2),
+                  builder: (context, value, child) {
+                    return Container(
+                      padding: EdgeInsets.all(24 * scale),
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.redAccent.withValues(
+                              alpha: 0.15 + (0.05 * math.sin(value * math.pi)),
+                            ),
+                            blurRadius: 40 + (10 * math.sin(value * math.pi)),
+                            spreadRadius: 5,
+                          ),
+                        ],
+                      ),
+                      child: Icon(
+                        Icons.cast,
+                        color: Colors.redAccent,
+                        size: 50 * scale,
+                      ),
+                    );
+                  },
+                ),
+                SizedBox(height: 10 * scale),
+
+                // Título de Dispositivo
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 40),
+                  child: Text(
+                    'Reproduciendo en $deviceName',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: (_isLandscape ? 20 : 19) * scale,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -0.5,
+                    ),
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                SizedBox(height: 12 * scale),
+
+                // Nombre del Contenido
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 40),
+                  child: Text(
+                    _currentItem.name,
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.7),
+                      fontSize: (_isLandscape ? 15 : 14) * scale,
+                      fontWeight: FontWeight.w400,
+                    ),
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                SizedBox(height: 48 * scale),
+
+                // Badge de Optimización
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 10,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.04),
+                    borderRadius: BorderRadius.circular(30),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.08),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.bolt_rounded,
+                        color: Colors.amber,
+                        size: 18,
+                      ),
+                      const SizedBox(width: 10),
+                      Text(
+                        'Disfruta Bump Comba en tu TV',
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.5),
+                          fontSize: 12 * scale,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0.2,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildControls() {
     final size = MediaQuery.of(context).size;
     final isPiP = size.height < 300 || size.width < 300;
@@ -2712,21 +3599,42 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                       ),
                       SizedBox(width: horizontalGap),
                     ],
-                    StreamBuilder<bool>(
-                      stream: _player?.stream.playing,
-                      initialData: _player?.state.playing,
-                      builder: (context, snapshot) {
-                        final isPlaying = snapshot.data ?? false;
-                        return IconButton(
-                          iconSize: centralIconSize,
-                          icon: Icon(
-                            isPlaying
-                                ? Icons.pause_circle_filled
-                                : Icons.play_circle_fill,
-                            color: Colors.white,
-                          ),
-                          onPressed: _togglePlayback,
-                        );
+                    ValueListenableBuilder<bool>(
+                      valueListenable: CastService().isCasting,
+                      builder: (context, isCasting, _) {
+                        return isCasting
+                            ? ValueListenableBuilder<bool>(
+                              valueListenable: CastService().castPlaying,
+                              builder: (context, isPlaying, _) {
+                                return IconButton(
+                                  iconSize: centralIconSize,
+                                  icon: Icon(
+                                    isPlaying
+                                        ? Icons.pause_circle_filled
+                                        : Icons.play_circle_fill,
+                                    color: Colors.white,
+                                  ),
+                                  onPressed: _togglePlayback,
+                                );
+                              },
+                            )
+                            : StreamBuilder<bool>(
+                              stream: _player?.stream.playing,
+                              initialData: _player?.state.playing,
+                              builder: (context, snapshot) {
+                                final isPlaying = snapshot.data ?? false;
+                                return IconButton(
+                                  iconSize: centralIconSize,
+                                  icon: Icon(
+                                    isPlaying
+                                        ? Icons.pause_circle_filled
+                                        : Icons.play_circle_fill,
+                                    color: Colors.white,
+                                  ),
+                                  onPressed: _togglePlayback,
+                                );
+                              },
+                            );
                       },
                     ),
                     if (!_currentItem.isLive) ...[
@@ -2776,8 +3684,20 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                   ),
                                   onPressed: () async {
                                     if (_player != null && !_isVideoLoading) {
-                                      final position = _player!.state.position;
-                                      final duration = _player!.state.duration;
+                                      final castService = CastService();
+                                      Duration position = Duration.zero;
+                                      Duration duration = Duration.zero;
+
+                                      if (castService.isCasting.value) {
+                                        position =
+                                            castService.castPosition.value;
+                                        duration =
+                                            castService.castDuration.value;
+                                      } else if (_player != null) {
+                                        position = _player!.state.position;
+                                        duration = _player!.state.duration;
+                                      }
+
                                       if (duration.inSeconds > 0) {
                                         await _watchProgressService
                                             .saveProgress(
@@ -2835,23 +3755,33 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                     ],
                                   ),
                                 ),
-                                if (!_currentItem.isLive)
-                                  IconButton(
-                                    padding:
-                                        _isLandscape
-                                            ? EdgeInsets.zero
-                                            : const EdgeInsets.all(8),
-                                    constraints:
-                                        _isLandscape
-                                            ? const BoxConstraints()
-                                            : null,
-                                    icon: Icon(
-                                      Icons.speed_rounded,
-                                      color: Colors.white,
-                                      size: 24 * scale,
-                                    ),
-                                    onPressed: _showSpeedSelection,
-                                  ),
+                                // Botón de Cast / Transmitir a TV
+                                ValueListenableBuilder<bool>(
+                                  valueListenable: CastService().isCasting,
+                                  builder: (context, casting, _) {
+                                    return IconButton(
+                                      padding:
+                                          _isLandscape
+                                              ? EdgeInsets.zero
+                                              : const EdgeInsets.all(8),
+                                      constraints:
+                                          _isLandscape
+                                              ? const BoxConstraints()
+                                              : null,
+                                      icon: Icon(
+                                        casting
+                                            ? Icons.cast_connected_rounded
+                                            : Icons.cast_rounded,
+                                        color:
+                                            casting
+                                                ? Colors.redAccent
+                                                : Colors.white,
+                                        size: 24 * scale,
+                                      ),
+                                      onPressed: _showCastSelection,
+                                    );
+                                  },
+                                ),
                                 IconButton(
                                   padding:
                                       _isLandscape
@@ -2935,181 +3865,268 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                       stream: _player?.stream.duration,
                                       initialData: _player?.state.duration,
                                       builder: (context, durationSnapshot) {
-                                        final position =
-                                            positionSnapshot.data ??
-                                            Duration.zero;
-                                        final duration =
-                                            durationSnapshot.data ??
-                                            Duration.zero;
-                                        final max =
-                                            duration.inMilliseconds.toDouble();
-                                        final value =
-                                            _isDragging
-                                                ? _dragValue
-                                                : position.inMilliseconds
-                                                    .toDouble()
-                                                    .clamp(
-                                                      0.0,
-                                                      max > 0 ? max : 0.0,
-                                                    );
+                                        return ValueListenableBuilder<bool>(
+                                          valueListenable:
+                                              CastService().isCasting,
+                                          builder: (context, isCasting, _) {
+                                            return ValueListenableBuilder<
+                                              Duration
+                                            >(
+                                              valueListenable:
+                                                  CastService().castPosition,
+                                              builder: (context, castPos, _) {
+                                                return ValueListenableBuilder<
+                                                  Duration
+                                                >(
+                                                  valueListenable:
+                                                      CastService()
+                                                          .castDuration,
+                                                  builder: (
+                                                    context,
+                                                    castDur,
+                                                    _,
+                                                  ) {
+                                                    final position =
+                                                        isCasting
+                                                            ? castPos
+                                                            : (positionSnapshot
+                                                                    .data ??
+                                                                Duration.zero);
+                                                    final duration =
+                                                        isCasting
+                                                            ? castDur
+                                                            : (durationSnapshot
+                                                                    .data ??
+                                                                Duration.zero);
+                                                    final max =
+                                                        duration.inMilliseconds
+                                                            .toDouble();
+                                                    final value =
+                                                        _isDragging
+                                                            ? _dragValue
+                                                            : position
+                                                                .inMilliseconds
+                                                                .toDouble()
+                                                                .clamp(
+                                                                  0.0,
+                                                                  max > 0
+                                                                      ? max
+                                                                      : 0.0,
+                                                                );
 
-                                        return GestureDetector(
-                                          behavior: HitTestBehavior.opaque,
-                                          onHorizontalDragUpdate: (_) {},
-                                          child: Column(
-                                            children: [
-                                              SliderTheme(
-                                                data: SliderThemeData(
-                                                  trackHeight: 1.5 * scale,
-                                                  activeTrackColor:
-                                                      Colors.white,
-                                                  inactiveTrackColor: Colors
-                                                      .white
-                                                      .withValues(alpha: 0.24),
-                                                  thumbColor: Colors.white,
-                                                  thumbShape:
-                                                      RoundSliderThumbShape(
-                                                        enabledThumbRadius:
-                                                            6 * scale,
+                                                    return GestureDetector(
+                                                      behavior:
+                                                          HitTestBehavior
+                                                              .opaque,
+                                                      onHorizontalDragUpdate:
+                                                          (_) {},
+                                                      child: Column(
+                                                        children: [
+                                                          SliderTheme(
+                                                            data: SliderThemeData(
+                                                              trackHeight:
+                                                                  1.5 * scale,
+                                                              activeTrackColor:
+                                                                  Colors.white,
+                                                              inactiveTrackColor:
+                                                                  Colors.white
+                                                                      .withValues(
+                                                                        alpha:
+                                                                            0.24,
+                                                                      ),
+                                                              thumbColor:
+                                                                  Colors.white,
+                                                              thumbShape:
+                                                                  RoundSliderThumbShape(
+                                                                    enabledThumbRadius:
+                                                                        6 *
+                                                                        scale,
+                                                                  ),
+                                                              overlayShape:
+                                                                  RoundSliderOverlayShape(
+                                                                    overlayRadius:
+                                                                        14 *
+                                                                        scale,
+                                                                  ),
+                                                            ),
+                                                            child: Slider(
+                                                              min: 0,
+                                                              max:
+                                                                  max > 0
+                                                                      ? max
+                                                                      : 1,
+                                                              value: value,
+                                                              onChangeStart: (
+                                                                newValue,
+                                                              ) {
+                                                                setState(() {
+                                                                  _isDragging =
+                                                                      true;
+                                                                  _dragValue =
+                                                                      newValue;
+                                                                });
+                                                              },
+                                                              onChanged: (
+                                                                newValue,
+                                                              ) {
+                                                                setState(
+                                                                  () =>
+                                                                      _dragValue =
+                                                                          newValue,
+                                                                );
+                                                              },
+                                                              onChangeEnd: (
+                                                                newValue,
+                                                              ) {
+                                                                final castService =
+                                                                    CastService();
+                                                                if (castService
+                                                                    .isCasting
+                                                                    .value) {
+                                                                  castService.seek(
+                                                                    newValue /
+                                                                        1000.0,
+                                                                  );
+                                                                } else {
+                                                                  _player?.seek(
+                                                                    Duration(
+                                                                      milliseconds:
+                                                                          newValue
+                                                                              .toInt(),
+                                                                    ),
+                                                                  );
+                                                                }
+                                                                setState(() {
+                                                                  _isDragging =
+                                                                      false;
+                                                                  _isSeeking =
+                                                                      true;
+                                                                });
+                                                                Future.delayed(
+                                                                  const Duration(
+                                                                    milliseconds:
+                                                                        1000,
+                                                                  ),
+                                                                  () {
+                                                                    if (mounted &&
+                                                                        _isSeeking) {
+                                                                      setState(
+                                                                        () =>
+                                                                            _isSeeking =
+                                                                                false,
+                                                                      );
+                                                                    }
+                                                                  },
+                                                                );
+                                                              },
+                                                            ),
+                                                          ),
+                                                          Padding(
+                                                            padding:
+                                                                EdgeInsets.symmetric(
+                                                                  horizontal:
+                                                                      8 * scale,
+                                                                ),
+                                                            child: Row(
+                                                              children: [
+                                                                Text(
+                                                                  WatchProgressService.formatDuration(
+                                                                    Duration(
+                                                                      milliseconds:
+                                                                          value
+                                                                              .toInt(),
+                                                                    ),
+                                                                  ),
+                                                                  style: TextStyle(
+                                                                    color:
+                                                                        Colors
+                                                                            .white70,
+                                                                    fontSize:
+                                                                        11 *
+                                                                        scale,
+                                                                    fontWeight:
+                                                                        FontWeight
+                                                                            .w500,
+                                                                  ),
+                                                                ),
+                                                                const Spacer(),
+                                                                if (_playlist
+                                                                        .length >
+                                                                    1) ...[
+                                                                  IconButton(
+                                                                    icon: Icon(
+                                                                      Icons
+                                                                          .list_alt,
+                                                                      color:
+                                                                          Colors
+                                                                              .white,
+                                                                      size:
+                                                                          20 *
+                                                                          scale,
+                                                                    ),
+                                                                    padding:
+                                                                        EdgeInsets.all(
+                                                                          6 *
+                                                                              scale,
+                                                                        ),
+                                                                    onPressed:
+                                                                        _showEpisodeSelection,
+                                                                  ),
+                                                                  SizedBox(
+                                                                    width:
+                                                                        8 *
+                                                                        scale,
+                                                                  ),
+                                                                ],
+                                                                IconButton(
+                                                                  icon: Icon(
+                                                                    Icons
+                                                                        .settings,
+                                                                    color:
+                                                                        Colors
+                                                                            .white,
+                                                                    size:
+                                                                        20 *
+                                                                        scale,
+                                                                  ),
+                                                                  padding:
+                                                                      EdgeInsets.all(
+                                                                        6 * scale,
+                                                                      ),
+                                                                  onPressed:
+                                                                      _showSettingsMenu,
+                                                                ),
+                                                                SizedBox(
+                                                                  width:
+                                                                      8 * scale,
+                                                                ),
+                                                                Text(
+                                                                  WatchProgressService.formatDuration(
+                                                                    duration,
+                                                                  ),
+                                                                  style: TextStyle(
+                                                                    color:
+                                                                        Colors
+                                                                            .white70,
+                                                                    fontSize:
+                                                                        11 *
+                                                                        scale,
+                                                                    fontWeight:
+                                                                        FontWeight
+                                                                            .w500,
+                                                                  ),
+                                                                ),
+                                                              ],
+                                                            ),
+                                                          ),
+                                                        ],
                                                       ),
-                                                  overlayShape:
-                                                      RoundSliderOverlayShape(
-                                                        overlayRadius:
-                                                            14 * scale,
-                                                      ),
-                                                ),
-                                                child: Slider(
-                                                  min: 0,
-                                                  max: max > 0 ? max : 1,
-                                                  value: value,
-                                                  onChangeStart: (newValue) {
-                                                    setState(() {
-                                                      _isDragging = true;
-                                                      _dragValue = newValue;
-                                                    });
-                                                  },
-                                                  onChanged: (newValue) {
-                                                    setState(
-                                                      () =>
-                                                          _dragValue = newValue,
                                                     );
                                                   },
-                                                  onChangeEnd: (newValue) {
-                                                    _player?.seek(
-                                                      Duration(
-                                                        milliseconds:
-                                                            newValue.toInt(),
-                                                      ),
-                                                    );
-                                                    setState(() {
-                                                      _isDragging = false;
-                                                      _isSeeking = true;
-                                                    });
-                                                    Future.delayed(
-                                                      const Duration(
-                                                        milliseconds: 1000,
-                                                      ),
-                                                      () {
-                                                        if (mounted &&
-                                                            _isSeeking) {
-                                                          setState(
-                                                            () =>
-                                                                _isSeeking =
-                                                                    false,
-                                                          );
-                                                        }
-                                                      },
-                                                    );
-                                                  },
-                                                ),
-                                              ),
-                                              Padding(
-                                                padding: EdgeInsets.symmetric(
-                                                  horizontal: 8 * scale,
-                                                ),
-                                                child: Row(
-                                                  children: [
-                                                    Text(
-                                                      WatchProgressService.formatDuration(
-                                                        Duration(
-                                                          milliseconds:
-                                                              value.toInt(),
-                                                        ),
-                                                      ),
-                                                      style: TextStyle(
-                                                        color: Colors.white70,
-                                                        fontSize: 11 * scale,
-                                                        fontWeight:
-                                                            FontWeight.w500,
-                                                      ),
-                                                    ),
-                                                    const Spacer(),
-                                                    // Botón de subtítulos
-                                                    IconButton(
-                                                      icon: Icon(
-                                                        _subtitlesEnabled
-                                                            ? Icons.subtitles
-                                                            : Icons
-                                                                .subtitles_outlined,
-                                                        color: Colors.white,
-                                                        size: 20 * scale,
-                                                      ),
-                                                      padding: EdgeInsets.zero,
-                                                      constraints:
-                                                          const BoxConstraints(),
-                                                      onPressed:
-                                                          _showSubtitleSelection,
-                                                    ),
-                                                    SizedBox(width: 12 * scale),
-                                                    // Botón de audio
-                                                    IconButton(
-                                                      icon: Icon(
-                                                        Icons.audiotrack,
-                                                        color: Colors.white,
-                                                        size: 20 * scale,
-                                                      ),
-                                                      padding: EdgeInsets.zero,
-                                                      constraints:
-                                                          const BoxConstraints(),
-                                                      onPressed:
-                                                          _showAudioSelection,
-                                                    ),
-                                                    if (_playlist.length >
-                                                        1) ...[
-                                                      SizedBox(
-                                                        width: 12 * scale,
-                                                      ),
-                                                      IconButton(
-                                                        icon: Icon(
-                                                          Icons.list_alt,
-                                                          color: Colors.white,
-                                                          size: 20 * scale,
-                                                        ),
-                                                        padding:
-                                                            EdgeInsets.zero,
-                                                        constraints:
-                                                            const BoxConstraints(),
-                                                        onPressed:
-                                                            _showEpisodeSelection,
-                                                      ),
-                                                    ],
-                                                    SizedBox(width: 12 * scale),
-                                                    Text(
-                                                      WatchProgressService.formatDuration(
-                                                        duration,
-                                                      ),
-                                                      style: TextStyle(
-                                                        color: Colors.white70,
-                                                        fontSize: 11 * scale,
-                                                        fontWeight:
-                                                            FontWeight.w500,
-                                                      ),
-                                                    ),
-                                                  ],
-                                                ),
-                                              ),
-                                            ],
-                                          ),
+                                                );
+                                              },
+                                            );
+                                          },
                                         );
                                       },
                                     );
@@ -3129,27 +4146,37 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   void _seekBackward({bool showControls = true}) {
     if (_player == null) return;
+    final castService = CastService();
     setState(() {
       _isSeeking = true;
       _seekFeedbackForward = false;
       _seekFeedbackSeconds = 10;
     });
-    final pos = _player!.state.position - const Duration(seconds: 10);
-    _player!.seek(pos < Duration.zero ? Duration.zero : pos);
+    if (castService.isCasting.value) {
+      castService.seekBackward(seconds: 10);
+    } else {
+      final pos = _player!.state.position - const Duration(seconds: 10);
+      _player!.seek(pos < Duration.zero ? Duration.zero : pos);
+    }
     _startHideControlsTimer(showIfHidden: showControls);
     _resetSeekFeedback();
   }
 
   void _seekForward({bool showControls = true}) {
     if (_player == null) return;
+    final castService = CastService();
     setState(() {
       _isSeeking = true;
       _seekFeedbackForward = true;
       _seekFeedbackSeconds = 10;
     });
-    final pos = _player!.state.position + const Duration(seconds: 10);
-    final dur = _player!.state.duration;
-    _player!.seek(pos > dur ? dur : pos);
+    if (castService.isCasting.value) {
+      castService.seekForward(seconds: 10);
+    } else {
+      final pos = _player!.state.position + const Duration(seconds: 10);
+      final dur = _player!.state.duration;
+      _player!.seek(pos > dur ? dur : pos);
+    }
     _startHideControlsTimer(showIfHidden: showControls);
     _resetSeekFeedback();
   }
@@ -3514,6 +4541,281 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Widget StatefulWidget para buscar y listar dispositivos Chromecast.
+class _CastDeviceSelector extends StatefulWidget {
+  final bool isLandscape;
+  final void Function(CastDevice device) onDeviceSelected;
+
+  const _CastDeviceSelector({
+    required this.isLandscape,
+    required this.onDeviceSelected,
+  });
+
+  @override
+  State<_CastDeviceSelector> createState() => _CastDeviceSelectorState();
+}
+
+class _CastDeviceSelectorState extends State<_CastDeviceSelector> {
+  List<CastDevice>? _devices;
+  bool _isSearching = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _searchDevices();
+  }
+
+  Future<void> _searchDevices() async {
+    setState(() {
+      _isSearching = true;
+      _error = null;
+      _devices = null;
+    });
+
+    try {
+      final devices = await CastService().discoverDevices(
+        timeout: const Duration(seconds: 6),
+      );
+      if (mounted) {
+        setState(() {
+          _devices = devices;
+          _isSearching = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = 'Error al buscar dispositivos';
+          _isSearching = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: widget.isLandscape ? 420 : double.infinity,
+      margin: widget.isLandscape ? const EdgeInsets.all(24) : EdgeInsets.zero,
+      constraints: BoxConstraints(
+        maxHeight:
+            widget.isLandscape
+                ? MediaQuery.of(context).size.width * 0.85
+                : MediaQuery.of(context).size.height * 0.55,
+      ),
+      decoration: BoxDecoration(
+        color: const Color.fromARGB(255, 27, 27, 27),
+        borderRadius:
+            widget.isLandscape
+                ? BorderRadius.circular(24)
+                : const BorderRadius.vertical(top: Radius.circular(20)),
+        border:
+            widget.isLandscape
+                ? Border.all(color: Colors.white12, width: 1)
+                : null,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.cast_rounded, color: Colors.white, size: 22),
+                    SizedBox(width: 10),
+                    Text(
+                      'Transmitir a TV',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (!_isSearching)
+                      IconButton(
+                        onPressed: _searchDevices,
+                        icon: const Icon(
+                          Icons.refresh_rounded,
+                          color: Colors.white70,
+                        ),
+                        tooltip: 'Buscar de nuevo',
+                      ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close, color: Colors.white70),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const Divider(color: Colors.white10, height: 1),
+          if (_isSearching)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 40),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    width: 32,
+                    height: 32,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2.5,
+                      color: Colors.redAccent.withValues(alpha: 0.8),
+                      strokeCap: StrokeCap.round,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  Text(
+                    'Buscando dispositivos...',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.6),
+                      fontSize: 14,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Asegúrate de estar en la misma red Wi-Fi',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.35),
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else if (_error != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 24),
+              child: Column(
+                children: [
+                  Icon(
+                    Icons.wifi_off_rounded,
+                    color: Colors.red.withValues(alpha: 0.6),
+                    size: 40,
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    _error!,
+                    style: const TextStyle(color: Colors.white70, fontSize: 14),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 16),
+                  TextButton.icon(
+                    icon: const Icon(Icons.refresh, size: 18),
+                    label: const Text('Reintentar'),
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.redAccent,
+                    ),
+                    onPressed: _searchDevices,
+                  ),
+                ],
+              ),
+            )
+          else if (_devices != null && _devices!.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 24),
+              child: Column(
+                children: [
+                  Icon(
+                    Icons.tv_off_rounded,
+                    color: Colors.white.withValues(alpha: 0.4),
+                    size: 40,
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'No se encontraron dispositivos',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Verifica que tu TV/Chromecast esté encendido\ny conectado a la misma red Wi-Fi.',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.5),
+                      fontSize: 13,
+                      height: 1.5,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 20),
+                  TextButton.icon(
+                    icon: const Icon(Icons.refresh, size: 18),
+                    label: const Text('Buscar de nuevo'),
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.redAccent,
+                    ),
+                    onPressed: _searchDevices,
+                  ),
+                ],
+              ),
+            )
+          else if (_devices != null)
+            Flexible(
+              child: ListView.builder(
+                padding: EdgeInsets.zero,
+                shrinkWrap: true,
+                itemCount: _devices!.length,
+                itemBuilder: (context, index) {
+                  final device = _devices![index];
+                  return ListTile(
+                    leading: Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: Colors.redAccent.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(
+                        Icons.tv_rounded,
+                        color: Colors.redAccent,
+                        size: 22,
+                      ),
+                    ),
+                    title: Text(
+                      device.name,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    subtitle: Text(
+                      device.host,
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.4),
+                        fontSize: 12,
+                      ),
+                    ),
+                    trailing: const Icon(
+                      Icons.chevron_right,
+                      color: Colors.white38,
+                    ),
+                    onTap: () => widget.onDeviceSelected(device),
+                  );
+                },
+              ),
+            ),
+          const SizedBox(height: 16),
+        ],
       ),
     );
   }

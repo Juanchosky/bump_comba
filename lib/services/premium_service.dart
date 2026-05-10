@@ -65,7 +65,7 @@ class PremiumService {
   /// Check if user has any active premium entitlement
   bool get hasActiveSubscription => _isPremium;
 
-  ///  bool get isPremium => kDebugMode ? true : _isPremium;
+  ///bool get isPremium => kDebugMode ? true : _isPremium;
 
   /// bool get hasActiveSubscription => isPremium;
 

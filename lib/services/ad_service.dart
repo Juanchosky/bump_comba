@@ -644,6 +644,7 @@ class AdService {
     VoidCallback? onAdFailed,
     VoidCallback? onCancel,
     String? message,
+    int quarterTurns = 0,
   }) {
     if (!isSupported || PremiumService().isPremium) {
       onUserEarnedReward();
@@ -665,20 +666,25 @@ class AdService {
             curve: Curves.easeOutBack,
             reverseCurve: Curves.easeIn,
           );
+          final dialog = Dialog(
+            backgroundColor: Colors.transparent,
+            insetPadding: const EdgeInsets.symmetric(horizontal: 24),
+            child: _RewardedAdConfirmationDialog(
+              message: message,
+              adService: this,
+              onUserEarnedReward: onUserEarnedReward,
+              onAdFailed: onAdFailed,
+            ),
+          );
+
           return FadeTransition(
             opacity: anim,
             child: ScaleTransition(
               scale: curve,
-              child: Dialog(
-                backgroundColor: Colors.transparent,
-                insetPadding: const EdgeInsets.symmetric(horizontal: 24),
-                child: _RewardedAdConfirmationDialog(
-                  message: message,
-                  adService: this,
-                  onUserEarnedReward: onUserEarnedReward,
-                  onAdFailed: onAdFailed,
-                ),
-              ),
+              child:
+                  quarterTurns != 0
+                      ? RotatedBox(quarterTurns: quarterTurns, child: dialog)
+                      : dialog,
             ),
           );
         },

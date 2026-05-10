@@ -137,7 +137,7 @@ class M3UService extends ChangeNotifier {
   static const String _likedUrlsKey = 'm3u_liked_urls';
   static const String _failedLogosKey = 'm3u_failed_logos';
   static const String _favoriteItemsJsonKey = 'm3u_favorite_items_json';
-  static const Duration _cacheDuration = Duration(hours: 24);
+  static const Duration _cacheDuration = Duration(minutes: 10);
 
   // ── Singleton ────────────────────────────────────────────────────────────
   static final M3UService _instance = M3UService._internal();
@@ -1191,7 +1191,18 @@ class M3UService extends ChangeNotifier {
   }) async {
     _lastError = null;
     try {
-      if (_items.isNotEmpty && !forceRefresh) return true;
+      // PERF: Si ya hay items y el caché NO ha expirado, devolvemos true inmediatamente
+      final bool isExpired = _isCacheExpired();
+      if (_items.isNotEmpty && !forceRefresh && !isExpired) {
+        return true;
+      }
+
+      // Si el contenido está vacío o el caché expiró o se forzó refresh, 
+      // re-resolvemos los códigos del Load Balancer para asegurar que apuntamos
+      // al servidor más actualizado y disponible.
+      if (_items.isEmpty || isExpired || forceRefresh) {
+        await _reResolveCodesIfNeeded();
+      }
 
       final filtersMap =
           _filterRules
@@ -1201,7 +1212,7 @@ class M3UService extends ChangeNotifier {
       if (useRetry) {
         return await retryLoad(
           attempts: retryAttempts,
-          forceRefresh: forceRefresh,
+          forceRefresh: forceRefresh || isExpired,
           onProgress: onProgress,
         );
       }
@@ -2374,6 +2385,61 @@ class M3UService extends ChangeNotifier {
   // ===========================================================================
   // CACHE MANAGEMENT — ROBUST-3
   // ===========================================================================
+
+  /// Checks if the main M3U cache has expired based on [_cacheDuration].
+  bool _isCacheExpired() {
+    final key = _isUnifiedMode ? _unifiedCacheTimestampKey : _cacheTimestampKey;
+    final timestamp = _prefs?.getInt(key);
+    if (timestamp == null) return true;
+
+    final elapsed = DateTime.now().millisecondsSinceEpoch - timestamp;
+    return elapsed > _cacheDuration.inMilliseconds;
+  }
+
+  /// Re-resolves all sources that were added via a code (like "1234").
+  /// This ensures that the URL and credentials are up to date with the load balancer.
+  Future<void> _reResolveCodesIfNeeded() async {
+    if (_sources.isEmpty) return;
+
+    bool changed = false;
+    for (int i = 0; i < _sources.length; i++) {
+      final source = _sources[i];
+      if (source.isCode && source.originalInput != null) {
+        try {
+          final resolved = await resolveM3UInput(source.originalInput!);
+          if (resolved.url != null) {
+            // Check if anything meaningful changed (url, user, pass, or type)
+            final bool urlChanged = resolved.url != source.url;
+            final bool userChanged = resolved.username != source.username;
+            final bool passChanged = resolved.password != source.password;
+            final bool typeChanged = resolved.type != source.type;
+
+            if (urlChanged || userChanged || passChanged || typeChanged) {
+              debugPrint(
+                'Re-resolved code ${source.originalInput}: updating source data.',
+              );
+              _sources[i] = M3USource(
+                name: source.name,
+                url: resolved.url!,
+                isCode: true,
+                originalInput: source.originalInput,
+                username: resolved.username,
+                password: resolved.password,
+                type: resolved.type,
+              );
+              changed = true;
+            }
+          }
+        } catch (e) {
+          debugPrint('Error re-resolving code ${source.originalInput}: $e');
+        }
+      }
+    }
+
+    if (changed) {
+      await _saveSources();
+    }
+  }
 
   /// ROBUST-3: clearCache now logs errors so failures are visible in debug builds.
   Future<void> clearCache() async {

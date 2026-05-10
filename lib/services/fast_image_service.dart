@@ -8,18 +8,30 @@ import 'package:http/io_client.dart';
 import 'performance_service.dart';
 import 'metadata_fallback_service.dart';
 
-// FIX 1: Headers compatibles con la mayoría de CDNs IPTV
+// Headers mínimos — solo lo imprescindible para evitar 403.
+// Menos headers = handshake más rápido con el CDN.
 const Map<String, String> _kImageHeaders = {
   'User-Agent':
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-      '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Accept': 'image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-  'Connection': 'keep-alive',
+      'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+  'Accept': 'image/*,*/*;q=0.8',
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// APP CACHE MANAGER
+// APP CACHE MANAGER — Optimizado para velocidad
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// HttpClient compartido con pool de conexiones agresivo.
+/// - maxConnectionsPerHost: 6 descargas paralelas al mismo servidor
+/// - idleTimeout: mantiene conexiones vivas para reutilización HTTP/1.1
+/// - autoUncompress: deja que el sistema descomprima automáticamente
+final HttpClient _sharedHttpClient = HttpClient()
+  ..connectionTimeout = const Duration(seconds: 8)
+  ..idleTimeout = const Duration(seconds: 30)
+  ..maxConnectionsPerHost = 6
+  ..autoUncompress = true
+  ..badCertificateCallback =
+      ((X509Certificate cert, String host, int port) => true);
 
 class AppCacheManager {
   static const key = 'bump_comba_img_cache';
@@ -27,14 +39,9 @@ class AppCacheManager {
     Config(
       key,
       stalePeriod: const Duration(days: 7),
-      maxNrOfCacheObjects: 2500,
+      maxNrOfCacheObjects: 3000,
       fileService: HttpFileService(
-        httpClient: IOClient(
-          HttpClient()
-            ..connectionTimeout = const Duration(seconds: 15)
-            ..badCertificateCallback =
-                ((X509Certificate cert, String host, int port) => true),
-        ),
+        httpClient: IOClient(_sharedHttpClient),
       ),
     ),
   );
@@ -81,8 +88,8 @@ class FastImageService {
   static const int _maxQueuedMemory = 3000;
   final Set<String> _queued = {};
 
-  static const int _batchSize = 4;
-  static const int _maxBackgroundPrewarm = 24;
+  static const int _batchSize = 8;
+  static const int _maxBackgroundPrewarm = 40;
 
   int get _thumbWidth => PerformanceService().lowMemoryLimit ? 150 : 300;
 
@@ -120,7 +127,8 @@ class FastImageService {
         eagerError: false,
       );
 
-      await Future.delayed(const Duration(milliseconds: 300));
+      // Micro-pausa entre batches para no bloquear el UI thread
+      await Future.delayed(const Duration(milliseconds: 50));
     }
   }
 
@@ -130,7 +138,7 @@ class FastImageService {
         ResizeImage(
           CachedNetworkImageProvider(
             url,
-            headers: _kImageHeaders, // FIX 1
+            headers: _kImageHeaders,
             cacheManager: AppCacheManager.instance,
           ),
           width: _thumbWidth,
@@ -142,14 +150,14 @@ class FastImageService {
   }
 
   void prewarmPriority(List<String> urls, BuildContext context) {
-    for (final url in urls.take(20)) {
+    for (final url in urls.take(30)) {
       if (!isValidImageUrl(url) || _queued.contains(url)) continue;
       _queued.add(url);
       precacheImage(
         ResizeImage(
           CachedNetworkImageProvider(
             url,
-            headers: _kImageHeaders, // FIX 1
+            headers: _kImageHeaders,
             cacheManager: AppCacheManager.instance,
           ),
           width: _thumbWidth,
@@ -203,15 +211,19 @@ class _FastThumbnailState extends State<FastThumbnail>
   int? _effectiveCacheWidth;
   String? _fallbackUrl;
   bool _isResolvingFallback = false;
+
+  // Silent retry state
   int _retryCount = 0;
   Timer? _retryTimer;
+  int _imageKey = 0;
+  bool _hasLoaded = false;
 
   @override
   void initState() {
     super.initState();
     _fadeController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 250),
+      duration: const Duration(milliseconds: 200),
     );
     _fadeAnimation = CurvedAnimation(
       parent: _fadeController,
@@ -253,7 +265,6 @@ class _FastThumbnailState extends State<FastThumbnail>
   @override
   void didUpdateWidget(FastThumbnail oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // FIX 3: solo resetear si la URL cambió — cacheWidth es estable en runtime
     if (oldWidget.url != widget.url) {
       _cachedProvider = null;
       _fallbackUrl = null;
@@ -261,32 +272,56 @@ class _FastThumbnailState extends State<FastThumbnail>
       _fadeController.reset();
       _retryCount = 0;
       _retryTimer?.cancel();
+      _hasLoaded = false;
+      _imageKey = 0;
       _checkAndResolveFallback();
     }
   }
 
-  void _handleError() {
-    // Retry logic: 3 attempts with increasing delay (5s, 15s, 30s)
-    if (_retryCount < 3) {
-      _retryCount++;
-      _retryTimer?.cancel();
-      _retryTimer = Timer(Duration(seconds: _retryCount * 10 - 5), () {
-        if (mounted) {
-          // Evict previous failed attempt from cache to force reload
-          if (_cachedProvider != null) {
-            _cachedProvider!.evict();
-          }
-          setState(() {
-            _cachedProvider = null;
-          });
-        }
-      });
-    } else {
-      // Only report as permanent failure after all retries
-      if (widget.onError != null) {
-        widget.onError!();
-      }
+  /// Silently retry loading the image after a short delay.
+  void _scheduleRetry() {
+    if (!mounted || _hasLoaded) return;
+
+    // Max 5 retries: 2s, 4s, 8s, 12s, 18s
+    if (_retryCount >= 5) {
+      widget.onError?.call();
+      return;
     }
+
+    _retryCount++;
+    _retryTimer?.cancel();
+    final delay = Duration(seconds: [2, 4, 8, 12, 18][_retryCount - 1]);
+
+    _retryTimer = Timer(delay, () {
+      if (!mounted || _hasLoaded) return;
+
+      // 1. Evict from disk cache
+      final url = _resolveUrl();
+      if (url != null) {
+        AppCacheManager.instance.removeFile(url).catchError((_) {});
+      }
+
+      // 2. Evict from memory
+      _cachedProvider?.evict();
+      _cachedProvider = null;
+
+      // 3. Reset fade
+      _fadeController.reset();
+
+      // 4. Rebuild with new key
+      if (mounted) {
+        setState(() {
+          _imageKey++;
+        });
+      }
+    });
+  }
+
+  /// Resolve the effective image URL (primary or fallback), trimmed.
+  String? _resolveUrl() {
+    final String? raw =
+        FastImageService.isValidImageUrl(widget.url) ? widget.url : _fallbackUrl;
+    return raw?.trim();
   }
 
   @override
@@ -299,12 +334,7 @@ class _FastThumbnailState extends State<FastThumbnail>
   ImageProvider _getProvider() {
     if (_cachedProvider != null) return _cachedProvider!;
 
-    final String? rawImageTarget =
-        FastImageService.isValidImageUrl(widget.url)
-            ? widget.url
-            : _fallbackUrl;
-
-    final String? imageTarget = rawImageTarget?.trim();
+    final String? imageTarget = _resolveUrl();
 
     if (imageTarget == null || imageTarget.isEmpty) {
       return const AssetImage('assets/placeholder.png');
@@ -312,7 +342,7 @@ class _FastThumbnailState extends State<FastThumbnail>
 
     ImageProvider provider = CachedNetworkImageProvider(
       imageTarget,
-      headers: _kImageHeaders, // FIX 1
+      headers: _kImageHeaders,
       cacheManager: AppCacheManager.instance,
     );
 
@@ -378,6 +408,7 @@ class _FastThumbnailState extends State<FastThumbnail>
           FadeTransition(
             opacity: _fadeAnimation,
             child: Image(
+              key: ValueKey('thumb_$_imageKey'),
               image: _getProvider(),
               width: widget.width,
               height: widget.height,
@@ -385,6 +416,7 @@ class _FastThumbnailState extends State<FastThumbnail>
               gaplessPlayback: true,
               frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
                 if (wasSynchronouslyLoaded) {
+                  _hasLoaded = true;
                   if (!_fadeController.isCompleted) {
                     SchedulerBinding.instance.addPostFrameCallback((_) {
                       if (mounted) _fadeController.value = 1.0;
@@ -393,6 +425,7 @@ class _FastThumbnailState extends State<FastThumbnail>
                   return child;
                 }
                 if (frame == null) return const SizedBox.shrink();
+                _hasLoaded = true;
                 if (!_fadeController.isCompleted) {
                   SchedulerBinding.instance.addPostFrameCallback((_) {
                     if (mounted) _fadeController.forward();
@@ -402,9 +435,9 @@ class _FastThumbnailState extends State<FastThumbnail>
               },
               errorBuilder: (context, error, stackTrace) {
                 WidgetsBinding.instance.addPostFrameCallback((_) {
-                  if (mounted) _handleError();
+                  if (mounted) _scheduleRetry();
                 });
-                return _placeholder();
+                return const SizedBox.shrink();
               },
             ),
           ),
@@ -446,15 +479,19 @@ class _FastChannelLogoState extends State<FastChannelLogo>
   late AnimationController _fadeController;
   late Animation<double> _fadeAnimation;
   ImageProvider? _cachedProvider;
+
+  // Silent retry state
   int _retryCount = 0;
   Timer? _retryTimer;
+  int _imageKey = 0;
+  bool _hasLoaded = false;
 
   @override
   void initState() {
     super.initState();
     _fadeController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 250),
+      duration: const Duration(milliseconds: 200),
     );
     _fadeAnimation = CurvedAnimation(
       parent: _fadeController,
@@ -470,28 +507,41 @@ class _FastChannelLogoState extends State<FastChannelLogo>
       _fadeController.reset();
       _retryCount = 0;
       _retryTimer?.cancel();
+      _hasLoaded = false;
+      _imageKey = 0;
     }
   }
 
-  void _handleError() {
-    if (_retryCount < 3) {
-      _retryCount++;
-      _retryTimer?.cancel();
-      _retryTimer = Timer(Duration(seconds: _retryCount * 10 - 5), () {
-        if (mounted) {
-          if (_cachedProvider != null) {
-            _cachedProvider!.evict();
-          }
-          setState(() {
-            _cachedProvider = null;
-          });
-        }
-      });
-    } else {
-      if (widget.onError != null) {
-        widget.onError!();
-      }
+  void _scheduleRetry() {
+    if (!mounted || _hasLoaded) return;
+
+    if (_retryCount >= 5) {
+      widget.onError?.call();
+      return;
     }
+
+    _retryCount++;
+    _retryTimer?.cancel();
+    final delay = Duration(seconds: [2, 4, 8, 12, 18][_retryCount - 1]);
+
+    _retryTimer = Timer(delay, () {
+      if (!mounted || _hasLoaded) return;
+
+      final url = widget.url?.trim();
+      if (url != null) {
+        AppCacheManager.instance.removeFile(url).catchError((_) {});
+      }
+
+      _cachedProvider?.evict();
+      _cachedProvider = null;
+      _fadeController.reset();
+
+      if (mounted) {
+        setState(() {
+          _imageKey++;
+        });
+      }
+    });
   }
 
   @override
@@ -532,6 +582,7 @@ class _FastChannelLogoState extends State<FastChannelLogo>
         FadeTransition(
           opacity: _fadeAnimation,
           child: Image(
+            key: ValueKey('logo_$_imageKey'),
             image: _getProvider(),
             width: widget.size,
             height: widget.size,
@@ -539,6 +590,7 @@ class _FastChannelLogoState extends State<FastChannelLogo>
             gaplessPlayback: true,
             frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
               if (wasSynchronouslyLoaded) {
+                _hasLoaded = true;
                 if (!_fadeController.isCompleted) {
                   SchedulerBinding.instance.addPostFrameCallback((_) {
                     if (mounted) _fadeController.value = 1.0;
@@ -547,6 +599,7 @@ class _FastChannelLogoState extends State<FastChannelLogo>
                 return child;
               }
               if (frame == null) return const SizedBox.shrink();
+              _hasLoaded = true;
               if (!_fadeController.isCompleted) {
                 SchedulerBinding.instance.addPostFrameCallback((_) {
                   if (mounted) _fadeController.forward();
@@ -556,9 +609,9 @@ class _FastChannelLogoState extends State<FastChannelLogo>
             },
             errorBuilder: (context, error, stackTrace) {
               WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (mounted) _handleError();
+                if (mounted) _scheduleRetry();
               });
-              return _placeholder();
+              return const SizedBox.shrink();
             },
           ),
         ),

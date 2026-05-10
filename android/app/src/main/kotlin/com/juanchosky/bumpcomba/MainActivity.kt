@@ -12,11 +12,11 @@ import android.graphics.drawable.Icon
 import android.os.Build
 import android.util.Rational
 import androidx.activity.enableEdgeToEdge
-import io.flutter.embedding.android.FlutterFragmentActivity
+import com.ryanheise.audioservice.AudioServiceFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
-class MainActivity : FlutterFragmentActivity() {
+class MainActivity : AudioServiceFragmentActivity() {
     private val CHANNEL = "com.juanchosky.bumpcomba/pip"
     private val ACTION_MEDIA_CONTROL = "media_control"
     private val EXTRA_CONTROL_TYPE = "control_type"

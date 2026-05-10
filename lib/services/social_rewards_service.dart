@@ -20,7 +20,7 @@ class SocialRewardsService {
 
   bool _isRated = false;
   bool _isShared = false;
-
+ 
   bool get isRated => _isRated;
   bool get isShared => _isShared;
 
