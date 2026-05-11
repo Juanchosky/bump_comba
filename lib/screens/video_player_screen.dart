@@ -840,7 +840,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         castAudioHandler.setMediaItem(
           id: currentUrl,
           title: _currentItem.name,
-          album: 'Bump Comba',
+          artist: 'Bump Comba',
+          album: castService.connectedDevice?.name ?? 'TV',
           artUri: _currentItem.logo,
         );
 
@@ -2593,108 +2594,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                       padding: const EdgeInsets.all(20),
                       child: Column(
                         children: [
-                          const Icon(Icons.cast, color: Colors.white, size: 45),
-                          const SizedBox(height: 16),
-                          Text(
-                            'Conectado a ${castService.connectedDevice?.name ?? "TV"}',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 16,
-                              fontWeight: FontWeight.w500,
-                            ),
-                            textAlign: TextAlign.center,
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            _currentItem.name,
-                            style: TextStyle(
-                              color: Colors.white.withValues(alpha: 0.6),
-                              fontSize: 14,
-                            ),
-                            textAlign: TextAlign.center,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          const SizedBox(height: 24),
-                          AnimatedBuilder(
-                            animation: Listenable.merge([
-                              castService.castPosition,
-                              castService.castDuration,
-                              castService.castPlaying,
-                            ]),
-                            builder: (context, _) {
-                              final pos = castService.castPosition.value;
-                              final dur = castService.castDuration.value;
-                              final isPlaying = castService.castPlaying.value;
-
-                              final posStr =
-                                  WatchProgressService.formatDuration(pos);
-                              final durStr =
-                                  WatchProgressService.formatDuration(dur);
-                              final progress =
-                                  dur.inMilliseconds > 0
-                                      ? pos.inMilliseconds / dur.inMilliseconds
-                                      : 0.0;
-
-                              return Column(
-                                children: [
-                                  Row(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      IconButton(
-                                        icon: Icon(
-                                          isPlaying
-                                              ? Icons
-                                                  .pause_circle_filled_rounded
-                                              : Icons.play_circle_fill_rounded,
-                                          size: 48,
-                                          color: Colors.white,
-                                        ),
-                                        onPressed: () {
-                                          if (isPlaying) {
-                                            castService.pause();
-                                          } else {
-                                            castService.play();
-                                          }
-                                        },
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 16),
-                                  LinearProgressIndicator(
-                                    value: progress.clamp(0.0, 1.0),
-                                    backgroundColor: Colors.white24,
-                                    valueColor:
-                                        const AlwaysStoppedAnimation<Color>(
-                                          Colors.redAccent,
-                                        ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Row(
-                                    mainAxisAlignment:
-                                        MainAxisAlignment.spaceBetween,
-                                    children: [
-                                      Text(
-                                        posStr,
-                                        style: const TextStyle(
-                                          color: Colors.white70,
-                                          fontSize: 12,
-                                        ),
-                                      ),
-                                      Text(
-                                        durStr,
-                                        style: const TextStyle(
-                                          color: Colors.white70,
-                                          fontSize: 12,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ],
-                              );
-                            },
-                          ),
-                          const SizedBox(height: 16),
                           // Toggle de audio local
                           StatefulBuilder(
                             builder: (context, setInnerState) {
@@ -2789,7 +2688,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                             },
                           ),
                           if (_localAudioDuringCast) ...[
-                            const SizedBox(height: 16),
+                            const SizedBox(height: 20),
                             StatefulBuilder(
                               builder: (context, setInnerState) {
                                 return Column(
@@ -2951,7 +2850,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 castAudioHandler.setMediaItem(
                   id: currentUrl,
                   title: _currentItem.name,
-                  album: 'Bump Comba',
+                  artist: 'Bump Comba',
+                  album: device.name,
                   artUri: _currentItem.logo,
                 );
                 await castService.loadMedia(
@@ -3555,9 +3455,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 40),
                   child: Text(
-                    'Reproduciendo en $deviceName',
+                    'Estás viendo en $deviceName',
                     style: TextStyle(
-                      color: Colors.white,
+                      color: const Color.fromARGB(237, 255, 255, 255),
                       fontSize: (_isLandscape ? 20 : 19) * scale,
                       fontWeight: FontWeight.w700,
                       letterSpacing: -0.5,
