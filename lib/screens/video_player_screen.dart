@@ -843,14 +843,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           album: 'Bump Comba',
           artUri: _currentItem.logo,
         );
-        
+
         // Cargamos en Chromecast si es una nueva sesión o si es un reload
         // (esto asegura que si el TV se colgó, también se recupere en la misma posición)
         // Cargamos en Chromecast si es una nueva sesión o si es un reload
         // (esto asegura que si el TV se colgó, también se recupere en la misma posición)
-        final double finalStartPosition = (startFrom != null) 
-            ? startFrom.inSeconds.toDouble() 
-            : (castService.lastKnownPosition.inSeconds.toDouble());
+        final double finalStartPosition =
+            (startFrom != null)
+                ? startFrom.inSeconds.toDouble()
+                : (castService.lastKnownPosition.inSeconds.toDouble());
 
         castService.loadMedia(
           url: currentUrl,
@@ -1115,9 +1116,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     if (CastService().castMediaFinished.value && mounted) {
       final castService = CastService();
       // Usar la última posición válida conocida para evitar regresar a 0
-      final Duration pos = castService.castPosition.value.inSeconds > 0 
-          ? castService.castPosition.value 
-          : castService.lastKnownPosition;
+      final Duration pos =
+          castService.castPosition.value.inSeconds > 0
+              ? castService.castPosition.value
+              : castService.lastKnownPosition;
       final dur = castService.castDuration.value;
 
       // Si terminó faltando más de 1 minuto, fue un error del stream
@@ -1336,7 +1338,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     if (!_isLiveContent) {
       if (_retryCount < 2) {
         _retryCount++;
-        debugPrint('VOD reload #$_retryCount at ${currentPos.inSeconds}s. UA: $_currentUserAgent');
+        debugPrint(
+          'VOD reload #$_retryCount at ${currentPos.inSeconds}s. UA: $_currentUserAgent',
+        );
         await _initializePlayer(
           _currentItem,
           startFrom: currentPos.inSeconds > 5 ? currentPos : null,
@@ -3542,15 +3546,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                           ),
                         ],
                       ),
-                      child: Icon(
-                        Icons.cast,
-                        color: Colors.redAccent,
-                        size: 50 * scale,
-                      ),
                     );
                   },
                 ),
-                SizedBox(height: 10 * scale),
+                SizedBox(height: 1 * scale),
 
                 // Título de Dispositivo
                 Padding(
@@ -3603,14 +3602,21 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(
-                        Icons.bolt_rounded,
-                        color: Colors.amber,
+                      Icon(
+                        _localAudioDuringCast
+                            ? Icons.volume_up_rounded
+                            : Icons.bolt_rounded,
+                        color:
+                            _localAudioDuringCast
+                                ? Colors.redAccent
+                                : Colors.amber,
                         size: 18,
                       ),
                       const SizedBox(width: 10),
                       Text(
-                        'Disfruta Bump Comba en tu TV',
+                        _localAudioDuringCast
+                            ? 'Escuchando desde el teléfono'
+                            : 'Audio reproduciéndose en el televisor',
                         style: TextStyle(
                           color: Colors.white.withValues(alpha: 0.5),
                           fontSize: 12 * scale,
@@ -4702,7 +4708,11 @@ class _CastDeviceSelectorState extends State<_CastDeviceSelector> {
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.cast_rounded, color: Colors.white, size: 22),
+                    const Icon(
+                      Icons.cast_rounded,
+                      color: Colors.white,
+                      size: 22,
+                    ),
                     const SizedBox(width: 10),
                     const Text(
                       'Transmitir a TV',
@@ -4710,23 +4720,6 @@ class _CastDeviceSelectorState extends State<_CastDeviceSelector> {
                         color: Colors.white,
                         fontSize: 18,
                         fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: Colors.blueAccent.withValues(alpha: 0.2),
-                        borderRadius: BorderRadius.circular(4),
-                        border: Border.all(color: Colors.blueAccent.withValues(alpha: 0.5)),
-                      ),
-                      child: const Text(
-                        'BETA',
-                        style: TextStyle(
-                          color: Colors.blueAccent,
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold,
-                        ),
                       ),
                     ),
                   ],
