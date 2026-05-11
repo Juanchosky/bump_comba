@@ -302,6 +302,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   @override
   void dispose() {
+    WakelockPlus.disable(); // ← Liberar bloqueo de pantalla
     CastService().castMediaFinished.removeListener(_onCastMediaFinished);
     CastService().castPosition.removeListener(_syncFromCast);
     CastService().castPlaying.removeListener(_syncFromCast);
@@ -512,6 +513,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     Duration? startFrom,
     bool isLocalReload = false,
   }) async {
+    WakelockPlus.enable(); // ← Evitar que el sistema duerma el CPU/Red durante el Cast
     // Limpieza de URL para evitar fragmentos de tiempo (#t=...)
     final cleanedUrl = NormalizationUtils.cleanUrl(item.url);
     item = item.copyWith(url: cleanedUrl);
@@ -833,18 +835,28 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         }
       }
 
-      if (castService.isCasting.value && !isLocalReload) {
+      // Sincronizar con Chromecast si estamos transmitiendo
+      if (castService.isCasting.value) {
         castAudioHandler.setMediaItem(
           id: currentUrl,
           title: _currentItem.name,
           album: 'Bump Comba',
           artUri: _currentItem.logo,
         );
+        
+        // Cargamos en Chromecast si es una nueva sesión o si es un reload
+        // (esto asegura que si el TV se colgó, también se recupere en la misma posición)
+        // Cargamos en Chromecast si es una nueva sesión o si es un reload
+        // (esto asegura que si el TV se colgó, también se recupere en la misma posición)
+        final double finalStartPosition = (startFrom != null) 
+            ? startFrom.inSeconds.toDouble() 
+            : (castService.lastKnownPosition.inSeconds.toDouble());
+
         castService.loadMedia(
           url: currentUrl,
           title: _currentItem.name,
           thumbnailUrl: _currentItem.logo,
-          startPosition: startFrom != null ? startFrom.inSeconds.toDouble() : 0,
+          startPosition: finalStartPosition,
         );
       }
 
@@ -1102,12 +1114,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   void _onCastMediaFinished() {
     if (CastService().castMediaFinished.value && mounted) {
       final castService = CastService();
-      final pos = castService.castPosition.value;
+      // Usar la última posición válida conocida para evitar regresar a 0
+      final Duration pos = castService.castPosition.value.inSeconds > 0 
+          ? castService.castPosition.value 
+          : castService.lastKnownPosition;
       final dur = castService.castDuration.value;
 
+      // Si terminó faltando más de 1 minuto, fue un error del stream
       if (dur.inSeconds > 0 && pos.inSeconds < (dur.inSeconds - 60)) {
         debugPrint(
-          'Transmisión Cast finalizada prematuramente. Reconectando...',
+          'Transmisión Cast finalizada prematuramente a los ${pos.inSeconds}s. Reconectando...',
         );
         if (mounted) _showAppSnackBar('Reconectando transmisión...');
         final currentUrl =
@@ -1306,15 +1322,24 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // Rotar User-Agent en cada intento
     _userAgentIndex++;
 
+    // Capturar la posición actual de forma inteligente
+    Duration currentPos = Duration.zero;
+    if (CastService().isCasting.value) {
+      currentPos = CastService().castPosition.value;
+      if (currentPos == Duration.zero) {
+        currentPos = CastService().lastKnownPosition;
+      }
+    } else {
+      currentPos = _player?.state.position ?? Duration.zero;
+    }
+
     if (!_isLiveContent) {
       if (_retryCount < 2) {
         _retryCount++;
-        debugPrint('VOD retry #$_retryCount UA: $_currentUserAgent');
-        final pos = _player!.state.position;
-        // Siempre re-inicializar para que los cambios en hwdec (mediacodec-copy) surtan efecto
+        debugPrint('VOD reload #$_retryCount at ${currentPos.inSeconds}s. UA: $_currentUserAgent');
         await _initializePlayer(
           _currentItem,
-          startFrom: pos.inSeconds > 5 ? pos : null,
+          startFrom: currentPos.inSeconds > 5 ? currentPos : null,
           isLocalReload: true,
         );
       } else if (_currentServerIndex < _serverUrls.length - 1) {
@@ -1322,15 +1347,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         _retryCount = 0;
         _currentServerIndex++;
         debugPrint(
-          'Primary server failed. Trying alternative server #$_currentServerIndex',
+          'Primary server failed. Trying alternative server #$_currentServerIndex at ${currentPos.inSeconds}s',
         );
-        final pos = _player!.state.position;
         if (mounted) {
           _showAppSnackBar('Intentando con servidor alternativo...');
         }
         await _initializePlayer(
           _currentItem,
-          startFrom: pos.inSeconds > 5 ? pos : null,
+          startFrom: currentPos.inSeconds > 5 ? currentPos : null,
           isLocalReload: true,
         );
       } else {

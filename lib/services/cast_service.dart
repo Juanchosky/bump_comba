@@ -26,6 +26,9 @@ class CastService {
   final ValueNotifier<String> castPlayerState = ValueNotifier('IDLE');
   final ValueNotifier<bool> castMediaFinished = ValueNotifier(false);
 
+  /// Última posición conocida antes de una posible desconexión o stall.
+  Duration lastKnownPosition = Duration.zero;
+
   StreamSubscription? _stateSubscription;
   StreamSubscription? _messageSubscription;
   Timer? _statusPollTimer;
@@ -278,14 +281,26 @@ class CastService {
     _statusPollTimer = null;
   }
 
-  /// Solicita el estado actual de media al Chromecast.
+  /// Solicita el estado actual de media y del receiver al Chromecast.
+  /// Enviamos ambos para actuar como un "heartbeat" doble y evitar que la
+  /// sesión se cierre por inactividad del sender (error común de los 5 min).
   void _requestMediaStatus() {
-    if (_session == null || _mediaSessionId == null) return;
-    _session!.sendMessage(CastSession.kNamespaceMedia, {
+    if (_session == null) return;
+
+    // 1. Heartbeat al Receiver (mantiene el socket v2 vivo)
+    _session!.sendMessage(CastSession.kNamespaceReceiver, {
       'type': 'GET_STATUS',
       'requestId': _requestId++,
-      if (_mediaSessionId != null) 'mediaSessionId': _mediaSessionId,
     });
+
+    // 2. Heartbeat al Media Player (mantiene la sesión de media viva)
+    if (_mediaSessionId != null) {
+      _session!.sendMessage(CastSession.kNamespaceMedia, {
+        'type': 'GET_STATUS',
+        'requestId': _requestId++,
+        'mediaSessionId': int.tryParse(_mediaSessionId!) ?? _mediaSessionId,
+      });
+    }
   }
 
   void _handleReceiverMessage(Map<String, dynamic> message) {
@@ -323,7 +338,11 @@ class CastService {
     // Posición actual (en segundos, como double)
     final currentTime = status['currentTime'];
     if (currentTime is num) {
-      castPosition.value = Duration(milliseconds: (currentTime * 1000).toInt());
+      final pos = Duration(milliseconds: (currentTime * 1000).toInt());
+      castPosition.value = pos;
+      if (pos > Duration.zero) {
+        lastKnownPosition = pos;
+      }
     }
 
     // Duración del contenido
@@ -410,28 +429,42 @@ class CastService {
     castPlaying.value = false;
     castMediaFinished.value = false;
 
-    // ─── Xtream IPTV: Intentar HLS para compatibilidad de audio ───
+    // ─── Xtream/IPTV Optimization: Force HLS for Audio Compatibility ───
     String castUrl = url;
     _isFallbackAttempt = false;
     _pendingFallbackUrl = null;
 
-    final xtreamPattern = RegExp(
-      r'/(movie|series)/[^/]+/[^/]+/\d+\.(mp4|mkv|avi|ts)$',
-      caseSensitive: false,
-    );
-    if (xtreamPattern.hasMatch(castUrl)) {
+    // Detectar si es una URL de IPTV (por patrón o por puertos comunes de Xtream)
+    final isIptv =
+        url.contains('/movie/') ||
+        url.contains('/series/') ||
+        url.contains('/live/') ||
+        url.contains('output=') ||
+        RegExp(r':(80|8080|25461|2095|2082|2086)/').hasMatch(url);
+
+    if (isIptv && !url.contains('.m3u8')) {
       _pendingFallbackUrl = url;
       _pendingFallbackTitle = title;
       _pendingFallbackThumb = thumbnailUrl;
       _pendingFallbackPosition = startPosition;
 
-      castUrl = castUrl.replaceFirst(
-        RegExp(r'\.(mp4|mkv|avi|ts)$', caseSensitive: false),
-        '.m3u8',
-      );
+      // Intentamos convertir a HLS (.m3u8) que es el "estándar de oro" para Cast.
+      // Los servidores IPTV suelen tener un transcodificador AAC para HLS.
+      if (castUrl.contains('.')) {
+        castUrl = castUrl.replaceFirst(
+          RegExp(r'\.(mp4|mkv|avi|ts)$', caseSensitive: false),
+          '.m3u8',
+        );
+      }
+
+      if (castUrl.contains('output=ts')) {
+        castUrl = castUrl.replaceFirst('output=ts', 'output=m3u8');
+      } else if (!castUrl.contains('output=')) {
+        castUrl += castUrl.contains('?') ? '&output=m3u8' : '?output=m3u8';
+      }
+
       debugPrint(
-        'CastService: Trying HLS first for audio compatibility '
-        '(fallback: original URL)',
+        'CastService: IPTV/VOD optimization. Forcing HLS (.m3u8) for maximum audio compatibility.',
       );
     }
 
@@ -488,6 +521,12 @@ class CastService {
             {'url': thumbnailUrl},
           ],
       },
+      // HACK para audio: Algunos receptores activan decodificadores extra con estas flags
+      'customData': {
+        'audioConfig': {'bitrate': 128000, 'channels': 2},
+        'hlsSegmentFormat': 'FMP4',
+        'hlsVideoType': 'MPEG_TS_H264_AAC',
+      },
     };
 
     _session!.sendMessage(CastSession.kNamespaceMedia, {
@@ -499,9 +538,12 @@ class CastService {
     });
 
     debugPrint(
-      'CastService: Loading "$title" ($resolvedContentType, $streamType) '
-      '${_isFallbackAttempt ? "[FALLBACK] " : ""}'
-      'on Chromecast → $url',
+      'CastService: 🚀 LOADING MEDIA 🚀\n'
+      '   - Title: $title\n'
+      '   - URL: $url\n'
+      '   - MIME: $resolvedContentType\n'
+      '   - Stream: $streamType\n'
+      '   - Fallback Attempt: $_isFallbackAttempt',
     );
   }
 
