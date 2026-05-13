@@ -35,24 +35,28 @@ class DeepLinkService {
 
   void _handleUri(BuildContext context, Uri uri) {
     debugPrint('Incoming deep link: $uri');
-    
+
     // Support formats:
     // https://bump-comba.vercel.app/details?n=Inception&s=0
     // comba://details?n=Inception&s=1
-    
+
     if (uri.path.contains('/details') || uri.host == 'details') {
       final String? name = uri.queryParameters['n'];
       final bool isSeries = uri.queryParameters['s'] == '1';
-      
+
       if (name != null && name.isNotEmpty) {
         _findAndNavigate(context, name, isSeries);
       }
     }
   }
 
-  Future<void> _findAndNavigate(BuildContext context, String name, bool isSeries) async {
+  Future<void> _findAndNavigate(
+    BuildContext context,
+    String name,
+    bool isSeries,
+  ) async {
     final m3uService = M3UService();
-    
+
     // If items are not loaded yet, wait a bit or try to load them
     if (m3uService.items.isEmpty) {
       debugPrint('DeepLink: Items not loaded yet, waiting...');
@@ -61,10 +65,10 @@ class DeepLinkService {
     }
 
     final String query = name.toLowerCase();
-    
+
     // Try to find an exact or close match
     final results = m3uService.search(query);
-    
+
     if (results.isNotEmpty) {
       // Prioritize by isSeries flag
       M3UItem? target;

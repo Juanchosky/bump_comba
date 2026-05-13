@@ -685,13 +685,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           await mpv.setProperty('cache', 'yes');
           await mpv.setProperty('cache-pause', 'yes');
           await mpv.setProperty('cache-on-disk', 'no');
-          await mpv.setProperty('cache-pause-wait', _isLiveContent ? '1' : '3');
+          await mpv.setProperty('cache-pause-wait', _isLiveContent ? '1' : '2');
           await mpv.setProperty('cache-pause-initial', 'yes');
           await mpv.setProperty(
             'stream-buffer-size',
             '4194304',
           ); // 4MB buffer for network
           await mpv.setProperty('network-timeout', '60');
+
+          // Permitir buscar dentro de datos ya descargados (evita re-fetch al hacer seek)
+          await mpv.setProperty('demuxer-seekable-cache', 'yes');
 
           if (_isLiveContent) {
             await mpv.setProperty('cache-secs', '60');
@@ -719,7 +722,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             await mpv.setProperty(
               'cache-secs',
               '300',
-            ); // Increase buffer seconds
+            ); // 5 minutos de buffer máximo
             await mpv.setProperty(
               'demuxer-max-bytes',
               '268435456',
@@ -727,16 +730,24 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             await mpv.setProperty('demuxer-max-back-bytes', '67108864');
             await mpv.setProperty('demuxer-readahead-secs', '180');
             await mpv.setProperty('cache-pause-initial', 'yes');
-            await mpv.setProperty('cache-pause-wait', '5');
+            // Reanuda reproducción tras solo 2s de re-buffering (antes: 5s)
+            await mpv.setProperty('cache-pause-wait', '2');
             await mpv.setProperty('stream-buffer-size', '16777216');
             await mpv.setProperty('network-timeout', '60');
+            // Forzar seekable para streams IPTV que no reportan duración correctamente.
+            // Sin esto, MPV desactiva el seek-cache y cada búsqueda re-descarga.
+            await mpv.setProperty('force-seekable', 'yes');
           }
 
           // -- NETWORK & COMPATIBILITY --
           await mpv.setProperty('http-reconnect', 'yes');
-          await mpv.setProperty('http-reconnect-sleep', '1');
+          // Reconexión más rápida tras caída de red (antes: 1s → ahora: 0.5s)
+          await mpv.setProperty('http-reconnect-sleep', '0.5');
           await mpv.setProperty('http-reconnect-timeout', '10');
           await mpv.setProperty('tls-verify', 'no');
+          // Usar HTTP pipelining para descargar segmentos HLS más rápido
+          // (envía la siguiente petición sin esperar respuesta de la anterior)
+          await mpv.setProperty('http-pipelining', 'yes');
 
           // User-Agent Rotation: Use a modern browser UA for VOD to avoid throttling
           final selectedUA =
@@ -790,7 +801,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
           // Audio Sync
           await mpv.setProperty('video-sync', 'audio');
-          await mpv.setProperty('audio-buffer', '0.5');
+          // Buffer de audio más bajo → menor latencia al reanudar tras pausa/seek
+          await mpv.setProperty('audio-buffer', '0.2');
           await mpv.setProperty('audio-stream-silence', 'yes');
           await mpv.setProperty('audio-fallback-to-null', 'yes');
 
@@ -820,13 +832,24 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
       final currentUrl = _serverUrls[_currentServerIndex % _serverUrls.length];
       final castService = CastService();
-      final shouldPlayLocally = !castService.isCasting.value;
+      final shouldPlayLocally =
+          !castService.isCasting.value ||
+          (_localAudioDuringCast && castService.isCasting.value);
 
       if (!isPrewarmed) {
         await _player!.open(
           Media(currentUrl, httpHeaders: _buildHeaders(currentUrl)),
           play: shouldPlayLocally,
         );
+        // Durante Cast sin audio local, cerramos la descarga del player local
+        // completamente para liberar el ancho de banda al Chromecast.
+        // Un player pausado-pero-abierto sigue consumiendo red en background.
+        if (castService.isCasting.value && !_localAudioDuringCast) {
+          await Future.delayed(const Duration(milliseconds: 300));
+          try {
+            _player?.stop();
+          } catch (_) {}
+        }
       } else {
         if (shouldPlayLocally) {
           _player!.play();
@@ -845,14 +868,18 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           artUri: _currentItem.logo,
         );
 
-        // Cargamos en Chromecast si es una nueva sesión o si es un reload
-        // (esto asegura que si el TV se colgó, también se recupere en la misma posición)
-        // Cargamos en Chromecast si es una nueva sesión o si es un reload
-        // (esto asegura que si el TV se colgó, también se recupere en la misma posición)
+        // Cargamos en Chromecast si es una nueva sesión o si es un reload.
+        // IMPORTANTE: Solo usamos lastKnownPosition si es un reload del mismo
+        // episodio (isLocalReload=true). Al pasar al siguiente episodio,
+        // startFrom==null y isLocalReload==false, por lo que siempre empezamos
+        // desde el inicio (0) para evitar que el episodio nuevo empiece desde
+        // la posición final del episodio anterior.
         final double finalStartPosition =
             (startFrom != null)
                 ? startFrom.inSeconds.toDouble()
-                : (castService.lastKnownPosition.inSeconds.toDouble());
+                : (isLocalReload
+                    ? castService.lastKnownPosition.inSeconds.toDouble()
+                    : 0.0);
 
         castService.loadMedia(
           url: currentUrl,
@@ -920,9 +947,26 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _progressSaveTimer?.cancel();
 
     // Buffering stream to show/hide loading spinner
+    // + Auto-recuperación: si el player sale de buffering exitosamente
+    //   mientras _hasError está activo, significa que el stream se recuperó
+    //   en segundo plano → limpiar la pantalla de error automáticamente.
     _streamSubscriptions.add(
       _player!.stream.buffering.listen((buffering) {
-        if (mounted) setState(() => _isBuffering = buffering);
+        if (mounted) {
+          setState(() => _isBuffering = buffering);
+          if (!buffering && _hasError && _player != null) {
+            final state = _player!.state;
+            if (state.playing || state.position.inMilliseconds > 0) {
+              debugPrint(
+                'Auto-recovery: stream recovered while error UI was shown. Clearing error.',
+              );
+              setState(() {
+                _hasError = false;
+                _scrapingError = null;
+              });
+            }
+          }
+        }
       }),
     );
 
@@ -1115,6 +1159,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   void _onCastMediaFinished() {
     if (CastService().castMediaFinished.value && mounted) {
+      // Si ya hay un countdown activo o ya se canceló, ignorar la señal.
+      // Esto previene doble-disparo durante la transición entre episodios.
+      if (_nextEpisodeCountdown != null || _autoPlayCancelled) {
+        debugPrint(
+          '_onCastMediaFinished: Ignored — countdown active or autoplay cancelled.',
+        );
+        return;
+      }
+
       final castService = CastService();
       // Usar la última posición válida conocida para evitar regresar a 0
       final Duration pos =
@@ -1197,11 +1250,22 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     final currentIndex = _playlist.indexWhere((i) => i.url == _currentItem.url);
     if (currentIndex != -1 && currentIndex < _playlist.length - 1) {
       final nextItem = _playlist[currentIndex + 1];
+
+      // CRÍTICO: Resetear el estado de Cast ANTES de cargar el nuevo episodio.
+      // Sin esto, lastKnownPosition queda con la posición final del episodio
+      // anterior, y el nuevo episodio carga desde el final → bucle infinito.
+      final castService = CastService();
+      castService.lastKnownPosition = Duration.zero;
+      // Limpiar la bandera de "media terminada" para evitar que se dispare
+      // inmediatamente al cargar el nuevo episodio.
+      castService.castMediaFinished.value = false;
+
       setState(() {
         _currentItem = nextItem;
         _midRollAdShown = false;
         _midRollNoticeShown = false;
         _nextEpisodeCountdown = null;
+        _autoPlayCancelled = false;
         _serverUrls = []; // Reset for next item
         _currentServerIndex = 0;
       });
@@ -1456,6 +1520,38 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 40),
+              SizedBox(
+                width: double.infinity,
+                height: 50,
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    // Resetear todo el estado de reintentos y volver a intentar
+                    setState(() {
+                      _hasError = false;
+                      _scrapingError = null;
+                      _retryCount = 0;
+                      _currentServerIndex = 0;
+                      _userAgentIndex++;
+                      _serverUrls = [];
+                    });
+                    _initializePlayer(_currentItem);
+                  },
+                  icon: const Icon(Icons.refresh_rounded, size: 20),
+                  label: const Text(
+                    'Reintentar',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.white.withValues(alpha: 0.12),
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    elevation: 0,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
               SizedBox(
                 width: double.infinity,
                 height: 50,

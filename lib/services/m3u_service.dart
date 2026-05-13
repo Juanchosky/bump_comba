@@ -339,6 +339,17 @@ class M3UService extends ChangeNotifier {
       });
       await file.writeAsString(obfuscated);
       await _prefs?.setInt(_logicVersionKey, _currentLogicVersion);
+
+      // FIX: Guardar también el timestamp del caché para que _loadJsonCache()
+      // y _isCacheExpired() funcionen correctamente con fuentes Xtream.
+      // Sin esto, el caché JSON se guardaba pero sin timestamp → siempre
+      // se consideraba expirado → re-descarga innecesaria en cada reinicio.
+      final timestampKey =
+          _isUnifiedMode ? _unifiedCacheTimestampKey : _cacheTimestampKey;
+      await _prefs?.setInt(
+        timestampKey,
+        DateTime.now().millisecondsSinceEpoch,
+      );
     } catch (e) {
       debugPrint('Error saving JSON cache: $e');
     }
@@ -1378,6 +1389,23 @@ class M3UService extends ChangeNotifier {
         forceRefresh,
         onProgress: onProgress,
       );
+
+      // FIX: Si la descarga de red devuelve lista vacía (timeout, error, etc.),
+      // no sobreescribir el contenido existente. Intentar usar el caché como
+      // fallback para evitar pantallas en blanco al reiniciar la app.
+      if (items.isEmpty) {
+        debugPrint('Xtream fetch returned empty — falling back to cache');
+        final fallback = await _loadJsonCache(ignoreExpiration: true);
+        if (fallback != null && fallback.isNotEmpty) {
+          final custom = await fetchCustomContent(forceRefresh: false);
+          await _indexItems([...custom, ...fallback]);
+          return true;
+        }
+        // Si tampoco hay caché, mantener los items actuales si existen
+        if (_items.isNotEmpty) return true;
+        return false;
+      }
+
       final custom = await fetchCustomContent(forceRefresh: forceRefresh);
       await _indexItems([...custom, ...items]);
 

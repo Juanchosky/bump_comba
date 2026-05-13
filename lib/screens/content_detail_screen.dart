@@ -1302,18 +1302,14 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   }
 
   void _shareContent() {
-    final String encodedName = Uri.encodeComponent(widget.item.name);
-    final String deepLink = 'https://bump-comba.vercel.app/details?n=$encodedName&s=${widget.item.isSeries ? 1 : 0}';
     final String text =
-        'Mira "${widget.item.name}" en Bump Comba 🎬\n\nVer ahora: $deepLink\n\nDescarga la app: https://play.google.com/store/apps/details?id=com.juanchosky.bumpcomba';
+        'Mira "${widget.item.name}" en Bump Comba 🎬\n\nDescarga la app: https://play.google.com/store/apps/details?id=com.juanchosky.bumpcomba';
     Share.share(text);
   }
 
   void _shareEpisode(M3UItem episode) {
-    final String encodedName = Uri.encodeComponent(widget.item.name);
-    final String deepLink = 'https://bump-comba.vercel.app/details?n=$encodedName&s=1';
     final String text =
-        'Mira el episodio "${episode.name}" de "${widget.item.name}" en Bump Comba 🎬\n\nVer ahora: $deepLink\n\nDescarga la app: https://play.google.com/store/apps/details?id=com.juanchosky.bumpcomba';
+        'Mira el episodio "${episode.name}" de "${widget.item.name}" en Bump Comba 🎬\n\nDescarga la app: https://play.google.com/store/apps/details?id=com.juanchosky.bumpcomba';
     Share.share(text);
   }
 

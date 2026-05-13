@@ -266,13 +266,23 @@ class CastService {
   double _pendingFallbackPosition = 0.0;
   bool _isFallbackAttempt = false;
 
+  // ─── Flag para suprimir FINISHED espurio durante la carga de un nuevo medio ───
+  // El Chromecast envía IDLE/FINISHED del episodio anterior justo antes de
+  // procesar el nuevo LOAD. Este flag evita que esa señal llegue a la UI.
+  bool _isLoadingMedia = false;
+  Timer? _loadingMediaTimer;
+
   // ─── Polling de estado para sincronización ───
 
-  /// Inicia polling periódico de GET_STATUS al Chromecast cada 1 segundo.
+  /// Inicia polling periódico de GET_STATUS al Chromecast.
+  /// - Media heartbeat: cada 1 segundo (sincronización fina de posición)
+  /// - Receiver heartbeat: cada 3 segundos (mantiene el socket vivo con menos ruido)
   void _startStatusPolling() {
     _stopStatusPolling();
+    int _pollTick = 0;
     _statusPollTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      _requestMediaStatus();
+      _pollTick++;
+      _requestMediaStatus(sendReceiverHeartbeat: _pollTick % 3 == 0);
     });
   }
 
@@ -282,23 +292,25 @@ class CastService {
   }
 
   /// Solicita el estado actual de media y del receiver al Chromecast.
-  /// Enviamos ambos para actuar como un "heartbeat" doble y evitar que la
-  /// sesión se cierre por inactividad del sender (error común de los 5 min).
-  void _requestMediaStatus() {
+  /// [sendReceiverHeartbeat] controla si también se envía heartbeat al receptor
+  /// (cada 3 segundos es suficiente para mantener el socket vivo).
+  void _requestMediaStatus({bool sendReceiverHeartbeat = false}) {
     if (_session == null) return;
 
-    // 1. Heartbeat al Receiver (mantiene el socket v2 vivo)
-    _session!.sendMessage(CastSession.kNamespaceReceiver, {
-      'type': 'GET_STATUS',
-      'requestId': _requestId++,
-    });
-
-    // 2. Heartbeat al Media Player (mantiene la sesión de media viva)
+    // 1. Heartbeat al Media Player (sincronización de posición — cada segundo)
     if (_mediaSessionId != null) {
       _session!.sendMessage(CastSession.kNamespaceMedia, {
         'type': 'GET_STATUS',
         'requestId': _requestId++,
         'mediaSessionId': int.tryParse(_mediaSessionId!) ?? _mediaSessionId,
+      });
+    }
+
+    // 2. Heartbeat al Receiver (mantiene el socket v2 vivo — cada 3 segundos)
+    if (sendReceiverHeartbeat) {
+      _session!.sendMessage(CastSession.kNamespaceReceiver, {
+        'type': 'GET_STATUS',
+        'requestId': _requestId++,
       });
     }
   }
@@ -363,6 +375,15 @@ class CastService {
     if (playerState == 'IDLE') {
       final idleReason = status['idleReason']?.toString();
       if (idleReason == 'FINISHED') {
+        // Suprimir la señal si estamos en plena carga de un nuevo medio.
+        // El Chromecast emite FINISHED del episodio anterior antes de procesar
+        // el nuevo LOAD, lo que causaría un bucle infinito de episodios.
+        if (_isLoadingMedia) {
+          debugPrint(
+            'CastService: FINISHED suppressed (new LOAD in progress)',
+          );
+          return;
+        }
         debugPrint('CastService: Playback finished');
         castPlaying.value = false;
         castMediaFinished.value = true;
@@ -429,6 +450,15 @@ class CastService {
     castPlaying.value = false;
     castMediaFinished.value = false;
 
+    // Suprimir FINISHED espurios del episodio anterior durante la transición.
+    // El Chromecast tarda ~2-3 segundos en procesar el nuevo LOAD y puede
+    // emitir IDLE/FINISHED del contenido anterior en ese intervalo.
+    _isLoadingMedia = true;
+    _loadingMediaTimer?.cancel();
+    _loadingMediaTimer = Timer(const Duration(seconds: 4), () {
+      _isLoadingMedia = false;
+    });
+
     // ─── Xtream/IPTV Optimization: Force HLS for Audio Compatibility ───
     String castUrl = url;
     _isFallbackAttempt = false;
@@ -442,7 +472,7 @@ class CastService {
         url.contains('output=') ||
         RegExp(r':(80|8080|25461|2095|2082|2086)/').hasMatch(url);
 
-    if (isIptv && !url.contains('.m3u8')) {
+    if (isIptv && !url.contains('.m3u8') && !url.contains('output=m3u8')) {
       _pendingFallbackUrl = url;
       _pendingFallbackTitle = title;
       _pendingFallbackThumb = thumbnailUrl;
@@ -503,10 +533,14 @@ class CastService {
     }
 
     // Determinar tipo de stream
-    final streamType =
-        lowUrl.contains('/live/') || lowUrl.contains('type=live')
-            ? 'LIVE'
-            : 'BUFFERED';
+    final bool isLive =
+        lowUrl.contains('/live/') || lowUrl.contains('type=live');
+    final String streamType = isLive ? 'LIVE' : 'BUFFERED';
+
+    // Pre-buffer agresivo: pedimos al Chromecast que bufferee 60s por adelantado.
+    // Esto reduce las pausas en VOD serie porque el TV tiene más datos listos
+    // antes de necesitarlos (especialmente útil en conexiones Wi-Fi compartidas).
+    final int preloadSeconds = isLive ? 15 : 60;
 
     final Map<String, dynamic> mediaInfo = {
       'contentId': url,
@@ -521,6 +555,15 @@ class CastService {
             {'url': thumbnailUrl},
           ],
       },
+      // Pre-buffer hint: el receptor empieza a descargar $preloadSeconds segundos
+      // por adelantado de la posición de reproducción actual.
+      'preloadTime': preloadSeconds,
+      // Configuración de reproducción para el Default Media Receiver v3
+      'playbackConfig': {
+        // Iniciar reproducción solo cuando haya al menos 5 segundos en buffer
+        'initialBandwidth': 10000000, // 10 Mbps hint para elección de bitrate
+        'protocolType': isLive ? 0 : 1, // 0=HLS, 1=DASH (hint)
+      },
       // HACK para audio: Algunos receptores activan decodificadores extra con estas flags
       'customData': {
         'audioConfig': {'bitrate': 128000, 'channels': 2},
@@ -529,12 +572,19 @@ class CastService {
       },
     };
 
+    // Usar requestId único para cada LOAD — evita que el Chromecast duplique
+    // mensajes o ignore el LOAD por considerarlo repetido (bug del Default Receiver)
+    final int loadRequestId = _requestId++;
+
     _session!.sendMessage(CastSession.kNamespaceMedia, {
       'type': 'LOAD',
-      'requestId': _isFallbackAttempt ? 3 : 2,
+      'requestId': loadRequestId,
       'media': mediaInfo,
       'autoplay': true,
       'currentTime': startPosition,
+      // Reproducir inmediatamente sin esperar a que el buffer llene (el TV
+      // gestiona el pre-buffer internamente con 'preloadTime').
+      'activeTrackIds': [],
     });
 
     debugPrint(
@@ -627,6 +677,9 @@ class CastService {
   Future<void> disconnect() async {
     try {
       _stopStatusPolling();
+      _loadingMediaTimer?.cancel();
+      _loadingMediaTimer = null;
+      _isLoadingMedia = false;
       if (_session != null) {
         try {
           stop();

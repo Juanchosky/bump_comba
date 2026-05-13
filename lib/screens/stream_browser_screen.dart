@@ -4409,15 +4409,24 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                           Expanded(
                             child: ElevatedButton.icon(
                               onPressed: () {
-                                _playItem(item);
+                                // FIX: Si es una serie, abrir la pantalla de detalle
+                                // (donde se cargan los episodios) en lugar de intentar
+                                // reproducirla directamente como película.
+                                if (item.isSeries) {
+                                  _onItemTap(item);
+                                } else {
+                                  _playItem(item);
+                                }
                               },
-                              icon: const Icon(
-                                Icons.play_arrow,
+                              icon: Icon(
+                                item.isSeries
+                                    ? Icons.play_arrow
+                                    : Icons.play_arrow,
                                 color: AppColors.background,
                               ),
-                              label: const Text(
-                                'Reproducir',
-                                style: TextStyle(
+                              label: Text(
+                                item.isSeries ? 'Reproducir' : 'Reproducir',
+                                style: const TextStyle(
                                   color: AppColors.background,
                                   fontWeight: FontWeight.bold,
                                 ),
