@@ -5,6 +5,10 @@
       "destination": "/api/assetlinks"
     },
     {
+      "source": "/details",
+      "destination": "/admin_content/details.html"
+    },
+    {
       "source": "/(.*)",
       "destination": "/admin_content/$1"
     }

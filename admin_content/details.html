@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bump Comba | Contenido</title>
+    
+    <!-- Open Graph / Meta Tags -->
+    <meta property="og:type" content="video.movie">
+    <meta property="og:title" content="Mira este contenido en Bump Comba 🎬">
+    <meta property="og:description" content="La mejor app para ver tus pelis y series favoritas. ¡Descárgala ya!">
+    <meta property="og:image" content="https://bump-comba.vercel.app/favicon.png">
+
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #121212;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            text-align: center;
+        }
+        .container {
+            padding: 20px;
+            max-width: 400px;
+        }
+        .logo {
+            width: 80px;
+            height: 80px;
+            background: linear-gradient(135deg, #ff4b2b, #ff416c);
+            border-radius: 20px;
+            margin-bottom: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 40px;
+            box-shadow: 0 10px 20px rgba(255, 75, 43, 0.3);
+        }
+        h1 { font-size: 24px; margin-bottom: 10px; }
+        p { color: #aaa; margin-bottom: 30px; line-height: 1.5; }
+        .btn {
+            background: #ff4b2b;
+            color: white;
+            text-decoration: none;
+            padding: 14px 28px;
+            border-radius: 12px;
+            font-weight: bold;
+            display: inline-block;
+            transition: transform 0.2s;
+        }
+        .btn:active { transform: scale(0.95); }
+        .loading {
+            margin-top: 20px;
+            font-size: 14px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">🎬</div>
+        <h1 id="title">Abriendo en Bump Comba...</h1>
+        <p id="desc">Si tienes la app instalada, se abrirá automáticamente. De lo contrario, te llevaremos a la Play Store.</p>
+        
+        <a href="https://play.google.com/store/apps/details?id=com.juanchosky.bumpcomba" class="btn">
+            Descargar en Play Store
+        </a>
+
+        <div class="loading">Redirigiendo...</div>
+    </div>
+
+    <script>
+        const params = new URLSearchParams(window.location.search);
+        const name = params.get('n');
+        const isSeries = params.get('s') === '1';
+        
+        if (name) {
+            document.title = `${name} | Bump Comba`;
+            document.getElementById('title').innerText = `Mira "${name}" en la app`;
+        }
+
+        const playStoreUrl = "https://play.google.com/store/apps/details?id=com.juanchosky.bumpcomba";
+        
+        // Intent to redirect after a short delay
+        // If the app is installed and App Links are verified, this page won't even be seen on mobile.
+        // This is a fallback for when the app isn't installed.
+        setTimeout(() => {
+            window.location.href = playStoreUrl;
+        }, 2500);
+    </script>
+</body>
+</html>
