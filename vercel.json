@@ -1,20 +1,12 @@
 {
-  "headers": [
-    {
-      "source": "/.well-known/(.*)",
-      "headers": [
-        {
-          "key": "Content-Type",
-          "value": "application/json"
-        },
-        {
-          "key": "Access-Control-Allow-Origin",
-          "value": "*"
-        }
-      ]
-    }
-  ],
   "rewrites": [
-    { "source": "/((?!\\.well-known).*)", "destination": "/admin_content/$1" }
+    {
+      "source": "/.well-known/assetlinks.json",
+      "destination": "/api/assetlinks"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/admin_content/$1"
+    }
   ]
 }
