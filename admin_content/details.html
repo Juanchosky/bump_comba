@@ -5,6 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Bump Comba | Contenido</title>
     
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
     <!-- Open Graph / Meta Tags -->
     <meta property="og:type" content="video.movie">
     <meta property="og:title" content="Mira este contenido en Bump Comba 🎬">
@@ -12,85 +20,215 @@
     <meta property="og:image" content="https://bump-comba.vercel.app/favicon.png">
 
     <style>
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #121212;
-            color: white;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100vh;
+        :root {
+            --primary: #ff4b2b;
+            --primary-glow: rgba(255, 75, 43, 0.4);
+            --bg: #0a0a0a;
+            --card-bg: rgba(255, 255, 255, 0.05);
+            --text-main: #ffffff;
+            --text-dim: rgba(255, 255, 255, 0.6);
+        }
+
+        * {
             margin: 0;
-            text-align: center;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Outfit', sans-serif;
         }
-        .container {
-            padding: 20px;
-            max-width: 400px;
-        }
-        .logo {
-            width: 80px;
-            height: 80px;
-            background: linear-gradient(135deg, #ff4b2b, #ff416c);
-            border-radius: 20px;
-            margin-bottom: 24px;
+
+        body {
+            background-color: var(--bg);
+            color: var(--text-main);
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 40px;
-            box-shadow: 0 10px 20px rgba(255, 75, 43, 0.3);
+            min-height: 100vh;
+            overflow: hidden;
+            position: relative;
         }
-        h1 { font-size: 24px; margin-bottom: 10px; }
-        p { color: #aaa; margin-bottom: 30px; line-height: 1.5; }
+
+        /* Background Nebula Glows */
+        .glow {
+            position: absolute;
+            width: 300px;
+            height: 300px;
+            background: var(--primary);
+            filter: blur(150px);
+            opacity: 0.15;
+            border-radius: 50%;
+            z-index: 0;
+        }
+        .glow-1 { top: -100px; left: -100px; }
+        .glow-2 { bottom: -100px; right: -100px; }
+
+        .container {
+            z-index: 1;
+            width: 90%;
+            max-width: 420px;
+            padding: 40px 30px;
+            background: var(--card-bg);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 32px;
+            text-align: center;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            animation: slideUp 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(30px) scale(0.95); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        .logo-wrapper {
+            position: relative;
+            display: inline-block;
+            margin-bottom: 30px;
+        }
+
+        .logo-icon {
+            width: 100px;
+            height: 100px;
+            background: linear-gradient(135deg, var(--primary), #ff416c);
+            border-radius: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 50px;
+            box-shadow: 0 15px 30px var(--primary-glow);
+            animation: pulse 2s infinite ease-in-out;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); box-shadow: 0 15px 30px var(--primary-glow); }
+            50% { transform: scale(1.05); box-shadow: 0 20px 40px rgba(255, 75, 43, 0.6); }
+            100% { transform: scale(1); box-shadow: 0 15px 30px var(--primary-glow); }
+        }
+
+        h1 {
+            font-size: 28px;
+            font-weight: 800;
+            margin-bottom: 12px;
+            background: linear-gradient(to bottom, #fff, #ccc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            line-height: 1.2;
+        }
+
+        p {
+            font-size: 16px;
+            color: var(--text-dim);
+            margin-bottom: 35px;
+            line-height: 1.6;
+            font-weight: 300;
+        }
+
         .btn {
-            background: #ff4b2b;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            background: linear-gradient(135deg, var(--primary), #ff416c);
             color: white;
             text-decoration: none;
-            padding: 14px 28px;
-            border-radius: 12px;
-            font-weight: bold;
-            display: inline-block;
-            transition: transform 0.2s;
+            padding: 18px 30px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 16px;
+            transition: all 0.3s cubic-bezier(0.23, 1, 0.32, 1);
+            border: none;
+            box-shadow: 0 10px 20px rgba(255, 75, 43, 0.2);
+            width: 100%;
+            margin-bottom: 20px;
         }
-        .btn:active { transform: scale(0.95); }
-        .loading {
-            margin-top: 20px;
+
+        .btn:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 15px 30px rgba(255, 75, 43, 0.4);
+        }
+
+        .btn:active {
+            transform: translateY(-1px);
+        }
+
+        .loading-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            color: var(--text-dim);
             font-size: 14px;
-            color: #666;
+        }
+
+        .spinner {
+            width: 18px;
+            height: 18px;
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            border-top: 2px solid var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .footer {
+            position: absolute;
+            bottom: 30px;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.2);
+            letter-spacing: 2px;
+            text-transform: uppercase;
         }
     </style>
 </head>
 <body>
+    <div class="glow glow-1"></div>
+    <div class="glow glow-2"></div>
+
     <div class="container">
-        <div class="logo">🎬</div>
-        <h1 id="title">Abriendo en Bump Comba...</h1>
-        <p id="desc">Si tienes la app instalada, se abrirá automáticamente. De lo contrario, te llevaremos a la Play Store.</p>
+        <div class="logo-wrapper">
+            <div class="logo-icon">🎬</div>
+        </div>
+        
+        <h1 id="title">Abriendo en Bump Comba</h1>
+        <p id="desc">Si tienes la app instalada se abrirá en segundos. Si no, puedes descargarla aquí abajo.</p>
         
         <a href="https://play.google.com/store/apps/details?id=com.juanchosky.bumpcomba" class="btn">
-            Descargar en Play Store
+            <i data-lucide="download-cloud"></i>
+            Descargar App
         </a>
 
-        <div class="loading">Redirigiendo...</div>
+        <div class="loading-container">
+            <div class="spinner"></div>
+            <span id="status-text">Redirigiendo a Play Store...</span>
+        </div>
     </div>
 
+    <div class="footer">By Juan Aldm</div>
+
     <script>
+        // Initialize Lucide Icons
+        lucide.createIcons();
+
         const params = new URLSearchParams(window.location.search);
         const name = params.get('n');
-        const isSeries = params.get('s') === '1';
         
         if (name) {
             document.title = `${name} | Bump Comba`;
-            document.getElementById('title').innerText = `Mira "${name}" en la app`;
+            document.getElementById('title').innerText = `Mira "${name}"`;
+            document.getElementById('desc').innerText = `Estamos preparando todo para que disfrutes de "${name}" en la mejor calidad.`;
         }
 
         const playStoreUrl = "https://play.google.com/store/apps/details?id=com.juanchosky.bumpcomba";
         
         // Intent to redirect after a short delay
-        // If the app is installed and App Links are verified, this page won't even be seen on mobile.
-        // This is a fallback for when the app isn't installed.
+        // This is only a fallback for when the app isn't installed.
         setTimeout(() => {
             window.location.href = playStoreUrl;
-        }, 2500);
+        }, 3000);
     </script>
 </body>
 </html>
