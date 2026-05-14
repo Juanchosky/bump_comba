@@ -9,6 +9,7 @@ import '../utils/transitions.dart';
 import '../utils/snack_bar_utils.dart';
 import '../services/social_rewards_service.dart';
 import '../widgets/rate_dialog.dart';
+import '../services/deep_link_service.dart';
 
 class MainMenuScreen extends StatefulWidget {
   const MainMenuScreen({super.key, required this.highScore});
@@ -49,12 +50,16 @@ class _MainMenuScreenState extends State<MainMenuScreen>
     );
 
     _logoController.forward();
+
+    // Initialize Deep Link Listener
+    DeepLinkService().init(context);
   }
 
   @override
   void dispose() {
     _shineController.dispose();
     _logoController.dispose();
+    DeepLinkService().dispose();
     super.dispose();
   }
 
