@@ -1,7 +1,7 @@
 {
   "headers": [
     {
-      "source": "/.well-known/assetlinks.json",
+      "source": "/.well-known/(.*)",
       "headers": [
         {
           "key": "Content-Type",
@@ -15,10 +15,6 @@
     }
   ],
   "rewrites": [
-    {
-      "source": "/.well-known/assetlinks.json",
-      "destination": "/admin_content/.well-known/assetlinks.json"
-    },
-    { "source": "/(.*)", "destination": "/admin_content/$1" }
+    { "source": "/((?!\\.well-known).*)", "destination": "/admin_content/$1" }
   ]
 }
