@@ -6,11 +6,19 @@
         {
           "key": "Content-Type",
           "value": "application/json"
+        },
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
         }
       ]
     }
   ],
   "rewrites": [
+    {
+      "source": "/.well-known/assetlinks.json",
+      "destination": "/admin_content/.well-known/assetlinks.json"
+    },
     { "source": "/(.*)", "destination": "/admin_content/$1" }
   ]
 }
