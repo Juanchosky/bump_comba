@@ -4,9 +4,55 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
+import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
 import 'performance_service.dart';
 import 'metadata_fallback_service.dart';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FAILED IMAGE TRACKER — Retries on app resume
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Global tracker that watches for app lifecycle changes and triggers
+/// silent retries on all registered widgets when the app comes back
+/// to the foreground. This handles the common case where images fail
+/// due to a momentary network issue and the user backgrounds the app.
+class _FailedImageTracker with WidgetsBindingObserver {
+  static final _FailedImageTracker instance = _FailedImageTracker._();
+  _FailedImageTracker._();
+
+  bool _initialized = false;
+  final Set<VoidCallback> _retryCallbacks = {};
+
+  void init() {
+    if (_initialized) return;
+    _initialized = true;
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  void register(VoidCallback callback) {
+    init();
+    _retryCallbacks.add(callback);
+  }
+
+  void unregister(VoidCallback callback) {
+    _retryCallbacks.remove(callback);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _retryCallbacks.isNotEmpty) {
+      // Copy the set because callbacks may unregister themselves
+      final callbacks = Set<VoidCallback>.from(_retryCallbacks);
+      // Small delay to let the system settle after resume
+      Future.delayed(const Duration(milliseconds: 500), () {
+        for (final cb in callbacks) {
+          cb();
+        }
+      });
+    }
+  }
+}
 
 // Headers mínimos — solo lo imprescindible para evitar 403.
 // Menos headers = handshake más rápido con el CDN.
@@ -33,6 +79,91 @@ final HttpClient _sharedHttpClient = HttpClient()
   ..badCertificateCallback =
       ((X509Certificate cert, String host, int port) => true);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// VALIDATING IMAGE FILE SERVICE
+// Intercepts HTTP responses to reject non-image content (HTML error pages, etc.)
+// BEFORE they get cached. This prevents the root cause of images never loading:
+// the Xtream server sometimes returns HTML ("XUI.one - Debug Mode") which
+// flutter_cache_manager would cache as a valid file, causing permanent
+// ImageDecoder failures on Android.
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _ValidatingImageFileService extends FileService {
+  final http.Client _httpClient;
+  _ValidatingImageFileService(this._httpClient);
+
+  @override
+  Future<FileServiceResponse> get(String url,
+      {Map<String, String>? headers}) async {
+    final req = http.Request('GET', Uri.parse(url));
+    if (headers != null) {
+      req.headers.addAll(headers);
+    }
+    final httpResponse = await _httpClient.send(req);
+
+    // Check content-type BEFORE creating the cache response
+    final contentType =
+        httpResponse.headers['content-type']?.toLowerCase() ?? '';
+    if (contentType.contains('text/html') ||
+        contentType.contains('text/plain')) {
+      // Drain the response to free resources, then throw
+      httpResponse.stream.drain<void>().catchError((_) {});
+      throw HttpExceptionWithStatus(
+        httpResponse.statusCode,
+        'Server returned non-image content-type: $contentType',
+        uri: Uri.parse(url),
+      );
+    }
+
+    // Wrap the stream to also peek at the first bytes
+    // (some IPTV servers don't set content-type correctly)
+    return _ValidatingHttpGetResponse(httpResponse);
+  }
+}
+
+/// Extends HttpGetResponse with first-bytes HTML validation.
+class _ValidatingHttpGetResponse extends HttpGetResponse {
+  final http.StreamedResponse _rawResponse;
+  Stream<List<int>>? _validatedStream;
+
+  _ValidatingHttpGetResponse(this._rawResponse) : super(_rawResponse);
+
+  @override
+  Stream<List<int>> get content {
+    if (_validatedStream != null) return _validatedStream!;
+
+    final controller = StreamController<List<int>>();
+    bool firstChunk = true;
+
+    _rawResponse.stream.listen(
+      (data) {
+        if (firstChunk && data.length >= 5) {
+          firstChunk = false;
+          // Check for HTML signature: <!DOC, <html, <HTML
+          final header = String.fromCharCodes(data.take(15).toList());
+          if (header.trimLeft().startsWith('<') &&
+              (header.contains('html') ||
+               header.contains('HTML') ||
+               header.contains('!DOC'))) {
+            controller.addError(
+              Exception('Response body is HTML, not an image'),
+            );
+            controller.close();
+            return;
+          }
+        }
+        firstChunk = false;
+        controller.add(data);
+      },
+      onError: controller.addError,
+      onDone: controller.close,
+    );
+
+    _validatedStream = controller.stream;
+    return _validatedStream!;
+  }
+}
+
 class AppCacheManager {
   static const key = 'bump_comba_img_cache';
   static final CacheManager instance = CacheManager(
@@ -40,8 +171,8 @@ class AppCacheManager {
       key,
       stalePeriod: const Duration(days: 7),
       maxNrOfCacheObjects: 3000,
-      fileService: HttpFileService(
-        httpClient: IOClient(_sharedHttpClient),
+      fileService: _ValidatingImageFileService(
+        IOClient(_sharedHttpClient),
       ),
     ),
   );
@@ -218,6 +349,9 @@ class _FastThumbnailState extends State<FastThumbnail>
   int _imageKey = 0;
   bool _hasLoaded = false;
 
+  // Retry intervals: aggressive at start, backs off gradually
+  static const List<int> _retryDelays = [1, 2, 4, 6, 10, 15, 20, 30];
+
   @override
   void initState() {
     super.initState();
@@ -231,6 +365,8 @@ class _FastThumbnailState extends State<FastThumbnail>
     );
     _effectiveCacheWidth = _computeCacheWidth();
     _checkAndResolveFallback();
+    // Register for app resume retries
+    _FailedImageTracker.instance.register(_onAppResumeRetry);
   }
 
   void _checkAndResolveFallback() async {
@@ -278,42 +414,80 @@ class _FastThumbnailState extends State<FastThumbnail>
     }
   }
 
+  /// Called when the app resumes from background — retry if image hasn't loaded.
+  void _onAppResumeRetry() {
+    if (!mounted || _hasLoaded) return;
+    // Reset retry count so the user gets fresh attempts after resume
+    _retryCount = 0;
+    _performRetry();
+  }
+
   /// Silently retry loading the image after a short delay.
   void _scheduleRetry() {
     if (!mounted || _hasLoaded) return;
 
-    // Max 5 retries: 2s, 4s, 8s, 12s, 18s
-    if (_retryCount >= 5) {
-      widget.onError?.call();
+    if (_retryCount >= _retryDelays.length) {
+      // Don't give up permanently — keep retrying at the longest interval
+      _retryTimer?.cancel();
+      _retryTimer = Timer(const Duration(seconds: 30), () {
+        if (!mounted || _hasLoaded) return;
+        _performRetry();
+      });
       return;
     }
 
+    final delay = Duration(seconds: _retryDelays[_retryCount]);
     _retryCount++;
     _retryTimer?.cancel();
-    final delay = Duration(seconds: [2, 4, 8, 12, 18][_retryCount - 1]);
 
     _retryTimer = Timer(delay, () {
       if (!mounted || _hasLoaded) return;
+      _performRetry();
+    });
+  }
 
-      // 1. Evict from disk cache
-      final url = _resolveUrl();
-      if (url != null) {
-        AppCacheManager.instance.removeFile(url).catchError((_) {});
+  /// Core retry logic shared by timer-based and app-resume retries.
+  /// Awaits cache eviction before triggering a rebuild to guarantee
+  /// the corrupted file is gone before a fresh download starts.
+  Future<void> _performRetry() async {
+    if (!mounted || _hasLoaded) return;
+
+    final url = _resolveUrl();
+    if (url != null) {
+      // 1. Evict from disk cache FIRST and wait for completion
+      try {
+        await AppCacheManager.instance.removeFile(url);
+      } catch (_) {}
+
+      // 2. Evict every form of this image from Flutter's in-memory cache
+      //    (including ResizeImage wrappers)
+      final provider = CachedNetworkImageProvider(
+        url,
+        headers: _kImageHeaders,
+        cacheManager: AppCacheManager.instance,
+      );
+      try { await provider.evict(); } catch (_) {}
+      if (_effectiveCacheWidth != null) {
+        try {
+          await ResizeImage(provider, width: _effectiveCacheWidth!).evict();
+        } catch (_) {}
       }
 
-      // 2. Evict from memory
-      _cachedProvider?.evict();
-      _cachedProvider = null;
+      // 3. Also clear from Flutter's global image cache by key
+      PaintingBinding.instance.imageCache.evict(url);
+    }
 
-      // 3. Reset fade
-      _fadeController.reset();
+    if (!mounted || _hasLoaded) return;
 
-      // 4. Rebuild with new key
-      if (mounted) {
-        setState(() {
-          _imageKey++;
-        });
-      }
+    // 4. Drop our own cached reference
+    _cachedProvider = null;
+
+    // 5. Reset fade — image will appear seamlessly via gaplessPlayback
+    _fadeController.reset();
+
+    // 6. Rebuild with new key
+    setState(() {
+      _imageKey++;
     });
   }
 
@@ -326,6 +500,7 @@ class _FastThumbnailState extends State<FastThumbnail>
 
   @override
   void dispose() {
+    _FailedImageTracker.instance.unregister(_onAppResumeRetry);
     _fadeController.dispose();
     _retryTimer?.cancel();
     super.dispose();
@@ -417,6 +592,7 @@ class _FastThumbnailState extends State<FastThumbnail>
               frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
                 if (wasSynchronouslyLoaded) {
                   _hasLoaded = true;
+                  _FailedImageTracker.instance.unregister(_onAppResumeRetry);
                   if (!_fadeController.isCompleted) {
                     SchedulerBinding.instance.addPostFrameCallback((_) {
                       if (mounted) _fadeController.value = 1.0;
@@ -426,6 +602,7 @@ class _FastThumbnailState extends State<FastThumbnail>
                 }
                 if (frame == null) return const SizedBox.shrink();
                 _hasLoaded = true;
+                _FailedImageTracker.instance.unregister(_onAppResumeRetry);
                 if (!_fadeController.isCompleted) {
                   SchedulerBinding.instance.addPostFrameCallback((_) {
                     if (mounted) _fadeController.forward();
@@ -486,6 +663,9 @@ class _FastChannelLogoState extends State<FastChannelLogo>
   int _imageKey = 0;
   bool _hasLoaded = false;
 
+  // Retry intervals: aggressive at start, backs off gradually
+  static const List<int> _retryDelays = [1, 2, 4, 6, 10, 15, 20, 30];
+
   @override
   void initState() {
     super.initState();
@@ -497,6 +677,8 @@ class _FastChannelLogoState extends State<FastChannelLogo>
       parent: _fadeController,
       curve: Curves.easeOut,
     );
+    // Register for app resume retries
+    _FailedImageTracker.instance.register(_onAppResumeRetry);
   }
 
   @override
@@ -512,40 +694,75 @@ class _FastChannelLogoState extends State<FastChannelLogo>
     }
   }
 
+  /// Called when the app resumes from background — retry if image hasn't loaded.
+  void _onAppResumeRetry() {
+    if (!mounted || _hasLoaded) return;
+    _retryCount = 0;
+    _performRetry();
+  }
+
   void _scheduleRetry() {
     if (!mounted || _hasLoaded) return;
 
-    if (_retryCount >= 5) {
-      widget.onError?.call();
+    if (_retryCount >= _retryDelays.length) {
+      // Don't give up permanently — keep retrying at the longest interval
+      _retryTimer?.cancel();
+      _retryTimer = Timer(const Duration(seconds: 30), () {
+        if (!mounted || _hasLoaded) return;
+        _performRetry();
+      });
       return;
     }
 
+    final delay = Duration(seconds: _retryDelays[_retryCount]);
     _retryCount++;
     _retryTimer?.cancel();
-    final delay = Duration(seconds: [2, 4, 8, 12, 18][_retryCount - 1]);
 
     _retryTimer = Timer(delay, () {
       if (!mounted || _hasLoaded) return;
+      _performRetry();
+    });
+  }
 
-      final url = widget.url?.trim();
-      if (url != null) {
-        AppCacheManager.instance.removeFile(url).catchError((_) {});
-      }
+  /// Core retry logic shared by timer-based and app-resume retries.
+  Future<void> _performRetry() async {
+    if (!mounted || _hasLoaded) return;
 
-      _cachedProvider?.evict();
-      _cachedProvider = null;
-      _fadeController.reset();
+    final url = widget.url?.trim();
+    if (url != null) {
+      // Evict from disk cache FIRST and wait for completion
+      try {
+        await AppCacheManager.instance.removeFile(url);
+      } catch (_) {}
 
-      if (mounted) {
-        setState(() {
-          _imageKey++;
-        });
-      }
+      // Evict every form from Flutter's in-memory cache
+      final provider = CachedNetworkImageProvider(
+        url,
+        headers: _kImageHeaders,
+        cacheManager: AppCacheManager.instance,
+      );
+      try { await provider.evict(); } catch (_) {}
+      try {
+        await ResizeImage(provider, width: widget.size.toInt() * 2).evict();
+      } catch (_) {}
+
+      // Also clear from Flutter's global image cache
+      PaintingBinding.instance.imageCache.evict(url);
+    }
+
+    if (!mounted || _hasLoaded) return;
+
+    _cachedProvider = null;
+    _fadeController.reset();
+
+    setState(() {
+      _imageKey++;
     });
   }
 
   @override
   void dispose() {
+    _FailedImageTracker.instance.unregister(_onAppResumeRetry);
     _fadeController.dispose();
     _retryTimer?.cancel();
     super.dispose();
@@ -591,6 +808,7 @@ class _FastChannelLogoState extends State<FastChannelLogo>
             frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
               if (wasSynchronouslyLoaded) {
                 _hasLoaded = true;
+                _FailedImageTracker.instance.unregister(_onAppResumeRetry);
                 if (!_fadeController.isCompleted) {
                   SchedulerBinding.instance.addPostFrameCallback((_) {
                     if (mounted) _fadeController.value = 1.0;
@@ -600,6 +818,7 @@ class _FastChannelLogoState extends State<FastChannelLogo>
               }
               if (frame == null) return const SizedBox.shrink();
               _hasLoaded = true;
+              _FailedImageTracker.instance.unregister(_onAppResumeRetry);
               if (!_fadeController.isCompleted) {
                 SchedulerBinding.instance.addPostFrameCallback((_) {
                   if (mounted) _fadeController.forward();

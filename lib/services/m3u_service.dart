@@ -346,10 +346,7 @@ class M3UService extends ChangeNotifier {
       // se consideraba expirado → re-descarga innecesaria en cada reinicio.
       final timestampKey =
           _isUnifiedMode ? _unifiedCacheTimestampKey : _cacheTimestampKey;
-      await _prefs?.setInt(
-        timestampKey,
-        DateTime.now().millisecondsSinceEpoch,
-      );
+      await _prefs?.setInt(timestampKey, DateTime.now().millisecondsSinceEpoch);
     } catch (e) {
       debugPrint('Error saving JSON cache: $e');
     }
@@ -1208,7 +1205,7 @@ class M3UService extends ChangeNotifier {
         return true;
       }
 
-      // Si el contenido está vacío o el caché expiró o se forzó refresh, 
+      // Si el contenido está vacío o el caché expiró o se forzó refresh,
       // re-resolvemos los códigos del Load Balancer para asegurar que apuntamos
       // al servidor más actualizado y disponible.
       if (_items.isEmpty || isExpired || forceRefresh) {
