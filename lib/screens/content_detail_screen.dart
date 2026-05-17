@@ -52,6 +52,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   int _selectedSeason = 1;
   List<M3UItem> _otherVersions = [];
   bool _isLoadingEpisodes = false;
+  bool _episodesLoadFailed = false;
   List<M3UItem> _dynamicEpisodes = [];
 
   // TMDB Metadata
@@ -571,7 +572,10 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
   Future<void> _loadEpisodes() async {
     if (!mounted) return;
-    setState(() => _isLoadingEpisodes = true);
+    setState(() {
+      _isLoadingEpisodes = true;
+      _episodesLoadFailed = false;
+    });
 
     try {
       final episodes = await _m3uService.fetchEpisodesForItem(widget.item);
@@ -579,12 +583,20 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
         setState(() {
           _dynamicEpisodes = episodes;
           _isLoadingEpisodes = false;
+          // FIX: Si después de los reintentos internos sigue vacío, marcar como fallo
+          // para que la UI muestre el botón de reintentar.
+          _episodesLoadFailed = episodes.isEmpty;
+          _seasonMap.clear();
+          _seasons.clear();
           _groupEpisodes();
         });
       }
     } catch (e) {
       if (mounted) {
-        setState(() => _isLoadingEpisodes = false);
+        setState(() {
+          _isLoadingEpisodes = false;
+          _episodesLoadFailed = true;
+        });
         debugPrint('Error loading episodes: $e');
       }
     }
@@ -1611,6 +1623,52 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
         const SizedBox(height: 33),
         if (_isLoadingEpisodes)
           _buildEpisodePulse()
+        else if (_episodesLoadFailed && episodes.isEmpty)
+          // FIX: Mostrar botón de reintentar cuando los episodios no cargaron,
+          // en vez de mostrar una lista vacía sin indicación al usuario.
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 24),
+            child: Center(
+              child: Column(
+                children: [
+                  Icon(
+                    Icons.cloud_off_rounded,
+                    size: 40,
+                    color: Colors.white.withValues(alpha: 0.3),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'No se pudieron cargar los episodios',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.5),
+                      fontSize: 14,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  ElevatedButton.icon(
+                    onPressed: _loadEpisodes,
+                    icon: const Icon(Icons.refresh, size: 18),
+                    label: const Text('Reintentar'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.white.withValues(alpha: 0.1),
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 10,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        side: BorderSide(
+                          color: Colors.white.withValues(alpha: 0.2),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          )
         else
           ListView.builder(
             padding: EdgeInsets.zero,

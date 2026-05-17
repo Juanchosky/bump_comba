@@ -25,6 +25,11 @@ class XtreamService {
   }
 
   /// Helper para peticiones GET con seguimiento de progreso (streaming)
+  ///
+  /// FIX: Valida que la respuesta sea JSON válido antes de devolverla.
+  /// Servidores XUI.one/Xtream a veces devuelven páginas HTML de "Debug Mode"
+  /// en lugar de JSON (credenciales inválidas, IP bloqueada, mantenimiento),
+  /// lo que causaba FormatException al intentar parsear.
   Future<String?> _getWithProgress(
     Uri url, {
     void Function(DownloadProgress)? onProgress,
@@ -47,7 +52,23 @@ class XtreamService {
         onProgress?.call(DownloadProgress(received, total));
       }
 
-      return utf8.decode(bytes, allowMalformed: true);
+      final body = utf8.decode(bytes, allowMalformed: true);
+
+      // FIX: Detectar respuestas HTML del servidor Xtream.
+      // Cuando las credenciales son inválidas, la IP está bloqueada, o el
+      // servidor está en mantenimiento, XUI.one devuelve una página HTML
+      // en vez de JSON. Detectamos esto y devolvemos null para que el
+      // fallback a caché se active correctamente.
+      final trimmedBody = body.trimLeft();
+      if (trimmedBody.startsWith('<') || trimmedBody.startsWith('<!')) {
+        debugPrint(
+          'Xtream API returned HTML instead of JSON (possible auth failure, '
+          'IP block, or server maintenance). URL: ${url.host}${url.path}',
+        );
+        return null;
+      }
+
+      return body;
     } finally {
       client.close();
     }
@@ -64,6 +85,14 @@ class XtreamService {
       );
       final response = await http.get(url).timeout(const Duration(seconds: 10));
       if (response.statusCode == 200) {
+        // FIX: Validar que la respuesta sea JSON antes de parsear.
+        final trimmed = response.body.trimLeft();
+        if (trimmed.startsWith('<') || trimmed.startsWith('<!')) {
+          debugPrint(
+            'Xtream login: server returned HTML instead of JSON (auth/IP issue)',
+          );
+          return null;
+        }
         return json.decode(response.body);
       }
     } catch (e) {

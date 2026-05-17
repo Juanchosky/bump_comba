@@ -373,7 +373,12 @@ class M3UService extends ChangeNotifier {
       if (savedVersion < _currentLogicVersion) return null;
 
       if (!ignoreExpiration) {
-        final cacheTimestamp = _prefs?.getInt(_cacheTimestampKey);
+        // FIX: Usar la key correcta según el modo (unified vs single).
+        // Antes siempre usaba _cacheTimestampKey, lo que causaba que en modo
+        // unificado el caché siempre pareciera expirado → re-descarga innecesaria.
+        final timestampKey =
+            _isUnifiedMode ? _unifiedCacheTimestampKey : _cacheTimestampKey;
+        final cacheTimestamp = _prefs?.getInt(timestampKey);
         if (cacheTimestamp == null ||
             DateTime.now().millisecondsSinceEpoch - cacheTimestamp >
                 _cacheDuration.inMilliseconds) {
@@ -850,37 +855,58 @@ class M3UService extends ChangeNotifier {
             return ratioA.compareTo(ratioB);
           });
 
-          final bestMatch = balancerData.first;
-          final String bestUrl = bestMatch['value'] as String;
-          final String bestId = bestMatch['id'] as String;
-          final String bestType =
-              (bestMatch['type'] ?? 'm3u').toString().toLowerCase();
+          // FIX: Iterar sobre los servidores del balanceador para encontrar
+          // uno que NO esté bloqueado por el ISP del usuario (ej. España).
+          for (var match in balancerData) {
+            final String url = match['value'] as String;
+            final String id = match['id'] as String;
+            final String type =
+                (match['type'] ?? 'm3u').toString().toLowerCase();
+            final String? user = match['username']?.toString();
+            final String? pass = match['password']?.toString();
 
-          _incrementLoadBalancerConnection(bestId);
+            // Si es xtream, validamos que el servidor sea accesible antes de elegirlo.
+            if (type == 'xtream' && user != null && pass != null) {
+              final xtream = XtreamService();
+              final loginOk = await xtream.login(url, user, pass);
+              if (loginOk == null) {
+                debugPrint(
+                  'Load Balancer: Server $url is blocked or failing for this user. '
+                  'Trying next server in pool...',
+                );
+                continue; // Server bloqueado, pasamos al siguiente
+              }
+            }
 
-          // Second-pass: If it's a code but the 'value' contains a composite URL
-          // like http://host:port/get.php?username=XXX... parse it.
-          if (bestUrl.startsWith('http') && bestUrl.contains('username=')) {
-            try {
-              final uri = Uri.parse(bestUrl);
-              return (
-                url:
-                    '${uri.scheme}://${uri.host}${uri.hasPort ? ':${uri.port}' : ''}',
-                isCode: true,
-                username: uri.queryParameters['username'],
-                password: uri.queryParameters['password'],
-                type: 'xtream',
-              );
-            } catch (_) {}
+            // Si llegamos aquí, el servidor funciona (o no es xtream)
+            _incrementLoadBalancerConnection(id);
+
+            // Second-pass: If it's a code but the 'value' contains a composite URL
+            // like http://host:port/get.php?username=XXX... parse it.
+            if (url.startsWith('http') && url.contains('username=')) {
+              try {
+                final uri = Uri.parse(url);
+                return (
+                  url:
+                      '${uri.scheme}://${uri.host}${uri.hasPort ? ':${uri.port}' : ''}',
+                  isCode: true,
+                  username: uri.queryParameters['username'],
+                  password: uri.queryParameters['password'],
+                  type: 'xtream',
+                );
+              } catch (_) {}
+            }
+
+            return (
+              url: url,
+              isCode: true,
+              username: user,
+              password: pass,
+              type: type,
+            );
           }
-
-          return (
-            url: bestUrl,
-            isCode: true,
-            username: bestMatch['username']?.toString(),
-            password: bestMatch['password']?.toString(),
-            type: bestType,
-          );
+          
+          debugPrint('Load Balancer: All available servers are blocked or failing.');
         }
       }
     } catch (e) {
@@ -1403,6 +1429,46 @@ class M3UService extends ChangeNotifier {
         return false;
       }
 
+      // FIX: Detectar fetch parcial — si el caché tenía películas o series
+      // pero la descarga fresca NO las tiene, es un fetch incompleto
+      // (un endpoint falló por timeout/error). En ese caso, NO sobreescribir
+      // el caché bueno con datos incompletos.
+      final newMovies = items.where((i) => !i.isLive && !i.isSeries).length;
+      final newSeries = items.where((i) => i.isSeries).length;
+      final hadMovies = _movies.isNotEmpty;
+      final hadSeries = _series.isNotEmpty;
+
+      if ((hadMovies && newMovies == 0) || (hadSeries && newSeries == 0)) {
+        debugPrint(
+          'Xtream partial fetch detected (movies: $newMovies, series: $newSeries, '
+          'had movies: $hadMovies, had series: $hadSeries) — keeping cached data',
+        );
+        // Intentar complementar: usar caché para las categorías faltantes
+        final fallback = await _loadJsonCache(ignoreExpiration: true);
+        if (fallback != null && fallback.isNotEmpty) {
+          // Mezclar: usar los datos frescos que SÍ llegaron + caché para lo que faltó
+          final freshLive = items.where((i) => i.isLive).toList();
+          final freshMovies = items.where((i) => !i.isLive && !i.isSeries).toList();
+          final freshSeries = items.where((i) => i.isSeries).toList();
+
+          final cachedLive = fallback.where((i) => i.isLive).toList();
+          final cachedMovies = fallback.where((i) => !i.isLive && !i.isSeries).toList();
+          final cachedSeries = fallback.where((i) => i.isSeries).toList();
+
+          final merged = [
+            ...(freshLive.isNotEmpty ? freshLive : cachedLive),
+            ...(freshMovies.isNotEmpty ? freshMovies : cachedMovies),
+            ...(freshSeries.isNotEmpty ? freshSeries : cachedSeries),
+          ];
+
+          final custom = await fetchCustomContent(forceRefresh: false);
+          await _indexItems([...custom, ...merged]);
+          // NO guardar en caché el merge parcial — mantener el caché completo
+          return true;
+        }
+        // Si no hay fallback, usar lo que llegó (mejor que nada)
+      }
+
       final custom = await fetchCustomContent(forceRefresh: forceRefresh);
       await _indexItems([...custom, ...items]);
 
@@ -1491,6 +1557,62 @@ class M3UService extends ChangeNotifier {
 
       final xtream = XtreamService();
 
+      // FIX: Validar credenciales ANTES de lanzar los 3 fetches en paralelo.
+      // Si el servidor devuelve HTML ("Debug Mode") en vez de JSON, las
+      // credenciales son inválidas, la IP está bloqueada, o el servidor
+      // está en mantenimiento. Evitamos 3 peticiones inútiles.
+      var loginResult = await xtream.login(host, user, pass);
+
+      // Si el login falla en el host configurado, intentar con el host real
+      // almacenado en caché de un login anterior exitoso.
+      String effectiveHost = host;
+      final cachedRealHost = _prefs?.getString('xtream_real_host_$host');
+      if (loginResult == null && cachedRealHost != null && cachedRealHost != host) {
+        debugPrint(
+          'Xtream login failed on $host, trying cached real host: $cachedRealHost',
+        );
+        loginResult = await xtream.login(cachedRealHost, user, pass);
+        if (loginResult != null) {
+          effectiveHost = cachedRealHost;
+        }
+      }
+
+      if (loginResult == null) {
+        debugPrint(
+          'Xtream login validation failed for $host — credentials may be '
+          'invalid, IP blocked, or server in maintenance.',
+        );
+        _lastError = 'El servidor no acepta las credenciales actuales. '
+            'Puede que tu IP esté bloqueada o el servidor esté en mantenimiento.';
+        return [];
+      }
+
+      // Extraer el host real del server_info del login response.
+      // Servidores XUI.one reportan el host real en server_info.url,
+      // que puede diferir del proxy/CDN configurado (ej: red4tv.lat → ultratvsv.site).
+      try {
+        final serverInfo = loginResult['server_info'];
+        if (serverInfo != null) {
+          final realUrl = serverInfo['url']?.toString();
+          final realPort = serverInfo['port']?.toString() ?? '80';
+          final protocol = serverInfo['server_protocol']?.toString() ?? 'http';
+          if (realUrl != null && realUrl.isNotEmpty) {
+            final constructedHost = '$protocol://$realUrl:$realPort';
+            // Guardar el host real en caché para futuros fallbacks
+            await _prefs?.setString('xtream_real_host_$host', constructedHost);
+            if (constructedHost != effectiveHost) {
+              debugPrint(
+                'Xtream: real server differs from configured. '
+                'Configured=$effectiveHost, Real=$constructedHost. Using real server.',
+              );
+              effectiveHost = constructedHost;
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('Error parsing server_info: $e');
+      }
+
       int liveBytes = 0;
       int vodBytes = 0;
       int seriesBytes = 0;
@@ -1502,9 +1624,10 @@ class M3UService extends ChangeNotifier {
       }
 
       // Parallel fetch for Live, VOD and Series with tracking
+      // Usa effectiveHost que puede ser el host real extraído del server_info
       final results = await Future.wait([
         xtream.fetchLiveStreams(
-          host,
+          effectiveHost,
           user,
           pass,
           onProgress: (p) {
@@ -1513,7 +1636,7 @@ class M3UService extends ChangeNotifier {
           },
         ),
         xtream.fetchVodStreams(
-          host,
+          effectiveHost,
           user,
           pass,
           onProgress: (p) {
@@ -1522,7 +1645,7 @@ class M3UService extends ChangeNotifier {
           },
         ),
         xtream.fetchSeries(
-          host,
+          effectiveHost,
           user,
           pass,
           onProgress: (p) {
@@ -1770,6 +1893,9 @@ class M3UService extends ChangeNotifier {
   }
 
   /// Fetches episodes for a series shell (specifically for Xtream Codes).
+  ///
+  /// FIX: Incluye reintentos con backoff exponencial para evitar que
+  /// timeouts intermitentes del servidor resulten en "0 episodios".
   Future<List<M3UItem>> fetchEpisodesForItem(M3UItem item) async {
     if (!item.isSeries) return [];
     if (item.episodes.isNotEmpty) return item.episodes;
@@ -1791,13 +1917,41 @@ class M3UService extends ChangeNotifier {
     if (source == null || source.type != 'xtream') return [];
 
     final xtream = XtreamService();
-    final episodes = await xtream.fetchSeriesEpisodes(
-      source.url,
-      source.username ?? '',
-      source.password ?? '',
-      item.url, // series_id
-      item.name,
-    );
+
+    // Use the effective host if a real host was previously resolved during login.
+    String effectiveHost = source.url;
+    final cachedRealHost = _prefs?.getString('xtream_real_host_${source.url}');
+    if (cachedRealHost != null && cachedRealHost.isNotEmpty) {
+      effectiveHost = cachedRealHost;
+    }
+
+    // Reintentar hasta 3 veces con backoff exponencial (1s, 2s, 4s)
+    // Los servidores Xtream a veces fallan intermitentemente, lo que
+    // causa que se muestren "0 episodios" sin opción de reintentar.
+    List<M3UItem> episodes = [];
+    for (int attempt = 0; attempt < 3; attempt++) {
+      try {
+        episodes = await xtream.fetchSeriesEpisodes(
+          effectiveHost,
+          source.username ?? '',
+          source.password ?? '',
+          item.url, // series_id
+          item.name,
+        );
+        if (episodes.isNotEmpty) break;
+      } catch (e) {
+        debugPrint('fetchEpisodesForItem attempt ${attempt + 1} error: $e');
+      }
+
+      if (attempt < 2) {
+        final delay = Duration(seconds: 1 << attempt); // 1s, 2s, 4s
+        debugPrint(
+          'fetchEpisodesForItem attempt ${attempt + 1} returned empty for '
+          '"${item.name}". Retrying in ${delay.inSeconds}s…',
+        );
+        await Future.delayed(delay);
+      }
+    }
 
     // Dynamic indexing: add newly fetched episodes to the global URL index
     // so resolveItemFromProgress can find them immediately via URL.
@@ -2423,6 +2577,10 @@ class M3UService extends ChangeNotifier {
 
   /// Re-resolves all sources that were added via a code (like "1234").
   /// This ensures that the URL and credentials are up to date with the load balancer.
+  ///
+  /// FIX: Ahora valida las nuevas credenciales via login() antes de aplicarlas.
+  /// Esto previene que el load balancer asigne un servidor en "Debug Mode" o con
+  /// IP bloqueada (común en España y regiones con restricciones de ISP).
   Future<void> _reResolveCodesIfNeeded() async {
     if (_sources.isEmpty) return;
 
@@ -2440,6 +2598,26 @@ class M3UService extends ChangeNotifier {
             final bool typeChanged = resolved.type != source.type;
 
             if (urlChanged || userChanged || passChanged || typeChanged) {
+              // Validar que las nuevas credenciales realmente funcionen
+              // antes de aplicarlas.
+              if (resolved.type == 'xtream' &&
+                  resolved.username != null &&
+                  resolved.password != null) {
+                final xtream = XtreamService();
+                final loginOk = await xtream.login(
+                  resolved.url!,
+                  resolved.username!,
+                  resolved.password!,
+                );
+                if (loginOk == null) {
+                  debugPrint(
+                    'Re-resolved code ${source.originalInput}: new credentials '
+                    'failed login validation. Keeping previous credentials.',
+                  );
+                  continue; // Skip this update — keep old working credentials
+                }
+              }
+
               debugPrint(
                 'Re-resolved code ${source.originalInput}: updating source data.',
               );
