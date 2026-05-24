@@ -5,6 +5,7 @@
 list(APPEND FLUTTER_PLUGIN_LIST
   app_links
   bonsoir_windows
+  connectivity_plus
   flutter_inappwebview_windows
   flutter_timezone
   media_kit_video

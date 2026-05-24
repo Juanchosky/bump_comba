@@ -19,6 +19,8 @@ import '../services/fast_image_service.dart';
 import '../services/dynamic_scraper_service.dart';
 import '../services/performance_service.dart';
 import '../services/cast_service.dart';
+import '../services/network_quality_service.dart';
+import '../services/adaptive_buffer_service.dart';
 
 import '../utils/snack_bar_utils.dart';
 import 'subscription_screen.dart';
@@ -51,6 +53,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   final WatchProgressService _watchProgressService = WatchProgressService();
   final GlobalKey<ScaffoldMessengerState> _innerMessengerKey =
       GlobalKey<ScaffoldMessengerState>();
+
+  // Adaptive quality
+  final NetworkQualityService _networkQuality = NetworkQualityService();
+  NetworkQuality? _lastAppliedQuality;
+  DateTime? _lastSeekTime;
 
   static const List<String> _userAgents = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -208,6 +215,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     AdService.isAdInProgress.addListener(_handleAdStateChange);
     CastService().isCasting.addListener(_handleCastStateChange);
     _startPlaybackFlow();
+
+    // Iniciar monitor de red ANTES de iniciar el player
+    _networkQuality.start();
+    _networkQuality.quality.addListener(_onQualityChanged);
   }
 
   void _handleCastStateChange() {
@@ -306,7 +317,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     CastService().castPosition.removeListener(_syncFromCast);
     CastService().castPlaying.removeListener(_syncFromCast);
     CastService().isCasting.removeListener(_handleCastStateChange);
+    _networkQuality.setActiveStreamUrl(null);
     // 1. Synchronous Dart-side cleanup (cancel all listeners FIRST).
+    _networkQuality.quality.removeListener(_onQualityChanged);
+    _networkQuality.stop();
     _hideControlsTimer?.cancel();
     _stallTimer?.cancel();
     _seekFeedbackTimer?.cancel();
@@ -456,7 +470,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   Future<void> _cleanupPlayer() async {
-    // 1. Cancel Dart-side subscriptions and timers first.
+    _networkQuality.setActiveStreamUrl(null);
     for (final s in _streamSubscriptions) {
       s.cancel();
     }
@@ -466,37 +480,34 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _stallTimer?.cancel();
 
     final p = _player;
+    _player = null;
 
-    // 2. Pause immediately — stops the decoder from producing frames.
     try {
       p?.pause();
     } catch (_) {}
 
-    // 3. Silence MPV and detach all outputs to prevent FFI callbacks.
+    // CRÍTICO: Liberar el VideoController PRIMERO y esperar a que el
+    // BLASTBufferQueue drene sus 8 buffers antes de tocar MPV.
+    // Sin esto, el nuevo VideoController encuentra buffers retenidos.
+    _videoControllerNotifier.value = null;
+    await Future.delayed(const Duration(milliseconds: 600));
+
     try {
       final mpv = p?.platform as dynamic;
       mpv?.setProperty('msg-level', 'all=no');
       mpv?.setProperty('log-level', 'no');
-      mpv?.setProperty('aid', 'no'); // disable audio
-      mpv?.setProperty('vid', 'no'); // disable video
-      mpv?.setProperty('sid', 'no'); // disable subtitles
-      mpv?.setProperty('ao', 'null'); // null audio output
-      mpv?.setProperty('vo', 'null'); // null video output
+      mpv?.setProperty('aid', 'no');
+      mpv?.setProperty('vid', 'no');
+      mpv?.setProperty('sid', 'no');
+      mpv?.setProperty('ao', 'null');
+      mpv?.setProperty('vo', 'null');
     } catch (_) {}
 
-    // 4. Unmount the Video widget from Flutter tree.
-    _videoControllerNotifier.value = null;
-
-    // 5. Null our reference so microtasks see it as gone.
-    _player = null;
-
-    // 6. Stop the player and drain MPV's native event queue.
     try {
       p?.stop();
     } catch (_) {}
-    await Future.delayed(const Duration(milliseconds: 1200));
+    await Future.delayed(const Duration(milliseconds: 600));
 
-    // 7. Dispose the old player.
     if (p != null) {
       try {
         await p.dispose();
@@ -658,9 +669,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           ),
         );
         _videoControllerNotifier.value = null;
-        Future.microtask(() {
-          if (mounted) _videoControllerNotifier.value = currentController;
-        });
+        // Esperar a que el BLASTBufferQueue libere los 8 buffers anteriores.
+        // El cleanup mejorado de _cleanupPlayer ya drena buffers nativos, por lo que 200ms es suficiente.
+        await Future.delayed(const Duration(milliseconds: 200));
+        if (mounted && !CastService().isCasting.value) {
+          _videoControllerNotifier.value = currentController;
+        }
       } else {
         // Durante Cast, nos aseguramos que no haya controlador de video activo en el móvil.
         _videoControllerNotifier.value = null;
@@ -834,7 +848,36 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         }
       });
 
+      // ── ADAPTIVE QUALITY: Aplicar perfil inicial basado en estado de red ──
+      // Se hace DESPUÉS del microtask original para no bloquear el arranque.
+      Future.delayed(const Duration(milliseconds: 800), () async {
+        if (!mounted || _player == null) return;
+        final mpv2 = _player?.platform as dynamic;
+        if (mpv2 == null) return;
+
+        final currentQuality = _networkQuality.quality.value;
+        _lastAppliedQuality = currentQuality;
+
+        // Solo aplicar perfil degradado si realmente la red es mala.
+        // En excellent/good no tocamos nada (el perfil por defecto es óptimo).
+        if (currentQuality == NetworkQuality.fair ||
+            currentQuality == NetworkQuality.poor) {
+          await AdaptiveBufferService().applyConfig(
+            mpv2,
+            currentQuality,
+            isLive: _isLiveContent,
+          );
+          debugPrint(
+            'AdaptiveQuality: Initial profile applied: ${currentQuality.name}',
+          );
+        }
+      });
+
       final currentUrl = _serverUrls[_currentServerIndex % _serverUrls.length];
+      
+      // Informar al monitor de red qué servidor estamos usando
+      // para que mida la velocidad contra ESE servidor, no contra Google
+      _networkQuality.setActiveStreamUrl(currentUrl);
       final castService = CastService();
       final shouldPlayLocally =
           !castService.isCasting.value ||
@@ -894,6 +937,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       }
 
       if (startFrom != null && startFrom.inSeconds > 0) {
+        // FASE 1: Esperar a que el demuxer reporte duración
         int attempts = 0;
         while (attempts < 60 && mounted && _player != null) {
           await Future.delayed(const Duration(milliseconds: 500));
@@ -901,7 +945,24 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           attempts++;
         }
 
+        // FASE 2: Esperar al primer frame decodificado antes de hacer seek.
+        // El decoder MTK c2.mtk.avc.decoder lanza releaseAsync si recibe
+        // un seek antes de haber procesado el primer output frame.
+        // Esperamos hasta 3s a que width/height > 0 (primer frame listo).
+        int frameWait = 0;
+        while (frameWait < 30 && mounted && _player != null) {
+          await Future.delayed(const Duration(milliseconds: 100));
+          final w = _player!.state.width ?? 0;
+          final h = _player!.state.height ?? 0;
+          if (w > 0 && h > 0) break;
+          frameWait++;
+        }
+        // El CCodecBufferChannel MTK necesita ~300-500ms entre el primer
+        // output frame dequeued y el primer seek para evitar releaseAsync.
+        await Future.delayed(const Duration(milliseconds: 500));
+
         if (mounted && _player != null) {
+          _lastSeekTime = DateTime.now();
           await _player!.seek(startFrom);
           for (int i = 0; i < 5; i++) {
             await Future.delayed(const Duration(milliseconds: 500));
@@ -909,6 +970,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             final diff =
                 (_player!.state.position.inSeconds - startFrom.inSeconds).abs();
             if (diff < 10) break;
+            _lastSeekTime = DateTime.now();
             await _player!.seek(startFrom);
           }
         }
@@ -1310,8 +1372,32 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         _stallSeconds++;
         showingSpinner = true;
 
-        final int threshold = _isLiveContent ? 5 : 10;
+        // Threshold dinámico según calidad de red:
+        // - Buena red: recargar rápido (5–10s)
+        // - Mala red: darle más tiempo para que el buffer se llene (15–25s)
+        final networkQ = _networkQuality.quality.value;
+        final int threshold;
+        if (networkQ == NetworkQuality.poor) {
+          threshold = _isLiveContent ? 20 : 35; // Más paciencia en red mala
+        } else if (networkQ == NetworkQuality.fair) {
+          threshold = _isLiveContent ? 10 : 20;
+        } else {
+          threshold = _isLiveContent ? 5 : 10; // Comportamiento original
+        }
+
         if (_stallSeconds >= threshold && !_isVideoLoading) {
+          // NUEVO: No recargar si acabamos de hacer un seek (los primeros 8s
+          // post-seek son normalmente buffering, no un stall real).
+          final secondsSinceSeek = _lastSeekTime != null
+              ? DateTime.now().difference(_lastSeekTime!).inSeconds
+              : 999;
+          if (secondsSinceSeek < 8) {
+            debugPrint(
+              'Stall ignorado: seek reciente hace ${secondsSinceSeek}s',
+            );
+            _stallSeconds = 0; // Reset para no acumular
+            return;
+          }
           // Si el stall ocurre justo después de cambiar de subtítulo, probablemente sea esa pista
           if (_lastSelectedTrack != null &&
               _lastTrackChangeTime != null &&
@@ -1940,6 +2026,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _toggleControls();
   }
 
+  void _pauseNetworkMonitoring() => _networkQuality.stop();
+  void _resumeNetworkMonitoring() => _networkQuality.start();
+
   void _togglePlayback() {
     final activePlayer = _player;
     if (activePlayer == null) return;
@@ -1961,6 +2050,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
     if (activePlayer.state.playing) {
       activePlayer.pause();
+      _pauseNetworkMonitoring();
       setState(() => _showControls = true);
       _hideControlsTimer?.cancel();
       if (_isPiPSupported) {
@@ -1968,6 +2058,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       }
     } else {
       activePlayer.play();
+      _resumeNetworkMonitoring();
       _startHideControlsTimer();
       if (_isPiPSupported) {
         platform.invokeMethod('updatePiPState', {'playing': true});
@@ -3904,6 +3995,46 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                 ),
                               ],
                             ),
+                            // Indicador de calidad de red (solo en datos móviles y red débil)
+                            ValueListenableBuilder<NetworkQuality>(
+                              valueListenable: _networkQuality.quality,
+                              builder: (context, q, _) {
+                                if (!_networkQuality.isMobileData.value ||
+                                    q.index < NetworkQuality.fair.index) {
+                                  return const SizedBox.shrink();
+                                }
+                                return Padding(
+                                  padding: const EdgeInsets.only(top: 2),
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(
+                                        q == NetworkQuality.poor
+                                            ? Icons.signal_cellular_0_bar
+                                            : Icons.signal_cellular_alt_1_bar,
+                                        size: 11 * scale,
+                                        color: q == NetworkQuality.poor
+                                            ? Colors.red
+                                            : Colors.amber,
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        q == NetworkQuality.poor
+                                            ? 'Señal muy débil — modo de emergencia activo'
+                                            : 'Señal débil — modo ahorro activo',
+                                        style: TextStyle(
+                                          color: q == NetworkQuality.poor
+                                              ? Colors.red.shade300
+                                              : Colors.amber.shade300,
+                                          fontSize: 10 * scale,
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
+                            ),
                             if (_currentItem.isLive && !_isLandscape)
                               Padding(
                                 padding: const EdgeInsets.only(left: 8, top: 8),
@@ -4232,6 +4363,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   void _seekBackward({bool showControls = true}) {
     if (_player == null) return;
+    _lastSeekTime = DateTime.now();
     final castService = CastService();
     setState(() {
       _isSeeking = true;
@@ -4250,6 +4382,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   void _seekForward({bool showControls = true}) {
     if (_player == null) return;
+    _lastSeekTime = DateTime.now();
     final castService = CastService();
     setState(() {
       _isSeeking = true;
@@ -4495,6 +4628,60 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _noticeTimer = Timer(const Duration(seconds: 3), () {
       if (mounted) _noticeAnimController.reverse();
     });
+  }
+
+  void _onQualityChanged() {
+    _onNetworkQualityChanged(_networkQuality.quality.value);
+  }
+
+  void _onNetworkQualityChanged(NetworkQuality newQuality) async {
+    if (!mounted || _player == null || _isVideoLoading) return;
+    if (_lastAppliedQuality == newQuality) return;
+
+    final previous = _lastAppliedQuality;
+    _lastAppliedQuality = newQuality;
+
+    final mpv = _player?.platform as dynamic;
+    if (mpv == null) return;
+
+    // Solo ajustar parámetros MPV. NUNCA recargar el player desde aquí.
+    await AdaptiveBufferService().applyConfig(
+      mpv,
+      newQuality,
+      isLive: _isLiveContent,
+    );
+
+    // Notificar al usuario solo en cambios significativos
+    if (_networkQuality.isMobileData.value && previous != null) {
+      final wasGood = previous.index <= NetworkQuality.good.index;
+      final isNowBad = newQuality.index >= NetworkQuality.fair.index;
+      final isNowGood = newQuality.index <= NetworkQuality.good.index;
+
+      if (wasGood && isNowBad) {
+        _showAdaptiveQualityNotice(degraded: true, quality: newQuality);
+      } else if (!wasGood && isNowGood) {
+        _showAdaptiveQualityNotice(degraded: false, quality: newQuality);
+      }
+    }
+  }
+
+  void _showAdaptiveQualityNotice({
+    required bool degraded,
+    required NetworkQuality quality,
+  }) {
+    if (!mounted) return;
+    final mbps = _networkQuality.estimatedBandwidthMbps.value;
+    final label = mbps < 1.0
+        ? '${(mbps * 1000).toInt()} Kbps'
+        : '${mbps.toStringAsFixed(1)} Mbps';
+
+    if (degraded) {
+      _showVisualNotice(
+        'Red débil ($label) — reduciendo calidad para evitar cortes',
+      );
+    } else {
+      _showVisualNotice('Conexión mejorada ($label) — restaurando calidad');
+    }
   }
 
   void _showVisualBottomSheet({
