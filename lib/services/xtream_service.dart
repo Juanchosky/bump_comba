@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
@@ -38,6 +39,14 @@ class XtreamService {
     final client = http.Client();
     try {
       final request = http.Request('GET', url);
+      // Forzar 'Connection: close' y agregar User-Agent estándar para evitar
+      // el envenenamiento de sockets TCP en redes móviles.
+      request.headers.addAll({
+        'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20',
+        'Accept': 'application/json, text/plain, */*',
+        'Connection': 'close',
+      });
+
       final response = await client.send(request).timeout(timeout);
 
       if (response.statusCode != 200) return null;
@@ -46,7 +55,10 @@ class XtreamService {
       final int? total = response.contentLength;
       int received = 0;
 
-      await for (final chunk in response.stream) {
+      // Timeout de 15 segundos para evitar cuelgues indefinidos en redes inestables
+      await for (final chunk in response.stream.timeout(
+        const Duration(seconds: 15),
+      )) {
         bytes.addAll(chunk);
         received += chunk.length;
         onProgress?.call(DownloadProgress(received, total));
@@ -69,6 +81,14 @@ class XtreamService {
       }
 
       return body;
+    } on TimeoutException catch (e) {
+      debugPrint(
+        'Xtream API GET TimeoutException: $e (URL: ${url.host}${url.path})',
+      );
+      return null;
+    } catch (e) {
+      debugPrint('Xtream API GET Error: $e (URL: ${url.host}${url.path})');
+      return null;
     } finally {
       client.close();
     }
@@ -79,9 +99,11 @@ class XtreamService {
     String user,
     String pass,
   ) async {
+    final cleanHost =
+        host.endsWith('/') ? host.substring(0, host.length - 1) : host;
     try {
       final url = Uri.parse(
-        '$host/player_api.php?username=$user&password=$pass',
+        '$cleanHost/player_api.php?username=$user&password=$pass',
       );
       final response = await http.get(url).timeout(const Duration(seconds: 10));
       if (response.statusCode == 200) {
@@ -107,10 +129,12 @@ class XtreamService {
     String pass, {
     void Function(DownloadProgress)? onProgress,
   }) async {
+    final cleanHost =
+        host.endsWith('/') ? host.substring(0, host.length - 1) : host;
     try {
       // 1. Get categories
       final catUrl = Uri.parse(
-        '$host/player_api.php?username=$user&password=$pass&action=get_live_categories',
+        '$cleanHost/player_api.php?username=$user&password=$pass&action=get_live_categories',
       );
       final catResStr = await _getWithProgress(catUrl, onProgress: onProgress);
       final Map<String, String> categoryMap = {};
@@ -127,7 +151,7 @@ class XtreamService {
 
       // 2. Get streams
       final streamUrl = Uri.parse(
-        '$host/player_api.php?username=$user&password=$pass&action=get_live_streams',
+        '$cleanHost/player_api.php?username=$user&password=$pass&action=get_live_streams',
       );
       final streamResStr = await _getWithProgress(
         streamUrl,
@@ -137,7 +161,7 @@ class XtreamService {
         return await compute(parseLiveStreamsInBackground, {
           'json': streamResStr,
           'categoryMap': categoryMap,
-          'host': host,
+          'host': cleanHost,
           'user': user,
           'pass': pass,
         });
@@ -154,9 +178,11 @@ class XtreamService {
     String pass, {
     void Function(DownloadProgress)? onProgress,
   }) async {
+    final cleanHost =
+        host.endsWith('/') ? host.substring(0, host.length - 1) : host;
     try {
       final catUrl = Uri.parse(
-        '$host/player_api.php?username=$user&password=$pass&action=get_vod_categories',
+        '$cleanHost/player_api.php?username=$user&password=$pass&action=get_vod_categories',
       );
       final catResStr = await _getWithProgress(catUrl, onProgress: onProgress);
       final Map<String, String> categoryMap = {};
@@ -172,7 +198,7 @@ class XtreamService {
       }
 
       final streamUrl = Uri.parse(
-        '$host/player_api.php?username=$user&password=$pass&action=get_vod_streams',
+        '$cleanHost/player_api.php?username=$user&password=$pass&action=get_vod_streams',
       );
       final streamResStr = await _getWithProgress(
         streamUrl,
@@ -182,7 +208,7 @@ class XtreamService {
         return await compute(parseVodStreamsInBackground, {
           'json': streamResStr,
           'categoryMap': categoryMap,
-          'host': host,
+          'host': cleanHost,
           'user': user,
           'pass': pass,
         });
@@ -199,9 +225,11 @@ class XtreamService {
     String pass, {
     void Function(DownloadProgress)? onProgress,
   }) async {
+    final cleanHost =
+        host.endsWith('/') ? host.substring(0, host.length - 1) : host;
     try {
       final catUrl = Uri.parse(
-        '$host/player_api.php?username=$user&password=$pass&action=get_series_categories',
+        '$cleanHost/player_api.php?username=$user&password=$pass&action=get_series_categories',
       );
       final catResStr = await _getWithProgress(catUrl, onProgress: onProgress);
       final Map<String, String> categoryMap = {};
@@ -217,7 +245,7 @@ class XtreamService {
       }
 
       final streamUrl = Uri.parse(
-        '$host/player_api.php?username=$user&password=$pass&action=get_series',
+        '$cleanHost/player_api.php?username=$user&password=$pass&action=get_series',
       );
       final streamResStr = await _getWithProgress(
         streamUrl,
@@ -227,7 +255,7 @@ class XtreamService {
         return await compute(parseSeriesInBackground, {
           'json': streamResStr,
           'categoryMap': categoryMap,
-          'host': host,
+          'host': cleanHost,
           'user': user,
           'pass': pass,
         });
@@ -246,49 +274,41 @@ class XtreamService {
     String seriesName, {
     void Function(DownloadProgress)? onProgress,
   }) async {
+    final cleanHost =
+        host.endsWith('/') ? host.substring(0, host.length - 1) : host;
     final user = SecurityUtils.deobfuscate(userRaw);
     final pass = SecurityUtils.deobfuscate(passRaw);
+    Uri? url;
     try {
-      final url = Uri.parse(
-        '$host/player_api.php?username=$user&password=$pass&action=get_series_info&series_id=$seriesId',
+      url = Uri.parse(
+        '$cleanHost/player_api.php?username=$user&password=$pass&action=get_series_info&series_id=$seriesId',
       );
       final resStr = await _getWithProgress(url, onProgress: onProgress);
       if (resStr != null) {
-        final data = json.decode(resStr);
-        final Map<String, dynamic> episodesData = data['episodes'] ?? {};
-        final List<M3UItem> allEpisodes = [];
-
-        episodesData.forEach((seasonNum, episodesList) {
-          if (episodesList is List) {
-            for (var ep in episodesList) {
-              final epId = ep['id'];
-              final ext = ep['container_extension'] ?? 'mp4';
-              final epName =
-                  ep['title']?.toString() ?? 'Episodio ${ep['episode_num']}';
-              final rawLogo = ep['info']?['movie_image']?.toString();
-
-              allEpisodes.add(
-                M3UItem(
-                  name: epName,
-                  url: '$host/series/$user/$pass/$epId.$ext',
-                  category: 'Episodios',
-                  seriesName: seriesName,
-                  seasonNumber: int.tryParse(seasonNum) ?? 0,
-                  episodeNumber:
-                      int.tryParse(ep['episode_num']?.toString() ?? '0') ?? 0,
-                  logo: _fixLogo(rawLogo, epName, host),
-                  duration:
-                      ep['info']?['duration']?.toString() ??
-                      ep['duration']?.toString(),
-                ),
-              );
-            }
-          }
+        final allEpisodes = await compute(parseSeriesEpisodesInBackground, {
+          'json': resStr,
+          'host': cleanHost,
+          'user': userRaw,
+          'pass': passRaw,
+          'seriesName': seriesName,
         });
+
+        if (allEpisodes.isEmpty) {
+          try {
+            final data = json.decode(resStr);
+            debugPrint(
+              'Xtream fetchSeriesEpisodes: parsed 0 episodes. '
+              'Keys in data: ${data is Map ? data.keys.toList() : 'not a Map'}. '
+              'episodes type: ${data is Map ? data['episodes']?.runtimeType : 'N/A'}. '
+              'seasons content: ${data is Map ? data['seasons'] : 'N/A'}. '
+              'URL: $url',
+            );
+          } catch (_) {}
+        }
         return allEpisodes;
       }
     } catch (e) {
-      print('Xtream fetchSeriesEpisodes error: $e');
+      debugPrint('Xtream fetchSeriesEpisodes error: $e. URL: $url');
     }
     return [];
   }
@@ -378,4 +398,138 @@ List<M3UItem> parseSeriesInBackground(Map<String, dynamic> input) {
       episodes: [],
     );
   }).toList();
+}
+
+String _fixLogoHelper(String? logo, String title, String host) {
+  if (logo == null || logo.trim().isEmpty || logo.contains('placeholder')) {
+    return '';
+  }
+  logo = logo.trim();
+
+  if (logo.startsWith('/')) {
+    return '$host$logo';
+  }
+  return logo;
+}
+
+List<M3UItem> parseSeriesEpisodesInBackground(Map<String, dynamic> input) {
+  final String jsonStr = input['json'];
+  final String cleanHost = input['host'];
+  final String user = SecurityUtils.deobfuscate(input['user'] ?? '');
+  final String pass = SecurityUtils.deobfuscate(input['pass'] ?? '');
+  final String seriesName = input['seriesName'] ?? '';
+
+  final data = json.decode(jsonStr);
+  final List<M3UItem> allEpisodes = [];
+
+  if (data is Map<String, dynamic>) {
+    final rawEpisodes = data['episodes'];
+    if (rawEpisodes is Map) {
+      rawEpisodes.forEach((seasonNum, episodesList) {
+        if (episodesList is List) {
+          for (var ep in episodesList) {
+            if (ep is Map) {
+              final epId = ep['id'];
+              if (epId == null) continue;
+              final ext = ep['container_extension'] ?? 'mp4';
+              final epName =
+                  ep['title']?.toString() ?? 'Episodio ${ep['episode_num']}';
+              final rawLogo = ep['info']?['movie_image']?.toString();
+
+              allEpisodes.add(
+                M3UItem(
+                  name: epName,
+                  url: '$cleanHost/series/$user/$pass/$epId.$ext',
+                  category: 'Episodios',
+                  seriesName: seriesName,
+                  seasonNumber: int.tryParse(seasonNum.toString()) ?? 0,
+                  episodeNumber:
+                      int.tryParse(ep['episode_num']?.toString() ?? '0') ?? 0,
+                  logo: _fixLogoHelper(rawLogo, epName, cleanHost),
+                  duration:
+                      ep['info']?['duration']?.toString() ??
+                      ep['duration']?.toString(),
+                ),
+              );
+            }
+          }
+        }
+      });
+    } else if (rawEpisodes is List) {
+      for (var ep in rawEpisodes) {
+        if (ep is Map) {
+          final epId = ep['id'];
+          if (epId == null) continue;
+          final ext = ep['container_extension'] ?? 'mp4';
+          final epName =
+              ep['title']?.toString() ?? 'Episodio ${ep['episode_num']}';
+          final rawLogo = ep['info']?['movie_image']?.toString();
+          final seasonNum = ep['season']?.toString() ?? '1';
+
+          allEpisodes.add(
+            M3UItem(
+              name: epName,
+              url: '$cleanHost/series/$user/$pass/$epId.$ext',
+              category: 'Episodios',
+              seriesName: seriesName,
+              seasonNumber: int.tryParse(seasonNum) ?? 1,
+              episodeNumber:
+                  int.tryParse(ep['episode_num']?.toString() ?? '0') ?? 0,
+              logo: _fixLogoHelper(rawLogo, epName, cleanHost),
+              duration:
+                  ep['info']?['duration']?.toString() ??
+                  ep['duration']?.toString(),
+            ),
+          );
+        }
+      }
+    }
+
+    // FALLBACK: Si no hay episodios en la clave "episodes", buscar si vienen anidados dentro de "seasons"
+    if (allEpisodes.isEmpty) {
+      final rawSeasons = data['seasons'];
+      if (rawSeasons is List) {
+        for (var season in rawSeasons) {
+          if (season is Map) {
+            final seasonEpisodes = season['episodes'];
+            final seasonNum =
+                season['season_number']?.toString() ??
+                season['id']?.toString() ??
+                '1';
+            if (seasonEpisodes is List) {
+              for (var ep in seasonEpisodes) {
+                if (ep is Map) {
+                  final epId = ep['id'];
+                  if (epId == null) continue;
+                  final ext = ep['container_extension'] ?? 'mp4';
+                  final epName =
+                      ep['title']?.toString() ??
+                      'Episodio ${ep['episode_num']}';
+                  final rawLogo = ep['info']?['movie_image']?.toString();
+
+                  allEpisodes.add(
+                    M3UItem(
+                      name: epName,
+                      url: '$cleanHost/series/$user/$pass/$epId.$ext',
+                      category: 'Episodios',
+                      seriesName: seriesName,
+                      seasonNumber: int.tryParse(seasonNum) ?? 1,
+                      episodeNumber:
+                          int.tryParse(ep['episode_num']?.toString() ?? '0') ??
+                          0,
+                      logo: _fixLogoHelper(rawLogo, epName, cleanHost),
+                      duration:
+                          ep['info']?['duration']?.toString() ??
+                          ep['duration']?.toString(),
+                    ),
+                  );
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return allEpisodes;
 }

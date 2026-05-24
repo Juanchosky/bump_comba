@@ -99,7 +99,8 @@ class _ValidatingImageFileService extends FileService {
     if (headers != null) {
       req.headers.addAll(headers);
     }
-    final httpResponse = await _httpClient.send(req);
+    // Timeout de conexión/envío de 10 segundos
+    final httpResponse = await _httpClient.send(req).timeout(const Duration(seconds: 10));
 
     // Check content-type BEFORE creating the cache response
     final contentType =
@@ -135,7 +136,8 @@ class _ValidatingHttpGetResponse extends HttpGetResponse {
     final controller = StreamController<List<int>>();
     bool firstChunk = true;
 
-    _rawResponse.stream.listen(
+    // Timeout de 10 segundos para descargas de trozos de imágenes lentas
+    _rawResponse.stream.timeout(const Duration(seconds: 10)).listen(
       (data) {
         if (firstChunk && data.length >= 5) {
           firstChunk = false;
@@ -531,38 +533,44 @@ class _FastThumbnailState extends State<FastThumbnail>
   Widget _placeholder() {
     final bool isLow = PerformanceService().isLowPerformance;
 
-    Widget base = Container(
-      width: widget.width,
-      height: widget.height,
-      color: const Color(0xFF1a1a1a),
-      child:
-          (widget.title != null && !isLow)
-              ? Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Text(
-                    widget.title!,
-                    textAlign: TextAlign.center,
-                    maxLines: 4,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.3),
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: (_) {
+        if (!_hasLoaded) {
+          _performRetry();
+        }
+      },
+      child: Container(
+        width: widget.width,
+        height: widget.height,
+        color: const Color(0xFF1a1a1a),
+        child:
+            (widget.title != null && !isLow)
+                ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Text(
+                      widget.title!,
+                      textAlign: TextAlign.center,
+                      maxLines: 4,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.3),
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
+                )
+                : Center(
+                  child: Icon(
+                    Icons.movie_creation_outlined,
+                    color: Colors.white.withValues(alpha: 0.1),
+                    size: 30,
+                  ),
                 ),
-              )
-              : Center(
-                child: Icon(
-                  Icons.movie_creation_outlined,
-                  color: Colors.white.withValues(alpha: 0.1),
-                  size: 30,
-                ),
-              ),
+      ),
     );
-
-    return base;
   }
 
   @override
@@ -839,22 +847,29 @@ class _FastChannelLogoState extends State<FastChannelLogo>
   }
 
   Widget _placeholder() {
-    if (PerformanceService().isLowPerformance) {
-      return SizedBox(
-        width: widget.size,
-        height: widget.size,
-        child: const Center(
-          child: Icon(Icons.tv, color: Color(0xFF2d2d2d), size: 20),
-        ),
-      );
-    }
-    return Container(
-      width: widget.size,
-      height: widget.size,
-      decoration: const BoxDecoration(
-        color: Color(0xFF1a1a1a),
-        shape: BoxShape.circle,
-      ),
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: (_) {
+        if (!_hasLoaded) {
+          _performRetry();
+        }
+      },
+      child: PerformanceService().isLowPerformance
+          ? SizedBox(
+              width: widget.size,
+              height: widget.size,
+              child: const Center(
+                child: Icon(Icons.tv, color: Color(0xFF2d2d2d), size: 20),
+              ),
+            )
+          : Container(
+              width: widget.size,
+              height: widget.size,
+              decoration: const BoxDecoration(
+                color: Color(0xFF1a1a1a),
+                shape: BoxShape.circle,
+              ),
+            ),
     );
   }
 }

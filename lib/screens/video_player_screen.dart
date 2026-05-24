@@ -21,7 +21,6 @@ import '../services/performance_service.dart';
 import '../services/cast_service.dart';
 
 import '../utils/snack_bar_utils.dart';
-import '../utils/normalization_utils.dart';
 import 'subscription_screen.dart';
 
 class ExitFullscreenIntent extends Intent {
@@ -704,7 +703,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             ); // 64MB for Live
             await mpv.setProperty('demuxer-max-back-bytes', '33554432');
             await mpv.setProperty('demuxer-readahead-secs', '20');
+
+            // Calidad adaptativa HLS automática
             await mpv.setProperty('hls-bitrate', 'auto');
+
             await mpv.setProperty('hls-forward-cache-secs', '30');
             await mpv.setProperty('hls-back-cache-secs', '10');
             await mpv.setProperty('demuxer-lavf-hacks', 'yes');
@@ -713,10 +715,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               'deinterlace',
               'auto',
             ); // Critical for Live TV
-            await mpv.setProperty(
-              'demuxer-lavf-o',
-              'protocol_whitelist=file,http,https,tcp,tls,crypto,hls,data,concat',
-            );
+            // protocol_whitelist is enabled by default by FFmpeg
           } else {
             // VOD Content (Movies/Series)
             await mpv.setProperty(
@@ -734,6 +733,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             await mpv.setProperty('cache-pause-wait', '2');
             await mpv.setProperty('stream-buffer-size', '16777216');
             await mpv.setProperty('network-timeout', '60');
+
+            // Calidad adaptativa HLS automática
+            await mpv.setProperty('hls-bitrate', 'auto');
+
             // Forzar seekable para streams IPTV que no reportan duración correctamente.
             // Sin esto, MPV desactiva el seek-cache y cada búsqueda re-descarga.
             await mpv.setProperty('force-seekable', 'yes');
@@ -745,6 +748,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           await mpv.setProperty('http-reconnect-sleep', '0.5');
           await mpv.setProperty('http-reconnect-timeout', '10');
           await mpv.setProperty('tls-verify', 'no');
+          await mpv.setProperty('load-unsafe-playlists', 'yes');
           // Usar HTTP pipelining para descargar segmentos HLS más rápido
           // (envía la siguiente petición sin esperar respuesta de la anterior)
           await mpv.setProperty('http-pipelining', 'yes');
@@ -1306,7 +1310,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         _stallSeconds++;
         showingSpinner = true;
 
-        final int threshold = _isLiveContent ? 10 : 15;
+        final int threshold = _isLiveContent ? 5 : 10;
         if (_stallSeconds >= threshold && !_isVideoLoading) {
           // Si el stall ocurre justo después de cambiar de subtítulo, probablemente sea esa pista
           if (_lastSelectedTrack != null &&
@@ -1337,6 +1341,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             _noMovementSeconds++;
             if (_noMovementSeconds >= 3) {
               showingSpinner = true;
+            }
+            // Para canales en vivo, si el video se congela silenciosamente por 5 segundos, forzar recarga rápida
+            if (_isLiveContent && _noMovementSeconds >= 5 && !_isVideoLoading) {
+              debugPrint(
+                'Congelamiento en canal en vivo (${_noMovementSeconds}s). Recargando...',
+              );
+              _noMovementSeconds = 0;
+              _reloadVideo();
             }
           } else {
             _noMovementSeconds = 0;
@@ -1430,7 +1442,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         setState(() => _hasError = true);
       }
     } else {
-      const backoffDelays = [2, 4, 8, 12, 20, 30];
+      const backoffDelays = [1, 2, 4, 8, 12, 20];
       final delay = backoffDelays[_retryCount < 6 ? _retryCount : 5];
       _retryCount++;
       setState(() => _isVideoLoading = true);
@@ -2511,6 +2523,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                     _showSubtitleSelection();
                   },
                 ),
+
                 ListTile(
                   leading: const Icon(Icons.audiotrack, color: Colors.white),
                   title: const Text(
