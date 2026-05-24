@@ -71,13 +71,14 @@ const Map<String, String> _kImageHeaders = {
 /// - maxConnectionsPerHost: 6 descargas paralelas al mismo servidor
 /// - idleTimeout: mantiene conexiones vivas para reutilización HTTP/1.1
 /// - autoUncompress: deja que el sistema descomprima automáticamente
-final HttpClient _sharedHttpClient = HttpClient()
-  ..connectionTimeout = const Duration(seconds: 8)
-  ..idleTimeout = const Duration(seconds: 30)
-  ..maxConnectionsPerHost = 6
-  ..autoUncompress = true
-  ..badCertificateCallback =
-      ((X509Certificate cert, String host, int port) => true);
+final HttpClient _sharedHttpClient =
+    HttpClient()
+      ..connectionTimeout = const Duration(seconds: 8)
+      ..idleTimeout = const Duration(seconds: 30)
+      ..maxConnectionsPerHost = 6
+      ..autoUncompress = true
+      ..badCertificateCallback =
+          ((X509Certificate cert, String host, int port) => true);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // VALIDATING IMAGE FILE SERVICE
@@ -93,14 +94,18 @@ class _ValidatingImageFileService extends FileService {
   _ValidatingImageFileService(this._httpClient);
 
   @override
-  Future<FileServiceResponse> get(String url,
-      {Map<String, String>? headers}) async {
+  Future<FileServiceResponse> get(
+    String url, {
+    Map<String, String>? headers,
+  }) async {
     final req = http.Request('GET', Uri.parse(url));
     if (headers != null) {
       req.headers.addAll(headers);
     }
     // Timeout de conexión/envío de 10 segundos
-    final httpResponse = await _httpClient.send(req).timeout(const Duration(seconds: 10));
+    final httpResponse = await _httpClient
+        .send(req)
+        .timeout(const Duration(seconds: 10));
 
     // Check content-type BEFORE creating the cache response
     final contentType =
@@ -137,29 +142,31 @@ class _ValidatingHttpGetResponse extends HttpGetResponse {
     bool firstChunk = true;
 
     // Timeout de 10 segundos para descargas de trozos de imágenes lentas
-    _rawResponse.stream.timeout(const Duration(seconds: 10)).listen(
-      (data) {
-        if (firstChunk && data.length >= 5) {
-          firstChunk = false;
-          // Check for HTML signature: <!DOC, <html, <HTML
-          final header = String.fromCharCodes(data.take(15).toList());
-          if (header.trimLeft().startsWith('<') &&
-              (header.contains('html') ||
-               header.contains('HTML') ||
-               header.contains('!DOC'))) {
-            controller.addError(
-              Exception('Response body is HTML, not an image'),
-            );
-            controller.close();
-            return;
-          }
-        }
-        firstChunk = false;
-        controller.add(data);
-      },
-      onError: controller.addError,
-      onDone: controller.close,
-    );
+    _rawResponse.stream
+        .timeout(const Duration(seconds: 10))
+        .listen(
+          (data) {
+            if (firstChunk && data.length >= 5) {
+              firstChunk = false;
+              // Check for HTML signature: <!DOC, <html, <HTML
+              final header = String.fromCharCodes(data.take(15).toList());
+              if (header.trimLeft().startsWith('<') &&
+                  (header.contains('html') ||
+                      header.contains('HTML') ||
+                      header.contains('!DOC'))) {
+                controller.addError(
+                  Exception('Response body is HTML, not an image'),
+                );
+                controller.close();
+                return;
+              }
+            }
+            firstChunk = false;
+            controller.add(data);
+          },
+          onError: controller.addError,
+          onDone: controller.close,
+        );
 
     _validatedStream = controller.stream;
     return _validatedStream!;
@@ -173,9 +180,7 @@ class AppCacheManager {
       key,
       stalePeriod: const Duration(days: 7),
       maxNrOfCacheObjects: 3000,
-      fileService: _ValidatingImageFileService(
-        IOClient(_sharedHttpClient),
-      ),
+      fileService: _ValidatingImageFileService(IOClient(_sharedHttpClient)),
     ),
   );
 }
@@ -468,7 +473,9 @@ class _FastThumbnailState extends State<FastThumbnail>
         headers: _kImageHeaders,
         cacheManager: AppCacheManager.instance,
       );
-      try { await provider.evict(); } catch (_) {}
+      try {
+        await provider.evict();
+      } catch (_) {}
       if (_effectiveCacheWidth != null) {
         try {
           await ResizeImage(provider, width: _effectiveCacheWidth!).evict();
@@ -496,7 +503,9 @@ class _FastThumbnailState extends State<FastThumbnail>
   /// Resolve the effective image URL (primary or fallback), trimmed.
   String? _resolveUrl() {
     final String? raw =
-        FastImageService.isValidImageUrl(widget.url) ? widget.url : _fallbackUrl;
+        FastImageService.isValidImageUrl(widget.url)
+            ? widget.url
+            : _fallbackUrl;
     return raw?.trim();
   }
 
@@ -749,7 +758,9 @@ class _FastChannelLogoState extends State<FastChannelLogo>
         headers: _kImageHeaders,
         cacheManager: AppCacheManager.instance,
       );
-      try { await provider.evict(); } catch (_) {}
+      try {
+        await provider.evict();
+      } catch (_) {}
       try {
         await ResizeImage(provider, width: widget.size.toInt() * 2).evict();
       } catch (_) {}
@@ -854,22 +865,23 @@ class _FastChannelLogoState extends State<FastChannelLogo>
           _performRetry();
         }
       },
-      child: PerformanceService().isLowPerformance
-          ? SizedBox(
-              width: widget.size,
-              height: widget.size,
-              child: const Center(
-                child: Icon(Icons.tv, color: Color(0xFF2d2d2d), size: 20),
+      child:
+          PerformanceService().isLowPerformance
+              ? SizedBox(
+                width: widget.size,
+                height: widget.size,
+                child: const Center(
+                  child: Icon(Icons.tv, color: Color(0xFF2d2d2d), size: 20),
+                ),
+              )
+              : Container(
+                width: widget.size,
+                height: widget.size,
+                decoration: const BoxDecoration(
+                  color: Color(0xFF1a1a1a),
+                  shape: BoxShape.circle,
+                ),
               ),
-            )
-          : Container(
-              width: widget.size,
-              height: widget.size,
-              decoration: const BoxDecoration(
-                color: Color(0xFF1a1a1a),
-                shape: BoxShape.circle,
-              ),
-            ),
     );
   }
 }
