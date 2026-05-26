@@ -199,8 +199,9 @@ class FastImageService {
     if (url == null || url.isEmpty) return false;
     if (!url.startsWith('http')) return false;
 
-    if (url.contains('ejemplo.com') || url.contains('placeholder.com'))
+    if (url.contains('ejemplo.com') || url.contains('placeholder.com')) {
       return false;
+    }
 
     // Rutas base de TMDB sin filename — no son imágenes válidas
     const tmdbIncompleteSuffixes = [

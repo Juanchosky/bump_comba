@@ -1655,7 +1655,15 @@ class M3UService extends ChangeNotifier {
         ),
       ]);
 
-      final allItems = results.expand((x) => x).toList();
+      if (results.any((r) => r == null)) {
+        debugPrint(
+          'Xtream fetch failed: one of the endpoints (Live, VOD, or Series) returned null. '
+          'Aborting fetch and preserving cache.',
+        );
+        return [];
+      }
+
+      final allItems = results.expand((x) => x!).toList();
 
       // EFFICIENCY: Pre-index existing favorites for O(1) lookup
       final existingFavUrls = _favoriteItems.map((f) => f.url).toSet();
@@ -3393,11 +3401,11 @@ List<M3UItem> _groupSeries(List<M3UItem> flatItems, List<String> favorites) {
   // Replaced local normalizeSeriesName with central NormalizationUtils.normalizeSeriesName
 
   for (final item in flatItems) {
-    final catLower = item.category.toLowerCase();
-    if (catLower.contains('movie') ||
-        catLower.contains('pelicula') ||
-        catLower.contains('cine') ||
-        catLower.contains('vod movies')) {
+    final catClean = _removeAccents(item.category.toLowerCase());
+    if (catClean.contains('movie') ||
+        catClean.contains('pelicula') ||
+        catClean.contains('cine') ||
+        catClean.contains('vod')) {
       standaloneItems.add(item);
       continue;
     }

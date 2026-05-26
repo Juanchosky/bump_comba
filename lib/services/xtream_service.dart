@@ -123,7 +123,7 @@ class XtreamService {
     return null;
   }
 
-  Future<List<M3UItem>> fetchLiveStreams(
+  Future<List<M3UItem>?> fetchLiveStreams(
     String host,
     String user,
     String pass, {
@@ -139,13 +139,25 @@ class XtreamService {
       final catResStr = await _getWithProgress(catUrl, onProgress: onProgress);
       final Map<String, String> categoryMap = {};
       if (catResStr != null) {
-        final List<dynamic> cats = json.decode(catResStr);
-        for (var c in cats) {
-          final id = c['category_id'].toString();
-          final name = NormalizationUtils.normalizeCategory(
-            c['category_name'].toString(),
-          );
-          categoryMap[id] = name;
+        try {
+          final decodedCats = json.decode(catResStr);
+          final List<dynamic> cats;
+          if (decodedCats is List) {
+            cats = decodedCats;
+          } else if (decodedCats is Map) {
+            cats = decodedCats.values.toList();
+          } else {
+            cats = [];
+          }
+          for (var c in cats) {
+            final id = c['category_id'].toString();
+            final name = NormalizationUtils.normalizeCategory(
+              c['category_name'].toString(),
+            );
+            categoryMap[id] = name;
+          }
+        } catch (e) {
+          debugPrint('Error parsing live categories: $e');
         }
       }
 
@@ -157,22 +169,21 @@ class XtreamService {
         streamUrl,
         onProgress: onProgress,
       );
-      if (streamResStr != null) {
-        return await compute(parseLiveStreamsInBackground, {
-          'json': streamResStr,
-          'categoryMap': categoryMap,
-          'host': cleanHost,
-          'user': user,
-          'pass': pass,
-        });
-      }
+      if (streamResStr == null) return null;
+      return await compute(parseLiveStreamsInBackground, {
+        'json': streamResStr,
+        'categoryMap': categoryMap,
+        'host': cleanHost,
+        'user': user,
+        'pass': pass,
+      });
     } catch (e) {
       print('Xtream fetchLiveStreams error: $e');
     }
-    return [];
+    return null;
   }
 
-  Future<List<M3UItem>> fetchVodStreams(
+  Future<List<M3UItem>?> fetchVodStreams(
     String host,
     String user,
     String pass, {
@@ -187,13 +198,25 @@ class XtreamService {
       final catResStr = await _getWithProgress(catUrl, onProgress: onProgress);
       final Map<String, String> categoryMap = {};
       if (catResStr != null) {
-        final List<dynamic> cats = json.decode(catResStr);
-        for (var c in cats) {
-          final id = c['category_id'].toString();
-          final name = NormalizationUtils.normalizeCategory(
-            c['category_name'].toString(),
-          );
-          categoryMap[id] = name;
+        try {
+          final decodedCats = json.decode(catResStr);
+          final List<dynamic> cats;
+          if (decodedCats is List) {
+            cats = decodedCats;
+          } else if (decodedCats is Map) {
+            cats = decodedCats.values.toList();
+          } else {
+            cats = [];
+          }
+          for (var c in cats) {
+            final id = c['category_id'].toString();
+            final name = NormalizationUtils.normalizeCategory(
+              c['category_name'].toString(),
+            );
+            categoryMap[id] = name;
+          }
+        } catch (e) {
+          debugPrint('Error parsing VOD categories: $e');
         }
       }
 
@@ -204,22 +227,21 @@ class XtreamService {
         streamUrl,
         onProgress: onProgress,
       );
-      if (streamResStr != null) {
-        return await compute(parseVodStreamsInBackground, {
-          'json': streamResStr,
-          'categoryMap': categoryMap,
-          'host': cleanHost,
-          'user': user,
-          'pass': pass,
-        });
-      }
+      if (streamResStr == null) return null;
+      return await compute(parseVodStreamsInBackground, {
+        'json': streamResStr,
+        'categoryMap': categoryMap,
+        'host': cleanHost,
+        'user': user,
+        'pass': pass,
+      });
     } catch (e) {
       print('Xtream fetchVodStreams error: $e');
     }
-    return [];
+    return null;
   }
 
-  Future<List<M3UItem>> fetchSeries(
+  Future<List<M3UItem>?> fetchSeries(
     String host,
     String user,
     String pass, {
@@ -234,13 +256,25 @@ class XtreamService {
       final catResStr = await _getWithProgress(catUrl, onProgress: onProgress);
       final Map<String, String> categoryMap = {};
       if (catResStr != null) {
-        final List<dynamic> cats = json.decode(catResStr);
-        for (var c in cats) {
-          final id = c['category_id'].toString();
-          final name = NormalizationUtils.normalizeCategory(
-            c['category_name'].toString(),
-          );
-          categoryMap[id] = name;
+        try {
+          final decodedCats = json.decode(catResStr);
+          final List<dynamic> cats;
+          if (decodedCats is List) {
+            cats = decodedCats;
+          } else if (decodedCats is Map) {
+            cats = decodedCats.values.toList();
+          } else {
+            cats = [];
+          }
+          for (var c in cats) {
+            final id = c['category_id'].toString();
+            final name = NormalizationUtils.normalizeCategory(
+              c['category_name'].toString(),
+            );
+            categoryMap[id] = name;
+          }
+        } catch (e) {
+          debugPrint('Error parsing series categories: $e');
         }
       }
 
@@ -251,19 +285,18 @@ class XtreamService {
         streamUrl,
         onProgress: onProgress,
       );
-      if (streamResStr != null) {
-        return await compute(parseSeriesInBackground, {
-          'json': streamResStr,
-          'categoryMap': categoryMap,
-          'host': cleanHost,
-          'user': user,
-          'pass': pass,
-        });
-      }
+      if (streamResStr == null) return null;
+      return await compute(parseSeriesInBackground, {
+        'json': streamResStr,
+        'categoryMap': categoryMap,
+        'host': cleanHost,
+        'user': user,
+        'pass': pass,
+      });
     } catch (e) {
       print('Xtream fetchSeries error: $e');
     }
-    return [];
+    return null;
   }
 
   Future<List<M3UItem>> fetchSeriesEpisodes(
@@ -327,7 +360,16 @@ List<M3UItem> parseLiveStreamsInBackground(Map<String, dynamic> input) {
   final String user = SecurityUtils.deobfuscate(input['user'] ?? '');
   final String pass = SecurityUtils.deobfuscate(input['pass'] ?? '');
 
-  final List<dynamic> streams = json.decode(jsonStr);
+  final decoded = json.decode(jsonStr);
+  final List<dynamic> streams;
+  if (decoded is List) {
+    streams = decoded;
+  } else if (decoded is Map) {
+    streams = decoded.values.toList();
+  } else {
+    streams = [];
+  }
+
   return streams.map((s) {
     final streamId = s['stream_id'];
     final ext = s['container_extension'] ?? 'm3u8';
@@ -354,7 +396,16 @@ List<M3UItem> parseVodStreamsInBackground(Map<String, dynamic> input) {
   final String user = SecurityUtils.deobfuscate(input['user'] ?? '');
   final String pass = SecurityUtils.deobfuscate(input['pass'] ?? '');
 
-  final List<dynamic> streams = json.decode(jsonStr);
+  final decoded = json.decode(jsonStr);
+  final List<dynamic> streams;
+  if (decoded is List) {
+    streams = decoded;
+  } else if (decoded is Map) {
+    streams = decoded.values.toList();
+  } else {
+    streams = [];
+  }
+
   return streams.map((s) {
     final streamId = s['stream_id'];
     final ext = s['container_extension'] ?? 'mp4';
@@ -380,7 +431,16 @@ List<M3UItem> parseSeriesInBackground(Map<String, dynamic> input) {
   );
   final String host = input['host'];
 
-  final List<dynamic> series = json.decode(jsonStr);
+  final decoded = json.decode(jsonStr);
+  final List<dynamic> series;
+  if (decoded is List) {
+    series = decoded;
+  } else if (decoded is Map) {
+    series = decoded.values.toList();
+  } else {
+    series = [];
+  }
+
   return series.map((s) {
     final seriesId = s['series_id'];
     final categoryId = s['category_id'].toString();

@@ -279,10 +279,10 @@ class CastService {
   /// - Receiver heartbeat: cada 3 segundos (mantiene el socket vivo con menos ruido)
   void _startStatusPolling() {
     _stopStatusPolling();
-    int _pollTick = 0;
+    int pollTick = 0;
     _statusPollTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      _pollTick++;
-      _requestMediaStatus(sendReceiverHeartbeat: _pollTick % 3 == 0);
+      pollTick++;
+      _requestMediaStatus(sendReceiverHeartbeat: pollTick % 3 == 0);
     });
   }
 

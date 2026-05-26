@@ -284,8 +284,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   void _syncFromCast() {
-    if (!mounted || !CastService().isConnected || _isDragging || _isSeeking)
+    if (!mounted || !CastService().isConnected || _isDragging || _isSeeking) {
       return;
+    }
     if (!_localAudioDuringCast) return;
 
     final isCastPlaying = CastService().castPlaying.value;
@@ -2838,13 +2839,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                 : Colors.white38,
                                       ),
                                       value: _localAudioDuringCast,
-                                      activeColor: Colors.redAccent,
+                                      activeThumbColor: Colors.redAccent,
                                       onChanged: (value) {
                                         setInnerState(() {});
                                         setState(() {
                                           _localAudioDuringCast = value;
-                                          if (!value)
+                                          if (!value) {
                                             _syncOffsetMs = 0; // Reset
+                                          }
                                         });
                                         if (value) {
                                           final castPos =
