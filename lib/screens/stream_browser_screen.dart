@@ -36,6 +36,7 @@ import 'settings_screen.dart';
 import '../services/social_rewards_service.dart';
 import '../widgets/rate_dialog.dart';
 import '../services/deep_link_service.dart';
+import '../services/network_quality_service.dart';
 
 class ExitFullscreenIntent extends Intent {
   const ExitFullscreenIntent();
@@ -66,6 +67,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   bool _hasError = false;
   String _errorMessage = '';
   String? _detectedCountryCode;
+  bool _isOffline = false;
+  bool _bannerDismissed = false;
 
   // Slow loading feedback
   bool _showSlowLoadingMessage = false;
@@ -168,7 +171,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   final List<StreamSubscription> _liveStreamSubscriptions = [];
 
   // Download progress
-  double? _downloadProgress;
   String? _downloadDetail;
 
   String _getRandomUserAgent() {
@@ -245,6 +247,26 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     _checkRateDialog();
     // Initialize Deep Link Listener
     DeepLinkService().init(context);
+
+    // Initialize global NetworkQualityService and listen
+    NetworkQualityService().startGlobal();
+    _isOffline =
+        NetworkQualityService().quality.value == NetworkQuality.offline;
+    NetworkQualityService().quality.addListener(_onNetworkQualityChanged);
+  }
+
+  void _onNetworkQualityChanged() {
+    final offline =
+        NetworkQualityService().quality.value == NetworkQuality.offline;
+    if (_isOffline != offline) {
+      if (mounted) {
+        setState(() {
+          _isOffline = offline;
+          // Volver a mostrar el banner cuando se pierde la conexión de nuevo
+          if (offline) _bannerDismissed = false;
+        });
+      }
+    }
   }
 
   void _checkRateDialog() {
@@ -274,6 +296,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
   @override
   void dispose() {
+    NetworkQualityService().quality.removeListener(_onNetworkQualityChanged);
     _watchProgressVersion.dispose();
     _m3uService.removeListener(_onM3UServiceUpdated);
     WatchProgressService().removeListener(_onWatchProgressUpdated);
@@ -332,7 +355,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       // Reset slow loading state and download indicators
       setState(() {
         _showSlowLoadingMessage = false;
-        _downloadProgress = null;
         _downloadDetail = null;
         // FIX: Resetear para que se recalcule con los datos del caché al reiniciar
         _recommendedItems = null;
@@ -382,12 +404,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             if (mounted) {
               setState(() {
                 if (progress.totalBytes != null && progress.totalBytes! > 0) {
-                  _downloadProgress =
-                      progress.receivedBytes / progress.totalBytes!;
                   _downloadDetail =
                       '${(progress.receivedBytes / 1024 / 1024).toStringAsFixed(1)} MB / ${(progress.totalBytes! / 1024 / 1024).toStringAsFixed(1)} MB';
                 } else {
-                  _downloadProgress = null;
                   _downloadDetail =
                       '${(progress.receivedBytes / 1024 / 1024).toStringAsFixed(1)} MB descargados...';
                 }
@@ -399,7 +418,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         _slowLoadingTimer?.cancel();
         if (mounted) {
           setState(() {
-            _downloadProgress = null;
             _downloadDetail = null;
             if (success) _isLoading = false;
           });
@@ -632,7 +650,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
               ),
             ),
           ),
-          bottomNavigationBar: _buildBottomNav(),
+          bottomNavigationBar: _isLoading ? null : _buildBottomNav(),
         ),
       ),
     );
@@ -1708,6 +1726,39 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                             : _m3uService.latestItems);
                     heroPool.addAll(fallback.where((i) => !i.isLive));
                   }
+
+                  // Netflix Offline Banner (con animación premium)
+                  homeSections.add(
+                    AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 450),
+                      transitionBuilder: (child, animation) {
+                        final slide = Tween<Offset>(
+                          begin: const Offset(0, -0.4),
+                          end: Offset.zero,
+                        ).animate(
+                          CurvedAnimation(
+                            parent: animation,
+                            curve: Curves.easeOutCubic,
+                          ),
+                        );
+                        return FadeTransition(
+                          opacity: animation,
+                          child: SlideTransition(position: slide, child: child),
+                        );
+                      },
+                      child:
+                          (_isOffline && !_bannerDismissed)
+                              ? _NetflixOfflineBanner(
+                                key: const ValueKey('banner_visible'),
+                                onDismiss: () {
+                                  setState(() => _bannerDismissed = true);
+                                },
+                              )
+                              : const SizedBox.shrink(
+                                key: ValueKey('banner_hidden'),
+                              ),
+                    ),
+                  );
 
                   homeSections.add(_buildHeroRandomLatest(heroPool));
 
@@ -5556,7 +5607,7 @@ class _FullscreenLivePlayerState extends State<_FullscreenLivePlayer> {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     _startHideTimer();
 
-    // Netflix-grade: match inline player's zero-cut config in fullscreen
+    //  match inline player's zero-cut config in fullscreen
     // Each property in its own try-catch to avoid cascade failures
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final player = widget.controllerNotifier.value?.player;
@@ -6807,6 +6858,190 @@ class _SearchPageState extends State<_SearchPage> {
           fontSize: 8,
           fontWeight: FontWeight.w900,
           letterSpacing: 0.5,
+        ),
+      ),
+    );
+  }
+}
+
+class _NetflixOfflineBanner extends StatefulWidget {
+  final VoidCallback onDismiss;
+
+  const _NetflixOfflineBanner({required this.onDismiss, super.key});
+
+  @override
+  State<_NetflixOfflineBanner> createState() => _NetflixOfflineBannerState();
+}
+
+class _NetflixOfflineBannerState extends State<_NetflixOfflineBanner>
+    with SingleTickerProviderStateMixin {
+  bool _isChecking = false;
+  late AnimationController _pulseController;
+
+  @override
+  void initState() {
+    super.initState();
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 2),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _pulseController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _handleRetry() async {
+    if (_isChecking) return;
+    setState(() {
+      _isChecking = true;
+    });
+
+    await NetworkQualityService().measureManual();
+    await Future.delayed(const Duration(milliseconds: 800));
+
+    if (mounted) {
+      setState(() {
+        _isChecking = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final showShadow = PerformanceService().shouldShowComplexShadows;
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1F1F1F),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: Colors.red.withValues(alpha: 0.3),
+          width: 1.5,
+        ),
+        boxShadow: showShadow ? null : null,
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(11),
+        child: IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Contenido principal
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 12,
+                  ),
+                  child: Row(
+                    children: [
+                      // Icono Wi-Fi con pulso
+                      AnimatedBuilder(
+                        animation: _pulseController,
+                        builder: (context, child) {
+                          return Opacity(
+                            opacity: 0.55 + (_pulseController.value * 0.45),
+                            child: child,
+                          );
+                        },
+                        child: const Icon(
+                          Icons.wifi_off_rounded,
+                          color: Color(0xFFE50914),
+                          size: 26,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+
+                      // Textos
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: const [
+                            Text(
+                              'Sin conexión a Internet',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 14.5,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            SizedBox(height: 2),
+                            Text(
+                              'Revisa tu Wi-Fi o datos móviles.',
+                              style: TextStyle(
+                                color: Colors.white60,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+
+                      // Botón Reintentar
+                      TextButton(
+                        onPressed: _handleRetry,
+                        style: TextButton.styleFrom(
+                          backgroundColor: Colors.white.withValues(alpha: 0.08),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 7,
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        child:
+                            _isChecking
+                                ? const SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    valueColor: AlwaysStoppedAnimation<Color>(
+                                      Colors.white,
+                                    ),
+                                  ),
+                                )
+                                : const Text(
+                                  'Reintentar',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12.5,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                      ),
+                      const SizedBox(width: 4),
+
+                      // Botón X para cerrar
+                      GestureDetector(
+                        onTap: widget.onDismiss,
+                        child: Container(
+                          padding: const EdgeInsets.all(6),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.06),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: const Icon(
+                            Icons.close_rounded,
+                            color: Colors.white54,
+                            size: 16,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

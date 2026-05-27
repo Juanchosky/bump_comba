@@ -48,11 +48,28 @@ class NetworkQualityService {
     _consecutiveGoodReadings = 0;
   }
 
+  bool _isGlobalStarted = false;
+
+  /// Iniciar el servicio de forma global (persistente en la app).
+  void startGlobal() {
+    if (_isGlobalStarted) return;
+    _isGlobalStarted = true;
+    start();
+  }
+
+  /// Forzar una medición manual de conectividad.
+  Future<void> measureManual() async {
+    await _measure();
+  }
+
   void start() {
     _connectivitySub?.cancel();
     try {
       _connectivitySub = _connectivity.onConnectivityChanged.listen(
-        _updateConnectionType,
+        (results) {
+          _updateConnectionType(results);
+          _measure();
+        },
       );
     } catch (e) {
       debugPrint('NetworkQualityService: error listening to connectivity: $e');
@@ -65,6 +82,10 @@ class NetworkQualityService {
   }
 
   void stop() {
+    if (_isGlobalStarted) {
+      _activeStreamUrl = null;
+      return;
+    }
     _pollTimer?.cancel();
     _connectivitySub?.cancel();
     _activeStreamUrl = null;
