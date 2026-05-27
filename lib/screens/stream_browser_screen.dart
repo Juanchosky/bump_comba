@@ -929,15 +929,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                SizedBox(
-                  width: 40,
-                  height: 40,
-                  child: CircularProgressIndicator(
-                    value: _downloadProgress,
-                    strokeWidth: 3,
-                    color: Colors.red,
-                  ),
-                ),
+                const CupertinoActivityIndicator(radius: 17),
                 if (_downloadDetail != null) ...[
                   const SizedBox(height: 24),
                   const _AnimatedLoadingMessages(),

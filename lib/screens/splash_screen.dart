@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart';
 
 import 'main_menu_screen.dart';
 import '../services/score_service.dart';
@@ -175,13 +176,9 @@ class _SplashScreenState extends State<SplashScreen>
                       ),
                     ),
                     const SizedBox(height: 50),
-                    SizedBox(
-                      width: 24,
-                      height: 24,
-                      child: CircularProgressIndicator(
-                        color: Colors.white.withOpacity(0.5),
-                        strokeWidth: 2,
-                      ),
+                    const CupertinoActivityIndicator(
+                      radius: 12,
+                      color: Colors.white,
                     ),
                   ],
                 ),

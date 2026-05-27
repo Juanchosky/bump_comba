@@ -60,10 +60,10 @@ class DeepLinkService {
     // If items are not loaded yet, wait until they are (up to 15 seconds)
     if (m3uService.items.isEmpty) {
       debugPrint('DeepLink: Items empty, checking cache or loading...');
-      
+
       // Ensure service is initialized
       await m3uService.init();
-      
+
       // Try to load from cache first for speed
       if (m3uService.items.isEmpty) {
         await m3uService.loadFromCache();
@@ -71,7 +71,7 @@ class DeepLinkService {
 
       // If still empty, wait a bit for any background loading to finish
       int attempts = 0;
-      while (m3uService.items.isEmpty && attempts < 10) { 
+      while (m3uService.items.isEmpty && attempts < 10) {
         await Future.delayed(const Duration(milliseconds: 500));
         attempts++;
       }
@@ -81,7 +81,7 @@ class DeepLinkService {
         debugPrint('DeepLink: Forcing remote load...');
         await m3uService.loadM3UContent(useRetry: false);
       }
-      
+
       if (m3uService.items.isEmpty) {
         debugPrint('DeepLink: Failed to load items for deep link');
         return;
