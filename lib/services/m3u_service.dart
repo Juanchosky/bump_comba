@@ -905,8 +905,10 @@ class M3UService extends ChangeNotifier {
               type: type,
             );
           }
-          
-          debugPrint('Load Balancer: All available servers are blocked or failing.');
+
+          debugPrint(
+            'Load Balancer: All available servers are blocked or failing.',
+          );
         }
       }
     } catch (e) {
@@ -1448,11 +1450,13 @@ class M3UService extends ChangeNotifier {
         if (fallback != null && fallback.isNotEmpty) {
           // Mezclar: usar los datos frescos que SÍ llegaron + caché para lo que faltó
           final freshLive = items.where((i) => i.isLive).toList();
-          final freshMovies = items.where((i) => !i.isLive && !i.isSeries).toList();
+          final freshMovies =
+              items.where((i) => !i.isLive && !i.isSeries).toList();
           final freshSeries = items.where((i) => i.isSeries).toList();
 
           final cachedLive = fallback.where((i) => i.isLive).toList();
-          final cachedMovies = fallback.where((i) => !i.isLive && !i.isSeries).toList();
+          final cachedMovies =
+              fallback.where((i) => !i.isLive && !i.isSeries).toList();
           final cachedSeries = fallback.where((i) => i.isSeries).toList();
 
           final merged = [
@@ -1567,7 +1571,9 @@ class M3UService extends ChangeNotifier {
       // almacenado en caché de un login anterior exitoso.
       String effectiveHost = host;
       final cachedRealHost = _prefs?.getString('xtream_real_host_$host');
-      if (loginResult == null && cachedRealHost != null && cachedRealHost != host) {
+      if (loginResult == null &&
+          cachedRealHost != null &&
+          cachedRealHost != host) {
         debugPrint(
           'Xtream login failed on $host, trying cached real host: $cachedRealHost',
         );
@@ -1582,7 +1588,8 @@ class M3UService extends ChangeNotifier {
           'Xtream login validation failed for $host — credentials may be '
           'invalid, IP blocked, or server in maintenance.',
         );
-        _lastError = 'El servidor no acepta las credenciales actuales. '
+        _lastError =
+            'El servidor no acepta las credenciales actuales. '
             'Puede que tu IP esté bloqueada o el servidor esté en mantenimiento.';
         return [];
       }

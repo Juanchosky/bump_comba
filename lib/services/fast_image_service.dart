@@ -28,6 +28,24 @@ class _FailedImageTracker with WidgetsBindingObserver {
     if (_initialized) return;
     _initialized = true;
     WidgetsBinding.instance.addObserver(this);
+
+    // Expand global image cache for buttery-smooth infinite scrolling
+    PaintingBinding.instance.imageCache.maximumSize = 3000;
+    PaintingBinding.instance.imageCache.maximumSizeBytes = 250 * 1024 * 1024; // 250MB
+
+    // Silence Flutter's internal "image resource service" error logs for
+    // TimeoutExceptions and network errors. We already handle these gracefully
+    // in each widget's errorBuilder, so the default console spam is unnecessary.
+    final originalOnError = FlutterError.onError;
+    FlutterError.onError = (FlutterErrorDetails details) {
+      final isImageService = details.library == 'image resource service';
+      if (isImageService) {
+        // Silently swallow image loading errors — our widgets handle them
+        return;
+      }
+      // Forward all other errors to the original handler
+      originalOnError?.call(details);
+    };
   }
 
   void register(VoidCallback callback) {
@@ -75,8 +93,9 @@ final HttpClient _sharedHttpClient =
     HttpClient()
       ..connectionTimeout = const Duration(seconds: 8)
       ..idleTimeout = const Duration(seconds: 30)
-      ..maxConnectionsPerHost = 6
+      ..maxConnectionsPerHost = 16
       ..autoUncompress = true
+      ..findProxy = null // Bypass proxy search to shave off ~50ms off initial handshakes
       ..badCertificateCallback =
           ((X509Certificate cert, String host, int port) => true);
 
@@ -102,10 +121,10 @@ class _ValidatingImageFileService extends FileService {
     if (headers != null) {
       req.headers.addAll(headers);
     }
-    // Timeout de conexión/envío de 10 segundos
+    // Timeout de conexión/envío de 5 segundos (Fail-fast)
     final httpResponse = await _httpClient
         .send(req)
-        .timeout(const Duration(seconds: 10));
+        .timeout(const Duration(seconds: 5));
 
     // Check content-type BEFORE creating the cache response
     final contentType =
@@ -141,9 +160,9 @@ class _ValidatingHttpGetResponse extends HttpGetResponse {
     final controller = StreamController<List<int>>();
     bool firstChunk = true;
 
-    // Timeout de 10 segundos para descargas de trozos de imágenes lentas
+    // Timeout de 5 segundos para descargas de trozos de imágenes lentas (Fail-fast)
     _rawResponse.stream
-        .timeout(const Duration(seconds: 10))
+        .timeout(const Duration(seconds: 5))
         .listen(
           (data) {
             if (firstChunk && data.length >= 5) {
@@ -183,6 +202,36 @@ class AppCacheManager {
       fileService: _ValidatingImageFileService(IOClient(_sharedHttpClient)),
     ),
   );
+}
+
+// Helper to determine if an error is transient and retryable
+bool _isRetryableError(Object error) {
+  final errStr = error.toString().toLowerCase();
+
+  // Do NOT retry timeouts automatically to prevent network/CPU starvation loops
+  if (error is TimeoutException || errStr.contains('timeout')) {
+    return false;
+  }
+
+  // Check for HTTP status exceptions
+  if (error is HttpExceptionWithStatus) {
+    final code = error.statusCode;
+    if (code == 404 || code == 403 || code == 401 || code == 400) {
+      return false;
+    }
+  }
+
+  // HTML debug pages or non-image content responses
+  if (errStr.contains('html') || errStr.contains('non-image')) {
+    return false;
+  }
+
+  // Common HTTP error tags in strings
+  if (errStr.contains('404') || errStr.contains('403') || errStr.contains('401')) {
+    return false;
+  }
+
+  return true;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -356,6 +405,9 @@ class _FastThumbnailState extends State<FastThumbnail>
   Timer? _retryTimer;
   int _imageKey = 0;
   bool _hasLoaded = false;
+  bool _hasFailedPermanently = false;
+
+  static const int _maxAutoRetries = 3;
 
   // Retry intervals: aggressive at start, backs off gradually
   static const List<int> _retryDelays = [1, 2, 4, 6, 10, 15, 20, 30];
@@ -399,10 +451,8 @@ class _FastThumbnailState extends State<FastThumbnail>
     if (widget.cacheWidth != null) return widget.cacheWidth;
     final performance = PerformanceService();
     if (performance.isLowPerformance) return 150;
-    if (performance.currentMode == PerformanceMode.high ||
-        !performance.isLowEndHeuristic) {
-      return null;
-    }
+    // Capping at 300 matches the background prewarmer's target width,
+    // resulting in instant memory-cache hits (0ms decode/render).
     return 300;
   }
 
@@ -417,6 +467,7 @@ class _FastThumbnailState extends State<FastThumbnail>
       _retryCount = 0;
       _retryTimer?.cancel();
       _hasLoaded = false;
+      _hasFailedPermanently = false;
       _imageKey = 0;
       _checkAndResolveFallback();
     }
@@ -431,15 +482,11 @@ class _FastThumbnailState extends State<FastThumbnail>
   }
 
   /// Silently retry loading the image after a short delay.
-  void _scheduleRetry() {
-    if (!mounted || _hasLoaded) return;
-
-    if (_retryCount >= _retryDelays.length) {
-      // Don't give up permanently — keep retrying at the longest interval
-      _retryTimer?.cancel();
-      _retryTimer = Timer(const Duration(seconds: 30), () {
-        if (!mounted || _hasLoaded) return;
-        _performRetry();
+  void _scheduleRetry(Object error) {
+    if (!mounted || _hasLoaded || _hasFailedPermanently) return;
+    if (!_isRetryableError(error) || _retryCount >= _maxAutoRetries) {
+      setState(() {
+        _hasFailedPermanently = true;
       });
       return;
     }
@@ -449,7 +496,7 @@ class _FastThumbnailState extends State<FastThumbnail>
     _retryTimer?.cancel();
 
     _retryTimer = Timer(delay, () {
-      if (!mounted || _hasLoaded) return;
+      if (!mounted || _hasLoaded || _hasFailedPermanently) return;
       _performRetry();
     });
   }
@@ -592,7 +639,7 @@ class _FastThumbnailState extends State<FastThumbnail>
       _fallbackUrl,
     );
 
-    if (!hasValidPrimary && !hasValidFallback) {
+    if (!hasValidPrimary && !hasValidFallback || _hasFailedPermanently) {
       content = _placeholder();
     } else {
       content = Stack(
@@ -630,7 +677,7 @@ class _FastThumbnailState extends State<FastThumbnail>
               },
               errorBuilder: (context, error, stackTrace) {
                 WidgetsBinding.instance.addPostFrameCallback((_) {
-                  if (mounted) _scheduleRetry();
+                  if (mounted) _scheduleRetry(error);
                 });
                 return const SizedBox.shrink();
               },
@@ -680,6 +727,9 @@ class _FastChannelLogoState extends State<FastChannelLogo>
   Timer? _retryTimer;
   int _imageKey = 0;
   bool _hasLoaded = false;
+  bool _hasFailedPermanently = false;
+
+  static const int _maxAutoRetries = 3;
 
   // Retry intervals: aggressive at start, backs off gradually
   static const List<int> _retryDelays = [1, 2, 4, 6, 10, 15, 20, 30];
@@ -708,6 +758,7 @@ class _FastChannelLogoState extends State<FastChannelLogo>
       _retryCount = 0;
       _retryTimer?.cancel();
       _hasLoaded = false;
+      _hasFailedPermanently = false;
       _imageKey = 0;
     }
   }
@@ -719,15 +770,11 @@ class _FastChannelLogoState extends State<FastChannelLogo>
     _performRetry();
   }
 
-  void _scheduleRetry() {
-    if (!mounted || _hasLoaded) return;
-
-    if (_retryCount >= _retryDelays.length) {
-      // Don't give up permanently — keep retrying at the longest interval
-      _retryTimer?.cancel();
-      _retryTimer = Timer(const Duration(seconds: 30), () {
-        if (!mounted || _hasLoaded) return;
-        _performRetry();
+  void _scheduleRetry(Object error) {
+    if (!mounted || _hasLoaded || _hasFailedPermanently) return;
+    if (!_isRetryableError(error) || _retryCount >= _maxAutoRetries) {
+      setState(() {
+        _hasFailedPermanently = true;
       });
       return;
     }
@@ -737,7 +784,7 @@ class _FastChannelLogoState extends State<FastChannelLogo>
     _retryTimer?.cancel();
 
     _retryTimer = Timer(delay, () {
-      if (!mounted || _hasLoaded) return;
+      if (!mounted || _hasLoaded || _hasFailedPermanently) return;
       _performRetry();
     });
   }
@@ -811,7 +858,7 @@ class _FastChannelLogoState extends State<FastChannelLogo>
   }
 
   Widget _buildImage() {
-    if (!FastImageService.isValidImageUrl(widget.url)) return _placeholder();
+    if (!FastImageService.isValidImageUrl(widget.url) || _hasFailedPermanently) return _placeholder();
 
     return Stack(
       children: [
@@ -848,7 +895,7 @@ class _FastChannelLogoState extends State<FastChannelLogo>
             },
             errorBuilder: (context, error, stackTrace) {
               WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (mounted) _scheduleRetry();
+                if (mounted) _scheduleRetry(error);
               });
               return const SizedBox.shrink();
             },

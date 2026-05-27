@@ -875,7 +875,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       });
 
       final currentUrl = _serverUrls[_currentServerIndex % _serverUrls.length];
-      
+
       // Informar al monitor de red qué servidor estamos usando
       // para que mida la velocidad contra ESE servidor, no contra Google
       _networkQuality.setActiveStreamUrl(currentUrl);
@@ -1389,9 +1389,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         if (_stallSeconds >= threshold && !_isVideoLoading) {
           // NUEVO: No recargar si acabamos de hacer un seek (los primeros 8s
           // post-seek son normalmente buffering, no un stall real).
-          final secondsSinceSeek = _lastSeekTime != null
-              ? DateTime.now().difference(_lastSeekTime!).inSeconds
-              : 999;
+          final secondsSinceSeek =
+              _lastSeekTime != null
+                  ? DateTime.now().difference(_lastSeekTime!).inSeconds
+                  : 999;
           if (secondsSinceSeek < 8) {
             debugPrint(
               'Stall ignorado: seek reciente hace ${secondsSinceSeek}s',
@@ -1610,7 +1611,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               const SizedBox(height: 16),
               Text(
                 _scrapingError ??
-                    'Es posible que el servidor esté caído. Inténtalo más tarde.',
+                    'Es posible que el servidor esté caído o tu conexión de red sea débil.',
                 style: TextStyle(
                   color: Colors.white.withValues(alpha: 0.6),
                   fontSize: 16,
@@ -4015,9 +4016,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                             ? Icons.signal_cellular_0_bar
                                             : Icons.signal_cellular_alt_1_bar,
                                         size: 11 * scale,
-                                        color: q == NetworkQuality.poor
-                                            ? Colors.red
-                                            : Colors.amber,
+                                        color:
+                                            q == NetworkQuality.poor
+                                                ? Colors.red
+                                                : Colors.amber,
                                       ),
                                       const SizedBox(width: 4),
                                       Text(
@@ -4025,9 +4027,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                             ? 'Señal muy débil — modo de emergencia activo'
                                             : 'Señal débil — modo ahorro activo',
                                         style: TextStyle(
-                                          color: q == NetworkQuality.poor
-                                              ? Colors.red.shade300
-                                              : Colors.amber.shade300,
+                                          color:
+                                              q == NetworkQuality.poor
+                                                  ? Colors.red.shade300
+                                                  : Colors.amber.shade300,
                                           fontSize: 10 * scale,
                                           fontWeight: FontWeight.w500,
                                         ),
@@ -4673,9 +4676,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }) {
     if (!mounted) return;
     final mbps = _networkQuality.estimatedBandwidthMbps.value;
-    final label = mbps < 1.0
-        ? '${(mbps * 1000).toInt()} Kbps'
-        : '${mbps.toStringAsFixed(1)} Mbps';
+    final label =
+        mbps < 1.0
+            ? '${(mbps * 1000).toInt()} Kbps'
+            : '${mbps.toStringAsFixed(1)} Mbps';
 
     if (degraded) {
       _showVisualNotice(
