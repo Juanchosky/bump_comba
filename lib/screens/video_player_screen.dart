@@ -418,49 +418,80 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
   }
 
+  Future<void> _playVideo() async {
+    if (!mounted) return;
+    _retryCount = 0;
+    _hasError = false;
+
+    final progress = await _watchProgressService.getProgress(
+      _currentItem.url,
+    );
+    Duration? startFrom;
+
+    if (progress != null && mounted) {
+      final shouldResume = await _showResumeDialog(
+        Duration(seconds: progress.positionSeconds),
+      );
+
+      if (shouldResume == null) {
+        Future.delayed(const Duration(milliseconds: 200), () {
+          if (mounted) Navigator.pop(context);
+        });
+        return;
+      }
+
+      if (shouldResume == true) {
+        startFrom = Duration(seconds: progress.positionSeconds);
+      } else if (shouldResume == false) {
+        await _watchProgressService.clearProgress(_currentItem.url);
+      }
+    }
+
+    await _initializePlayer(_currentItem, startFrom: startFrom);
+  }
+
   Future<void> _startPlaybackFlow() async {
     AdService().showRewardedAdWithConfirmation(
       context,
       quarterTurns: _isLandscape ? 1 : 0,
-      onUserEarnedReward: () async {
-        if (!mounted) return;
-        _retryCount = 0;
-        _hasError = false;
-
-        final progress = await _watchProgressService.getProgress(
-          _currentItem.url,
-        );
-        Duration? startFrom;
-
-        if (progress != null && mounted) {
-          final shouldResume = await _showResumeDialog(
-            Duration(seconds: progress.positionSeconds),
-          );
-
-          if (shouldResume == null) {
-            Future.delayed(const Duration(milliseconds: 200), () {
-              if (mounted) Navigator.pop(context);
-            });
-            return;
-          }
-
-          if (shouldResume == true) {
-            startFrom = Duration(seconds: progress.positionSeconds);
-          } else if (shouldResume == false) {
-            await _watchProgressService.clearProgress(_currentItem.url);
-          }
-        }
-
-        await _initializePlayer(_currentItem, startFrom: startFrom);
-      },
+      onUserEarnedReward: _playVideo,
       onAdFailed: () {
         if (mounted) {
-          _showAppSnackBar(
-            'Lo sentimos, no pudimos cargar este título. (Código: 5003)',
-          );
-          Future.delayed(const Duration(milliseconds: 200), () {
-            if (mounted) Navigator.pop(context);
-          });
+          if (AdService().adBlockerDetected) {
+            _showAppSnackBar('Bloqueador de anuncios detectado. Para continuar, desactívalo o suscríbete a Premium.');
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const SubscriptionScreen()),
+            ).then((_) {
+              if (mounted) {
+                if (!PremiumService().isPremium) {
+                  Navigator.pop(context);
+                } else {
+                  _playVideo();
+                }
+              }
+            });
+          } else if (AdService().hasReachedUnverifiedLimit) {
+            _showAppSnackBar('Límite de vistas sin anuncios alcanzado. Suscríbete a Premium.');
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const SubscriptionScreen()),
+            ).then((_) {
+              if (mounted) {
+                if (!PremiumService().isPremium) {
+                  Navigator.pop(context);
+                } else {
+                  _playVideo();
+                }
+              }
+            });
+          } else {
+            AdService().incrementUnverifiedViews();
+            _showAppSnackBar(
+              'Error técnico al cargar anuncio. Disfruta del contenido (${AdService().unverifiedViewsThisSession}/3 vistas de cortesía usadas).',
+            );
+            _playVideo();
+          }
         }
       },
       onCancel: () {
@@ -1688,10 +1719,41 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       },
       onAdFailed: () {
         if (mounted) {
-          _showAppSnackBar('Error al cargar el anuncio. (Código: 1004)');
-          Future.delayed(const Duration(milliseconds: 200), () {
-            if (mounted) Navigator.pop(context);
-          });
+          if (AdService().adBlockerDetected) {
+            _showAppSnackBar('Bloqueador de anuncios detectado. Para continuar, desactívalo o suscríbete a Premium.');
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const SubscriptionScreen()),
+            ).then((_) {
+              if (mounted) {
+                if (!PremiumService().isPremium) {
+                  Navigator.pop(context);
+                } else {
+                  if (_player != null) _player!.play();
+                }
+              }
+            });
+          } else if (AdService().hasReachedUnverifiedLimit) {
+            _showAppSnackBar('Límite de vistas sin anuncios alcanzado. Suscríbete a Premium.');
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const SubscriptionScreen()),
+            ).then((_) {
+              if (mounted) {
+                if (!PremiumService().isPremium) {
+                  Navigator.pop(context);
+                } else {
+                  if (_player != null) _player!.play();
+                }
+              }
+            });
+          } else {
+            AdService().incrementUnverifiedViews();
+            _showAppSnackBar(
+              'Error técnico al cargar anuncio. Disfruta del contenido (${AdService().unverifiedViewsThisSession}/3 vistas de cortesía usadas).',
+            );
+            if (_player != null) _player!.play();
+          }
         }
       },
       onCancel: () {
@@ -2538,7 +2600,59 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       },
       onAdFailed: () {
         if (mounted) {
-          _showAppSnackBar('Error al cargar el anuncio. Inténtalo de nuevo.');
+          if (AdService().adBlockerDetected) {
+            _showAppSnackBar('Bloqueador de anuncios detectado. Para continuar, desactívalo o suscríbete a Premium.');
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const SubscriptionScreen()),
+            ).then((_) {
+              if (mounted) {
+                if (!PremiumService().isPremium) {
+                  Navigator.pop(context);
+                } else {
+                  setState(() {
+                    _currentItem = newEpisode;
+                    _midRollAdShown = false;
+                    _midRollNoticeShown = false;
+                    _autoPlayCancelled = false;
+                  });
+                  _initializePlayer(newEpisode);
+                }
+              }
+            });
+          } else if (AdService().hasReachedUnverifiedLimit) {
+            _showAppSnackBar('Límite de vistas sin anuncios alcanzado. Suscríbete a Premium.');
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const SubscriptionScreen()),
+            ).then((_) {
+              if (mounted) {
+                if (!PremiumService().isPremium) {
+                  Navigator.pop(context);
+                } else {
+                  setState(() {
+                    _currentItem = newEpisode;
+                    _midRollAdShown = false;
+                    _midRollNoticeShown = false;
+                    _autoPlayCancelled = false;
+                  });
+                  _initializePlayer(newEpisode);
+                }
+              }
+            });
+          } else {
+            AdService().incrementUnverifiedViews();
+            _showAppSnackBar(
+              'Error técnico al cargar anuncio. Disfruta del contenido (${AdService().unverifiedViewsThisSession}/3 vistas de cortesía usadas).',
+            );
+            setState(() {
+              _currentItem = newEpisode;
+              _midRollAdShown = false;
+              _midRollNoticeShown = false;
+              _autoPlayCancelled = false;
+            });
+            _initializePlayer(newEpisode);
+          }
         }
       },
     );

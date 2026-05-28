@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'premium_service.dart';
 import '../utils/snack_bar_utils.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import '../screens/subscription_screen.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ALGORITMO ADAPTATIVO v2 — Anti-fatiga + Anti-adblocker + Revenue floor
@@ -49,6 +50,28 @@ class AdService {
   bool _adBlockerDetected = false;
   int _blockedActionsCount = 0;
   static const int _maxBlockedActionsBeforePaywall = 5;
+
+  // ── Unverified Views & Fallbacks ──────────────────────────────────────────
+  int _unverifiedViewsThisSession = 0;
+  static const int _maxUnverifiedViews = 3;
+  int? _lastLoadErrorCode;
+  static const String _unverifiedViewsKey = 'ad_unverified_views_count';
+
+  bool get hasReachedUnverifiedLimit =>
+      _unverifiedViewsThisSession >= _maxUnverifiedViews;
+  int get unverifiedViewsThisSession => _unverifiedViewsThisSession;
+  int? get lastLoadErrorCode => _lastLoadErrorCode;
+  bool get adBlockerDetected => _adBlockerDetected;
+
+  void incrementUnverifiedViews() {
+    _unverifiedViewsThisSession++;
+    _prefs?.setInt(_unverifiedViewsKey, _unverifiedViewsThisSession);
+  }
+
+  void resetUnverifiedViews() {
+    _unverifiedViewsThisSession = 0;
+    _prefs?.setInt(_unverifiedViewsKey, 0);
+  }
 
   // ── Plataforma ────────────────────────────────────────────────────────────
   bool get isSupported =>
@@ -158,12 +181,15 @@ class AdService {
 
     await _initUserSegment();
     _toleranceScore = (_prefs?.getInt(_toleranceScoreKey) ?? 50).clamp(20, 100);
+    _unverifiedViewsThisSession = _prefs?.getInt(_unverifiedViewsKey) ?? 0;
 
     final lastDate = _prefs?.getString(_lastAdDateKey) ?? '';
     final today = DateTime.now().toIso8601String().substring(0, 10);
     if (lastDate != today) {
       await _prefs?.setString(_lastAdDateKey, today);
       await _prefs?.setInt(_adsShownTodayKey, 0);
+      await _prefs?.setInt(_unverifiedViewsKey, 0);
+      _unverifiedViewsThisSession = 0;
     }
 
     if (!isSupported) return;
@@ -598,6 +624,10 @@ class AdService {
         onAdFailedToLoad: (error) {
           _rewardedAd = null;
           _isRewardedAdLoading = false;
+          _lastLoadErrorCode = error.code;
+          if (error.code == 2 || error.code == 3) {
+            _adBlockerDetected = true;
+          }
         },
       ),
     );
@@ -656,7 +686,7 @@ class AdService {
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!context.mounted) return;
-      showGeneralDialog<bool>(
+      showGeneralDialog<dynamic>(
         context: context,
         barrierDismissible: true,
         barrierLabel: '',
@@ -691,8 +721,24 @@ class AdService {
             ),
           );
         },
-      ).then((confirmed) {
-        if (confirmed != true) onCancel?.call();
+      ).then((result) async {
+        if (result == 'premium') {
+          if (context.mounted) {
+            await Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => const SubscriptionScreen(),
+              ),
+            );
+            if (PremiumService().isPremium) {
+              onUserEarnedReward();
+            } else {
+              onCancel?.call();
+            }
+          }
+        } else if (result != true) {
+          onCancel?.call();
+        }
       });
     });
   }
@@ -828,10 +874,11 @@ class AdService {
     };
   }
 }
-
 // ═══════════════════════════════════════════════════════════════════════════
 // REWARDED CONFIRMATION DIALOG
 // ═══════════════════════════════════════════════════════════════════════════
+
+enum DialogState { initial, loading, fallbackAllowed, limitReached, adblocker }
 
 class _RewardedAdConfirmationDialog extends StatefulWidget {
   final String? message;
@@ -853,42 +900,367 @@ class _RewardedAdConfirmationDialog extends StatefulWidget {
 
 class _RewardedAdConfirmationDialogState
     extends State<_RewardedAdConfirmationDialog> {
-  bool _isLoading = false;
+  DialogState _state = DialogState.initial;
+  int _secondsLeft = 10;
+  Timer? _countdownTimer;
+
+  @override
+  void dispose() {
+    _countdownTimer?.cancel();
+    super.dispose();
+  }
 
   void _handleConfirm() async {
-    setState(() => _isLoading = true);
-    try {
-      int retries = 0;
-      while (widget.adService._rewardedAd == null && retries < 16) {
-        if (!widget.adService._isRewardedAdLoading) {
-          widget.adService.loadRewardedAd();
-        }
-        await Future.delayed(const Duration(milliseconds: 500));
-        retries++;
+    if (widget.adService._adBlockerDetected) {
+      setState(() {
+        _state = DialogState.adblocker;
+      });
+      return;
+    }
+    if (widget.adService.hasReachedUnverifiedLimit) {
+      setState(() {
+        _state = DialogState.limitReached;
+      });
+      return;
+    }
+
+    setState(() {
+      _state = DialogState.loading;
+      _secondsLeft = 10;
+    });
+
+    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
       }
-      if (!mounted) return;
       if (widget.adService._rewardedAd != null) {
+        timer.cancel();
         Navigator.pop(context, true);
         widget.adService.showRewardedAd(
           onUserEarnedReward: widget.onUserEarnedReward,
           onAdFailed: widget.onAdFailed,
         );
-      } else {
-        if (mounted) {
-          setState(() => _isLoading = false);
-          SnackBarUtils.showAppSnackBar(
-            context,
-            'Lo sentimos, hubo un problema técnico. Inténtalo de nuevo. (Código de error: 1004)',
-          );
-        }
+        return;
       }
-    } catch (_) {
-      if (mounted) setState(() => _isLoading = false);
+      if (_secondsLeft <= 1) {
+        timer.cancel();
+        _handleTimeout();
+      } else {
+        setState(() {
+          _secondsLeft--;
+        });
+      }
+    });
+
+    // Proactivamente intentar cargar si es nulo
+    if (widget.adService._rewardedAd == null &&
+        !widget.adService._isRewardedAdLoading) {
+      widget.adService.loadRewardedAd();
     }
+  }
+
+  void _handleTimeout() {
+    if (!mounted) return;
+    if (widget.adService._adBlockerDetected) {
+      setState(() {
+        _state = DialogState.adblocker;
+      });
+    } else if (widget.adService.hasReachedUnverifiedLimit) {
+      setState(() {
+        _state = DialogState.limitReached;
+      });
+    } else {
+      setState(() {
+        _state = DialogState.fallbackAllowed;
+      });
+    }
+  }
+
+  void _navigateToPremium() {
+    Navigator.pop(context, 'premium');
   }
 
   @override
   Widget build(BuildContext context) {
+    IconData icon;
+    Color iconColor;
+    Color iconBgColor;
+    String title;
+    String message;
+    Widget buttons;
+
+    switch (_state) {
+      case DialogState.initial:
+        icon = Icons.play_circle_filled_rounded;
+        iconColor = Colors.red;
+        iconBgColor = Colors.red.withOpacity(0.15);
+        title = '¡Todo listo!';
+        message =
+            widget.message ?? 'Para iniciar la reproducción, mira un anuncio.';
+        buttons = Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              style: TextButton.styleFrom(
+                foregroundColor: Colors.white70,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
+              ),
+              child: const Text(
+                'Ahora no',
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+              ),
+            ),
+            const SizedBox(width: 8),
+            ElevatedButton(
+              onPressed: _handleConfirm,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFF44336).withOpacity(0.9),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 12,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                elevation: 0,
+              ),
+              child: const Text(
+                'Ver ahora',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 0.2,
+                ),
+              ),
+            ),
+          ],
+        );
+        break;
+
+      case DialogState.loading:
+        icon = Icons.play_circle_filled_rounded;
+        iconColor = Colors.red;
+        iconBgColor = Colors.red.withOpacity(0.15);
+        title = '¡Todo listo!';
+        message =
+            widget.message ?? 'Para iniciar la reproducción, mira un anuncio.';
+        buttons = Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            ElevatedButton(
+              onPressed: null,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFF44336).withOpacity(0.4),
+                foregroundColor: Colors.white60,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 12,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                elevation: 0,
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                      color: Colors.white,
+                      strokeWidth: 2,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    'Cargando ($_secondsLeft s)',
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        );
+        break;
+
+      case DialogState.adblocker:
+        icon = Icons.gpp_bad_rounded;
+        iconColor = Colors.redAccent;
+        iconBgColor = Colors.redAccent.withOpacity(0.15);
+        title = 'Bloqueador activo';
+        message =
+            'Hemos detectado un bloqueador de anuncios (AdBlock) o VPN activo. Desactívalo o suscríbete a Premium para ver el contenido directamente.';
+        buttons = Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              style: TextButton.styleFrom(
+                foregroundColor: Colors.white70,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
+              ),
+              child: const Text(
+                'Cerrar',
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+              ),
+            ),
+            const SizedBox(width: 8),
+            ElevatedButton.icon(
+              onPressed: _navigateToPremium,
+
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFF44336).withOpacity(0.9),
+                foregroundColor: const Color.fromARGB(255, 235, 235, 235),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 12,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                elevation: 0,
+              ),
+              label: const Text(
+                'Hazte Premium',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 0.2,
+                ),
+              ),
+            ),
+          ],
+        );
+        break;
+
+      case DialogState.limitReached:
+        icon = Icons.block_flipped;
+        iconColor = Colors.redAccent;
+        iconBgColor = Colors.redAccent.withOpacity(0.15);
+        title =
+            'Sin conexión (${widget.adService.unverifiedViewsThisSession}/3)';
+        message =
+            'Espera un momento... Si el error persiste, desactiva tu VPN o AdBlocker, o Hazte Premium.';
+        buttons = Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              style: TextButton.styleFrom(
+                foregroundColor: Colors.white70,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
+              ),
+              child: const Text(
+                'Cerrar',
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+              ),
+            ),
+            const SizedBox(width: 8),
+            ElevatedButton.icon(
+              onPressed: _navigateToPremium,
+
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFF44336).withOpacity(0.9),
+                foregroundColor: const Color.fromARGB(255, 235, 235, 235),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 12,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                elevation: 0,
+              ),
+              label: const Text(
+                '¡Hazte Premium!',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 0.2,
+                ),
+              ),
+            ),
+          ],
+        );
+        break;
+
+      case DialogState.fallbackAllowed:
+        icon = Icons.wifi_off_rounded;
+        iconColor = Colors.amber;
+        iconBgColor = Colors.amber.withOpacity(0.15);
+        title = 'Sin conexión';
+        message =
+            'Puedes seguir viendo. (${widget.adService.unverifiedViewsThisSession}/3 accesos offline usados).';
+        buttons = Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            TextButton(
+              onPressed: _navigateToPremium,
+              style: TextButton.styleFrom(
+                foregroundColor: Colors.amber,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
+                ),
+              ),
+              child: const Text(
+                '¡Hazte Premium!',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+              ),
+            ),
+            const SizedBox(width: 8),
+            ElevatedButton(
+              onPressed: () {
+                widget.adService.incrementUnverifiedViews();
+                SnackBarUtils.showAppSnackBar(
+                  context,
+                  'Sin conexión (${widget.adService.unverifiedViewsThisSession}/3 accesos offline)',
+                );
+                Navigator.pop(context, true);
+                widget.onUserEarnedReward();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFF44336).withOpacity(0.9),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 12,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                elevation: 0,
+              ),
+              child: const Text(
+                'Continuar',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 0.2,
+                ),
+              ),
+            ),
+          ],
+        );
+        break;
+    }
+
     return ClipRRect(
       borderRadius: BorderRadius.circular(20),
       child: BackdropFilter(
@@ -922,19 +1294,15 @@ class _RewardedAdConfirmationDialogState
                   Container(
                     padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
-                      color: Colors.red.withOpacity(0.15),
+                      color: iconBgColor,
                       shape: BoxShape.circle,
                     ),
-                    child: const Icon(
-                      Icons.play_circle_filled_rounded,
-                      color: Colors.red,
-                      size: 24,
-                    ),
+                    child: Icon(icon, color: iconColor, size: 24),
                   ),
                   const SizedBox(width: 12),
-                  const Text(
-                    '¡Todo listo!',
-                    style: TextStyle(
+                  Text(
+                    title,
+                    style: const TextStyle(
                       color: Colors.white,
                       fontSize: 19.6,
                       fontWeight: FontWeight.w700,
@@ -945,8 +1313,7 @@ class _RewardedAdConfirmationDialogState
               ),
               const SizedBox(height: 16),
               Text(
-                widget.message ??
-                    'Mira un breve anuncio para desbloquear el contenido y disfrutar ahora mismo.',
+                message,
                 style: TextStyle(
                   color: Colors.white.withOpacity(0.85),
                   fontSize: 15,
@@ -954,63 +1321,7 @@ class _RewardedAdConfirmationDialogState
                 ),
               ),
               const SizedBox(height: 28),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  TextButton(
-                    onPressed:
-                        _isLoading ? null : () => Navigator.pop(context, false),
-                    style: TextButton.styleFrom(
-                      foregroundColor: Colors.white70,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 12,
-                      ),
-                    ),
-                    child: const Text(
-                      'Ahora no',
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  ElevatedButton(
-                    onPressed: _isLoading ? null : _handleConfirm,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFFF44336).withOpacity(0.9),
-                      foregroundColor: Colors.white,
-                      padding: EdgeInsets.symmetric(
-                        horizontal: 24,
-                        vertical: _isLoading ? 8 : 12,
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      elevation: 0,
-                    ),
-                    child:
-                        _isLoading
-                            ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                color: Colors.white,
-                                strokeWidth: 2,
-                              ),
-                            )
-                            : const Text(
-                              'Ver ahora',
-                              style: TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.bold,
-                                letterSpacing: 0.2,
-                              ),
-                            ),
-                  ),
-                ],
-              ),
+              buttons,
             ],
           ),
         ),
