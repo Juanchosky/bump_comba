@@ -78,12 +78,15 @@ class AdService {
 
   // ── IDs ───────────────────────────────────────────────────────────────────
   static String get _realInterstitialId =>
-      dotenv.env['ADMOB_INTERSTITIAL_ID'] ?? 'ca-app-pub-4239841158013104/9278645985';
+      dotenv.env['ADMOB_INTERSTITIAL_ID'] ??
+      'ca-app-pub-4239841158013104/9278645985';
   static String get _realRewardedId =>
-      dotenv.env['ADMOB_REWARDED_ID'] ?? 'ca-app-pub-4239841158013104/9987208522';
+      dotenv.env['ADMOB_REWARDED_ID'] ??
+      'ca-app-pub-4239841158013104/9987208522';
   static String get _realRewardedInterstitialId =>
-      dotenv.env['ADMOB_REWARDED_INTERSTITIAL_ID'] ?? 'ca-app-pub-4239841158013104/1766987477';
-  static String get _realNativeId => 
+      dotenv.env['ADMOB_REWARDED_INTERSTITIAL_ID'] ??
+      'ca-app-pub-4239841158013104/1766987477';
+  static String get _realNativeId =>
       dotenv.env['ADMOB_NATIVE_ID'] ?? 'ca-app-pub-4239841158013104/9574791316';
 
   static const String _testInterstitialId =

@@ -329,6 +329,16 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
   void _onM3UServiceUpdated() {
     if (!mounted || _isLoading) return;
+
+    // ── TMDB TRENDING HERO: Si el hero no se ha establecido aún,
+    // intentar usar trending TMDB cuando los datos llegan async ──
+    if (_heroItem == null) {
+      final trendingItems = _m3uService.getTrendingBannerItems();
+      if (trendingItems.isNotEmpty) {
+        _setHeroRandomly(trendingItems);
+      }
+    }
+
     final recentItems = _m3uService.getRecentItems();
     if (recentItems.isNotEmpty &&
         (_recommendedItems == null || _recommendedItems!.isEmpty)) {
@@ -1150,6 +1160,13 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
     // Solo elegir un nuevo ítem si no está establecido (persistencia por sesión).
     if (_heroItem != null) return;
+
+    // ── PRIORIDAD TMDB: Intentar usar contenido trending de TMDB ──
+    final trendingItems = _m3uService.getTrendingBannerItems();
+    if (trendingItems.isNotEmpty) {
+      _setHeroRandomly(trendingItems);
+      if (_heroItem != null) return; // Si se estableció, no continuar
+    }
 
     // 1. Obtener un pool base de películas y series recientes.
     final List<M3UItem> moviePool = _m3uService.movies.take(100).toList();
@@ -3873,6 +3890,13 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   Widget _buildHeroRandomLatest(List<M3UItem> items) {
     if (items.isEmpty) return const SizedBox.shrink();
     if (_heroItem != null) return _buildHeroBanner(_heroItem!);
+
+    // ── PRIORIDAD TMDB: Intentar usar contenido trending de TMDB ──
+    final trendingItems = _m3uService.getTrendingBannerItems();
+    if (trendingItems.isNotEmpty) {
+      final random = trendingItems[DateTime.now().microsecond % trendingItems.length];
+      return _buildHeroBanner(random);
+    }
 
     // Fallback logic filtrando películas y series
     final validContent =

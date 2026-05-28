@@ -207,7 +207,9 @@ class TMDBService {
   Future<List<Map<String, String>>> getTrendingTitles() async {
     try {
       final response = await http.get(
-        Uri.parse('$_baseUrl/trending/all/week?api_key=$_apiKey&language=es-ES'),
+        Uri.parse(
+          '$_baseUrl/trending/all/week?api_key=$_apiKey&language=es-ES',
+        ),
       );
 
       if (response.statusCode == 200) {

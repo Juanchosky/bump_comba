@@ -176,6 +176,10 @@ class M3UService extends ChangeNotifier {
   List<M3UItem>? _cachedPopularTMDB;
   bool _isFetchingPopularTMDB = false;
   bool get isFetchingPopularTMDB => _isFetchingPopularTMDB;
+  // Cache for TMDB trending banner items (hero banner)
+  List<M3UItem>? _cachedTrendingBanner;
+  bool _isFetchingTrendingBanner = false;
+  bool get isFetchingTrendingBanner => _isFetchingTrendingBanner;
 
   // ROBUST-1: Completer-based init guard (prevents concurrent double-init)
   Completer<void>? _initCompleter;
@@ -1853,6 +1857,8 @@ class M3UService extends ChangeNotifier {
       );
       // Pre-warm popular search TMDB matches cache
       _fetchPopularFromTMDB();
+      // Pre-warm trending banner TMDB matches for the hero banner
+      _fetchTrendingForBanner();
       notifyListeners();
     });
 
@@ -2161,6 +2167,139 @@ class M3UService extends ChangeNotifier {
       debugPrint('Error fetching TMDB popular trends: $e');
     } finally {
       _isFetchingPopularTMDB = false;
+    }
+  }
+
+  /// Returns cached trending items for the hero banner.
+  /// If cache is empty, triggers an async fetch and returns empty list.
+  /// The UI should listen to notifyListeners() and rebuild when data arrives.
+  List<M3UItem> getTrendingBannerItems() {
+    // If we already have trending banner items, return them
+    if (_cachedTrendingBanner != null && _cachedTrendingBanner!.isNotEmpty) {
+      return _cachedTrendingBanner!;
+    }
+
+    // Reuse popular TMDB cache if available (same data, already fetched)
+    if (_cachedPopularTMDB != null && _cachedPopularTMDB!.isNotEmpty) {
+      // Filter to items with logos for visual quality in the banner
+      final withLogos =
+          _cachedPopularTMDB!
+              .where((i) => i.logo != null && i.logo!.isNotEmpty)
+              .toList();
+      if (withLogos.isNotEmpty) {
+        _cachedTrendingBanner = withLogos;
+        return _cachedTrendingBanner!;
+      }
+      // If none have logos, use all of them (TMDB fallback will handle posters)
+      _cachedTrendingBanner = _cachedPopularTMDB!;
+      return _cachedTrendingBanner!;
+    }
+
+    // Trigger async fetch if not already in progress
+    if (!_isFetchingTrendingBanner &&
+        !_isFetchingPopularTMDB &&
+        _items.isNotEmpty) {
+      _fetchTrendingForBanner();
+    }
+
+    return [];
+  }
+
+  /// Fetches trending titles from TMDB and cross-matches with local catalog
+  /// for the hero banner. Similar to _fetchPopularFromTMDB but optimized for
+  /// banner display (prefers items with logos/posters).
+  Future<void> _fetchTrendingForBanner() async {
+    if (_isFetchingTrendingBanner) return;
+    _isFetchingTrendingBanner = true;
+
+    try {
+      final List<M3UItem> finalResults = [];
+      final trends = await TMDBService().getTrendingTitles();
+
+      if (trends.isNotEmpty) {
+        final Set<String> matchedNames = {};
+        for (var trend in trends) {
+          final trendTitle = trend['title']?.toLowerCase() ?? '';
+          final trendYear = trend['year'] ?? '';
+          if (trendTitle.isEmpty) continue;
+
+          // Fast search in local library — prefer items with logos for the banner
+          M3UItem? bestMatch;
+          for (var item in _items) {
+            if (item.isLive || item.sourceName == 'Supabase') continue;
+            if (matchedNames.contains(item.name)) continue;
+
+            final itemName = item.name.toLowerCase();
+
+            // Basic title match
+            if (itemName.contains(trendTitle) ||
+                trendTitle.contains(itemName)) {
+              // Year verification for accuracy
+              if (trendYear.isNotEmpty && item.name.contains(trendYear)) {
+                bestMatch = item;
+                break;
+              } else if (trendYear.isEmpty) {
+                bestMatch = item;
+                break;
+              }
+            }
+          }
+
+          if (bestMatch != null) {
+            finalResults.add(bestMatch);
+            matchedNames.add(bestMatch.name);
+          }
+          if (finalResults.length >= 15) break;
+        }
+      }
+
+      // SMART FALLBACK: If no trends matched, pick recent/random items with logos
+      if (finalResults.isEmpty && _items.isNotEmpty) {
+        final vods =
+            _items
+                .where((i) => !i.isLive && i.sourceName != 'Supabase')
+                .toList();
+
+        if (vods.isNotEmpty) {
+          final regexYear = RegExp(r'\b(202[0-9]|19[0-9]{2})\b');
+          int maxYear = 0;
+          final Map<int, List<M3UItem>> yearGroups = {};
+
+          for (var v in vods) {
+            final match = regexYear.firstMatch(v.name);
+            if (match != null) {
+              final y = int.tryParse(match.group(1) ?? '0') ?? 0;
+              if (y > 1900 && y < 2100) {
+                if (y > maxYear) maxYear = y;
+                yearGroups.putIfAbsent(y, () => []).add(v);
+              }
+            }
+          }
+
+          if (maxYear > 0) {
+            final bestYearItems = yearGroups[maxYear]!;
+            bestYearItems.shuffle();
+            finalResults.addAll(bestYearItems.take(15));
+          } else {
+            vods.shuffle();
+            finalResults.addAll(vods.take(15));
+          }
+        }
+      }
+
+      _cachedTrendingBanner = finalResults;
+      // Also populate popular cache if it's empty (avoid double fetch)
+      if ((_cachedPopularTMDB == null || _cachedPopularTMDB!.isEmpty) &&
+          finalResults.isNotEmpty) {
+        _cachedPopularTMDB = finalResults.take(9).toList();
+      }
+      if (finalResults.isNotEmpty) {
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('Error fetching TMDB trending for banner: $e');
+    } finally {
+      _isFetchingTrendingBanner = false;
     }
   }
 
