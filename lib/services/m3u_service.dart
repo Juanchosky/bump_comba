@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:math';
 import 'package:http/http.dart' as http;
+import '../utils/bipb_serializer.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -17,6 +19,7 @@ import '../models/download_progress.dart';
 import '../utils/normalization_utils.dart';
 import '../services/watch_progress_service.dart';
 import 'tmdb_service.dart';
+import '../utils/dns_bypass_utils.dart';
 
 export '../models/m3u_item.dart';
 export '../models/download_progress.dart';
@@ -322,88 +325,70 @@ class M3UService extends ChangeNotifier {
     return File('${dir.path}/$_unifiedCachePrefix$index.txt');
   }
 
-  Future<File> _getJsonCacheFile() async {
-    final dir = await getApplicationDocumentsDirectory();
-    final suffix = _isUnifiedMode ? 'unified' : 'single_$_activeSourceIndex';
-    return File('${dir.path}/m3u_parsed_cache_$suffix.json');
-  }
-
   Future<File> _getCustomCacheFile() async {
     final dir = await getApplicationDocumentsDirectory();
     return File('${dir.path}/$_customCacheFileName');
   }
 
-  Future<void> _saveJsonCache(List<M3UItem> items) async {
+  Future<File> _getBinaryCacheFile() async {
+    final dir = await getApplicationDocumentsDirectory();
+    final suffix = _isUnifiedMode ? 'unified' : 'single_$_activeSourceIndex';
+    return File('${dir.path}/m3u_parsed_cache_$suffix.bin');
+  }
+
+  Future<void> _saveBinaryCache(List<M3UItem> items) async {
     try {
-      final file = await _getJsonCacheFile();
-      final securityKey =
-          dotenv.env['SECURITY_KEY'] ?? 'bump_comba_v1_secure_layer_2026';
-      final obfuscated = await compute(_encodeJsonCacheInBackground, {
-        'items': items,
-        'key': securityKey,
-      });
-      await file.writeAsString(obfuscated);
+      final file = await _getBinaryCacheFile();
+      final bytes = await compute(_serializeBinaryCacheInBackground, items);
+      await file.writeAsBytes(bytes);
       await _prefs?.setInt(_logicVersionKey, _currentLogicVersion);
 
-      // FIX: Guardar también el timestamp del caché para que _loadJsonCache()
-      // y _isCacheExpired() funcionen correctamente con fuentes Xtream.
-      // Sin esto, el caché JSON se guardaba pero sin timestamp → siempre
-      // se consideraba expirado → re-descarga innecesaria en cada reinicio.
       final timestampKey = _getActiveCacheTimestampKey();
       await _prefs?.setInt(timestampKey, DateTime.now().millisecondsSinceEpoch);
+      debugPrint('Binary cache saved: ${bytes.length} bytes');
     } catch (e) {
-      debugPrint('Error saving JSON cache: $e');
+      debugPrint('Error saving binary cache: $e');
     }
   }
 
   @pragma('vm:entry-point')
-  static String _encodeJsonCacheInBackground(Map<String, dynamic> data) {
-    final items = data['items'] as List<M3UItem>;
-    final key = data['key'] as String;
-    final jsonStr = json.encode(items.map((i) => i.toMap()).toList());
-
-    // Manual obfuscation to avoid dotenv dependency in isolate
-    final bytes = utf8.encode(jsonStr);
-    final keyBytes = utf8.encode(key);
-    final result = List<int>.generate(bytes.length, (i) {
-      return bytes[i] ^ keyBytes[i % keyBytes.length];
-    });
-    return 'obf:${base64.encode(result)}';
+  static Uint8List _serializeBinaryCacheInBackground(List<M3UItem> items) {
+    return BipbSerializer.serialize(items);
   }
 
-  Future<List<M3UItem>?> _loadJsonCache({bool ignoreExpiration = false}) async {
+  Future<List<M3UItem>?> _loadBinaryCache({
+    bool ignoreExpiration = false,
+  }) async {
     try {
       final savedVersion = _prefs?.getInt(_logicVersionKey) ?? 0;
       if (savedVersion < _currentLogicVersion) return null;
 
       if (!ignoreExpiration) {
-        // FIX: Usar la key correcta según el modo (unified vs single).
-        // Antes siempre usaba _cacheTimestampKey, lo que causaba que en modo
-        // unificado el caché siempre pareciera expirado → re-descarga innecesaria.
         final timestampKey = _getActiveCacheTimestampKey();
         final cacheTimestamp = _prefs?.getInt(timestampKey);
         if (cacheTimestamp == null ||
             DateTime.now().millisecondsSinceEpoch - cacheTimestamp >
                 _cacheDuration.inMilliseconds) {
-          // If expired and not ignoring expiration, return null to trigger network update
           return null;
         }
       }
 
-      final file = await _getJsonCacheFile();
+      final file = await _getBinaryCacheFile();
       if (!await file.exists()) return null;
 
-      final raw = await file.readAsString();
-      final securityKey =
-          dotenv.env['SECURITY_KEY'] ?? 'bump_comba_v1_secure_layer_2026';
-      return await compute(_decodeJsonCacheInBackground, {
-        'raw': raw,
-        'key': securityKey,
-      });
+      final bytes = await file.readAsBytes();
+      if (bytes.isEmpty) return null;
+
+      return await compute(_deserializeBinaryCacheInBackground, bytes);
     } catch (e) {
-      debugPrint('Error loading JSON cache: $e');
+      debugPrint('Error loading binary cache: $e');
       return null;
     }
+  }
+
+  @pragma('vm:entry-point')
+  static List<M3UItem> _deserializeBinaryCacheInBackground(Uint8List bytes) {
+    return BipbSerializer.deserialize(bytes);
   }
 
   // ===========================================================================
@@ -1209,8 +1194,8 @@ class M3UService extends ChangeNotifier {
             .map((f) => {'category': f.category, 'regex': f.regexPattern})
             .toList();
 
-    // 1. Try JSON cache first (best case)
-    final cachedItems = await _loadJsonCache(ignoreExpiration: true);
+    // 1. Try binary cache first (best case)
+    final cachedItems = await _loadBinaryCache(ignoreExpiration: true);
     if (cachedItems != null && cachedItems.isNotEmpty) {
       final custom = await fetchCustomContent(forceRefresh: false);
       await _indexItems([...custom, ...cachedItems]);
@@ -1224,18 +1209,18 @@ class M3UService extends ChangeNotifier {
         final cachedBytes = await cacheFile.readAsBytes();
         final sourceName = _activeSourceName();
         final custom = await fetchCustomContent(forceRefresh: false);
-        return _processOutput(
-          await compute(
-            parseM3UInBackground,
-            IsolateInput(
-              cachedBytes,
-              _favorites.toList(),
-              filtersMap,
-              sourceName,
-            ),
+        final transferable = await compute(
+          parseM3UInBackground,
+          IsolateInput(
+            cachedBytes,
+            _favorites.toList(),
+            filtersMap,
+            sourceName,
           ),
-          custom,
         );
+        final bytes = transferable.materialize().asUint8List();
+        final parsedItems = BipbSerializer.deserialize(bytes);
+        return _processOutput(parsedItems, custom);
       } catch (e) {
         debugPrint('Error loading raw cache: $e');
       }
@@ -1341,7 +1326,7 @@ class M3UService extends ChangeNotifier {
             _cacheDuration.inMilliseconds;
 
     if (hasValidUnifiedCache) {
-      final cachedItems = await _loadJsonCache();
+      final cachedItems = await _loadBinaryCache();
       if (cachedItems != null && cachedItems.isNotEmpty) {
         final custom = await fetchCustomContent(forceRefresh: forceRefresh);
         await _indexItems([...custom, ...cachedItems]);
@@ -1386,7 +1371,7 @@ class M3UService extends ChangeNotifier {
       }
 
       if (sourceBytes != null) {
-        final output = await compute(
+        final transferable = await compute(
           parseM3UInBackground,
           IsolateInput(
             sourceBytes,
@@ -1395,7 +1380,9 @@ class M3UService extends ChangeNotifier {
             source.name,
           ),
         );
-        allRawItems.addAll(output.items);
+        final bytes = transferable.materialize().asUint8List();
+        final parsedItems = BipbSerializer.deserialize(bytes);
+        allRawItems.addAll(parsedItems);
       }
     }
 
@@ -1411,8 +1398,8 @@ class M3UService extends ChangeNotifier {
     // 2. Full background indexing
     await _indexItems(allItems);
 
-    // 3. Save to JSON cache for future instant loads
-    _saveJsonCache(allRawItems);
+    // 3. Save to binary cache for future instant loads
+    _saveBinaryCache(allRawItems);
 
     return true;
   }
@@ -1429,7 +1416,7 @@ class M3UService extends ChangeNotifier {
 
     if (activeSource?.type == 'xtream') {
       if (!forceRefresh) {
-        final cachedItems = await _loadJsonCache();
+        final cachedItems = await _loadBinaryCache();
         if (cachedItems != null && cachedItems.isNotEmpty) {
           final custom = await fetchCustomContent(forceRefresh: forceRefresh);
           await _indexItems([...custom, ...cachedItems]);
@@ -1448,7 +1435,7 @@ class M3UService extends ChangeNotifier {
       // fallback para evitar pantallas en blanco al reiniciar la app.
       if (items.isEmpty) {
         debugPrint('Xtream fetch returned empty — falling back to cache');
-        final fallback = await _loadJsonCache(ignoreExpiration: true);
+        final fallback = await _loadBinaryCache(ignoreExpiration: true);
         if (fallback != null && fallback.isNotEmpty) {
           final custom = await fetchCustomContent(forceRefresh: false);
           await _indexItems([...custom, ...fallback]);
@@ -1474,7 +1461,7 @@ class M3UService extends ChangeNotifier {
           'had movies: $hadMovies, had series: $hadSeries) — keeping cached data',
         );
         // Intentar complementar: usar caché para las categorías faltantes
-        final fallback = await _loadJsonCache(ignoreExpiration: true);
+        final fallback = await _loadBinaryCache(ignoreExpiration: true);
         if (fallback != null && fallback.isNotEmpty) {
           // Mezclar: usar los datos frescos que SÍ llegaron + caché para lo que faltó
           final freshLive = items.where((i) => i.isLive).toList();
@@ -1505,7 +1492,7 @@ class M3UService extends ChangeNotifier {
       await _indexItems([...custom, ...items]);
 
       // Guardar en cache para la próxima vez
-      _saveJsonCache(items);
+      _saveBinaryCache(items);
       return true;
     }
 
@@ -1515,8 +1502,8 @@ class M3UService extends ChangeNotifier {
       if (cacheTimestamp != null &&
           DateTime.now().millisecondsSinceEpoch - cacheTimestamp <
               _cacheDuration.inMilliseconds) {
-        // Try JSON cache (MUCH faster)
-        final cachedItems = await _loadJsonCache();
+        // Try Binary cache (MUCH faster)
+        final cachedItems = await _loadBinaryCache();
         if (cachedItems != null && cachedItems.isNotEmpty) {
           final custom = await fetchCustomContent(forceRefresh: forceRefresh);
           await _indexItems([...custom, ...cachedItems]);
@@ -1528,18 +1515,18 @@ class M3UService extends ChangeNotifier {
           final cachedBytes = await cacheFile.readAsBytes();
           final sourceName = _activeSourceName();
           final custom = await fetchCustomContent(forceRefresh: forceRefresh);
-          return _processOutput(
-            await compute(
-              parseM3UInBackground,
-              IsolateInput(
-                cachedBytes,
-                _favorites.toList(),
-                filtersMap,
-                sourceName,
-              ),
+          final transferable = await compute(
+            parseM3UInBackground,
+            IsolateInput(
+              cachedBytes,
+              _favorites.toList(),
+              filtersMap,
+              sourceName,
             ),
-            custom,
           );
+          final bytes = transferable.materialize().asUint8List();
+          final parsedItems = BipbSerializer.deserialize(bytes);
+          return _processOutput(parsedItems, custom);
         }
       }
     }
@@ -1561,18 +1548,18 @@ class M3UService extends ChangeNotifier {
     );
 
     final custom = await fetchCustomContent(forceRefresh: forceRefresh);
-    return _processOutput(
-      await compute(
-        parseM3UInBackground,
-        IsolateInput(
-          bodyBytes,
-          _favorites.toList(),
-          filtersMap,
-          _activeSourceName(),
-        ),
+    final transferable = await compute(
+      parseM3UInBackground,
+      IsolateInput(
+        bodyBytes,
+        _favorites.toList(),
+        filtersMap,
+        _activeSourceName(),
       ),
-      custom,
     );
+    final bytes = transferable.materialize().asUint8List();
+    final parsedItems = BipbSerializer.deserialize(bytes);
+    return _processOutput(parsedItems, custom);
   }
 
   Future<List<M3UItem>> _fetchXtreamItems(
@@ -1748,12 +1735,13 @@ class M3UService extends ChangeNotifier {
 
       final client = http.Client();
       try {
-        final request = http.Request('GET', Uri.parse(url));
-        request.headers.addAll(headers);
+        final bypassed = await DnsBypassUtils.bypassUrl(url, headers);
+        final request = http.Request('GET', bypassed.uri);
+        request.headers.addAll(bypassed.headers);
 
         final response = await client
             .send(request)
-            .timeout(const Duration(seconds: 30));
+            .timeout(const Duration(seconds: 45));
 
         if (response.statusCode == 451) {
           _lastError =
@@ -1822,17 +1810,17 @@ class M3UService extends ChangeNotifier {
   // OUTPUT PROCESSING — ROBUST-2
   // ===========================================================================
 
-  bool _processOutput(IsolateOutput output, List<M3UItem> customItems) {
+  bool _processOutput(List<M3UItem> parsedItems, List<M3UItem> customItems) {
     // Merge custom items with M3U items
-    final combinedItems = [...customItems, ...output.items];
+    final combinedItems = [...customItems, ...parsedItems];
 
     // Update global state via a unified indexing call.
     // scheduleRecentCompute: false porque _processOutput ya tiene su propio
     // Future.delayed más abajo que hace el mismo cómputo. Evita duplicación.
     _indexItems(combinedItems, scheduleRecentCompute: false);
 
-    // Refresh other fields from output (things that don't need merging or are already processed)
-    _cachedLatestItems = output.latestItems;
+    // Refresh other fields
+    _cachedLatestItems = _calculateLatestItems(parsedItems).take(50).toList();
     _cachedRecentItems = null;
 
     // Sync _favoriteItems with newly parsed items
@@ -1871,7 +1859,7 @@ class M3UService extends ChangeNotifier {
     _saveFavorites();
 
     // Guardar cache en background — no bloquea el main thread
-    _saveJsonCache(output.items);
+    _saveBinaryCache(parsedItems);
 
     // Diferir cálculo de recientes para no bloquear el frame inicial con isolate
     Future.delayed(const Duration(milliseconds: 50), () async {
@@ -3046,7 +3034,7 @@ class IsolateOutput {
 }
 
 @pragma('vm:entry-point')
-IsolateOutput parseM3UInBackground(IsolateInput input) {
+TransferableTypedData parseM3UInBackground(IsolateInput input) {
   final content = utf8.decode(input.contentBytes, allowMalformed: true);
   const int maxItems = 100000;
   final List<M3UItem> rawItems = [];
@@ -3258,7 +3246,6 @@ IsolateOutput parseM3UInBackground(IsolateInput input) {
   }
 
   // ── Unify categories ───────────────────────────────────────────────────
-  // Pass 2: Map all items to canonical category names based on normalized keys
   final Map<String, String> canonicalNames = {};
   for (final item in rawItems) {
     final key = _normalizeCategoryKey(item.category);
@@ -3280,46 +3267,9 @@ IsolateOutput parseM3UInBackground(IsolateInput input) {
   final groupedItems = _groupSeries(groupedAlternatives, input.favorites);
   final sortedGrouped = _calculateLatestItems(groupedItems);
 
-  final movies = sortedGrouped.where((i) => !i.isSeries && !i.isLive).toList();
-  final series = sortedGrouped.where((i) => i.isSeries && !i.isLive).toList();
-
-  final Map<String, List<M3UItem>> catIndex = {};
-  final Set<String> catSet = {};
-  final Map<String, M3UItem> urlIndex = {};
-  final Map<String, M3UItem> seriesNameIndex = {};
-
-  for (final item in sortedGrouped) {
-    catIndex.putIfAbsent(item.category, () => []).add(item);
-    catSet.add(item.category);
-    if (item.url.isNotEmpty) urlIndex[item.url] = item;
-
-    if (item.isSeries) {
-      seriesNameIndex[item.name.trim().toLowerCase()] = item;
-    }
-    for (final ep in item.episodes) {
-      if (ep.url.isNotEmpty) urlIndex[ep.url] = ep;
-      for (final alt in ep.alternatives) {
-        if (alt.url.isNotEmpty) urlIndex[alt.url] = ep;
-      }
-    }
-    for (final alt in item.alternatives) {
-      if (alt.url.isNotEmpty) urlIndex[alt.url] = item;
-    }
-  }
-
-  final categories = _sortCategoriesByPriority(catSet);
-  _addSagaCategories(movies, catIndex, categories);
-
-  return IsolateOutput(
-    items: sortedGrouped,
-    movies: movies,
-    series: series,
-    categories: categories,
-    latestItems: sortedGrouped.take(50).toList(),
-    categoryIndex: catIndex,
-    urlIndex: urlIndex,
-    seriesNameIndex: seriesNameIndex,
-  );
+  // Return serialized binary bytes wrapped in TransferableTypedData
+  final bytes = BipbSerializer.serialize(sortedGrouped);
+  return TransferableTypedData.fromList([bytes]);
 }
 
 // ===========================================================================

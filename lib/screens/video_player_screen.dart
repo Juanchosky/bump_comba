@@ -1330,8 +1330,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (!mounted) return;
       setState(() {
-        if (_nextEpisodeCountdown! > 1) {
-          _nextEpisodeCountdown = _nextEpisodeCountdown! - 1;
+        final currentCount = _nextEpisodeCountdown;
+        if (currentCount == null) {
+          timer.cancel();
+          return;
+        }
+        if (currentCount > 1) {
+          _nextEpisodeCountdown = currentCount - 1;
         } else {
           timer.cancel();
           _nextEpisodeCountdown = null;

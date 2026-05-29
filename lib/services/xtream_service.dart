@@ -8,6 +8,7 @@ import '../models/m3u_item.dart';
 import '../models/download_progress.dart';
 import '../utils/normalization_utils.dart';
 import '../utils/security_utils.dart';
+import '../utils/dns_bypass_utils.dart';
 
 class XtreamService {
   static final XtreamService _instance = XtreamService._internal();
@@ -36,18 +37,19 @@ class XtreamService {
   Future<String?> _getWithProgress(
     Uri url, {
     void Function(DownloadProgress)? onProgress,
-    Duration timeout = const Duration(seconds: 30),
+    Duration timeout = const Duration(seconds: 45),
   }) async {
     final client = http.Client();
     try {
-      final request = http.Request('GET', url);
-      // Forzar 'Connection: close' y agregar User-Agent estándar para evitar
-      // el envenenamiento de sockets TCP en redes móviles.
-      request.headers.addAll({
+      final Map<String, String> headers = {
         'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20',
         'Accept': 'application/json, text/plain, */*',
         'Connection': 'close',
-      });
+      };
+
+      final bypassed = await DnsBypassUtils.bypassUrl(url.toString(), headers);
+      final request = http.Request('GET', bypassed.uri);
+      request.headers.addAll(bypassed.headers);
 
       final response = await client.send(request).timeout(timeout);
 
@@ -57,9 +59,9 @@ class XtreamService {
       final int? total = response.contentLength;
       int received = 0;
 
-      // Timeout de 15 segundos para evitar cuelgues indefinidos en redes inestables
+      // Timeout de 45 segundos para evitar cuelgues indefinidos en redes inestables y permitir descargar listas pesadas en conexiones lentas
       await for (final chunk in response.stream.timeout(
-        const Duration(seconds: 15),
+        const Duration(seconds: 45),
       )) {
         builder.add(chunk);
         received += chunk.length;
@@ -107,7 +109,13 @@ class XtreamService {
       final url = Uri.parse(
         '$cleanHost/player_api.php?username=$user&password=$pass',
       );
-      final response = await http.get(url).timeout(const Duration(seconds: 10));
+      final headers = {
+        'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20',
+        'Accept': 'application/json, text/plain, */*',
+      };
+      final bypassed = await DnsBypassUtils.bypassUrl(url.toString(), headers);
+      final response = await http.get(bypassed.uri, headers: bypassed.headers)
+          .timeout(const Duration(seconds: 25));
       if (response.statusCode == 200) {
         // FIX: Validar que la respuesta sea JSON antes de parsear.
         final trimmed = response.body.trimLeft();

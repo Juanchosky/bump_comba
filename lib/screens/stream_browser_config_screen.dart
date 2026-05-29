@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../services/game_config_service.dart';
 import '../services/m3u_service.dart';
 import '../services/performance_service.dart';
+import '../services/fast_image_service.dart';
 
 import '../services/premium_service.dart';
 import '../utils/colors.dart';
@@ -116,6 +117,18 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
                   title: 'Efectos Visuales',
                   subtitle: _getPerformanceModeText(),
                   onTap: _showPerformanceConfigDialog,
+                  isLast: false,
+                ),
+                _buildDivider(),
+                _buildSwitchRow(
+                  icon: CupertinoIcons.photo,
+                  title: 'Ahorro de Datos',
+                  subtitle: 'Imágenes en baja resolución (carga ultra rápida)',
+                  value: FastImageService.forceLowQuality,
+                  onChanged: (val) async {
+                    await FastImageService.setForceLowQuality(val);
+                    setState(() {});
+                  },
                   isLast: true,
                 ),
               ]),

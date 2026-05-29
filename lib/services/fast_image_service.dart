@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'performance_service.dart';
 import 'metadata_fallback_service.dart';
 import 'network_quality_service.dart';
@@ -375,7 +376,25 @@ bool _isRetryableError(Object error) {
 class FastImageService {
   static final FastImageService _instance = FastImageService._internal();
   factory FastImageService() => _instance;
-  FastImageService._internal();
+  FastImageService._internal() {
+    _loadSettings();
+  }
+
+  static bool forceLowQuality = false;
+
+  void _loadSettings() {
+    SharedPreferences.getInstance().then((prefs) {
+      forceLowQuality = prefs.getBool('force_low_image_quality') ?? false;
+    }).catchError((_) {});
+  }
+
+  static Future<void> setForceLowQuality(bool enabled) async {
+    forceLowQuality = enabled;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('force_low_image_quality', enabled);
+    } catch (_) {}
+  }
 
   // FIX 2: isValidImageUrl acepta URLs sin extensión (logos IPTV frecuentes)
   static bool isValidImageUrl(String? url) {
@@ -446,7 +465,7 @@ class FastImageService {
   /// Adaptive thumbnail width — smaller images on slow networks load
   /// 3-4x faster while still looking acceptable on phone screens.
   int get _thumbWidth {
-    if (PerformanceService().lowMemoryLimit) return 120;
+    if (forceLowQuality || PerformanceService().lowMemoryLimit) return 120;
     final quality = NetworkQualityService().quality.value;
     switch (quality) {
       case NetworkQuality.excellent:
@@ -649,6 +668,7 @@ class _FastThumbnailState extends State<FastThumbnail>
 
   int? _computeCacheWidth() {
     if (widget.cacheWidth != null) return widget.cacheWidth;
+    if (FastImageService.forceLowQuality) return 120;
     final performance = PerformanceService();
     if (performance.isLowPerformance) return 120;
     // Adapt resolution to network quality — smaller images on slow

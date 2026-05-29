@@ -22,6 +22,7 @@ class M3UItem {
   final String? sourceName;
 
   final bool? _isSeries;
+  bool? get explicitIsSeries => _isSeries;
   bool get isSeries => _isSeries ?? episodes.isNotEmpty;
   bool get hasAlternatives => alternatives.isNotEmpty;
 
