@@ -563,13 +563,19 @@ class M3UService extends ChangeNotifier {
       try {
         final uri = Uri.parse(source.url);
         if (uri.hasAuthority && uri.host.isNotEmpty) {
-          InternetAddress.lookup(uri.host).then((addresses) {
-            if (addresses.isNotEmpty) {
-              debugPrint('M3UService: DNS pre-resolved: ${uri.host} -> ${addresses.first.address}');
-            }
-          }).catchError((e) {
-            debugPrint('M3UService: DNS pre-resolve failed for ${uri.host}: $e');
-          });
+          InternetAddress.lookup(uri.host)
+              .then((addresses) {
+                if (addresses.isNotEmpty) {
+                  debugPrint(
+                    'M3UService: DNS pre-resolved: ${uri.host} -> ${addresses.first.address}',
+                  );
+                }
+              })
+              .catchError((e) {
+                debugPrint(
+                  'M3UService: DNS pre-resolve failed for ${uri.host}: $e',
+                );
+              });
         }
       } catch (_) {}
     }
@@ -3036,7 +3042,10 @@ IsolateOutput parseM3UInBackground(IsolateInput input) {
   final content = utf8.decode(input.contentBytes, allowMalformed: true);
   const int maxItems = 100000;
   final List<M3UItem> rawItems = [];
-  final lines = content.split('\n');
+  final lines = LineSplitter.split(content);
+
+  final stringPool = <String, String>{};
+  String intern(String s) => stringPool.putIfAbsent(s, () => s);
 
   final filters =
       input.filters.map((f) {
@@ -3111,49 +3120,58 @@ IsolateOutput parseM3UInBackground(IsolateInput input) {
     caseSensitive: false,
   );
 
-  for (int i = 0; i < lines.length && rawItems.length < maxItems; i++) {
-    final line = lines[i].trim();
+  String? currentName;
+  String? currentLogo;
+  String? currentCategory;
+  bool inExtInf = false;
+
+  for (final rawLine in lines) {
+    final line = rawLine.trim();
     if (line.isEmpty) continue;
     if (line.startsWith('#EXTVLCOPT')) continue;
 
     if (line.startsWith('#EXTINF:')) {
+      if (rawItems.length >= maxItems) break;
+
       final logoMatch = logoRegex.firstMatch(line);
-      final String? currentLogo = logoMatch?.group(1)?.trim();
+      currentLogo = logoMatch?.group(1)?.trim();
 
       final categoryMatch = categoryRegex.firstMatch(line);
       String rawCategory = categoryMatch?.group(1) ?? 'Sin categoría';
 
-      String currentCategory = NormalizationUtils.normalizeCategory(
-        rawCategory,
-      );
+      currentCategory = NormalizationUtils.normalizeCategory(rawCategory);
 
       final commaIndex = line.lastIndexOf(',');
-      if (commaIndex == -1) continue;
-      final String currentName = line.substring(commaIndex + 1).trim();
-      if (currentName.isEmpty) continue;
+      if (commaIndex == -1) {
+        inExtInf = false;
+        continue;
+      }
+      currentName = line.substring(commaIndex + 1).trim();
+      if (currentName.isEmpty) {
+        inExtInf = false;
+        continue;
+      }
 
       final nameLower = currentName.toLowerCase();
       final categoryLower = currentCategory.toLowerCase();
 
       if (isAdultRegex.hasMatch(categoryLower) ||
           isAdultRegex.hasMatch(nameLower)) {
+        inExtInf = false;
         continue;
       }
 
-      String? streamUrl;
-      for (int j = i + 1; j < lines.length; j++) {
-        final nextLine = lines[j].trim();
-        if (nextLine.isEmpty) continue;
-        if (nextLine.startsWith('#EXTINF:') || nextLine.startsWith('#EXTM3U')) {
-          break;
-        }
-        if (nextLine.startsWith('#')) continue;
-        streamUrl = nextLine;
-        i = j;
-        break;
+      inExtInf = true;
+      continue;
+    }
+
+    if (inExtInf) {
+      if (line.startsWith('#')) {
+        continue;
       }
 
-      if (streamUrl == null || streamUrl.isEmpty) continue;
+      final String streamUrl = line;
+      inExtInf = false; // Reset state
 
       if (!streamUrl.startsWith('http://') &&
           !streamUrl.startsWith('https://') &&
@@ -3163,6 +3181,8 @@ IsolateOutput parseM3UInBackground(IsolateInput input) {
       }
 
       final urlLower = streamUrl.toLowerCase();
+      final nameLower = currentName!.toLowerCase();
+      final categoryLower = currentCategory!.toLowerCase();
 
       bool shouldInclude = false;
       if (filters.isNotEmpty) {
@@ -3187,7 +3207,7 @@ IsolateOutput parseM3UInBackground(IsolateInput input) {
       if (vodEpisodeRegex.hasMatch(currentName)) liveScore -= 40;
       if (liveProtocolRegex.hasMatch(urlLower)) liveScore += 80;
       if (liveTsRegex.hasMatch(urlLower)) liveScore += 50;
-      if (liveCategoryTvSuffixRegex.hasMatch(currentCategory)) liveScore += 60;
+      if (liveCategoryTvSuffixRegex.hasMatch(currentCategory!)) liveScore += 60;
       if (liveCategoryStrongRegex.hasMatch(categoryLower)) liveScore += 50;
       if (liveCountryTvRegex.hasMatch(categoryLower)) liveScore += 35;
       if (liveSportsRegex.hasMatch(categoryLower) ||
@@ -3209,8 +3229,6 @@ IsolateOutput parseM3UInBackground(IsolateInput input) {
         }
       }
 
-      // Logo filtering removed to allow TMDB fallback to work for all items
-
       if (shouldInclude) {
         final isFav =
             hasFavorites &&
@@ -3220,10 +3238,11 @@ IsolateOutput parseM3UInBackground(IsolateInput input) {
             name: currentName,
             url: streamUrl,
             logo: currentLogo,
-            category: currentCategory,
+            category: intern(currentCategory),
             isFavorite: isFav,
             isLive: isLive,
-            sourceName: input.sourceName,
+            sourceName:
+                input.sourceName != null ? intern(input.sourceName!) : null,
           ),
         );
       }
@@ -3514,6 +3533,8 @@ List<M3UItem> _groupSeries(List<M3UItem> flatItems, List<String> favorites) {
 
   final Map<String, List<M3UItem>> seriesMap = {};
   final List<M3UItem> standaloneItems = [];
+  final seriesNamePool = <String, String>{};
+  String internSeries(String s) => seriesNamePool.putIfAbsent(s, () => s);
 
   final regexSxxEx = RegExp(
     r'^(.*?)\s*S(\d+)[._ -]*E(\d+)',
@@ -3596,17 +3617,16 @@ List<M3UItem> _groupSeries(List<M3UItem> flatItems, List<String> favorites) {
 
     if (seriesName != null && seriesName.isNotEmpty) {
       final sanitizedName = seriesName.replaceAll(regexTrim, '').trim();
-      final normalizedPart = NormalizationUtils.normalizeSeriesName(
-        sanitizedName,
-      );
-      final capSig = capSignature(sanitizedName);
+      final pooledName = internSeries(sanitizedName);
+      final normalizedPart = NormalizationUtils.normalizeSeriesName(pooledName);
+      final capSig = capSignature(pooledName);
       final groupKey = '${normalizedPart}_$capSig';
 
       seriesMap
           .putIfAbsent(groupKey, () => [])
           .add(
             item.copyWith(
-              seriesName: sanitizedName,
+              seriesName: pooledName,
               seasonNumber: seasonNum,
               episodeNumber: episodeNum,
             ),

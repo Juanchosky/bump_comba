@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
 import '../models/m3u_item.dart';
@@ -371,6 +372,9 @@ List<M3UItem> parseLiveStreamsInBackground(Map<String, dynamic> input) {
     streams = [];
   }
 
+  final pool = <String, String>{};
+  String intern(String s) => pool.putIfAbsent(s, () => s);
+
   return streams.map((s) {
     final streamId = s['stream_id'];
     final ext = s['container_extension'] ?? 'm3u8';
@@ -382,7 +386,7 @@ List<M3UItem> parseLiveStreamsInBackground(Map<String, dynamic> input) {
       name: name,
       url: '$host/live/$user/$pass/$streamId.$ext',
       logo: XtreamService()._fixLogo(rawLogo, name, host),
-      category: categoryMap[categoryId] ?? 'Live',
+      category: intern(categoryMap[categoryId] ?? 'Live'),
       isLive: true,
     );
   }).toList();
@@ -407,6 +411,9 @@ List<M3UItem> parseVodStreamsInBackground(Map<String, dynamic> input) {
     streams = [];
   }
 
+  final pool = <String, String>{};
+  String intern(String s) => pool.putIfAbsent(s, () => s);
+
   return streams.map((s) {
     final streamId = s['stream_id'];
     final ext = s['container_extension'] ?? 'mp4';
@@ -418,7 +425,7 @@ List<M3UItem> parseVodStreamsInBackground(Map<String, dynamic> input) {
       name: name,
       url: '$host/movie/$user/$pass/$streamId.$ext',
       logo: XtreamService()._fixLogo(rawLogo, name, host),
-      category: categoryMap[categoryId] ?? 'Películas',
+      category: intern(categoryMap[categoryId] ?? 'Películas'),
       isLive: false,
       duration: s['duration']?.toString() ?? s['duration_secs']?.toString(),
     );
@@ -442,6 +449,9 @@ List<M3UItem> parseSeriesInBackground(Map<String, dynamic> input) {
     series = [];
   }
 
+  final pool = <String, String>{};
+  String intern(String s) => pool.putIfAbsent(s, () => s);
+
   return series.map((s) {
     final seriesId = s['series_id'];
     final categoryId = s['category_id'].toString();
@@ -452,10 +462,10 @@ List<M3UItem> parseSeriesInBackground(Map<String, dynamic> input) {
       name: name,
       url: seriesId.toString(),
       logo: XtreamService()._fixLogo(rawLogo, name, host),
-      category: categoryMap[categoryId] ?? 'Series',
+      category: intern(categoryMap[categoryId] ?? 'Series'),
       isLive: false,
       isSeries: true,
-      seriesName: name,
+      seriesName: intern(name),
       episodes: [],
     );
   }).toList();

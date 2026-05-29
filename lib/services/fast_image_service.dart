@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:http/http.dart' as http;
-import 'package:http/io_client.dart';
 import 'performance_service.dart';
 import 'metadata_fallback_service.dart';
 import 'network_quality_service.dart';
@@ -171,7 +170,7 @@ const Map<String, String> _kImageHeaders = {
 final HttpClient _sharedHttpClient =
     HttpClient()
       ..connectionTimeout = const Duration(seconds: 20)
-      ..idleTimeout = const Duration(seconds: 30)
+      ..idleTimeout = const Duration(seconds: 60)
       ..maxConnectionsPerHost = 16
       ..autoUncompress = true
       ..findProxy =
