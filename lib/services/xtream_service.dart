@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
 import '../models/m3u_item.dart';
@@ -51,7 +52,7 @@ class XtreamService {
 
       if (response.statusCode != 200) return null;
 
-      final List<int> bytes = [];
+      final builder = BytesBuilder(copy: false);
       final int? total = response.contentLength;
       int received = 0;
 
@@ -59,12 +60,12 @@ class XtreamService {
       await for (final chunk in response.stream.timeout(
         const Duration(seconds: 15),
       )) {
-        bytes.addAll(chunk);
+        builder.add(chunk);
         received += chunk.length;
         onProgress?.call(DownloadProgress(received, total));
       }
 
-      final body = utf8.decode(bytes, allowMalformed: true);
+      final body = utf8.decode(builder.takeBytes(), allowMalformed: true);
 
       // FIX: Detectar respuestas HTML del servidor Xtream.
       // Cuando las credenciales son inválidas, la IP está bloqueada, o el

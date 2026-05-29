@@ -590,6 +590,16 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
           _seasons.clear();
           _groupEpisodes();
         });
+
+        // Pre-warm the episode covers since they were loaded asynchronously
+        final urls = episodes
+            .take(12)
+            .map((e) => e.logo)
+            .whereType<String>()
+            .toList();
+        if (urls.isNotEmpty) {
+          FastImageService().prewarm(urls, context);
+        }
       }
     } catch (e) {
       if (mounted) {

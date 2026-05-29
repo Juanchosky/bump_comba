@@ -185,13 +185,13 @@ Duration _adaptiveTimeout() {
   final quality = NetworkQualityService().quality.value;
   switch (quality) {
     case NetworkQuality.excellent:
-      return const Duration(seconds: 5);
+      return const Duration(seconds: 15);
     case NetworkQuality.good:
-      return const Duration(seconds: 8);
-    case NetworkQuality.fair:
-      return const Duration(seconds: 12);
-    case NetworkQuality.poor:
       return const Duration(seconds: 18);
+    case NetworkQuality.fair:
+      return const Duration(seconds: 22);
+    case NetworkQuality.poor:
+      return const Duration(seconds: 28);
     case NetworkQuality.offline:
       return const Duration(seconds: 5);
   }

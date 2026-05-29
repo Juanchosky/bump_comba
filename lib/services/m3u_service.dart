@@ -226,6 +226,7 @@ class M3UService extends ChangeNotifier {
 
       await _clearOldCache();
       await _loadSources();
+      _preResolveHostnames(); // PRE-RESOLVE DNS: Non-blocking prefetch of server IPs
 
       _isUnifiedMode = _prefs?.getBool(_isUnifiedModeKey) ?? false;
       if (_isUnifiedMode && !PremiumService().isPremium) {
@@ -552,6 +553,25 @@ class M3UService extends ChangeNotifier {
     if (_sources.isEmpty && oldUrl != null && oldUrl.isNotEmpty) {
       _sources.add(M3USource(name: 'Mi Fuente', url: oldUrl));
       await _saveSources();
+    }
+  }
+
+  /// Perform non-blocking DNS pre-resolution for all configured M3U and Xtream servers.
+  /// Pre-caches IP addresses in the host OS DNS resolver cache so initial connections are instant.
+  void _preResolveHostnames() {
+    for (final source in _sources) {
+      try {
+        final uri = Uri.parse(source.url);
+        if (uri.hasAuthority && uri.host.isNotEmpty) {
+          InternetAddress.lookup(uri.host).then((addresses) {
+            if (addresses.isNotEmpty) {
+              debugPrint('M3UService: DNS pre-resolved: ${uri.host} -> ${addresses.first.address}');
+            }
+          }).catchError((e) {
+            debugPrint('M3UService: DNS pre-resolve failed for ${uri.host}: $e');
+          });
+        }
+      } catch (_) {}
     }
   }
 
