@@ -41,11 +41,36 @@ class NetworkQualityService {
 
   /// Llamar desde VideoPlayerScreen cuando cambia el stream activo
   void setActiveStreamUrl(String? url) {
+    if (url == null) {
+      _activeStreamUrl = null;
+      _bandwidthHistory.clear();
+      _consecutivePoorReadings = 0;
+      _consecutiveGoodReadings = 0;
+      return;
+    }
+
+    final oldUrl = _activeStreamUrl;
     _activeStreamUrl = url;
-    // Reset historial cuando cambia el stream
+
+    if (oldUrl != null) {
+      try {
+        final oldUri = Uri.parse(oldUrl);
+        final newUri = Uri.parse(url);
+        if (oldUri.host == newUri.host) {
+          // Same host/server (e.g. local retry or alternative on same host), do NOT reset history/readings!
+          debugPrint('NetworkQualityService: Same host detected. Retaining network quality history.');
+          // Trigger an immediate background measurement check to stay up to date
+          unawaited(_measure());
+          return;
+        }
+      } catch (_) {}
+    }
+
+    // Different host: reset history but trigger immediate measurement so we have an estimate within 800ms
     _bandwidthHistory.clear();
     _consecutivePoorReadings = 0;
     _consecutiveGoodReadings = 0;
+    unawaited(_measure());
   }
 
   bool _isGlobalStarted = false;
@@ -245,10 +270,9 @@ class NetworkQualityService {
     if (isDegrading) {
       _consecutivePoorReadings++;
       _consecutiveGoodReadings = 0;
-      // Degradar inmediatamente si es muy grave (offline/poor),
-      // si no, esperar 2 lecturas para evitar flicker
+      // Degradar inmediatamente si es muy grave (offline o poor) para evitar stalls
       if (newQuality == NetworkQuality.offline ||
-          newQuality == NetworkQuality.poor && _consecutivePoorReadings >= 2) {
+          newQuality == NetworkQuality.poor) {
         _applyQuality(
           newQuality,
           estimatedBandwidthMbps.value,
