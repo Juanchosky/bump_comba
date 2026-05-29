@@ -151,19 +151,6 @@ class _FailedImageTracker with WidgetsBindingObserver {
 // Track successfully loaded URLs during this session to allow 0ms instant loading.
 final Set<String> _loadedUrls = {};
 
-// Track permanently broken URLs (404, 403, HTML error pages) to fail fast.
-final Set<String> _deadUrls = {};
-
-// Class to track active download requests per URL for priority and cancellation propagation.
-class _ActiveDownloadTrack {
-  final int priority;
-  final bool Function() isCancelled;
-  _ActiveDownloadTrack({required this.priority, required this.isCancelled});
-}
-
-// Global registry of active download tracks per URL.
-final Map<String, List<_ActiveDownloadTrack>> _activeDownloadTracks = {};
-
 // Headers mínimos — solo lo imprescindible para evitar 403.
 // Menos headers = handshake más rápido con el CDN.
 const Map<String, String> _kImageHeaders = {
@@ -228,29 +215,8 @@ class _ValidatingImageFileService extends FileService {
     String url, {
     Map<String, String>? headers,
   }) async {
-    // Determine priority and cancel status from the active tracks for this URL
-    final tracks = _activeDownloadTracks[url];
-    final priority =
-        (tracks != null && tracks.isNotEmpty)
-            ? tracks.map((t) => t.priority).reduce((a, b) => a > b ? a : b)
-            : 0;
-
-    bool isCancelled() {
-      final activeTracks = _activeDownloadTracks[url];
-      if (activeTracks == null || activeTracks.isEmpty) {
-        // If no widget is tracking this anymore, it's considered cancelled
-        return true;
-      }
-      // If all tracking widgets are cancelled/disposed, then it's cancelled
-      return activeTracks.every((t) => t.isCancelled());
-    }
-
     // Pasar por el semáforo para que el timeout solo cuente el tiempo de descarga real
-    return _DownloadSemaphore.instance.run(
-      () => _doGet(url, headers: headers),
-      priority: priority,
-      isCancelled: isCancelled,
-    );
+    return _DownloadSemaphore.instance.run(() => _doGet(url, headers: headers));
   }
 
   Future<FileServiceResponse> _doGet(
@@ -396,27 +362,12 @@ class _DownloadSemaphore {
     }
   }
 
-  Future<T> run<T>(
-    Future<T> Function() task, {
-    int priority = 0,
-    bool Function()? isCancelled,
-  }) async {
+  Future<T> run<T>(Future<T> Function() task, {int priority = 0}) async {
     if (_running >= _maxConcurrent) {
       final pc = _PrioritizedCompleter(priority);
       _waiters.add(pc);
-      try {
-        await pc.completer.future;
-      } catch (_) {
-        return Future.error('cancelled');
-      }
+      await pc.completer.future;
     }
-
-    // Verificar si ya fue cancelado antes de descargar
-    if (isCancelled?.call() == true) {
-      _drainWaiters(); // Despertar al siguiente, ya que no consumimos este slot
-      return Future.error('cancelled');
-    }
-
     _running++;
     try {
       return await task();
@@ -746,10 +697,6 @@ class _FastThumbnailState extends State<FastThumbnail>
   Timer? _hardTimeoutTimer; // ← NUEVO
   int _imageKey = 0;
   bool _hasLoaded = false;
-  bool _hardTimeoutStarted = false; // ← NUEVO
-  bool _disposed = false; // ← NUEVO
-  _ActiveDownloadTrack? _myTrack; // ← NUEVO
-  late bool _urlIsValid; // ← NUEVO
 
   // Retry intervals with exponential backoff, capped at 30s.
   // After index 7, all retries use 30s.
@@ -758,8 +705,6 @@ class _FastThumbnailState extends State<FastThumbnail>
   @override
   void initState() {
     super.initState();
-    _urlIsValid = FastImageService.isValidImageUrl(widget.url);
-    _registerTrack();
     final url = _resolveUrl();
     final wasAlreadyLoaded = url != null && _loadedUrls.contains(url);
 
@@ -776,52 +721,12 @@ class _FastThumbnailState extends State<FastThumbnail>
     _checkAndResolveFallback();
     // Register for app resume retries
     _FailedImageTracker.instance.register(_onAppResumeRetry);
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (!_hardTimeoutStarted) {
-      _startDelayedHardTimeout();
-    }
-  }
-
-  void _startDelayedHardTimeout() {
-    _hardTimeoutTimer?.cancel();
-    _hardTimeoutStarted = true;
-    Future.delayed(const Duration(milliseconds: 300), () {
-      if (mounted && !_hasLoaded) {
-        _resetHardTimeout();
-      }
-    });
-  }
-
-  void _registerTrack() {
-    final url = _resolveUrl();
-    if (url == null || url.isEmpty) return;
-    _myTrack = _ActiveDownloadTrack(
-      priority: widget.isHD ? 2 : 1,
-      isCancelled: () => _disposed,
-    );
-    _activeDownloadTracks.putIfAbsent(url, () => []).add(_myTrack!);
-  }
-
-  void _unregisterTrack(String? oldUrl) {
-    final url = oldUrl?.trim();
-    if (url == null || url.isEmpty || _myTrack == null) return;
-    final tracks = _activeDownloadTracks[url];
-    if (tracks != null) {
-      tracks.remove(_myTrack);
-      if (tracks.isEmpty) {
-        _activeDownloadTracks.remove(url);
-      }
-    }
-    _myTrack = null;
+    _resetHardTimeout(); // ← NUEVO: Iniciar el hard timeout
   }
 
   void _checkAndResolveFallback() async {
     if (!widget.useTMDBFallback || widget.title == null) return;
-    if (_urlIsValid) return;
+    if (FastImageService.isValidImageUrl(widget.url)) return;
     if (_fallbackUrl != null || _isResolvingFallback) return;
 
     setState(() => _isResolvingFallback = true);
@@ -866,9 +771,6 @@ class _FastThumbnailState extends State<FastThumbnail>
   void didUpdateWidget(FastThumbnail oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.url != widget.url) {
-      _unregisterTrack(oldWidget.url);
-      _urlIsValid = FastImageService.isValidImageUrl(widget.url);
-      _registerTrack();
       _cachedProvider = null;
       _fallbackUrl = null;
       _effectiveCacheWidth = _computeCacheWidth();
@@ -883,12 +785,9 @@ class _FastThumbnailState extends State<FastThumbnail>
 
       _retryCount = 0;
       _retryTimer?.cancel();
-      _hardTimeoutTimer?.cancel();
-      _hardTimeoutStarted = false;
       _hasLoaded = false;
       _imageKey = 0;
       _checkAndResolveFallback();
-      _startDelayedHardTimeout();
     }
   }
 
@@ -908,10 +807,6 @@ class _FastThumbnailState extends State<FastThumbnail>
 
     // Truly permanent errors — server says the image doesn't exist
     if (!_isRetryableError(error)) {
-      final url = _resolveUrl();
-      if (url != null) {
-        _deadUrls.add(url);
-      }
       return; // Stop retrying but don't mark as permanently failed
       // — network recovery or app resume can still trigger a retry
     }
@@ -1001,18 +896,15 @@ class _FastThumbnailState extends State<FastThumbnail>
 
   /// Resolve the effective image URL (primary or fallback), trimmed.
   String? _resolveUrl() {
-    final String? raw = _urlIsValid ? widget.url : _fallbackUrl;
-    final trimmed = raw?.trim();
-    if (trimmed != null && _deadUrls.contains(trimmed)) {
-      return null;
-    }
-    return trimmed;
+    final String? raw =
+        FastImageService.isValidImageUrl(widget.url)
+            ? widget.url
+            : _fallbackUrl;
+    return raw?.trim();
   }
 
   @override
   void dispose() {
-    _disposed = true;
-    _unregisterTrack(_resolveUrl());
     _FailedImageTracker.instance.unregister(_onAppResumeRetry);
     _fadeController.dispose();
     _retryTimer?.cancel();
@@ -1089,7 +981,7 @@ class _FastThumbnailState extends State<FastThumbnail>
   Widget build(BuildContext context) {
     Widget content;
 
-    final bool hasValidPrimary = _urlIsValid;
+    final bool hasValidPrimary = FastImageService.isValidImageUrl(widget.url);
     final bool hasValidFallback = FastImageService.isValidImageUrl(
       _fallbackUrl,
     );
@@ -1150,11 +1042,9 @@ class _FastThumbnailState extends State<FastThumbnail>
     }
 
     if (widget.borderRadius != null) {
-      return RepaintBoundary(
-        child: ClipRRect(borderRadius: widget.borderRadius!, child: content),
-      );
+      return ClipRRect(borderRadius: widget.borderRadius!, child: content);
     }
-    return RepaintBoundary(child: content);
+    return content;
   }
 }
 
@@ -1192,10 +1082,6 @@ class _FastChannelLogoState extends State<FastChannelLogo>
   Timer? _hardTimeoutTimer; // ← NUEVO
   int _imageKey = 0;
   bool _hasLoaded = false;
-  bool _hardTimeoutStarted = false; // ← NUEVO
-  bool _disposed = false; // ← NUEVO
-  _ActiveDownloadTrack? _myTrack; // ← NUEVO
-  late bool _urlIsValid; // ← NUEVO
 
   // Retry intervals with exponential backoff, capped at 30s.
   static const List<int> _retryDelays = [1, 2, 4, 8, 15, 20, 25, 30];
@@ -1203,8 +1089,6 @@ class _FastChannelLogoState extends State<FastChannelLogo>
   @override
   void initState() {
     super.initState();
-    _urlIsValid = FastImageService.isValidImageUrl(widget.url);
-    _registerTrack();
     final url = widget.url?.trim();
     final wasAlreadyLoaded = url != null && _loadedUrls.contains(url);
 
@@ -1219,56 +1103,13 @@ class _FastChannelLogoState extends State<FastChannelLogo>
     );
     // Register for app resume retries
     _FailedImageTracker.instance.register(_onAppResumeRetry);
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (!_hardTimeoutStarted) {
-      _startDelayedHardTimeout();
-    }
-  }
-
-  void _startDelayedHardTimeout() {
-    _hardTimeoutTimer?.cancel();
-    _hardTimeoutStarted = true;
-    Future.delayed(const Duration(milliseconds: 300), () {
-      if (mounted && !_hasLoaded) {
-        _resetHardTimeout();
-      }
-    });
-  }
-
-  void _registerTrack() {
-    final url = widget.url?.trim();
-    if (url == null || url.isEmpty) return;
-    _myTrack = _ActiveDownloadTrack(
-      priority: 1, // Channel logo has standard priority
-      isCancelled: () => _disposed,
-    );
-    _activeDownloadTracks.putIfAbsent(url, () => []).add(_myTrack!);
-  }
-
-  void _unregisterTrack(String? oldUrl) {
-    final url = oldUrl?.trim();
-    if (url == null || url.isEmpty || _myTrack == null) return;
-    final tracks = _activeDownloadTracks[url];
-    if (tracks != null) {
-      tracks.remove(_myTrack);
-      if (tracks.isEmpty) {
-        _activeDownloadTracks.remove(url);
-      }
-    }
-    _myTrack = null;
+    _resetHardTimeout(); // ← NUEVO: Iniciar el hard timeout
   }
 
   @override
   void didUpdateWidget(FastChannelLogo oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.url != widget.url) {
-      _unregisterTrack(oldWidget.url);
-      _urlIsValid = FastImageService.isValidImageUrl(widget.url);
-      _registerTrack();
       _cachedProvider = null;
 
       final url = widget.url?.trim();
@@ -1281,11 +1122,8 @@ class _FastChannelLogoState extends State<FastChannelLogo>
 
       _retryCount = 0;
       _retryTimer?.cancel();
-      _hardTimeoutTimer?.cancel();
-      _hardTimeoutStarted = false;
       _hasLoaded = false;
       _imageKey = 0;
-      _startDelayedHardTimeout();
     }
   }
 
@@ -1301,10 +1139,6 @@ class _FastChannelLogoState extends State<FastChannelLogo>
 
     // Truly permanent errors — stop but allow network-recovery retries
     if (!_isRetryableError(error)) {
-      final url = widget.url?.trim();
-      if (url != null) {
-        _deadUrls.add(url);
-      }
       return;
     }
 
@@ -1382,8 +1216,6 @@ class _FastChannelLogoState extends State<FastChannelLogo>
 
   @override
   void dispose() {
-    _disposed = true;
-    _unregisterTrack(widget.url);
     _FailedImageTracker.instance.unregister(_onAppResumeRetry);
     _fadeController.dispose();
     _retryTimer?.cancel();
@@ -1407,17 +1239,14 @@ class _FastChannelLogoState extends State<FastChannelLogo>
   @override
   Widget build(BuildContext context) {
     final child = _buildImage();
-    final content =
-        widget.borderRadius != null
-            ? ClipRRect(borderRadius: widget.borderRadius!, child: child)
-            : child;
-    return RepaintBoundary(child: content);
+    if (widget.borderRadius != null) {
+      return ClipRRect(borderRadius: widget.borderRadius!, child: child);
+    }
+    return child;
   }
 
   Widget _buildImage() {
-    final url = widget.url?.trim();
-    if (!_urlIsValid || url == null || _deadUrls.contains(url))
-      return _placeholder();
+    if (!FastImageService.isValidImageUrl(widget.url)) return _placeholder();
 
     return Stack(
       children: [
