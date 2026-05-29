@@ -49,6 +49,8 @@ class PremiumService {
   bool _isPremium = false;
   CustomerInfo? _customerInfo; // Store full info
   SharedPreferences? _prefs;
+  Completer<void>? _initCompleter;
+  Completer<void>? _remoteInitCompleter;
 
   // PC License State
   String? _pcExpirationDate;
@@ -121,17 +123,41 @@ class PremiumService {
   // INITIALIZATION
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /// Initialize RevenueCat SDK
+  /// Initialize RevenueCat SDK (Phase 1: Fast Cache-Load)
   /// Call this once at app startup (e.g., in main.dart)
   Future<void> initialize() async {
     if (_isInitialized) return;
+    if (_initCompleter != null) return _initCompleter!.future;
+
+    _initCompleter = Completer<void>();
 
     try {
       _prefs = await SharedPreferences.getInstance();
 
       // Load cached premium status for immediate UI response
       _isPremium = _prefs?.getBool(_premiumCacheKey) ?? false;
+      _isInitialized = true;
+      _premiumStatusController.add(_isPremium);
 
+      _initCompleter!.complete();
+
+      // Kick off Phase 2: Remote/network service setup asynchronously
+      unawaited(_initRemoteServices());
+    } catch (e) {
+      debugPrint('Premium: Initialization error: $e');
+      _isInitialized = true;
+      if (!_initCompleter!.isCompleted) {
+        _initCompleter!.complete();
+      }
+    }
+  }
+
+  /// Phase 2: Remote / network initialization (runs asynchronously)
+  Future<void> _initRemoteServices() async {
+    if (_remoteInitCompleter != null) return _remoteInitCompleter!.future;
+    _remoteInitCompleter = Completer<void>();
+
+    try {
       // Ensure Supabase is initialized before checking PC license
       await M3UService.initializeSupabase();
 
@@ -140,9 +166,10 @@ class PremiumService {
         final pcKeyResult = await _validateStoredPCLicense();
         if (pcKeyResult) {
           _isPremium = true;
-          _isInitialized = true;
+          await _prefs?.setBool(_premiumCacheKey, true);
           _premiumStatusController.add(_isPremium);
-          debugPrint('Premium: PC License is valid and active');
+          debugPrint('Premium: PC License is valid and active (remote verified)');
+          _remoteInitCompleter!.complete();
           return;
         }
       }
@@ -154,9 +181,9 @@ class PremiumService {
       } else if (_isSupported && defaultTargetPlatform == TargetPlatform.iOS) {
         configuration = PurchasesConfiguration(_iosApiKey);
       } else {
-        // Unsupported platform
-        debugPrint('Premium: Unsupported platform');
-        _isInitialized = true;
+        // Unsupported platform (e.g., desktop without valid PC license)
+        debugPrint('Premium: Unsupported platform or no active PC license');
+        _remoteInitCompleter!.complete();
         return;
       }
 
@@ -169,11 +196,13 @@ class PremiumService {
       // Fetch latest customer info
       await _refreshPremiumStatus();
 
-      _isInitialized = true;
-      debugPrint('Premium: Initialized successfully');
+      debugPrint('Premium: Remote services initialized successfully');
+      _remoteInitCompleter!.complete();
     } catch (e) {
-      debugPrint('Premium: Initialization error: $e');
-      _isInitialized = true; // Mark as initialized to avoid retry loops
+      debugPrint('Premium: Remote initialization error: $e');
+      if (!_remoteInitCompleter!.isCompleted) {
+        _remoteInitCompleter!.complete();
+      }
     }
   }
 
@@ -245,6 +274,7 @@ class PremiumService {
   /// Get available offerings from RevenueCat
   Future<Offerings?> getOfferings() async {
     if (!_isSupported) return null;
+    await _initRemoteServices(); // Ensure remote services are configured
     try {
       final offerings = await Purchases.getOfferings();
       return offerings;
@@ -259,6 +289,7 @@ class PremiumService {
   /// [offeringIdentifier] can be used to target a specific offering
   Future<bool> purchase(String productId, {String? offeringIdentifier}) async {
     if (!_isSupported) return false;
+    await _initRemoteServices(); // Ensure remote services are configured
     try {
       debugPrint(
         'Premium: Attempting to purchase: $productId (Offering: ${offeringIdentifier ?? 'current'})',
@@ -346,6 +377,7 @@ class PremiumService {
   /// Returns true if premium was restored
   Future<bool> restorePurchases() async {
     if (!_isSupported) return false;
+    await _initRemoteServices(); // Ensure remote services are configured
     try {
       debugPrint('Premium: Restoring purchases');
       final customerInfo = await Purchases.restorePurchases();

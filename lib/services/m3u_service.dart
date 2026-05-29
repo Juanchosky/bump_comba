@@ -19,7 +19,6 @@ import '../models/download_progress.dart';
 import '../utils/normalization_utils.dart';
 import '../services/watch_progress_service.dart';
 import 'tmdb_service.dart';
-import '../utils/dns_bypass_utils.dart';
 
 export '../models/m3u_item.dart';
 export '../models/download_progress.dart';
@@ -186,6 +185,7 @@ class M3UService extends ChangeNotifier {
 
   // ROBUST-1: Completer-based init guard (prevents concurrent double-init)
   Completer<void>? _initCompleter;
+  static Completer<void>? _supabaseInitCompleter;
 
   // ── Public getters ───────────────────────────────────────────────────────
   List<M3UItem> get items => _items;
@@ -250,10 +250,21 @@ class M3UService extends ChangeNotifier {
 
   /// Centralised Supabase initialisation.
   static Future<void> initializeSupabase() async {
+    if (_supabaseInitCompleter != null) return _supabaseInitCompleter!.future;
+
+    _supabaseInitCompleter = Completer<void>();
     try {
-      Supabase.instance.client;
-    } catch (_) {
-      await Supabase.initialize(url: _supabaseUrl, anonKey: _supabaseAnonKey);
+      try {
+        Supabase.instance.client;
+      } catch (_) {
+        await Supabase.initialize(url: _supabaseUrl, anonKey: _supabaseAnonKey);
+      }
+      _supabaseInitCompleter!.complete();
+    } catch (e, stack) {
+      final completer = _supabaseInitCompleter!;
+      _supabaseInitCompleter = null; // Allow retry on failure
+      completer.completeError(e, stack);
+      rethrow;
     }
   }
 
@@ -1735,9 +1746,8 @@ class M3UService extends ChangeNotifier {
 
       final client = http.Client();
       try {
-        final bypassed = await DnsBypassUtils.bypassUrl(url, headers);
-        final request = http.Request('GET', bypassed.uri);
-        request.headers.addAll(bypassed.headers);
+        final request = http.Request('GET', Uri.parse(url));
+        request.headers.addAll(headers);
 
         final response = await client
             .send(request)
