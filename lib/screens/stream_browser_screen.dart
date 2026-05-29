@@ -4620,6 +4620,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                       height: double.infinity,
                       fit: BoxFit.cover,
                       cacheWidth: null, // resolución completa para el hero
+                      isHD: true,
                       isSeries: item.isSeries,
                       useTMDBFallback: !item.isLive,
                       onError: () {

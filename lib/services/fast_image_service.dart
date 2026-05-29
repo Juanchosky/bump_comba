@@ -84,13 +84,13 @@ class _FailedImageTracker with WidgetsBindingObserver {
 
     if ((recoveredFromOffline || recoveredFromPoor) &&
         _retryCallbacks.isNotEmpty) {
-      // Network recovered! Retry ALL failed images after a short settle delay
-      final callbacks = Set<VoidCallback>.from(_retryCallbacks);
-      Future.delayed(const Duration(milliseconds: 800), () {
-        for (final cb in callbacks) {
-          cb();
-        }
-      });
+      final callbacks = List<VoidCallback>.from(_retryCallbacks);
+      // Escalonar: 1 retry cada 40ms → 200 imágenes = 8 segundos de rampa suave
+      for (int i = 0; i < callbacks.length; i++) {
+        Future.delayed(Duration(milliseconds: 600 + (i * 40)), () {
+          if (_retryCallbacks.contains(callbacks[i])) callbacks[i]();
+        });
+      }
     }
 
     // Also adapt HttpClient connection limits dynamically
@@ -115,6 +115,7 @@ class _FailedImageTracker with WidgetsBindingObserver {
       case NetworkQuality.offline:
         _sharedHttpClient.maxConnectionsPerHost = 2;
     }
+    _DownloadSemaphore.instance.updateLimit(quality); // ← AGREGAR
   }
 
   void register(VoidCallback callback) {
@@ -129,14 +130,12 @@ class _FailedImageTracker with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && _retryCallbacks.isNotEmpty) {
-      // Copy the set because callbacks may unregister themselves
-      final callbacks = Set<VoidCallback>.from(_retryCallbacks);
-      // Small delay to let the system settle after resume
-      Future.delayed(const Duration(milliseconds: 500), () {
-        for (final cb in callbacks) {
-          cb();
-        }
-      });
+      final callbacks = List<VoidCallback>.from(_retryCallbacks);
+      for (int i = 0; i < callbacks.length; i++) {
+        Future.delayed(Duration(milliseconds: 300 + (i * 50)), () {
+          if (_retryCallbacks.contains(callbacks[i])) callbacks[i]();
+        });
+      }
     }
   }
 
@@ -170,9 +169,12 @@ const Map<String, String> _kImageHeaders = {
 /// según la calidad de red detectada.
 final HttpClient _sharedHttpClient =
     HttpClient()
-      ..connectionTimeout = const Duration(seconds: 20)
-      ..idleTimeout = const Duration(seconds: 60)
-      ..maxConnectionsPerHost = 16
+      ..connectionTimeout = const Duration(seconds: 8) // era 20 — demasiado
+      ..idleTimeout = const Duration(
+        seconds: 20,
+      ) // era 60 — retiene slots innecesariamente
+      ..maxConnectionsPerHost =
+          8 // era 16 — el semáforo lo controla ahora
       ..autoUncompress = true
       ..findProxy =
           null // Bypass proxy search to shave off ~50ms off initial handshakes
@@ -180,20 +182,19 @@ final HttpClient _sharedHttpClient =
           ((X509Certificate cert, String host, int port) => true);
 
 /// Returns adaptive timeout based on current network quality.
-/// WiFi/Excellent: 5s, Good: 8s, Fair: 12s, Poor: 18s, Offline: 5s (fail-fast)
 Duration _adaptiveTimeout() {
   final quality = NetworkQualityService().quality.value;
   switch (quality) {
     case NetworkQuality.excellent:
-      return const Duration(seconds: 15);
+      return const Duration(seconds: 8);
     case NetworkQuality.good:
-      return const Duration(seconds: 18);
+      return const Duration(seconds: 10);
     case NetworkQuality.fair:
-      return const Duration(seconds: 22);
+      return const Duration(seconds: 14);
     case NetworkQuality.poor:
-      return const Duration(seconds: 28);
+      return const Duration(seconds: 18);
     case NetworkQuality.offline:
-      return const Duration(seconds: 5);
+      return const Duration(seconds: 4);
   }
 }
 
@@ -211,6 +212,14 @@ class _ValidatingImageFileService extends FileService {
 
   @override
   Future<FileServiceResponse> get(
+    String url, {
+    Map<String, String>? headers,
+  }) async {
+    // Pasar por el semáforo para que el timeout solo cuente el tiempo de descarga real
+    return _DownloadSemaphore.instance.run(() => _doGet(url, headers: headers));
+  }
+
+  Future<FileServiceResponse> _doGet(
     String url, {
     Map<String, String>? headers,
   }) async {
@@ -323,6 +332,66 @@ class _ValidatingHttpGetResponse extends HttpGetResponse {
   }
 }
 
+// ── GLOBAL DOWNLOAD SEMAPHORE FOR NETWORK MANAGEMENT ──
+
+class _DownloadSemaphore {
+  static final _DownloadSemaphore instance = _DownloadSemaphore._();
+  _DownloadSemaphore._();
+
+  int _maxConcurrent = 6;
+  int _running = 0;
+  final List<_PrioritizedCompleter> _waiters = [];
+
+  void updateLimit(NetworkQuality quality) {
+    _maxConcurrent = switch (quality) {
+      NetworkQuality.excellent => 8,
+      NetworkQuality.good => 6,
+      NetworkQuality.fair => 4,
+      NetworkQuality.poor => 2,
+      NetworkQuality.offline => 0,
+    };
+    // Si ahora hay slots libres, despertar waiters
+    _drainWaiters();
+  }
+
+  void _drainWaiters() {
+    while (_running < _maxConcurrent && _waiters.isNotEmpty) {
+      // Ordenar por prioridad (visible = mayor prioridad)
+      _waiters.sort((a, b) => b.priority.compareTo(a.priority));
+      _waiters.removeAt(0).completer.complete();
+    }
+  }
+
+  Future<T> run<T>(Future<T> Function() task, {int priority = 0}) async {
+    if (_running >= _maxConcurrent) {
+      final pc = _PrioritizedCompleter(priority);
+      _waiters.add(pc);
+      await pc.completer.future;
+    }
+    _running++;
+    try {
+      return await task();
+    } finally {
+      _running--;
+      _drainWaiters();
+    }
+  }
+
+  /// Cancelar todos los waiters cuando el usuario sale de la pantalla
+  void cancelAll() {
+    for (final w in _waiters) {
+      w.completer.completeError(Exception('cancelled'));
+    }
+    _waiters.clear();
+  }
+}
+
+class _PrioritizedCompleter {
+  final int priority;
+  final Completer<void> completer = Completer<void>();
+  _PrioritizedCompleter(this.priority);
+}
+
 class AppCacheManager {
   static const key = 'bump_comba_img_cache';
   static final CacheManager instance = CacheManager(
@@ -383,9 +452,11 @@ class FastImageService {
   static bool forceLowQuality = false;
 
   void _loadSettings() {
-    SharedPreferences.getInstance().then((prefs) {
-      forceLowQuality = prefs.getBool('force_low_image_quality') ?? false;
-    }).catchError((_) {});
+    SharedPreferences.getInstance()
+        .then((prefs) {
+          forceLowQuality = prefs.getBool('force_low_image_quality') ?? false;
+        })
+        .catchError((_) {});
   }
 
   static Future<void> setForceLowQuality(bool enabled) async {
@@ -520,11 +591,12 @@ class FastImageService {
       );
 
       // Longer pause between batches on slow networks to avoid congestion
-      final pauseMs =
-          NetworkQualityService().quality.value.index >=
-                  NetworkQuality.fair.index
-              ? 200
-              : 50;
+      final pauseMs = switch (NetworkQualityService().quality.value) {
+        NetworkQuality.excellent || NetworkQuality.good => 30,
+        NetworkQuality.fair => 150,
+        NetworkQuality.poor => 400,
+        NetworkQuality.offline => 0,
+      };
       await Future.delayed(Duration(milliseconds: pauseMs));
     }
   }
@@ -588,6 +660,7 @@ class FastThumbnail extends StatefulWidget {
   final bool isSeries;
   final bool useTMDBFallback;
   final VoidCallback? onError;
+  final bool isHD;
 
   const FastThumbnail({
     super.key,
@@ -601,6 +674,7 @@ class FastThumbnail extends StatefulWidget {
     this.isSeries = false,
     this.useTMDBFallback = false,
     this.onError,
+    this.isHD = false,
   });
 
   @override
@@ -620,6 +694,7 @@ class _FastThumbnailState extends State<FastThumbnail>
   // Uses exponential backoff with cap at 30s.
   int _retryCount = 0;
   Timer? _retryTimer;
+  Timer? _hardTimeoutTimer; // ← NUEVO
   int _imageKey = 0;
   bool _hasLoaded = false;
 
@@ -646,6 +721,7 @@ class _FastThumbnailState extends State<FastThumbnail>
     _checkAndResolveFallback();
     // Register for app resume retries
     _FailedImageTracker.instance.register(_onAppResumeRetry);
+    _resetHardTimeout(); // ← NUEVO: Iniciar el hard timeout
   }
 
   void _checkAndResolveFallback() async {
@@ -667,6 +743,11 @@ class _FastThumbnailState extends State<FastThumbnail>
   }
 
   int? _computeCacheWidth() {
+    if (widget.isHD) {
+      if (PerformanceService().lowMemoryLimit) return 300;
+      if (FastImageService.forceLowQuality) return 400;
+      return null; // Full HD resolution (original size, no resizing)
+    }
     if (widget.cacheWidth != null) return widget.cacheWidth;
     if (FastImageService.forceLowQuality) return 120;
     final performance = PerformanceService();
@@ -789,9 +870,27 @@ class _FastThumbnailState extends State<FastThumbnail>
     // 5. Reset fade — image will appear seamlessly via gaplessPlayback
     _fadeController.reset();
 
+    _resetHardTimeout(); // ← NUEVO: Reiniciar el hard timeout con cada retry
+
     // 6. Rebuild with new key
     setState(() {
       _imageKey++;
+    });
+  }
+
+  void _resetHardTimeout() {
+    _hardTimeoutTimer?.cancel();
+    if (_hasLoaded) return;
+    // Si en N segundos no hay frame ni error → forzar retry
+    final seconds = switch (NetworkQualityService().quality.value) {
+      NetworkQuality.excellent || NetworkQuality.good => 12,
+      NetworkQuality.fair => 18,
+      NetworkQuality.poor => 25,
+      NetworkQuality.offline => 8,
+    };
+    _hardTimeoutTimer = Timer(Duration(seconds: seconds), () {
+      if (!mounted || _hasLoaded) return;
+      _performRetry(); // evict + reload
     });
   }
 
@@ -809,6 +908,7 @@ class _FastThumbnailState extends State<FastThumbnail>
     _FailedImageTracker.instance.unregister(_onAppResumeRetry);
     _fadeController.dispose();
     _retryTimer?.cancel();
+    _hardTimeoutTimer?.cancel(); // ← NUEVO
     super.dispose();
   }
 
@@ -903,8 +1003,12 @@ class _FastThumbnailState extends State<FastThumbnail>
               gaplessPlayback: true,
               frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
                 _hasLoaded = true;
+                _hardTimeoutTimer?.cancel(); // ← NUEVO
                 final url = _resolveUrl();
                 if (url != null) {
+                  if (_loadedUrls.length > 4000) {
+                    _loadedUrls.clear(); // evitar leak
+                  }
                   _loadedUrls.add(url);
                 }
                 _FailedImageTracker.instance.unregister(_onAppResumeRetry);
@@ -975,6 +1079,7 @@ class _FastChannelLogoState extends State<FastChannelLogo>
   // Silent retry state — NEVER gives up permanently.
   int _retryCount = 0;
   Timer? _retryTimer;
+  Timer? _hardTimeoutTimer; // ← NUEVO
   int _imageKey = 0;
   bool _hasLoaded = false;
 
@@ -998,6 +1103,7 @@ class _FastChannelLogoState extends State<FastChannelLogo>
     );
     // Register for app resume retries
     _FailedImageTracker.instance.register(_onAppResumeRetry);
+    _resetHardTimeout(); // ← NUEVO: Iniciar el hard timeout
   }
 
   @override
@@ -1085,8 +1191,26 @@ class _FastChannelLogoState extends State<FastChannelLogo>
     _cachedProvider = null;
     _fadeController.reset();
 
+    _resetHardTimeout(); // ← NUEVO: Reiniciar el hard timeout con cada retry
+
     setState(() {
       _imageKey++;
+    });
+  }
+
+  void _resetHardTimeout() {
+    _hardTimeoutTimer?.cancel();
+    if (_hasLoaded) return;
+    // Si en N segundos no hay frame ni error → forzar retry
+    final seconds = switch (NetworkQualityService().quality.value) {
+      NetworkQuality.excellent || NetworkQuality.good => 12,
+      NetworkQuality.fair => 18,
+      NetworkQuality.poor => 25,
+      NetworkQuality.offline => 8,
+    };
+    _hardTimeoutTimer = Timer(Duration(seconds: seconds), () {
+      if (!mounted || _hasLoaded) return;
+      _performRetry(); // evict + reload
     });
   }
 
@@ -1095,6 +1219,7 @@ class _FastChannelLogoState extends State<FastChannelLogo>
     _FailedImageTracker.instance.unregister(_onAppResumeRetry);
     _fadeController.dispose();
     _retryTimer?.cancel();
+    _hardTimeoutTimer?.cancel(); // ← NUEVO
     super.dispose();
   }
 
@@ -1137,8 +1262,12 @@ class _FastChannelLogoState extends State<FastChannelLogo>
             gaplessPlayback: true,
             frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
               _hasLoaded = true;
+              _hardTimeoutTimer?.cancel(); // ← NUEVO
               final url = widget.url?.trim();
               if (url != null) {
+                if (_loadedUrls.length > 4000) {
+                  _loadedUrls.clear(); // evitar leak
+                }
                 _loadedUrls.add(url);
               }
               _FailedImageTracker.instance.unregister(_onAppResumeRetry);
