@@ -137,7 +137,7 @@ class M3UService extends ChangeNotifier {
   static const String _likedUrlsKey = 'm3u_liked_urls';
   static const String _failedLogosKey = 'm3u_failed_logos';
   static const String _favoriteItemsJsonKey = 'm3u_favorite_items_json';
-  static const Duration _cacheDuration = Duration(minutes: 10);
+  static const Duration _cacheDuration = Duration(hours: 12);
 
   // ── Singleton ────────────────────────────────────────────────────────────
   static final M3UService _instance = M3UService._internal();
@@ -349,8 +349,7 @@ class M3UService extends ChangeNotifier {
       // y _isCacheExpired() funcionen correctamente con fuentes Xtream.
       // Sin esto, el caché JSON se guardaba pero sin timestamp → siempre
       // se consideraba expirado → re-descarga innecesaria en cada reinicio.
-      final timestampKey =
-          _isUnifiedMode ? _unifiedCacheTimestampKey : _cacheTimestampKey;
+      final timestampKey = _getActiveCacheTimestampKey();
       await _prefs?.setInt(timestampKey, DateTime.now().millisecondsSinceEpoch);
     } catch (e) {
       debugPrint('Error saving JSON cache: $e');
@@ -381,8 +380,7 @@ class M3UService extends ChangeNotifier {
         // FIX: Usar la key correcta según el modo (unified vs single).
         // Antes siempre usaba _cacheTimestampKey, lo que causaba que en modo
         // unificado el caché siempre pareciera expirado → re-descarga innecesaria.
-        final timestampKey =
-            _isUnifiedMode ? _unifiedCacheTimestampKey : _cacheTimestampKey;
+        final timestampKey = _getActiveCacheTimestampKey();
         final cacheTimestamp = _prefs?.getInt(timestampKey);
         if (cacheTimestamp == null ||
             DateTime.now().millisecondsSinceEpoch - cacheTimestamp >
@@ -1513,7 +1511,7 @@ class M3UService extends ChangeNotifier {
 
     final cacheFile = await _getCacheFile();
     if (!forceRefresh) {
-      final cacheTimestamp = _prefs?.getInt(_cacheTimestampKey);
+      final cacheTimestamp = _prefs?.getInt(_getActiveCacheTimestampKey());
       if (cacheTimestamp != null &&
           DateTime.now().millisecondsSinceEpoch - cacheTimestamp <
               _cacheDuration.inMilliseconds) {
@@ -1558,7 +1556,7 @@ class M3UService extends ChangeNotifier {
     // Cache raw body
     await cacheFile.writeAsBytes(bodyBytes);
     await _prefs?.setInt(
-      _cacheTimestampKey,
+      _getActiveCacheTimestampKey(),
       DateTime.now().millisecondsSinceEpoch,
     );
 
@@ -2745,9 +2743,15 @@ class M3UService extends ChangeNotifier {
   // CACHE MANAGEMENT — ROBUST-3
   // ===========================================================================
 
+  String _getActiveCacheTimestampKey() {
+    return _isUnifiedMode
+        ? _unifiedCacheTimestampKey
+        : '${_cacheTimestampKey}_$_activeSourceIndex';
+  }
+
   /// Checks if the main M3U cache has expired based on [_cacheDuration].
   bool _isCacheExpired() {
-    final key = _isUnifiedMode ? _unifiedCacheTimestampKey : _cacheTimestampKey;
+    final key = _getActiveCacheTimestampKey();
     final timestamp = _prefs?.getInt(key);
     if (timestamp == null) return true;
 
@@ -2839,8 +2843,12 @@ class M3UService extends ChangeNotifier {
 
       final cacheFile = await _getCacheFile();
       if (await cacheFile.exists()) await cacheFile.delete();
-      await _prefs?.remove(_cacheTimestampKey);
 
+      // Clear all active and passive cache timestamps
+      for (int i = 0; i < _sources.length; i++) {
+        await _prefs?.remove('${_cacheTimestampKey}_$i');
+      }
+      await _prefs?.remove(_cacheTimestampKey);
       await _prefs?.remove(_unifiedCacheTimestampKey);
       final directory = await getApplicationDocumentsDirectory();
       final dir = Directory(directory.path);

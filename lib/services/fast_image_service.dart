@@ -231,8 +231,8 @@ class _ValidatingImageFileService extends FileService {
           ioResponse.headers.value('content-type')?.toLowerCase() ?? '';
       if (contentType.contains('text/html') ||
           contentType.contains('text/plain')) {
-        // Detach and destroy to immediately free the connection
-        ioResponse.detachSocket().then((s) => s.destroy()).catchError((_) {});
+        // Abort the request cleanly to release connection resources
+        req.abort();
         throw HttpExceptionWithStatus(
           ioResponse.statusCode,
           'Server returned non-image content-type: $contentType',
@@ -259,7 +259,7 @@ class _ValidatingImageFileService extends FileService {
 
       // Wrap the stream to also peek at the first bytes
       // (some IPTV servers don't set content-type correctly)
-      return _ValidatingHttpGetResponse(streamedResponse, ioResponse);
+      return _ValidatingHttpGetResponse(streamedResponse, req);
     } on TimeoutException {
       req?.abort(); // CRITICAL: Free connection on timeout!
       rethrow;
@@ -273,10 +273,10 @@ class _ValidatingImageFileService extends FileService {
 /// Extends HttpGetResponse with first-bytes HTML validation.
 class _ValidatingHttpGetResponse extends HttpGetResponse {
   final http.StreamedResponse _rawResponse;
-  final HttpClientResponse _ioResponse;
+  final HttpClientRequest _ioRequest;
   Stream<List<int>>? _validatedStream;
 
-  _ValidatingHttpGetResponse(this._rawResponse, this._ioResponse)
+  _ValidatingHttpGetResponse(this._rawResponse, this._ioRequest)
     : super(_rawResponse);
 
   @override
@@ -302,10 +302,7 @@ class _ValidatingHttpGetResponse extends HttpGetResponse {
                 controller.addError(
                   Exception('Response body is HTML, not an image'),
                 );
-                _ioResponse
-                    .detachSocket()
-                    .then((s) => s.destroy())
-                    .catchError((_) {});
+                _ioRequest.abort();
                 controller.close();
                 return;
               }
@@ -315,10 +312,7 @@ class _ValidatingHttpGetResponse extends HttpGetResponse {
           },
           onError: (Object error) {
             controller.addError(error);
-            _ioResponse
-                .detachSocket()
-                .then((s) => s.destroy())
-                .catchError((_) {});
+            _ioRequest.abort();
           },
           onDone: controller.close,
         );
