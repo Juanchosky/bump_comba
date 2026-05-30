@@ -254,7 +254,11 @@ class _ValidatingImageFileService extends FileService {
         for (final proxyTemplate in proxies) {
           final proxyUrl = proxyTemplate.replaceAll('{URL}', Uri.encodeComponent(url));
           try {
-            debugPrint('Image fetch: trying proxy $proxyUrl');
+            // Solo loguear en modo debug — en producción estos logs saturan la consola
+            assert(() {
+              debugPrint('Image fetch: trying proxy $proxyUrl');
+              return true;
+            }());
             final uri = Uri.parse(proxyUrl);
             req = await _sharedHttpClient.getUrl(uri).timeout(_adaptiveTimeout());
             req.headers.set('Accept', 'image/webp,image/*,*/*;q=0.8');

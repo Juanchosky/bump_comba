@@ -24,6 +24,9 @@ class NetworkQualityService {
   final ValueNotifier<int> latencyMs = ValueNotifier(0);
   final ValueNotifier<bool> isMobileData = ValueNotifier(false);
 
+  int _measureCount = 0;
+  NetworkQuality _lastLoggedQuality = NetworkQuality.excellent;
+
   Timer? _pollTimer;
   final Connectivity _connectivity = Connectivity();
   StreamSubscription? _connectivitySub;
@@ -58,7 +61,9 @@ class NetworkQualityService {
         final newUri = Uri.parse(url);
         if (oldUri.host == newUri.host) {
           // Same host/server (e.g. local retry or alternative on same host), do NOT reset history/readings!
-          debugPrint('NetworkQualityService: Same host detected. Retaining network quality history.');
+          debugPrint(
+            'NetworkQualityService: Same host detected. Retaining network quality history.',
+          );
           // Trigger an immediate background measurement check to stay up to date
           unawaited(_measure());
           return;
@@ -90,12 +95,10 @@ class NetworkQualityService {
   void start() {
     _connectivitySub?.cancel();
     try {
-      _connectivitySub = _connectivity.onConnectivityChanged.listen(
-        (results) {
-          _updateConnectionType(results);
-          _measure();
-        },
-      );
+      _connectivitySub = _connectivity.onConnectivityChanged.listen((results) {
+        _updateConnectionType(results);
+        _measure();
+      });
     } catch (e) {
       debugPrint('NetworkQualityService: error listening to connectivity: $e');
     }
@@ -176,11 +179,16 @@ class NetworkQualityService {
     final newQuality = _calculateQuality(smoothBandwidth, latency);
     _applyQualityWithHysteresis(newQuality);
 
-    debugPrint(
-      'NetworkQuality: ${quality.value.name} | '
-      '${smoothBandwidth.toStringAsFixed(2)} Mbps | ${latency}ms | '
-      'Mobile: ${isMobileData.value}',
-    );
+    // Solo imprimir si la calidad cambió o cada 4 mediciones
+    _measureCount = (_measureCount + 1) % 4;
+    if (_measureCount == 0 || quality.value != _lastLoggedQuality) {
+      _lastLoggedQuality = quality.value;
+      debugPrint(
+        'NetworkQuality: ${quality.value.name} | '
+        '${smoothBandwidth.toStringAsFixed(2)} Mbps | ${latency}ms | '
+        'Mobile: ${isMobileData.value}',
+      );
+    }
   }
 
   /// Mide la latencia TCP al servidor del stream REAL y estima el ancho de banda.
@@ -315,6 +323,8 @@ class NetworkQualityService {
   }
 
   void _applyQuality(NetworkQuality q, double bw, int lat) {
+    // Solo emitir si realmente cambió el valor
+    if (quality.value == q) return;
     quality.value = q;
   }
 
