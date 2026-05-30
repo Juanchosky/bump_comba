@@ -104,19 +104,29 @@ class _FailedImageTracker with WidgetsBindingObserver {
   /// Fewer parallel connections on slow networks = each image gets more
   /// bandwidth and completes faster instead of all stalling together.
   void _adaptConnectionLimits(NetworkQuality quality) {
+    // No cambiar límites más de una vez cada 5 segundos
+    // Evita que fluctuaciones rápidas de red desestabilicen la GPU
+    final now = DateTime.now();
+    if (_lastLimitChange != null &&
+        now.difference(_lastLimitChange!) < const Duration(seconds: 5) &&
+        quality != NetworkQuality.offline) {
+      return;
+    }
+    _lastLimitChange = now;
+
     switch (quality) {
       case NetworkQuality.excellent:
-        _sharedHttpClient.maxConnectionsPerHost = 16;
-      case NetworkQuality.good:
-        _sharedHttpClient.maxConnectionsPerHost = 10;
-      case NetworkQuality.fair:
         _sharedHttpClient.maxConnectionsPerHost = 6;
-      case NetworkQuality.poor:
+      case NetworkQuality.good:
+        _sharedHttpClient.maxConnectionsPerHost = 4;
+      case NetworkQuality.fair:
         _sharedHttpClient.maxConnectionsPerHost = 3;
-      case NetworkQuality.offline:
+      case NetworkQuality.poor:
         _sharedHttpClient.maxConnectionsPerHost = 2;
+      case NetworkQuality.offline:
+        _sharedHttpClient.maxConnectionsPerHost = 1;
     }
-    _DownloadSemaphore.instance.updateLimit(quality); // ← AGREGAR
+    _DownloadSemaphore.instance.updateLimit(quality);
   }
 
   void register(VoidCallback callback) {
