@@ -173,6 +173,17 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   // Download progress
   String? _downloadDetail;
 
+  // Progressive loading for categories rows
+  int _loadedHomeCategories = 3;
+  int _loadedMovieCategories = 3;
+  int _loadedSeriesCategories = 3;
+  int _loadedNovelaCategories = 3;
+
+  bool _isHomeLoadingMore = false;
+  bool _isMoviesLoadingMore = false;
+  bool _isSeriesLoadingMore = false;
+  bool _isNovelasLoadingMore = false;
+
   String _getRandomUserAgent() {
     const agents = [
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -628,33 +639,71 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           body: PrimaryScrollController(
             controller: _homeScrollController,
             child: SafeArea(
-              child: Column(
+              child: Stack(
                 children: [
-                  _buildAppBar(),
-                  Expanded(
-                    child:
-                        (_isDesktopOrWeb() && !PremiumService().isPremium)
-                            ? _buildDesktopPremiumGate()
-                            : AnimatedSwitcher(
-                              duration: const Duration(milliseconds: 400),
-                              switchInCurve: Curves.easeOut,
-                              switchOutCurve: Curves.easeIn,
-                              child:
-                                  _isLoading
-                                      ? KeyedSubtree(
-                                        key: const ValueKey('loading'),
-                                        child: _buildLoading(),
-                                      )
-                                      : _hasError
-                                      ? KeyedSubtree(
-                                        key: const ValueKey('error'),
-                                        child: _buildError(),
-                                      )
-                                      : KeyedSubtree(
-                                        key: const ValueKey('content'),
-                                        child: _buildStreamContent(),
-                                      ),
-                            ),
+                  Column(
+                    children: [
+                      _buildAppBar(),
+                      Expanded(
+                        child:
+                            (_isDesktopOrWeb() && !PremiumService().isPremium)
+                                ? _buildDesktopPremiumGate()
+                                : AnimatedSwitcher(
+                                  duration: const Duration(milliseconds: 400),
+                                  switchInCurve: Curves.easeOut,
+                                  switchOutCurve: Curves.easeIn,
+                                  child:
+                                      _isLoading
+                                          ? KeyedSubtree(
+                                            key: const ValueKey('loading'),
+                                            child: _buildLoading(),
+                                          )
+                                          : _hasError
+                                          ? KeyedSubtree(
+                                            key: const ValueKey('error'),
+                                            child: _buildError(),
+                                          )
+                                          : KeyedSubtree(
+                                            key: const ValueKey('content'),
+                                            child: _buildStreamContent(),
+                                          ),
+                                ),
+                      ),
+                    ],
+                  ),
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 450),
+                      transitionBuilder: (child, animation) {
+                        final slide = Tween<Offset>(
+                          begin: const Offset(0, -1.0),
+                          end: Offset.zero,
+                        ).animate(
+                          CurvedAnimation(
+                            parent: animation,
+                            curve: Curves.easeOutCubic,
+                          ),
+                        );
+                        return FadeTransition(
+                          opacity: animation,
+                          child: SlideTransition(position: slide, child: child),
+                        );
+                      },
+                      child:
+                          (_isOffline && !_bannerDismissed)
+                              ? _NetflixOfflineBanner(
+                                key: const ValueKey('global_banner_visible'),
+                                onDismiss: () {
+                                  setState(() => _bannerDismissed = true);
+                                },
+                              )
+                              : const SizedBox.shrink(
+                                key: ValueKey('global_banner_hidden'),
+                              ),
+                    ),
                   ),
                 ],
               ),
@@ -1745,39 +1794,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                     heroPool.addAll(fallback.where((i) => !i.isLive));
                   }
 
-                  // Netflix Offline Banner (con animación premium)
-                  homeSections.add(
-                    AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 450),
-                      transitionBuilder: (child, animation) {
-                        final slide = Tween<Offset>(
-                          begin: const Offset(0, -0.4),
-                          end: Offset.zero,
-                        ).animate(
-                          CurvedAnimation(
-                            parent: animation,
-                            curve: Curves.easeOutCubic,
-                          ),
-                        );
-                        return FadeTransition(
-                          opacity: animation,
-                          child: SlideTransition(position: slide, child: child),
-                        );
-                      },
-                      child:
-                          (_isOffline && !_bannerDismissed)
-                              ? _NetflixOfflineBanner(
-                                key: const ValueKey('banner_visible'),
-                                onDismiss: () {
-                                  setState(() => _bannerDismissed = true);
-                                },
-                              )
-                              : const SizedBox.shrink(
-                                key: ValueKey('banner_hidden'),
-                              ),
-                    ),
-                  );
-
                   homeSections.add(_buildHeroRandomLatest(heroPool));
 
                   // 2. Últimamente nuevo
@@ -1806,8 +1822,10 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                   }
 
                   // 5. Build dynamic categories with Top 10 injected after the first one
-                  for (int i = 0; i < displayCategories.length; i++) {
-                    final cat = displayCategories[i];
+                  final categoriesToLoad =
+                      displayCategories.take(_loadedHomeCategories).toList();
+                  for (int i = 0; i < categoriesToLoad.length; i++) {
+                    final cat = categoriesToLoad[i];
                     homeSections.add(
                       _buildCategoryRow(
                         cat,
@@ -1826,11 +1844,35 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                     homeSections.add(_buildTop10Section());
                   }
 
-                  return ListView.builder(
-                    physics: const AlwaysScrollableScrollPhysics(),
-                    padding: const EdgeInsets.only(bottom: 20),
-                    itemCount: homeSections.length,
-                    itemBuilder: (context, index) => homeSections[index],
+                  if (_isHomeLoadingMore) {
+                    homeSections.add(
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 20),
+                        child: Center(
+                          child: CupertinoActivityIndicator(
+                            radius: 14,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    );
+                  }
+
+                  return NotificationListener<ScrollNotification>(
+                    onNotification: (scrollInfo) {
+                      if (scrollInfo.metrics.pixels >=
+                          scrollInfo.metrics.maxScrollExtent - 200) {
+                        _loadMoreHomeCategories(displayCategories);
+                      }
+                      return false;
+                    },
+                    child: ListView.builder(
+                      controller: _homeScrollController,
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      padding: const EdgeInsets.only(bottom: 20),
+                      itemCount: homeSections.length,
+                      itemBuilder: (context, index) => homeSections[index],
+                    ),
                   );
                 },
               );
@@ -1897,40 +1939,54 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             }
           }
 
-          return ListView.builder(
-            physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.only(bottom: 20),
-            itemCount:
-                1 + // header+tabs
-                novelaCategories.length +
-                1 +
-                curatedNovelaLists.length,
-            itemBuilder: (context, index) {
-              if (index == 0) return _buildScrollableHeader(); // ← header+tabs
-              final i = index - 1;
+          final novelaSections = <Widget>[];
+          novelaSections.add(_buildScrollableHeader());
+          novelaSections.add(
+            _buildCategoryRow('Todas las Telenovelas', allNovelaItems),
+          );
 
-              if (i == 0) {
-                return _buildCategoryRow(
-                  'Todas las Telenovelas',
-                  allNovelaItems,
-                );
+          for (final curated in curatedNovelaLists) {
+            novelaSections.add(
+              _buildCategoryRow(curated['title'], curated['items']),
+            );
+          }
+
+          final categoriesToLoad =
+              novelaCategories.take(_loadedNovelaCategories).toList();
+          for (final cat in categoriesToLoad) {
+            novelaSections.add(
+              _buildCategoryRow(cat, _m3uService.getItemsByCategory(cat)),
+            );
+          }
+
+          if (_isNovelasLoadingMore) {
+            novelaSections.add(
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 20),
+                child: Center(
+                  child: CupertinoActivityIndicator(
+                    radius: 14,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            );
+          }
+
+          return NotificationListener<ScrollNotification>(
+            onNotification: (scrollInfo) {
+              if (scrollInfo.metrics.pixels >=
+                  scrollInfo.metrics.maxScrollExtent - 200) {
+                _loadMoreNovelaCategories(novelaCategories);
               }
-              final curatedIndex = i - 2;
-              if (curatedIndex >= 0 &&
-                  curatedIndex < curatedNovelaLists.length) {
-                final curated = curatedNovelaLists[curatedIndex];
-                return _buildCategoryRow(curated['title'], curated['items']);
-              }
-              final catIndex = i - 2 - curatedNovelaLists.length;
-              if (catIndex < 0 || catIndex >= novelaCategories.length) {
-                return const SizedBox.shrink();
-              }
-              final cat = novelaCategories[catIndex];
-              return _buildCategoryRow(
-                cat,
-                _m3uService.getItemsByCategory(cat),
-              );
+              return false;
             },
+            child: ListView.builder(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.only(bottom: 20),
+              itemCount: novelaSections.length,
+              itemBuilder: (context, index) => novelaSections[index],
+            ),
           );
         } else if (_selectedTab == 'Tesoros Especiales') {
           final otherCategories =
@@ -2052,26 +2108,51 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             .take(50)
             .toList();
 
-    return ListView.builder(
-      physics: const AlwaysScrollableScrollPhysics(),
-      padding: const EdgeInsets.only(bottom: 20),
-      itemCount: 1 + movieCategories.length + 2,
-      itemBuilder: (context, index) {
-        if (index == 0) return _buildScrollableHeader(); // ← header+tabs
-        final i = index - 1;
-        if (i == 0) return _buildCategoryRow('Todas las Películas', movies);
-        if (i == 1 && recentMovies.isNotEmpty) {
-          return _buildCategoryRow('Nuevas películas de hoy', recentMovies);
+    final movieSections = <Widget>[];
+    movieSections.add(_buildScrollableHeader());
+    movieSections.add(_buildCategoryRow('Todas las Películas', movies));
+    if (recentMovies.isNotEmpty) {
+      movieSections.add(
+        _buildCategoryRow('Nuevas películas de hoy', recentMovies),
+      );
+    }
+
+    final categoriesToLoad =
+        movieCategories.take(_loadedMovieCategories).toList();
+    for (final cat in categoriesToLoad) {
+      final catItems =
+          _m3uService
+              .getItemsByCategory(cat)
+              .where((i) => !i.isSeries && !i.isLive)
+              .toList();
+      movieSections.add(_buildCategoryRow(cat, catItems));
+    }
+
+    if (_isMoviesLoadingMore) {
+      movieSections.add(
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 20),
+          child: Center(
+            child: CupertinoActivityIndicator(radius: 14, color: Colors.white),
+          ),
+        ),
+      );
+    }
+
+    return NotificationListener<ScrollNotification>(
+      onNotification: (scrollInfo) {
+        if (scrollInfo.metrics.pixels >=
+            scrollInfo.metrics.maxScrollExtent - 200) {
+          _loadMoreMovieCategories(movieCategories);
         }
-        if (i == 1 && recentMovies.isEmpty) return const SizedBox.shrink();
-        final cat = movieCategories[i - 2];
-        final catItems =
-            _m3uService
-                .getItemsByCategory(cat)
-                .where((i) => !i.isSeries && !i.isLive)
-                .toList();
-        return _buildCategoryRow(cat, catItems);
+        return false;
       },
+      child: ListView.builder(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.only(bottom: 20),
+        itemCount: movieSections.length,
+        itemBuilder: (context, index) => movieSections[index],
+      ),
     );
   }
 
@@ -2132,35 +2213,55 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       }
     }
 
-    return ListView.builder(
-      physics: const AlwaysScrollableScrollPhysics(),
-      padding: const EdgeInsets.only(bottom: 20),
-      itemCount: 1 + seriesCategories.length + 2 + curatedLists.length,
-      itemBuilder: (context, index) {
-        if (index == 0) return _buildScrollableHeader(); // ← header+tabs
-        final i = index - 1;
-        if (i == 0) return _buildCategoryRow('Todas las Series', series);
-        if (i == 1 && recentSeries.isNotEmpty) {
-          return _buildCategoryRow('Nuevas series de hoy', recentSeries);
+    final seriesSections = <Widget>[];
+    seriesSections.add(_buildScrollableHeader());
+    seriesSections.add(_buildCategoryRow('Todas las Series', series));
+    if (recentSeries.isNotEmpty) {
+      seriesSections.add(
+        _buildCategoryRow('Nuevas series de hoy', recentSeries),
+      );
+    }
+
+    for (final curated in curatedLists) {
+      seriesSections.add(_buildCategoryRow(curated['title'], curated['items']));
+    }
+
+    final categoriesToLoad =
+        seriesCategories.take(_loadedSeriesCategories).toList();
+    for (final cat in categoriesToLoad) {
+      final catItems =
+          _m3uService
+              .getItemsByCategory(cat)
+              .where((i) => i.isSeries && !i.isLive)
+              .toList();
+      seriesSections.add(_buildCategoryRow(cat, catItems));
+    }
+
+    if (_isSeriesLoadingMore) {
+      seriesSections.add(
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 20),
+          child: Center(
+            child: CupertinoActivityIndicator(radius: 14, color: Colors.white),
+          ),
+        ),
+      );
+    }
+
+    return NotificationListener<ScrollNotification>(
+      onNotification: (scrollInfo) {
+        if (scrollInfo.metrics.pixels >=
+            scrollInfo.metrics.maxScrollExtent - 200) {
+          _loadMoreSeriesCategories(seriesCategories);
         }
-        if (i == 1 && recentSeries.isEmpty) return const SizedBox.shrink();
-        final curatedIndex = i - 2;
-        if (curatedIndex >= 0 && curatedIndex < curatedLists.length) {
-          final curated = curatedLists[curatedIndex];
-          return _buildCategoryRow(curated['title'], curated['items']);
-        }
-        final catIndex = i - 2 - curatedLists.length;
-        if (catIndex < 0 || catIndex >= seriesCategories.length) {
-          return const SizedBox.shrink();
-        }
-        final cat = seriesCategories[catIndex];
-        final catItems =
-            _m3uService
-                .getItemsByCategory(cat)
-                .where((i) => i.isSeries && !i.isLive)
-                .toList();
-        return _buildCategoryRow(cat, catItems);
+        return false;
       },
+      child: ListView.builder(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.only(bottom: 20),
+        itemCount: seriesSections.length,
+        itemBuilder: (context, index) => seriesSections[index],
+      ),
     );
   }
 
@@ -2788,7 +2889,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
   // Reopen sin destruir el player — el codec sigue vivo, gap mínimo (~200ms)
   Future<void> _quickReopenStream() async {
-    if (_livePlayer == null || _isLiveReloading || _currentLiveChannel == null) {
+    if (_livePlayer == null ||
+        _isLiveReloading ||
+        _currentLiveChannel == null) {
       return;
     }
     _lastRecoveryTime = DateTime.now();
@@ -3897,7 +4000,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     // ── PRIORIDAD TMDB: Intentar usar contenido trending de TMDB ──
     final trendingItems = _m3uService.getTrendingBannerItems();
     if (trendingItems.isNotEmpty) {
-      final random = trendingItems[DateTime.now().microsecond % trendingItems.length];
+      final random =
+          trendingItems[DateTime.now().microsecond % trendingItems.length];
       return _buildHeroBanner(random);
     }
 
@@ -4743,6 +4847,134 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         ),
       ),
     );
+  }
+
+  void _loadMoreHomeCategories(List<String> categories) async {
+    if (_isHomeLoadingMore || _loadedHomeCategories >= categories.length)
+      return;
+    setState(() {
+      _isHomeLoadingMore = true;
+    });
+
+    final nextCats = categories.skip(_loadedHomeCategories).take(3).toList();
+    final urls = <String>[];
+    for (final cat in nextCats) {
+      final items = _m3uService.getItemsByCategory(cat);
+      final filtered = _m3uService.filterValidItems(items);
+      urls.addAll(filtered.take(6).map((i) => i.logo).whereType<String>());
+    }
+
+    await Future.wait([
+      Future.delayed(const Duration(milliseconds: 600)),
+      if (urls.isNotEmpty) FastImageService().prewarmAndAwait(urls, context),
+    ]);
+
+    if (!mounted) return;
+    setState(() {
+      _loadedHomeCategories = (_loadedHomeCategories + 3).clamp(
+        0,
+        categories.length,
+      );
+      _isHomeLoadingMore = false;
+    });
+  }
+
+  void _loadMoreMovieCategories(List<String> categories) async {
+    if (_isMoviesLoadingMore || _loadedMovieCategories >= categories.length)
+      return;
+    setState(() {
+      _isMoviesLoadingMore = true;
+    });
+
+    final nextCats = categories.skip(_loadedMovieCategories).take(3).toList();
+    final urls = <String>[];
+    for (final cat in nextCats) {
+      final items =
+          _m3uService
+              .getItemsByCategory(cat)
+              .where((i) => !i.isSeries && !i.isLive)
+              .toList();
+      final filtered = _m3uService.filterValidItems(items);
+      urls.addAll(filtered.take(6).map((i) => i.logo).whereType<String>());
+    }
+
+    await Future.wait([
+      Future.delayed(const Duration(milliseconds: 600)),
+      if (urls.isNotEmpty) FastImageService().prewarmAndAwait(urls, context),
+    ]);
+
+    if (!mounted) return;
+    setState(() {
+      _loadedMovieCategories = (_loadedMovieCategories + 3).clamp(
+        0,
+        categories.length,
+      );
+      _isMoviesLoadingMore = false;
+    });
+  }
+
+  void _loadMoreSeriesCategories(List<String> categories) async {
+    if (_isSeriesLoadingMore || _loadedSeriesCategories >= categories.length)
+      return;
+    setState(() {
+      _isSeriesLoadingMore = true;
+    });
+
+    final nextCats = categories.skip(_loadedSeriesCategories).take(3).toList();
+    final urls = <String>[];
+    for (final cat in nextCats) {
+      final items =
+          _m3uService
+              .getItemsByCategory(cat)
+              .where((i) => i.isSeries && !i.isLive)
+              .toList();
+      final filtered = _m3uService.filterValidItems(items);
+      urls.addAll(filtered.take(6).map((i) => i.logo).whereType<String>());
+    }
+
+    await Future.wait([
+      Future.delayed(const Duration(milliseconds: 600)),
+      if (urls.isNotEmpty) FastImageService().prewarmAndAwait(urls, context),
+    ]);
+
+    if (!mounted) return;
+    setState(() {
+      _loadedSeriesCategories = (_loadedSeriesCategories + 3).clamp(
+        0,
+        categories.length,
+      );
+      _isSeriesLoadingMore = false;
+    });
+  }
+
+  void _loadMoreNovelaCategories(List<String> categories) async {
+    if (_isNovelasLoadingMore || _loadedNovelaCategories >= categories.length)
+      return;
+    setState(() {
+      _isNovelasLoadingMore = true;
+    });
+
+    final nextCats = categories.skip(_loadedNovelaCategories).take(3).toList();
+    final urls = <String>[];
+    for (final cat in nextCats) {
+      final items = _m3uService.getItemsByCategory(cat);
+      final filtered = _m3uService.filterValidItems(items);
+      urls.addAll(filtered.take(6).map((i) => i.logo).whereType<String>());
+    }
+
+    await Future.wait([
+      Future.delayed(const Duration(milliseconds: 600)),
+      if (urls.isNotEmpty) FastImageService().prewarmAndAwait(urls, context),
+    ]);
+
+    if (!mounted) return;
+    setState(() {
+      _loadedNovelaCategories = (_loadedNovelaCategories + 3).clamp(
+        0,
+        categories.length,
+      );
+      _isNovelasLoadingMore = false;
+    });
   }
 
   Widget _buildCategoryRow(String title, List<M3UItem> items) {
@@ -6941,134 +7173,160 @@ class _NetflixOfflineBannerState extends State<_NetflixOfflineBanner>
   Widget build(BuildContext context) {
     final showShadow = PerformanceService().shouldShowComplexShadows;
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+      margin: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
       decoration: BoxDecoration(
-        color: const Color(0xFF1F1F1F),
+        color: Colors.transparent,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: Colors.red.withValues(alpha: 0.3),
-          width: 1.5,
-        ),
-        boxShadow: showShadow ? null : null,
+        boxShadow:
+            showShadow
+                ? [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.5),
+                    blurRadius: 16,
+                    spreadRadius: 2,
+                    offset: const Offset(0, 8),
+                  ),
+                ]
+                : null,
       ),
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(11),
-        child: IntrinsicHeight(
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // Contenido principal
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 12,
-                  ),
-                  child: Row(
-                    children: [
-                      // Icono Wi-Fi con pulso
-                      AnimatedBuilder(
-                        animation: _pulseController,
-                        builder: (context, child) {
-                          return Opacity(
-                            opacity: 0.55 + (_pulseController.value * 0.45),
-                            child: child,
-                          );
-                        },
-                        child: const Icon(
-                          Icons.wifi_off_rounded,
-                          color: Color(0xFFE50914),
-                          size: 26,
+        borderRadius: BorderRadius.circular(12),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+          child: Container(
+            decoration: BoxDecoration(
+              color: const Color(0xFF1F1F1F).withValues(alpha: 0.82),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: const Color(0xFFE50914).withValues(alpha: 0.35),
+                width: 1.5,
+              ),
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(11),
+              child: IntrinsicHeight(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // Contenido principal
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 12,
                         ),
-                      ),
-                      const SizedBox(width: 12),
-
-                      // Textos
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: const [
-                            Text(
-                              'Sin conexión a Internet',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 14.5,
-                                fontWeight: FontWeight.bold,
+                        child: Row(
+                          children: [
+                            // Icono Wi-Fi con pulso
+                            AnimatedBuilder(
+                              animation: _pulseController,
+                              builder: (context, child) {
+                                return Opacity(
+                                  opacity:
+                                      0.55 + (_pulseController.value * 0.45),
+                                  child: child,
+                                );
+                              },
+                              child: const Icon(
+                                Icons.wifi_off_rounded,
+                                color: Color(0xFFE50914),
+                                size: 26,
                               ),
                             ),
-                            SizedBox(height: 2),
-                            Text(
-                              'Revisa tu Wi-Fi o datos móviles.',
-                              style: TextStyle(
-                                color: Colors.white60,
-                                fontSize: 12,
+                            const SizedBox(width: 12),
+
+                            // Textos
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: const [
+                                  Text(
+                                    'Sin conexión a Internet',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 14.5,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  SizedBox(height: 2),
+                                  Text(
+                                    'Revisa tu Wi-Fi o datos móviles.',
+                                    style: TextStyle(
+                                      color: Colors.white60,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+
+                            // Botón Reintentar
+                            TextButton(
+                              onPressed: _handleRetry,
+                              style: TextButton.styleFrom(
+                                backgroundColor: Colors.white.withValues(
+                                  alpha: 0.08,
+                                ),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 7,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                minimumSize: Size.zero,
+                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              ),
+                              child:
+                                  _isChecking
+                                      ? const SizedBox(
+                                        width: 14,
+                                        height: 14,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          valueColor:
+                                              AlwaysStoppedAnimation<Color>(
+                                                Colors.white,
+                                              ),
+                                        ),
+                                      )
+                                      : const Text(
+                                        'Reintentar',
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 12.5,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                            ),
+                            const SizedBox(width: 4),
+
+                            // Botón X para cerrar
+                            GestureDetector(
+                              onTap: widget.onDismiss,
+                              child: Container(
+                                padding: const EdgeInsets.all(6),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: 0.06),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: const Icon(
+                                  Icons.close_rounded,
+                                  color: Colors.white54,
+                                  size: 16,
+                                ),
                               ),
                             ),
                           ],
                         ),
                       ),
-                      const SizedBox(width: 6),
-
-                      // Botón Reintentar
-                      TextButton(
-                        onPressed: _handleRetry,
-                        style: TextButton.styleFrom(
-                          backgroundColor: Colors.white.withValues(alpha: 0.08),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 7,
-                          ),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          minimumSize: Size.zero,
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        ),
-                        child:
-                            _isChecking
-                                ? const SizedBox(
-                                  width: 14,
-                                  height: 14,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    valueColor: AlwaysStoppedAnimation<Color>(
-                                      Colors.white,
-                                    ),
-                                  ),
-                                )
-                                : const Text(
-                                  'Reintentar',
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 12.5,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                      ),
-                      const SizedBox(width: 4),
-
-                      // Botón X para cerrar
-                      GestureDetector(
-                        onTap: widget.onDismiss,
-                        child: Container(
-                          padding: const EdgeInsets.all(6),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.06),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: const Icon(
-                            Icons.close_rounded,
-                            color: Colors.white54,
-                            size: 16,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               ),
-            ],
+            ),
           ),
         ),
       ),

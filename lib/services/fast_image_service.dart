@@ -643,6 +643,40 @@ class FastImageService {
       );
     }
   }
+
+  Future<void> prewarmAndAwait(List<String> urls, BuildContext context) async {
+    if (urls.isEmpty) return;
+
+    // Skip awaiting online network images when offline to render cached/fallback items instantly
+    if (NetworkQualityService().quality.value == NetworkQuality.offline) {
+      return;
+    }
+
+    // Filter valid URLs
+    final validUrls = urls.where((u) => isValidImageUrl(u)).toList();
+    if (validUrls.isEmpty) return;
+
+    // Run precaching for all of them in parallel
+    await Future.wait(
+      validUrls.map((url) async {
+        try {
+          await precacheImage(
+            ResizeImage(
+              CachedNetworkImageProvider(
+                url,
+                headers: _kImageHeaders,
+                cacheManager: AppCacheManager.instance,
+              ),
+              width: _thumbWidth,
+            ),
+            context,
+            onError: (_, _) {},
+          );
+        } catch (_) {}
+      }),
+      eagerError: false,
+    );
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -936,6 +970,7 @@ class _FastThumbnailState extends State<FastThumbnail>
 
   Widget _placeholder() {
     final bool isLow = PerformanceService().isLowPerformance;
+    final bool hasError = _retryCount > 0;
 
     return Listener(
       behavior: HitTestBehavior.translucent,
@@ -948,31 +983,53 @@ class _FastThumbnailState extends State<FastThumbnail>
         width: widget.width,
         height: widget.height,
         color: const Color(0xFF1a1a1a),
-        child:
-            (widget.title != null && !isLow)
-                ? Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Text(
-                      widget.title!,
-                      textAlign: TextAlign.center,
-                      maxLines: 4,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.3),
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                      ),
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            if (widget.title != null && !isLow)
+              Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Text(
+                    widget.title!,
+                    textAlign: TextAlign.center,
+                    maxLines: 4,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.3),
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
                     ),
                   ),
-                )
-                : Center(
-                  child: Icon(
-                    Icons.movie_creation_outlined,
-                    color: Colors.white.withValues(alpha: 0.1),
-                    size: 30,
+                ),
+              )
+            else
+              Center(
+                child: Icon(
+                  Icons.movie_creation_outlined,
+                  color: Colors.white.withValues(alpha: 0.1),
+                  size: 30,
+                ),
+              ),
+            if (hasError)
+              Positioned(
+                top: 6,
+                right: 6,
+                child: Container(
+                  padding: const EdgeInsets.all(4),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.7),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.replay_outlined,
+                    color: Colors.white70,
+                    size: 14,
                   ),
                 ),
+              ),
+          ],
+        ),
       ),
     );
   }

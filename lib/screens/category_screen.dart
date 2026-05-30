@@ -1,6 +1,7 @@
 import 'package:bump_comba/services/m3u_service.dart';
 import 'package:bump_comba/screens/content_detail_screen.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart';
 import '../services/performance_service.dart';
 import '../services/fast_image_service.dart';
 import '../utils/transitions.dart';
@@ -28,20 +29,22 @@ class CategoryScreen extends StatefulWidget {
 }
 
 class _CategoryScreenState extends State<CategoryScreen> {
-  late List<M3UItem> _displayItems;
   final M3UService _m3uService = M3UService();
+  final ScrollController _scrollController = ScrollController();
+  int _displayCount = 30;
+  bool _isLoadingMore = false;
 
   @override
   void initState() {
     super.initState();
-    // Pre-filter definitely invalid items
-    _displayItems = _m3uService.filterValidItems(widget.items);
+    _scrollController.addListener(_onScroll);
 
     // Aggressive pre-caching for first category items
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
+        final currentItems = _m3uService.filterValidItems(widget.items);
         final urls =
-            _displayItems
+            currentItems
                 .take(15)
                 .map((i) => i.logo)
                 .whereType<String>()
@@ -54,12 +57,48 @@ class _CategoryScreenState extends State<CategoryScreen> {
   }
 
   @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _onScroll() {
+    if (_scrollController.position.pixels >=
+        _scrollController.position.maxScrollExtent - 200) {
+      _loadMoreItems();
+    }
+  }
+
+  void _loadMoreItems() async {
+    final currentItems = _m3uService.filterValidItems(widget.items);
+    if (_isLoadingMore || _displayCount >= currentItems.length) return;
+    setState(() {
+      _isLoadingMore = true;
+    });
+
+    final nextBatch = currentItems.skip(_displayCount).take(30).toList();
+    final urls = nextBatch.map((i) => i.logo).whereType<String>().toList();
+
+    await Future.wait([
+      Future.delayed(const Duration(milliseconds: 600)),
+      if (urls.isNotEmpty) FastImageService().prewarmAndAwait(urls, context),
+    ]);
+
+    if (!mounted) return;
+    setState(() {
+      _displayCount = (_displayCount + 30).clamp(0, currentItems.length);
+      _isLoadingMore = false;
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
       listenable: Listenable.merge([PerformanceService(), _m3uService]),
       builder: (context, _) {
         // Re-filter if M3UService updated (e.g. from internal failures)
         final currentItems = _m3uService.filterValidItems(widget.items);
+        final itemsToDisplay = currentItems.take(_displayCount).toList();
 
         return Scaffold(
           backgroundColor: AppColors.background,
@@ -76,43 +115,64 @@ class _CategoryScreenState extends State<CategoryScreen> {
             foregroundColor: Colors.white,
           ),
           body: SafeArea(
-            child: GridView.builder(
-              padding: const EdgeInsets.all(10),
-              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: (MediaQuery.of(context).size.width / 160)
-                    .floor()
-                    .clamp(3, 12),
-                childAspectRatio: 0.6,
-                crossAxisSpacing: 10,
-                mainAxisSpacing: 10,
-              ),
-              itemCount: currentItems.length,
-              itemBuilder: (context, index) {
-                final item = currentItems[index];
-                return GestureDetector(
-                  onTap: () async {
-                    // Calculate similar items
-                    final similarItems =
-                        widget.items.where((i) => i.url != item.url).toList();
-                    similarItems.shuffle();
+            child: CustomScrollView(
+              controller: _scrollController,
+              slivers: [
+                SliverPadding(
+                  padding: const EdgeInsets.all(10),
+                  sliver: SliverGrid(
+                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: (MediaQuery.of(context).size.width / 160)
+                          .floor()
+                          .clamp(3, 12),
+                      childAspectRatio: 0.6,
+                      crossAxisSpacing: 10,
+                      mainAxisSpacing: 10,
+                    ),
+                    delegate: SliverChildBuilderDelegate(
+                      (context, index) {
+                        final item = itemsToDisplay[index];
+                        return GestureDetector(
+                          onTap: () async {
+                            // Calculate similar items
+                            final similarItems =
+                                widget.items.where((i) => i.url != item.url).toList();
+                            similarItems.shuffle();
 
-                    await Navigator.push(
-                      context,
-                      FadeScalePageRoute(
-                        page: ContentDetailScreen(
-                          item: item,
-                          similarItems: similarItems.take(10).toList(),
-                          onToggleFavorite: (favItem) async {
-                            await _m3uService.toggleFavorite(favItem);
-                            if (mounted) setState(() {});
+                            await Navigator.push(
+                              context,
+                              FadeScalePageRoute(
+                                page: ContentDetailScreen(
+                                  item: item,
+                                  similarItems: similarItems.take(10).toList(),
+                                  onToggleFavorite: (favItem) async {
+                                    await _m3uService.toggleFavorite(favItem);
+                                    if (mounted) setState(() {});
+                                  },
+                                ),
+                              ),
+                            );
                           },
+                          child: _buildCard(item),
+                        );
+                      },
+                      childCount: itemsToDisplay.length,
+                    ),
+                  ),
+                ),
+                if (_isLoadingMore)
+                  const SliverToBoxAdapter(
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(vertical: 20),
+                      child: Center(
+                        child: CupertinoActivityIndicator(
+                          radius: 14,
+                          color: Colors.white,
                         ),
                       ),
-                    );
-                  },
-                  child: _buildCard(item),
-                );
-              },
+                    ),
+                  ),
+              ],
             ),
           ),
         );
