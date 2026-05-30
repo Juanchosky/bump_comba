@@ -6,6 +6,8 @@ import '../services/watch_progress_service.dart';
 import 'content_detail_screen.dart';
 import '../utils/colors.dart';
 import '../utils/transitions.dart';
+import '../services/network_quality_service.dart';
+import 'stream_browser_screen.dart';
 
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
@@ -26,18 +28,38 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
   List<_HistoryEntry> _historyEntries = [];
   bool _isLoading = true;
+  bool _isOffline = false;
+  bool _bannerDismissed = false;
 
   @override
   void initState() {
     super.initState();
     _loadHistory();
     _watchProgressService.addListener(_loadHistory);
+
+    _isOffline =
+        NetworkQualityService().quality.value == NetworkQuality.offline;
+    NetworkQualityService().quality.addListener(_onNetworkQualityChanged);
   }
 
   @override
   void dispose() {
     _watchProgressService.removeListener(_loadHistory);
+    NetworkQualityService().quality.removeListener(_onNetworkQualityChanged);
     super.dispose();
+  }
+
+  void _onNetworkQualityChanged() {
+    final offline =
+        NetworkQualityService().quality.value == NetworkQuality.offline;
+    if (_isOffline != offline) {
+      if (mounted) {
+        setState(() {
+          _isOffline = offline;
+          if (offline) _bannerDismissed = false;
+        });
+      }
+    }
   }
 
   Future<void> _loadHistory() async {
@@ -218,14 +240,53 @@ class _HistoryScreenState extends State<HistoryScreen> {
             ),
         ],
       ),
-      body:
-          _isLoading
-              ? const Center(
-                child: CircularProgressIndicator(color: Colors.red),
-              )
-              : _historyEntries.isEmpty
-              ? _buildEmptyState()
-              : _buildHistoryGrid(),
+      body: SafeArea(
+        child: Stack(
+          children: [
+            _isLoading
+                ? const Center(
+                  child: CircularProgressIndicator(color: Colors.red),
+                )
+                : _historyEntries.isEmpty
+                ? _buildEmptyState()
+                : _buildHistoryGrid(),
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 450),
+                transitionBuilder: (child, animation) {
+                  final slide = Tween<Offset>(
+                    begin: const Offset(0, -1.0),
+                    end: Offset.zero,
+                  ).animate(
+                    CurvedAnimation(
+                      parent: animation,
+                      curve: Curves.easeOutCubic,
+                    ),
+                  );
+                  return FadeTransition(
+                    opacity: animation,
+                    child: SlideTransition(position: slide, child: child),
+                  );
+                },
+                child:
+                    (_isOffline && !_bannerDismissed)
+                        ? NetflixOfflineBanner(
+                          key: const ValueKey('history_banner_visible'),
+                          onDismiss: () {
+                            setState(() => _bannerDismissed = true);
+                          },
+                        )
+                        : const SizedBox.shrink(
+                          key: ValueKey('history_banner_hidden'),
+                        ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

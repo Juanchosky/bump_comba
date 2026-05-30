@@ -6,6 +6,8 @@ import '../services/performance_service.dart';
 import '../services/fast_image_service.dart';
 import '../utils/transitions.dart';
 import '../utils/colors.dart';
+import '../services/network_quality_service.dart';
+import 'stream_browser_screen.dart';
 
 // Since we need to play items, we need access to the player logic or open details logic.
 // Simpler approach: Category screen opens ContentDetailScreen when item is tapped.
@@ -33,11 +35,17 @@ class _CategoryScreenState extends State<CategoryScreen> {
   final ScrollController _scrollController = ScrollController();
   int _displayCount = 30;
   bool _isLoadingMore = false;
+  bool _isOffline = false;
+  bool _bannerDismissed = false;
 
   @override
   void initState() {
     super.initState();
     _scrollController.addListener(_onScroll);
+
+    _isOffline =
+        NetworkQualityService().quality.value == NetworkQuality.offline;
+    NetworkQualityService().quality.addListener(_onNetworkQualityChanged);
 
     // Aggressive pre-caching for first category items
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -59,7 +67,21 @@ class _CategoryScreenState extends State<CategoryScreen> {
   @override
   void dispose() {
     _scrollController.dispose();
+    NetworkQualityService().quality.removeListener(_onNetworkQualityChanged);
     super.dispose();
+  }
+
+  void _onNetworkQualityChanged() {
+    final offline =
+        NetworkQualityService().quality.value == NetworkQuality.offline;
+    if (_isOffline != offline) {
+      if (mounted) {
+        setState(() {
+          _isOffline = offline;
+          if (offline) _bannerDismissed = false;
+        });
+      }
+    }
   }
 
   void _onScroll() {
@@ -115,63 +137,101 @@ class _CategoryScreenState extends State<CategoryScreen> {
             foregroundColor: Colors.white,
           ),
           body: SafeArea(
-            child: CustomScrollView(
-              controller: _scrollController,
-              slivers: [
-                SliverPadding(
-                  padding: const EdgeInsets.all(10),
-                  sliver: SliverGrid(
-                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: (MediaQuery.of(context).size.width / 160)
-                          .floor()
-                          .clamp(3, 12),
-                      childAspectRatio: 0.6,
-                      crossAxisSpacing: 10,
-                      mainAxisSpacing: 10,
-                    ),
-                    delegate: SliverChildBuilderDelegate(
-                      (context, index) {
-                        final item = itemsToDisplay[index];
-                        return GestureDetector(
-                          onTap: () async {
-                            // Calculate similar items
-                            final similarItems =
-                                widget.items.where((i) => i.url != item.url).toList();
-                            similarItems.shuffle();
+            child: Stack(
+              children: [
+                CustomScrollView(
+                  controller: _scrollController,
+                  slivers: [
+                    SliverPadding(
+                      padding: const EdgeInsets.all(10),
+                      sliver: SliverGrid(
+                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: (MediaQuery.of(context).size.width / 160)
+                              .floor()
+                              .clamp(3, 12),
+                          childAspectRatio: 0.6,
+                          crossAxisSpacing: 10,
+                          mainAxisSpacing: 10,
+                        ),
+                        delegate: SliverChildBuilderDelegate(
+                          (context, index) {
+                            final item = itemsToDisplay[index];
+                            return GestureDetector(
+                              onTap: () async {
+                                // Calculate similar items
+                                final similarItems =
+                                    widget.items.where((i) => i.url != item.url).toList();
+                                similarItems.shuffle();
 
-                            await Navigator.push(
-                              context,
-                              FadeScalePageRoute(
-                                page: ContentDetailScreen(
-                                  item: item,
-                                  similarItems: similarItems.take(10).toList(),
-                                  onToggleFavorite: (favItem) async {
-                                    await _m3uService.toggleFavorite(favItem);
-                                    if (mounted) setState(() {});
-                                  },
-                                ),
-                              ),
+                                await Navigator.push(
+                                  context,
+                                  FadeScalePageRoute(
+                                    page: ContentDetailScreen(
+                                      item: item,
+                                      similarItems: similarItems.take(10).toList(),
+                                      onToggleFavorite: (favItem) async {
+                                        await _m3uService.toggleFavorite(favItem);
+                                        if (mounted) setState(() {});
+                                      },
+                                    ),
+                                  ),
+                                );
+                              },
+                              child: _buildCard(item),
                             );
                           },
-                          child: _buildCard(item),
-                        );
-                      },
-                      childCount: itemsToDisplay.length,
-                    ),
-                  ),
-                ),
-                if (_isLoadingMore)
-                  const SliverToBoxAdapter(
-                    child: Padding(
-                      padding: EdgeInsets.symmetric(vertical: 20),
-                      child: Center(
-                        child: CupertinoActivityIndicator(
-                          radius: 14,
-                          color: Colors.white,
+                          childCount: itemsToDisplay.length,
                         ),
                       ),
                     ),
+                    if (_isLoadingMore)
+                      const SliverToBoxAdapter(
+                        child: Padding(
+                          padding: EdgeInsets.symmetric(vertical: 20),
+                          child: Center(
+                            child: CupertinoActivityIndicator(
+                              radius: 14,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 450),
+                    transitionBuilder: (child, animation) {
+                      final slide = Tween<Offset>(
+                        begin: const Offset(0, -1.0),
+                        end: Offset.zero,
+                      ).animate(
+                        CurvedAnimation(
+                          parent: animation,
+                          curve: Curves.easeOutCubic,
+                        ),
+                      );
+                      return FadeTransition(
+                        opacity: animation,
+                        child: SlideTransition(position: slide, child: child),
+                      );
+                    },
+                    child:
+                        (_isOffline && !_bannerDismissed)
+                            ? NetflixOfflineBanner(
+                              key: const ValueKey('category_banner_visible'),
+                              onDismiss: () {
+                                setState(() => _bannerDismissed = true);
+                              },
+                            )
+                            : const SizedBox.shrink(
+                              key: ValueKey('category_banner_hidden'),
+                            ),
                   ),
+                ),
               ],
             ),
           ),

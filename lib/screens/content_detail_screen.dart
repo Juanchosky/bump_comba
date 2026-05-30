@@ -18,6 +18,8 @@ import 'subscription_screen.dart';
 import '../utils/colors.dart';
 import '../services/dynamic_scraper_service.dart';
 import '../services/cast_service.dart';
+import '../services/network_quality_service.dart';
+import 'stream_browser_screen.dart';
 
 class ContentDetailScreen extends StatefulWidget {
   final M3UItem item;
@@ -44,6 +46,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   bool _isDisliked = false;
   bool _isDisliking = false;
   final M3UService _m3uService = M3UService();
+  bool _isOffline = false;
+  bool _bannerDismissed = false;
 
   // Series/Version grouping
   final Map<int, List<M3UItem>> _seasonMap = {};
@@ -94,6 +98,10 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
     AdService().recordDetailsVisit();
     _fetchMetadata();
     _initPrewarm();
+
+    _isOffline =
+        NetworkQualityService().quality.value == NetworkQuality.offline;
+    NetworkQualityService().quality.addListener(_onNetworkQualityChanged);
 
     // Aggressive pre-caching for similar items and episodes
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -210,6 +218,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   void dispose() {
     _shineController.dispose();
     _pulseController.dispose();
+    NetworkQualityService().quality.removeListener(_onNetworkQualityChanged);
 
     // -- CRITICAL DISPOSAL SEQUENCE FOR MOTOROLA/ANDROID 15 --
     final p = _prewarmPlayer;
@@ -233,6 +242,19 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
     }
 
     super.dispose();
+  }
+
+  void _onNetworkQualityChanged() {
+    final offline =
+        NetworkQualityService().quality.value == NetworkQuality.offline;
+    if (_isOffline != offline) {
+      if (mounted) {
+        setState(() {
+          _isOffline = offline;
+          if (offline) _bannerDismissed = false;
+        });
+      }
+    }
   }
 
   void _showFullDescriptionBottomSheet(String overview) {
@@ -921,42 +943,82 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
       builder: (context, _) {
         return Scaffold(
           backgroundColor: AppColors.background,
-          body: CustomScrollView(
-            slivers: [
-              _buildSliverAppBar(),
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _buildTitleSection(),
-                      const SizedBox(height: 20),
-                      _buildPlayButton(),
-                      const SizedBox(height: 20),
-                      _buildDescription(),
-                      const SizedBox(height: 12),
-                      _buildSocialButtons(),
-                      const SizedBox(height: 24),
-                      const Divider(color: Colors.white12, height: 1),
-                      if (widget.item.isSeries) ...[
-                        const SizedBox(height: 24),
-                        _buildEpisodesList(),
-                      ],
-                      if (_otherVersions.isNotEmpty) ...[
-                        const SizedBox(height: 24),
-                        _buildVersionSelector(),
-                      ],
-                      if (widget.similarItems.isNotEmpty) ...[
-                        const SizedBox(height: 24),
-                        _buildSimilarTitles(),
-                      ],
-                      const SizedBox(height: 30),
-                    ],
+          body: SafeArea(
+            child: Stack(
+              children: [
+                CustomScrollView(
+                  slivers: [
+                    _buildSliverAppBar(),
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _buildTitleSection(),
+                            const SizedBox(height: 20),
+                            _buildPlayButton(),
+                            const SizedBox(height: 20),
+                            _buildDescription(),
+                            const SizedBox(height: 12),
+                            _buildSocialButtons(),
+                            const SizedBox(height: 24),
+                            const Divider(color: Colors.white12, height: 1),
+                            if (widget.item.isSeries) ...[
+                              const SizedBox(height: 24),
+                              _buildEpisodesList(),
+                            ],
+                            if (_otherVersions.isNotEmpty) ...[
+                              const SizedBox(height: 24),
+                              _buildVersionSelector(),
+                            ],
+                            if (widget.similarItems.isNotEmpty) ...[
+                              const SizedBox(height: 24),
+                              _buildSimilarTitles(),
+                            ],
+                            const SizedBox(height: 30),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 450),
+                    transitionBuilder: (child, animation) {
+                      final slide = Tween<Offset>(
+                        begin: const Offset(0, -1.0),
+                        end: Offset.zero,
+                      ).animate(
+                        CurvedAnimation(
+                          parent: animation,
+                          curve: Curves.easeOutCubic,
+                        ),
+                      );
+                      return FadeTransition(
+                        opacity: animation,
+                        child: SlideTransition(position: slide, child: child),
+                      );
+                    },
+                    child:
+                        (_isOffline && !_bannerDismissed)
+                            ? NetflixOfflineBanner(
+                              key: const ValueKey('detail_banner_visible'),
+                              onDismiss: () {
+                                setState(() => _bannerDismissed = true);
+                              },
+                            )
+                            : const SizedBox.shrink(
+                              key: ValueKey('detail_banner_hidden'),
+                            ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         );
       },

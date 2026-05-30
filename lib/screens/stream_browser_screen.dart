@@ -694,7 +694,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                       },
                       child:
                           (_isOffline && !_bannerDismissed)
-                              ? _NetflixOfflineBanner(
+                              ? NetflixOfflineBanner(
                                 key: const ValueKey('global_banner_visible'),
                                 onDismiss: () {
                                   setState(() => _bannerDismissed = true);
@@ -7124,16 +7124,16 @@ class _SearchPageState extends State<_SearchPage> {
   }
 }
 
-class _NetflixOfflineBanner extends StatefulWidget {
+class NetflixOfflineBanner extends StatefulWidget {
   final VoidCallback onDismiss;
 
-  const _NetflixOfflineBanner({required this.onDismiss, super.key});
+  const NetflixOfflineBanner({required this.onDismiss, super.key});
 
   @override
-  State<_NetflixOfflineBanner> createState() => _NetflixOfflineBannerState();
+  State<NetflixOfflineBanner> createState() => NetflixOfflineBannerState();
 }
 
-class _NetflixOfflineBannerState extends State<_NetflixOfflineBanner>
+class NetflixOfflineBannerState extends State<NetflixOfflineBanner>
     with SingleTickerProviderStateMixin {
   bool _isChecking = false;
   late AnimationController _pulseController;
