@@ -31,8 +31,9 @@ class DnsBypassUtils {
     }
 
     // Try standard DNS resolution first
+    List<InternetAddress> addresses = [];
     try {
-      final addresses = await InternetAddress.lookup(host)
+      addresses = await InternetAddress.lookup(host)
           .timeout(const Duration(seconds: 4));
       if (addresses.isNotEmpty) {
         // Look for IPv4 only, filtering out failed IPs
@@ -50,6 +51,15 @@ class DnsBypassUtils {
       debugPrint('DNS standard lookup failed for $host: $e. Trying DoH fallback...');
     }
 
+    // ISP no resuelve o solo da IPv6 → intentar con DNS público
+    if (addresses.isEmpty || addresses.every((addr) => addr.type != InternetAddressType.IPv4)) {
+      final publicIp = await DnsBypassUtils.resolveWithPublicDns(host);
+      if (publicIp != null && _isValidIp(publicIp) && !_failedIps.contains(publicIp)) {
+        _ipCache[host] = publicIp;
+        return publicIp;
+      }
+    }
+
     // Fallback to DNS-over-HTTPS using Cloudflare & Google (explicitly requesting IPv4 records)
     final ip = await _resolveViaDoH(host);
     if (ip != null && _isValidIp(ip)) {
@@ -59,6 +69,42 @@ class DnsBypassUtils {
 
     // Do NOT return IPv6 addresses. Return null to skip DNS Bypass and fallback to default name resolution.
     debugPrint('DNS Bypass: No IPv4 found for $host. Skipping bypass.');
+    return null;
+  }
+
+  /// Resuelve un hostname usando el DNS-over-HTTPS de Cloudflare o Google.
+  /// Funciona aunque el DNS del ISP colombiano no resuelva el host.
+  static Future<String?> resolveWithPublicDns(String host) async {
+    // Intentar primero con Cloudflare, luego con Google como respaldo
+    final endpoints = [
+      'https://cloudflare-dns.com/dns-query?name=$host&type=A',
+      'https://dns.google/resolve?name=$host&type=A',
+    ];
+
+    for (final endpoint in endpoints) {
+      try {
+        final response = await http.get(
+          Uri.parse(endpoint),
+          headers: {'Accept': 'application/dns-json'},
+        ).timeout(const Duration(seconds: 4));
+
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          final answers = data['Answer'] as List?;
+          if (answers != null) {
+            // Filtrar solo registros tipo A (IPv4 = tipo 1)
+            final ipv4 = answers
+                .where((a) => a['type'] == 1)
+                .map((a) => a['data'] as String)
+                .where((ip) => !ip.contains(':')) // excluir IPv6
+                .toList();
+            if (ipv4.isNotEmpty) return ipv4.first;
+          }
+        }
+      } catch (_) {
+        continue; // probar el siguiente endpoint
+      }
+    }
     return null;
   }
 

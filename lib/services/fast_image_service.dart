@@ -25,6 +25,7 @@ class _FailedImageTracker with WidgetsBindingObserver {
   bool _initialized = false;
   final Set<VoidCallback> _retryCallbacks = {};
   NetworkQuality _lastQuality = NetworkQuality.excellent;
+  DateTime? _lastLimitChange;
 
   void init() {
     if (_initialized) return;
@@ -225,6 +226,71 @@ class _ValidatingImageFileService extends FileService {
   }) async {
     HttpClientRequest? req;
     try {
+      final host = Uri.tryParse(url)?.host ?? '';
+      final shouldProxy = host.contains('ultratvsv.site') ||
+          host.contains('image.tmdb.org') ||
+          host.contains('yt3.googleusercontent.com') ||
+          host.contains('red4tv.lat');
+
+      if (shouldProxy) {
+        // Lista de proxies en orden de preferencia
+        // Si tienes un Cloudflare Worker propio, ponlo primero
+        final proxies = [
+          'https://morning-night-2d8a.juandanielarrieta23.workers.dev/?url={URL}',
+          'https://wsrv.nl/?url={URL}&output=webp',
+          'https://images.weserv.nl/?url={URL}',
+        ];
+
+        for (final proxyTemplate in proxies) {
+          final proxyUrl = proxyTemplate.replaceAll('{URL}', Uri.encodeComponent(url));
+          try {
+            debugPrint('Image fetch: trying proxy $proxyUrl');
+            final uri = Uri.parse(proxyUrl);
+            req = await _sharedHttpClient.getUrl(uri).timeout(_adaptiveTimeout());
+            req.headers.set('Accept', 'image/webp,image/*,*/*;q=0.8');
+
+            final ioResponse = await req.close().timeout(_adaptiveTimeout());
+            final contentType =
+                ioResponse.headers.value('content-type')?.toLowerCase() ?? '';
+
+            if (contentType.contains('text/html') ||
+                contentType.contains('text/plain') ||
+                contentType.contains('application/json') || // ← NUEVO: rechazar JSON
+                ioResponse.statusCode >= 400) {
+              req.abort();
+              // Este proxy falló, probar el siguiente
+              continue;
+            }
+
+            // Proxy funcionó — construir respuesta
+            final responseHeaders = <String, String>{};
+            ioResponse.headers.forEach((key, values) {
+              responseHeaders[key] = values.join(',');
+            });
+            final streamedResponse = http.StreamedResponse(
+              ioResponse,
+              ioResponse.statusCode,
+              contentLength: ioResponse.contentLength == -1
+                  ? null
+                  : ioResponse.contentLength,
+              request: http.Request('GET', uri),
+              headers: responseHeaders,
+              isRedirect: ioResponse.isRedirect,
+              persistentConnection: ioResponse.persistentConnection,
+              reasonPhrase: ioResponse.reasonPhrase,
+            );
+            return _ValidatingHttpGetResponse(streamedResponse, req);
+
+          } catch (proxyError) {
+            req?.abort();
+            debugPrint('Proxy $proxyTemplate failed: $proxyError. Trying next...');
+            continue;
+          }
+        }
+
+        debugPrint('All proxies failed for $url. Falling back to direct fetch...');
+      }
+
       final uri = Uri.parse(url);
       req = await _sharedHttpClient.getUrl(uri).timeout(_adaptiveTimeout());
 
@@ -338,17 +404,17 @@ class _DownloadSemaphore {
   static final _DownloadSemaphore instance = _DownloadSemaphore._();
   _DownloadSemaphore._();
 
-  int _maxConcurrent = 6;
+  int _maxConcurrent = 4;
   int _running = 0;
   final List<_PrioritizedCompleter> _waiters = [];
 
   void updateLimit(NetworkQuality quality) {
     _maxConcurrent = switch (quality) {
-      NetworkQuality.excellent => 8,
-      NetworkQuality.good => 6,
-      NetworkQuality.fair => 4,
-      NetworkQuality.poor => 2,
-      NetworkQuality.offline => 0,
+      NetworkQuality.excellent => 4,
+      NetworkQuality.good      => 3,
+      NetworkQuality.fair      => 2,
+      NetworkQuality.poor      => 1,
+      NetworkQuality.offline   => 0,
     };
     // Si ahora hay slots libres, despertar waiters
     _drainWaiters();
