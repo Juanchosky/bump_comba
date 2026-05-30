@@ -1739,9 +1739,23 @@ class M3UService extends ChangeNotifier {
         final request = http.Request('GET', bypassed.uri);
         request.headers.addAll(bypassed.headers);
 
-        final response = await client
-            .send(request)
-            .timeout(const Duration(seconds: 45));
+        http.StreamedResponse response;
+        try {
+          response = await client
+              .send(request)
+              .timeout(const Duration(seconds: 45));
+
+          if (response.statusCode < 200 || response.statusCode >= 300) {
+            throw http.ClientException('Bypassed request returned status ${response.statusCode}');
+          }
+        } catch (e) {
+          debugPrint('DNS Bypass M3U fetch failed: $e. Retrying with original URL: $url');
+          final originalRequest = http.Request('GET', Uri.parse(url));
+          originalRequest.headers.addAll(headers);
+          response = await client
+              .send(originalRequest)
+              .timeout(const Duration(seconds: 45));
+        }
 
         if (response.statusCode == 451) {
           _lastError =

@@ -50,9 +50,19 @@ class XtreamService {
       final request = http.Request('GET', bypassed.uri);
       request.headers.addAll(bypassed.headers);
 
-      final response = await client.send(request).timeout(timeout);
-
-      if (response.statusCode != 200) return null;
+      http.StreamedResponse response;
+      try {
+        response = await client.send(request).timeout(timeout);
+        if (response.statusCode != 200) {
+          throw http.ClientException('Bypassed request returned status ${response.statusCode}');
+        }
+      } catch (e) {
+        debugPrint('DNS Bypass GET failed: $e. Retrying with original host: ${url.host}');
+        final originalRequest = http.Request('GET', url);
+        originalRequest.headers.addAll(headers);
+        response = await client.send(originalRequest).timeout(timeout);
+        if (response.statusCode != 200) return null;
+      }
 
       final builder = BytesBuilder(copy: false);
       final int? total = response.contentLength;
@@ -113,8 +123,19 @@ class XtreamService {
         'Accept': 'application/json, text/plain, */*',
       };
       final bypassed = await DnsBypassUtils.bypassUrl(url.toString(), headers);
-      final response = await http.get(bypassed.uri, headers: bypassed.headers)
-          .timeout(const Duration(seconds: 25));
+      http.Response response;
+      try {
+        response = await http.get(bypassed.uri, headers: bypassed.headers)
+            .timeout(const Duration(seconds: 25));
+        if (response.statusCode != 200) {
+          throw http.ClientException('Bypassed login returned status ${response.statusCode}');
+        }
+      } catch (e) {
+        debugPrint('DNS Bypass login failed: $e. Retrying with original host: ${url.host}');
+        response = await http.get(url, headers: headers)
+            .timeout(const Duration(seconds: 25));
+      }
+
       if (response.statusCode == 200) {
         // FIX: Validar que la respuesta sea JSON antes de parsear.
         final trimmed = response.body.trimLeft();

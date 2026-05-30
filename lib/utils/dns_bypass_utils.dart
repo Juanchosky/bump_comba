@@ -8,10 +8,15 @@ class DnsBypassUtils {
   static final Map<String, String> _ipCache = {};
 
   /// Resolves the hostname using custom DNS-over-HTTPS fallback if standard resolution fails.
+  /// Strictly resolves to IPv4 addresses to prevent unreachable network errors on IPv6.
   static Future<String?> resolveHostname(String host) async {
     // Return cached IP if already resolved
     if (_ipCache.containsKey(host)) {
-      return _ipCache[host];
+      final cachedIp = _ipCache[host];
+      // Verify cached IP is a valid IPv4 address (clearing stale/old IPv6 from hot-reloads)
+      if (cachedIp != null && _isValidIp(cachedIp)) {
+        return cachedIp;
+      }
     }
 
     // Try standard DNS resolution first
@@ -19,20 +24,28 @@ class DnsBypassUtils {
       final addresses = await InternetAddress.lookup(host)
           .timeout(const Duration(seconds: 4));
       if (addresses.isNotEmpty) {
-        final ip = addresses.first.address;
-        _ipCache[host] = ip;
-        return ip;
+        // Look for IPv4 only
+        final ipv4 = addresses.where((addr) => addr.type == InternetAddressType.IPv4);
+        if (ipv4.isNotEmpty) {
+          final ip = ipv4.first.address;
+          _ipCache[host] = ip;
+          return ip;
+        }
       }
     } catch (e) {
       debugPrint('DNS standard lookup failed for $host: $e. Trying DoH fallback...');
     }
 
-    // Fallback to DNS-over-HTTPS using Cloudflare & Google
+    // Fallback to DNS-over-HTTPS using Cloudflare & Google (explicitly requesting IPv4 records)
     final ip = await _resolveViaDoH(host);
-    if (ip != null) {
+    if (ip != null && _isValidIp(ip)) {
       _ipCache[host] = ip;
+      return ip;
     }
-    return ip;
+
+    // Do NOT return IPv6 addresses. Return null to skip DNS Bypass and fallback to default name resolution.
+    debugPrint('DNS Bypass: No IPv4 found for $host. Skipping bypass.');
+    return null;
   }
 
   static Future<String?> _resolveViaDoH(String host) async {
@@ -92,7 +105,7 @@ class DnsBypassUtils {
   static bool _isValidIp(String ip) {
     try {
       final addr = InternetAddress.tryParse(ip);
-      return addr != null;
+      return addr != null && addr.type == InternetAddressType.IPv4;
     } catch (_) {
       return false;
     }

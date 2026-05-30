@@ -34,7 +34,7 @@ class _SettingsScreenState extends State<SettingsScreen>
   final M3UService _m3uService = M3UService();
   final SocialRewardsService _rewardsService = SocialRewardsService();
   final PremiumService _premiumService = PremiumService();
-  bool _isLoading = false;
+  bool _isLoading = true;
   @override
   void initState() {
     super.initState();
@@ -43,15 +43,18 @@ class _SettingsScreenState extends State<SettingsScreen>
   }
 
   Future<void> _loadSettings() async {
-    // If services are already initialized (singleton), initializers should handle idempotency,
-    // but we can skip heavy lifting.
-    await _configService.init();
-    await _scoreService.init();
-    await _locService.init();
-    await _m3uService.init();
-    await _rewardsService.init();
-
-    await _rewardsService.init();
+    try {
+      // Initialize all services concurrently to prevent main-thread blocking and frame drops
+      await Future.wait([
+        _configService.init(),
+        _scoreService.init(),
+        _locService.init(),
+        _m3uService.init(),
+        _rewardsService.init(),
+      ]);
+    } catch (e) {
+      debugPrint('Error loading settings services: $e');
+    }
 
     if (mounted) {
       setState(() {
