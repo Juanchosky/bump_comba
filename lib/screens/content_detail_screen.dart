@@ -17,7 +17,6 @@ import 'video_player_screen.dart';
 import 'subscription_screen.dart';
 import '../utils/colors.dart';
 import '../services/dynamic_scraper_service.dart';
-import '../utils/normalization_utils.dart';
 import '../services/cast_service.dart';
 
 class ContentDetailScreen extends StatefulWidget {

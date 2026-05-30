@@ -1186,8 +1186,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           final n = item.name.toLowerCase();
           if (n.contains('canal ') ||
               n.contains('tv ') ||
-              n.contains('en vivo'))
+              n.contains('en vivo')) {
             return false;
+          }
           return true;
         }).toList();
 
@@ -2787,8 +2788,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
   // Reopen sin destruir el player — el codec sigue vivo, gap mínimo (~200ms)
   Future<void> _quickReopenStream() async {
-    if (_livePlayer == null || _isLiveReloading || _currentLiveChannel == null)
+    if (_livePlayer == null || _isLiveReloading || _currentLiveChannel == null) {
       return;
+    }
     _lastRecoveryTime = DateTime.now();
     _liveRetryCount++;
 
@@ -2853,8 +2855,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     if (!mounted ||
         _currentLiveChannel == null ||
         _isLiveReloading ||
-        _isLiveError)
+        _isLiveError) {
       return;
+    }
 
     // Backoff exponencial suave: 300ms, 800ms, 1.5s, 3s, 5s, 8s
     const delays = [300, 800, 1500, 3000, 5000, 8000];
