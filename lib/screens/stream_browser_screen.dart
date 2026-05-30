@@ -3823,25 +3823,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   Widget _buildLiveChannelTile(M3UItem item, int index) {
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      leading: Container(
-        width: 48,
-        height: 48,
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.05),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child:
-              item.logo != null && item.logo!.isNotEmpty
-                  ? FastChannelLogo(
-                    url: item.logo,
-                    size: 48,
-                    borderRadius: BorderRadius.circular(8),
-                  )
-                  : const Icon(Icons.tv, color: Colors.white12),
-        ),
-      ),
       title: Row(
         children: [
           Text(

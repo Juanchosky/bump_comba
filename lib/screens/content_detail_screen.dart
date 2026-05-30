@@ -1033,7 +1033,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                       onTap:
                           () {}, // Blocks click-through to background widgets
                       child: Container(
-                        color: Colors.black.withValues(alpha: 0.85),
+                        color: Colors.black.withValues(alpha: 0.65),
                         child: const Center(
                           child: CupertinoActivityIndicator(
                             radius: 14,
