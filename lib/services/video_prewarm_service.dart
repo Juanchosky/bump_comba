@@ -11,10 +11,6 @@ class VideoPrewarmService {
   final Map<String, Player> _prewarmedPlayers = {};
 
   Future<void> prewarm(M3UItem item, String userAgent) async {
-    // CRITICAL: Disable video pre-warming on Android to prevent
-    // BLASTBufferQueue surface exhaustion and fatal callbacks.
-    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) return;
-
     final url = item.url;
     if (_prewarmedPlayers.containsKey(url)) return;
 

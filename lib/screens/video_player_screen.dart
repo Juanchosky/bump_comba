@@ -21,6 +21,7 @@ import '../services/performance_service.dart';
 import '../services/cast_service.dart';
 import '../services/network_quality_service.dart';
 import '../services/adaptive_buffer_service.dart';
+import 'package:http/http.dart' as http;
 
 import '../utils/snack_bar_utils.dart';
 import 'subscription_screen.dart';
@@ -423,9 +424,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _retryCount = 0;
     _hasError = false;
 
-    final progress = await _watchProgressService.getProgress(
-      _currentItem.url,
-    );
+    final progress = await _watchProgressService.getProgress(_currentItem.url);
     Duration? startFrom;
 
     if (progress != null && mounted) {
@@ -458,10 +457,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       onAdFailed: () {
         if (mounted) {
           if (AdService().adBlockerDetected) {
-            _showAppSnackBar('Bloqueador de anuncios detectado. Para continuar, desactívalo o suscríbete a Premium.');
+            _showAppSnackBar(
+              'Bloqueador de anuncios detectado. Para continuar, desactívalo o suscríbete a Premium.',
+            );
             Navigator.push(
               context,
-              MaterialPageRoute(builder: (context) => const SubscriptionScreen()),
+              MaterialPageRoute(
+                builder: (context) => const SubscriptionScreen(),
+              ),
             ).then((_) {
               if (mounted) {
                 if (!PremiumService().isPremium) {
@@ -472,10 +475,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               }
             });
           } else if (AdService().hasReachedUnverifiedLimit) {
-            _showAppSnackBar('Límite de vistas sin anuncios alcanzado. Suscríbete a Premium.');
+            _showAppSnackBar(
+              'Límite de vistas sin anuncios alcanzado. Suscríbete a Premium.',
+            );
             Navigator.push(
               context,
-              MaterialPageRoute(builder: (context) => const SubscriptionScreen()),
+              MaterialPageRoute(
+                builder: (context) => const SubscriptionScreen(),
+              ),
             ).then((_) {
               if (mounted) {
                 if (!PremiumService().isPremium) {
@@ -547,6 +554,51 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         debugPrint('Error disposing player in _cleanupPlayer: $e');
       }
     }
+  }
+
+  // PRE-RESOLVER DNS del servidor de video via Cloudflare
+  // Esto elimina los ~200-400ms de latencia DNS desde Colombia
+  Future<void> _prewarmDns(String url) async {
+    try {
+      final uri = Uri.parse(url);
+      final host = uri.host;
+      // Cloudflare DNS-over-HTTPS — mucho más rápido que el DNS del ISP colombiano
+      await http
+          .get(
+            Uri.parse('https://cloudflare-dns.com/dns-query?name=$host&type=A'),
+            headers: {'Accept': 'application/dns-json'},
+          )
+          .timeout(const Duration(seconds: 3));
+    } catch (_) {}
+  }
+
+  /// Si la URL es un M3U8, la ruteamos por el Worker para acelerar
+  /// la descarga de la playlist inicial (la más lenta desde Colombia).
+  /// Los segmentos de video NO se proxean — son demasiado grandes.
+  String _resolveStreamUrl(String url) {
+    final lower = url.toLowerCase();
+
+    // Solo proxear playlists M3U8, no segmentos .ts ni .mp4
+    final isPlaylist =
+        lower.contains('.m3u8') ||
+        lower.contains('/playlist') ||
+        lower.contains('/index.m3u8');
+
+    if (!isPlaylist) return url; // URLs directas .mp4 etc no necesitan proxy
+
+    // Dominios que sabemos son lentos desde Colombia
+    final needsProxy =
+        url.contains('ultratvsv.site') ||
+        url.contains('red4tv.lat') ||
+        url.contains('iptv') ||
+        url.contains('/live/') ||
+        url.contains('/hls/');
+
+    if (!needsProxy) return url;
+
+    const workerUrl =
+        'https://morning-night-2d8a.juandanielarrieta23.workers.dev';
+    return '$workerUrl/?url=${Uri.encodeComponent(url)}';
   }
 
   String _videoKey = '';
@@ -736,7 +788,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             'stream-buffer-size',
             '4194304',
           ); // 4MB buffer for network
-          await mpv.setProperty('network-timeout', '60');
+          // Timeout más agresivo — si el servidor no responde en 10s, es que está caído
+          // El reload automático probará el siguiente servidor rápidamente
+          await mpv.setProperty('network-timeout', '10');
+          await mpv.setProperty('http-header-fields', 'Connection: keep-alive');
 
           // Permitir buscar dentro de datos ya descargados (evita re-fetch al hacer seek)
           await mpv.setProperty('demuxer-seekable-cache', 'yes');
@@ -778,7 +833,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             // Reanuda reproducción tras solo 2s de re-buffering (antes: 5s)
             await mpv.setProperty('cache-pause-wait', '2');
             await mpv.setProperty('stream-buffer-size', '16777216');
-            await mpv.setProperty('network-timeout', '60');
+            await mpv.setProperty('network-timeout', '10');
 
             // Calidad adaptativa HLS automática
             await mpv.setProperty('hls-bitrate', 'auto');
@@ -792,7 +847,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           await mpv.setProperty('http-reconnect', 'yes');
           // Reconexión más rápida tras caída de red (antes: 1s → ahora: 0.5s)
           await mpv.setProperty('http-reconnect-sleep', '0.5');
-          await mpv.setProperty('http-reconnect-timeout', '10');
+          await mpv.setProperty('http-reconnect-timeout', '5');
           await mpv.setProperty('tls-verify', 'no');
           await mpv.setProperty('load-unsafe-playlists', 'yes');
           // Usar HTTP pipelining para descargar segmentos HLS más rápido
@@ -838,10 +893,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
           // Threading and error detection
           await mpv.setProperty('vd-lavc-threads', '0');
-          await mpv.setProperty(
-            'vd-lavc-skiploopfilter',
-            PerformanceService().isLowPerformance ? 'nonref' : 'none',
-          );
+          // 'nonref' solo funciona con decoders de software (lavf/ffmpeg).
+          // Con mediacodec-copy (hardware Android) es un argumento inválido
+          // que genera un error de stream y causa un reload innecesario.
+          // En hardware Android el filtrado de loop lo hace el propio codec.
+          await mpv.setProperty('vd-lavc-skiploopfilter', 'none');
           await mpv.setProperty('framedrop', 'vo');
           await mpv.setProperty('vd-lavc-fast-decoding', 'yes');
           await mpv.setProperty(
@@ -887,13 +943,25 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         final mpv2 = _player?.platform as dynamic;
         if (mpv2 == null) return;
 
+        // Forzar una medición actualizada ANTES de aplicar perfil.
+        // La primera medición suele ser incorrecta porque el stream
+        // aún no está activo cuando el servicio arranca.
+        await _networkQuality.measureManual();
+
         final currentQuality = _networkQuality.quality.value;
         _lastAppliedQuality = currentQuality;
 
-        // Solo aplicar perfil degradado si realmente la red es mala.
-        // En excellent/good no tocamos nada (el perfil por defecto es óptimo).
-        if (currentQuality == NetworkQuality.fair ||
-            currentQuality == NetworkQuality.poor) {
+        // GUARD: Si el ancho de banda real es >=2.0Mbps, no aplicar perfil degradado
+        // aunque la heurística de latencia diga "poor" o "fair" — puede ser una medición
+        // transitoria incorrecta al inicio.
+        final realBandwidth = _networkQuality.estimatedBandwidthMbps.value;
+        final shouldDegrade =
+            (currentQuality == NetworkQuality.fair ||
+                currentQuality == NetworkQuality.poor) &&
+            realBandwidth <
+                2.0; // Solo degradar si el ancho de banda real es bajo
+
+        if (shouldDegrade) {
           await AdaptiveBufferService().applyConfig(
             mpv2,
             currentQuality,
@@ -902,10 +970,19 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           debugPrint(
             'AdaptiveQuality: Initial profile applied: ${currentQuality.name}',
           );
+        } else if (currentQuality == NetworkQuality.poor ||
+            currentQuality == NetworkQuality.fair) {
+          debugPrint(
+            'AdaptiveQuality: Skipping degraded profile — real bandwidth is ${realBandwidth.toStringAsFixed(1)} Mbps (quality: ${currentQuality.name})',
+          );
         }
       });
 
       final currentUrl = _serverUrls[_currentServerIndex % _serverUrls.length];
+      final resolvedUrl = _resolveStreamUrl(currentUrl);
+
+      // Calentar DNS en paralelo mientras se configura MPV
+      unawaited(_prewarmDns(currentUrl));
 
       // Informar al monitor de red qué servidor estamos usando
       // para que mida la velocidad contra ESE servidor, no contra Google
@@ -917,7 +994,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
       if (!isPrewarmed) {
         await _player!.open(
-          Media(currentUrl, httpHeaders: _buildHeaders(currentUrl)),
+          Media(resolvedUrl, httpHeaders: _buildHeaders(currentUrl)),
           play: shouldPlayLocally,
         );
         // Durante Cast sin audio local, cerramos la descarga del player local
@@ -1725,10 +1802,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       onAdFailed: () {
         if (mounted) {
           if (AdService().adBlockerDetected) {
-            _showAppSnackBar('Bloqueador de anuncios detectado. Para continuar, desactívalo o suscríbete a Premium.');
+            _showAppSnackBar(
+              'Bloqueador de anuncios detectado. Para continuar, desactívalo o suscríbete a Premium.',
+            );
             Navigator.push(
               context,
-              MaterialPageRoute(builder: (context) => const SubscriptionScreen()),
+              MaterialPageRoute(
+                builder: (context) => const SubscriptionScreen(),
+              ),
             ).then((_) {
               if (mounted) {
                 if (!PremiumService().isPremium) {
@@ -1739,10 +1820,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               }
             });
           } else if (AdService().hasReachedUnverifiedLimit) {
-            _showAppSnackBar('Límite de vistas sin anuncios alcanzado. Suscríbete a Premium.');
+            _showAppSnackBar(
+              'Límite de vistas sin anuncios alcanzado. Suscríbete a Premium.',
+            );
             Navigator.push(
               context,
-              MaterialPageRoute(builder: (context) => const SubscriptionScreen()),
+              MaterialPageRoute(
+                builder: (context) => const SubscriptionScreen(),
+              ),
             ).then((_) {
               if (mounted) {
                 if (!PremiumService().isPremium) {
@@ -2606,10 +2691,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       onAdFailed: () {
         if (mounted) {
           if (AdService().adBlockerDetected) {
-            _showAppSnackBar('Bloqueador de anuncios detectado. Para continuar, desactívalo o suscríbete a Premium.');
+            _showAppSnackBar(
+              'Bloqueador de anuncios detectado. Para continuar, desactívalo o suscríbete a Premium.',
+            );
             Navigator.push(
               context,
-              MaterialPageRoute(builder: (context) => const SubscriptionScreen()),
+              MaterialPageRoute(
+                builder: (context) => const SubscriptionScreen(),
+              ),
             ).then((_) {
               if (mounted) {
                 if (!PremiumService().isPremium) {
@@ -2626,10 +2715,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               }
             });
           } else if (AdService().hasReachedUnverifiedLimit) {
-            _showAppSnackBar('Límite de vistas sin anuncios alcanzado. Suscríbete a Premium.');
+            _showAppSnackBar(
+              'Límite de vistas sin anuncios alcanzado. Suscríbete a Premium.',
+            );
             Navigator.push(
               context,
-              MaterialPageRoute(builder: (context) => const SubscriptionScreen()),
+              MaterialPageRoute(
+                builder: (context) => const SubscriptionScreen(),
+              ),
             ).then((_) {
               if (mounted) {
                 if (!PremiumService().isPremium) {

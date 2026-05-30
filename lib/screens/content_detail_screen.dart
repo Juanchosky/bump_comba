@@ -123,10 +123,6 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   }
 
   void _initPrewarm() {
-    // CRITICAL: Disable video pre-warming on Android to prevent
-    // BLASTBufferQueue surface exhaustion and fatal callbacks.
-    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) return;
-
     if (!PerformanceService().allowVideoPrewarm) return;
 
     // Solo pre-calentar si no es Live (los live gastan mucho ancho de banda)
