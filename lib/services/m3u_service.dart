@@ -1612,6 +1612,7 @@ class M3UService extends ChangeNotifier {
       // Extraer el host real del server_info del login response.
       // Servidores XUI.one reportan el host real en server_info.url,
       // que puede diferir del proxy/CDN configurado (ej: red4tv.lat → ultratvsv.site).
+      String? realHost;
       try {
         final serverInfo = loginResult['server_info'];
         if (serverInfo != null) {
@@ -1620,15 +1621,9 @@ class M3UService extends ChangeNotifier {
           final protocol = serverInfo['server_protocol']?.toString() ?? 'http';
           if (realUrl != null && realUrl.isNotEmpty) {
             final constructedHost = '$protocol://$realUrl:$realPort';
+            realHost = constructedHost;
             // Guardar el host real en caché para futuros fallbacks
             await _prefs?.setString('xtream_real_host_$host', constructedHost);
-            if (constructedHost != effectiveHost) {
-              debugPrint(
-                'Xtream: real server differs from configured. '
-                'Configured=$effectiveHost, Real=$constructedHost. Using real server.',
-              );
-              effectiveHost = constructedHost;
-            }
           }
         }
       } catch (e) {
@@ -1646,8 +1641,8 @@ class M3UService extends ChangeNotifier {
       }
 
       // Parallel fetch for Live, VOD and Series with tracking
-      // Usa effectiveHost que puede ser el host real extraído del server_info
-      final results = await Future.wait([
+      // Prioritize the configured host (succeeded during login validation)
+      var results = await Future.wait([
         xtream.fetchLiveStreams(
           effectiveHost,
           user,
@@ -1676,6 +1671,49 @@ class M3UService extends ChangeNotifier {
           },
         ),
       ]);
+
+      final fallbackHost = realHost ?? cachedRealHost;
+      if (results.any((r) => r == null) && fallbackHost != null && fallbackHost != host) {
+        debugPrint(
+          'Xtream fetch failed on configured host $effectiveHost. '
+          'Falling back to real server: $fallbackHost',
+        );
+        // Reset progress counters before retrying
+        liveBytes = 0;
+        vodBytes = 0;
+        seriesBytes = 0;
+        notify();
+
+        results = await Future.wait([
+          xtream.fetchLiveStreams(
+            fallbackHost,
+            user,
+            pass,
+            onProgress: (p) {
+              liveBytes = p.receivedBytes;
+              notify();
+            },
+          ),
+          xtream.fetchVodStreams(
+            fallbackHost,
+            user,
+            pass,
+            onProgress: (p) {
+              vodBytes = p.receivedBytes;
+              notify();
+            },
+          ),
+          xtream.fetchSeries(
+            fallbackHost,
+            user,
+            pass,
+            onProgress: (p) {
+              seriesBytes = p.receivedBytes;
+              notify();
+            },
+          ),
+        ]);
+      }
 
       if (results.any((r) => r == null)) {
         debugPrint(
@@ -1754,7 +1792,11 @@ class M3UService extends ChangeNotifier {
           debugPrint(
             'DNS Bypass M3U fetch failed: $e. Retrying with original URL: $url',
           );
-          final originalRequest = http.Request('GET', Uri.parse(url));
+          final originalUri = Uri.parse(url);
+          if (bypassed.uri.host != originalUri.host) {
+            DnsBypassUtils.reportFailedIp(originalUri.host, bypassed.uri.host);
+          }
+          final originalRequest = http.Request('GET', originalUri);
           originalRequest.headers.addAll(headers);
           response = await client
               .send(originalRequest)
@@ -1969,12 +2011,8 @@ class M3UService extends ChangeNotifier {
 
     final xtream = XtreamService();
 
-    // Use the effective host if a real host was previously resolved during login.
+    // Try the configured host first (succeeded during login)
     String effectiveHost = source.url;
-    final cachedRealHost = _prefs?.getString('xtream_real_host_${source.url}');
-    if (cachedRealHost != null && cachedRealHost.isNotEmpty) {
-      effectiveHost = cachedRealHost;
-    }
 
     // Reintentar hasta 2 veces con backoff exponencial (1s) para evitar cuelgues largos
     List<M3UItem> episodes = [];
@@ -1999,6 +2037,23 @@ class M3UService extends ChangeNotifier {
           '"${item.name}". Retrying in ${delay.inSeconds}s…',
         );
         await Future.delayed(delay);
+      }
+    }
+
+    // Fallback to cached real host if configured host returned 0 episodes
+    final cachedRealHost = _prefs?.getString('xtream_real_host_${source.url}');
+    if (episodes.isEmpty && cachedRealHost != null && cachedRealHost.isNotEmpty && cachedRealHost != source.url) {
+      debugPrint('fetchEpisodesForItem failed on configured host $effectiveHost. Falling back to cached real host $cachedRealHost...');
+      try {
+        episodes = await xtream.fetchSeriesEpisodes(
+          cachedRealHost,
+          source.username ?? '',
+          source.password ?? '',
+          item.url,
+          item.name,
+        );
+      } catch (e) {
+        debugPrint('fetchEpisodesForItem fallback error: $e');
       }
     }
 

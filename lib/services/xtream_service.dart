@@ -58,6 +58,9 @@ class XtreamService {
         }
       } catch (e) {
         debugPrint('DNS Bypass GET failed: $e. Retrying with original host: ${url.host}');
+        if (bypassed.uri.host != url.host) {
+          DnsBypassUtils.reportFailedIp(url.host, bypassed.uri.host);
+        }
         final originalRequest = http.Request('GET', url);
         originalRequest.headers.addAll(headers);
         response = await client.send(originalRequest).timeout(timeout);
@@ -132,6 +135,9 @@ class XtreamService {
         }
       } catch (e) {
         debugPrint('DNS Bypass login failed: $e. Retrying with original host: ${url.host}');
+        if (bypassed.uri.host != url.host) {
+          DnsBypassUtils.reportFailedIp(url.host, bypassed.uri.host);
+        }
         response = await http.get(url, headers: headers)
             .timeout(const Duration(seconds: 25));
       }

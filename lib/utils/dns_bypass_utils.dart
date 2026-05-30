@@ -6,17 +6,28 @@ import 'package:http/http.dart' as http;
 
 class DnsBypassUtils {
   static final Map<String, String> _ipCache = {};
+  static final Set<String> _failedIps = {};
+
+  /// Marks an IP address as failed, removing it from cache so that a different one is resolved.
+  static void reportFailedIp(String host, String ip) {
+    debugPrint('DNS Bypass: Reporting failed IP $ip for host $host');
+    _failedIps.add(ip);
+    if (_ipCache[host] == ip) {
+      _ipCache.remove(host);
+    }
+  }
 
   /// Resolves the hostname using custom DNS-over-HTTPS fallback if standard resolution fails.
   /// Strictly resolves to IPv4 addresses to prevent unreachable network errors on IPv6.
   static Future<String?> resolveHostname(String host) async {
-    // Return cached IP if already resolved
+    // Return cached IP if already resolved and not marked as failed
     if (_ipCache.containsKey(host)) {
       final cachedIp = _ipCache[host];
       // Verify cached IP is a valid IPv4 address (clearing stale/old IPv6 from hot-reloads)
-      if (cachedIp != null && _isValidIp(cachedIp)) {
+      if (cachedIp != null && _isValidIp(cachedIp) && !_failedIps.contains(cachedIp)) {
         return cachedIp;
       }
+      _ipCache.remove(host);
     }
 
     // Try standard DNS resolution first
@@ -24,10 +35,13 @@ class DnsBypassUtils {
       final addresses = await InternetAddress.lookup(host)
           .timeout(const Duration(seconds: 4));
       if (addresses.isNotEmpty) {
-        // Look for IPv4 only
-        final ipv4 = addresses.where((addr) => addr.type == InternetAddressType.IPv4);
+        // Look for IPv4 only, filtering out failed IPs
+        final ipv4 = addresses
+            .where((addr) => addr.type == InternetAddressType.IPv4)
+            .map((addr) => addr.address)
+            .where((ip) => !_failedIps.contains(ip));
         if (ipv4.isNotEmpty) {
-          final ip = ipv4.first.address;
+          final ip = ipv4.first;
           _ipCache[host] = ip;
           return ip;
         }
@@ -63,7 +77,7 @@ class DnsBypassUtils {
           for (final answer in answers) {
             if (answer['type'] == 1) { // A record
               final ip = answer['data'] as String?;
-              if (ip != null && _isValidIp(ip)) {
+              if (ip != null && _isValidIp(ip) && !_failedIps.contains(ip)) {
                 debugPrint('DoH Cloudflare resolved $host -> $ip');
                 return ip;
               }
@@ -87,7 +101,7 @@ class DnsBypassUtils {
           for (final answer in answers) {
             if (answer['type'] == 1) { // A record
               final ip = answer['data'] as String?;
-              if (ip != null && _isValidIp(ip)) {
+              if (ip != null && _isValidIp(ip) && !_failedIps.contains(ip)) {
                 debugPrint('DoH Google resolved $host -> $ip');
                 return ip;
               }
