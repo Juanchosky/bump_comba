@@ -1673,7 +1673,9 @@ class M3UService extends ChangeNotifier {
       ]);
 
       final fallbackHost = realHost ?? cachedRealHost;
-      if (results.any((r) => r == null) && fallbackHost != null && fallbackHost != host) {
+      if (results.any((r) => r == null) &&
+          fallbackHost != null &&
+          fallbackHost != host) {
         debugPrint(
           'Xtream fetch failed on configured host $effectiveHost. '
           'Falling back to real server: $fallbackHost',
@@ -2042,8 +2044,13 @@ class M3UService extends ChangeNotifier {
 
     // Fallback to cached real host if configured host returned 0 episodes
     final cachedRealHost = _prefs?.getString('xtream_real_host_${source.url}');
-    if (episodes.isEmpty && cachedRealHost != null && cachedRealHost.isNotEmpty && cachedRealHost != source.url) {
-      debugPrint('fetchEpisodesForItem failed on configured host $effectiveHost. Falling back to cached real host $cachedRealHost...');
+    if (episodes.isEmpty &&
+        cachedRealHost != null &&
+        cachedRealHost.isNotEmpty &&
+        cachedRealHost != source.url) {
+      debugPrint(
+        'fetchEpisodesForItem failed on configured host $effectiveHost. Falling back to cached real host $cachedRealHost...',
+      );
       try {
         episodes = await xtream.fetchSeriesEpisodes(
           cachedRealHost,

@@ -9,7 +9,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'performance_service.dart';
 import 'metadata_fallback_service.dart';
 import 'network_quality_service.dart';
-import '../utils/dns_bypass_utils.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FAILED IMAGE TRACKER — Retries on app resume
