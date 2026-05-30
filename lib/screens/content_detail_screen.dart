@@ -1,9 +1,11 @@
-import 'package:bump_comba/services/m3u_service.dart';
-import 'package:bump_comba/services/watch_progress_service.dart';
+import '../services/m3u_service.dart';
+import '../services/watch_progress_service.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'dart:ui';
 import 'dart:math' as math;
+import 'dart:async';
 import 'package:media_kit/media_kit.dart';
 
 import '../utils/transitions.dart';
@@ -48,6 +50,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   final M3UService _m3uService = M3UService();
   bool _isOffline = false;
   bool _bannerDismissed = false;
+  bool _isPageLoading = true;
+  int _loadingSession = 0;
 
   // Series/Version grouping
   final Map<int, List<M3UItem>> _seasonMap = {};
@@ -75,12 +79,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
     super.initState();
     _isFavorite = widget.item.isFavorite;
 
-    if (widget.item.isSeries) {
-      if (widget.item.episodes.isEmpty) {
-        _loadEpisodes();
-      } else {
-        _groupEpisodes();
-      }
+    if (widget.item.isSeries && widget.item.episodes.isNotEmpty) {
+      _groupEpisodes();
     }
     _findOtherVersions();
 
@@ -96,42 +96,26 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
     )..repeat(reverse: true);
 
     AdService().recordDetailsVisit();
-    _fetchMetadata();
     _initPrewarm();
 
     _isOffline =
         NetworkQualityService().quality.value == NetworkQuality.offline;
     NetworkQualityService().quality.addListener(_onNetworkQualityChanged);
 
-    // Aggressive pre-caching for similar items and episodes
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
-        final List<String> urls = [];
-        // First few similar items
-        if (widget.similarItems.isNotEmpty) {
-          urls.addAll(
-            widget.similarItems.take(8).map((i) => i.logo).whereType<String>(),
-          );
-        }
-        // First few episodes if series
-        if (widget.item.isSeries && widget.item.episodes.isNotEmpty) {
-          urls.addAll(
-            widget.item.episodes.take(8).map((i) => i.logo).whereType<String>(),
-          );
-        }
-        if (urls.isNotEmpty) {
-          FastImageService().prewarm(urls.toSet().toList(), context);
-        }
+        _loadPageData();
       }
     });
   }
 
   Future<void> _fetchMetadata() async {
+    final currentSession = _loadingSession;
     final data = await _tmdbService.searchAndGetDetails(
       widget.item.name,
       isSeries: widget.item.isSeries,
     );
-    if (mounted) {
+    if (mounted && currentSession == _loadingSession) {
       setState(() {
         _metadata = data;
       });
@@ -254,6 +238,70 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
           if (offline) _bannerDismissed = false;
         });
       }
+    }
+  }
+
+  Future<void> _loadPageData() async {
+    if (!mounted) return;
+
+    _loadingSession++;
+    final currentSession = _loadingSession;
+
+    if (mounted) {
+      setState(() {
+        _isPageLoading = true;
+      });
+    }
+
+    final List<Future> loadingTasks = [];
+
+    // 1. Fetch TMDB metadata
+    loadingTasks.add(_fetchMetadata());
+
+    // 2. Fetch episodes if it is a series and they are not loaded yet
+    if (widget.item.isSeries && widget.item.episodes.isEmpty) {
+      loadingTasks.add(_loadEpisodes());
+    }
+
+    // 3. Prewarm and await the main hero image
+    if (widget.item.logo != null && widget.item.logo!.isNotEmpty) {
+      loadingTasks.add(
+        FastImageService().prewarmAndAwait([widget.item.logo!], context),
+      );
+    }
+
+    // Await all tasks in parallel with a fast and intelligent safety timeout of 2.2 seconds.
+    // If it takes longer (slow cellular or unstable network), we automatically fade the loader away
+    // and reveal the page layout, letting the remaining tasks complete silently in the background.
+    try {
+      await Future.wait(
+        loadingTasks,
+      ).timeout(const Duration(milliseconds: 2200));
+    } catch (_) {
+      // Proceed even if any task fails or times out (robust error handling)
+    }
+
+    // Trigger aggressive background pre-caching for similar items and episodes
+    final List<String> backgroundUrls = [];
+    if (widget.similarItems.isNotEmpty) {
+      backgroundUrls.addAll(
+        widget.similarItems.take(8).map((i) => i.logo).whereType<String>(),
+      );
+    }
+    final episodesList = _allEpisodes;
+    if (widget.item.isSeries && episodesList.isNotEmpty) {
+      backgroundUrls.addAll(
+        episodesList.take(8).map((i) => i.logo).whereType<String>(),
+      );
+    }
+    if (backgroundUrls.isNotEmpty) {
+      FastImageService().prewarm(backgroundUrls.toSet().toList(), context);
+    }
+
+    if (mounted && currentSession == _loadingSession) {
+      setState(() {
+        _isPageLoading = false;
+      });
     }
   }
 
@@ -593,6 +641,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
   Future<void> _loadEpisodes() async {
     if (!mounted) return;
+    final currentSession = _loadingSession;
+
     setState(() {
       _isLoadingEpisodes = true;
       _episodesLoadFailed = false;
@@ -600,7 +650,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
     try {
       final episodes = await _m3uService.fetchEpisodesForItem(widget.item);
-      if (mounted) {
+      if (mounted && currentSession == _loadingSession) {
         setState(() {
           _dynamicEpisodes = episodes;
           _isLoadingEpisodes = false;
@@ -612,18 +662,15 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
           _groupEpisodes();
         });
 
-        // Pre-warm the episode covers since they were loaded asynchronously
-        final urls = episodes
-            .take(12)
-            .map((e) => e.logo)
-            .whereType<String>()
-            .toList();
+        // Pre-warm and await the first 6 episode covers so they are fully loaded and cached instantly
+        final urls =
+            episodes.take(6).map((e) => e.logo).whereType<String>().toList();
         if (urls.isNotEmpty) {
-          FastImageService().prewarm(urls, context);
+          await FastImageService().prewarmAndAwait(urls, context);
         }
       }
     } catch (e) {
-      if (mounted) {
+      if (mounted && currentSession == _loadingSession) {
         setState(() {
           _isLoadingEpisodes = false;
           _episodesLoadFailed = true;
@@ -983,6 +1030,28 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                     ),
                   ],
                 ),
+                if (_isPageLoading)
+                  Positioned.fill(
+                    child: ClipRect(
+                      child: BackdropFilter(
+                        filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap:
+                              () {}, // Blocks click-through to background widgets
+                          child: Container(
+                            color: Colors.black.withValues(alpha: 0.55),
+                            child: const Center(
+                              child: CupertinoActivityIndicator(
+                                radius: 14,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
                 Positioned(
                   top: 0,
                   left: 0,

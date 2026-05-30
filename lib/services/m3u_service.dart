@@ -1746,10 +1746,14 @@ class M3UService extends ChangeNotifier {
               .timeout(const Duration(seconds: 45));
 
           if (response.statusCode < 200 || response.statusCode >= 300) {
-            throw http.ClientException('Bypassed request returned status ${response.statusCode}');
+            throw http.ClientException(
+              'Bypassed request returned status ${response.statusCode}',
+            );
           }
         } catch (e) {
-          debugPrint('DNS Bypass M3U fetch failed: $e. Retrying with original URL: $url');
+          debugPrint(
+            'DNS Bypass M3U fetch failed: $e. Retrying with original URL: $url',
+          );
           final originalRequest = http.Request('GET', Uri.parse(url));
           originalRequest.headers.addAll(headers);
           response = await client
@@ -1972,11 +1976,9 @@ class M3UService extends ChangeNotifier {
       effectiveHost = cachedRealHost;
     }
 
-    // Reintentar hasta 3 veces con backoff exponencial (1s, 2s, 4s)
-    // Los servidores Xtream a veces fallan intermitentemente, lo que
-    // causa que se muestren "0 episodios" sin opción de reintentar.
+    // Reintentar hasta 2 veces con backoff exponencial (1s) para evitar cuelgues largos
     List<M3UItem> episodes = [];
-    for (int attempt = 0; attempt < 3; attempt++) {
+    for (int attempt = 0; attempt < 2; attempt++) {
       try {
         episodes = await xtream.fetchSeriesEpisodes(
           effectiveHost,
@@ -1990,8 +1992,8 @@ class M3UService extends ChangeNotifier {
         debugPrint('fetchEpisodesForItem attempt ${attempt + 1} error: $e');
       }
 
-      if (attempt < 2) {
-        final delay = Duration(seconds: 1 << attempt); // 1s, 2s, 4s
+      if (attempt < 1) {
+        const delay = Duration(seconds: 1); // 1s
         debugPrint(
           'fetchEpisodesForItem attempt ${attempt + 1} returned empty for '
           '"${item.name}". Retrying in ${delay.inSeconds}s…',

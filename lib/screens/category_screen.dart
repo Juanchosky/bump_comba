@@ -1,5 +1,5 @@
-import 'package:bump_comba/services/m3u_service.dart';
-import 'package:bump_comba/screens/content_detail_screen.dart';
+import '../services/m3u_service.dart';
+import 'content_detail_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
 import '../services/performance_service.dart';

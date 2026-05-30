@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'package:audio_service/audio_service.dart';
-import 'package:bump_comba/services/cast_service.dart';
+import 'cast_service.dart';
 
 class CastAudioHandler extends BaseAudioHandler {
   final CastService _castService = CastService();
