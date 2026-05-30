@@ -1028,21 +1028,16 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                 ),
                 if (_isPageLoading)
                   Positioned.fill(
-                    child: ClipRect(
-                      child: BackdropFilter(
-                        filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTap:
-                              () {}, // Blocks click-through to background widgets
-                          child: Container(
-                            color: Colors.black.withValues(alpha: 0.55),
-                            child: const Center(
-                              child: CupertinoActivityIndicator(
-                                radius: 14,
-                                color: Colors.white,
-                              ),
-                            ),
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap:
+                          () {}, // Blocks click-through to background widgets
+                      child: Container(
+                        color: Colors.black.withValues(alpha: 0.85),
+                        child: const Center(
+                          child: CupertinoActivityIndicator(
+                            radius: 14,
+                            color: Colors.white,
                           ),
                         ),
                       ),
