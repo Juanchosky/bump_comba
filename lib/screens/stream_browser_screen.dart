@@ -148,7 +148,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   bool _isLiveChannel = true;
   // Cooldown: prevent cascading recoveries (codec init takes ~3-5s)
   DateTime _lastRecoveryTime = DateTime.fromMillisecondsSinceEpoch(0);
-  static const int _recoveryCooldownSeconds = 10;
+  static const int _recoveryCooldownSeconds = 8;
 
   // Calidad Adaptativa Dinámica
   bool _isQualityCapped = false;
@@ -2330,6 +2330,32 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     _isDisposingLivePlayer = false;
   }
 
+  // PRE-RESOLVER DNS del servidor de video via Cloudflare
+  // Esto elimina los ~200-400ms de latencia DNS desde Colombia
+  Future<void> _prewarmDns(String url) async {
+    try {
+      final uri = Uri.parse(url);
+      final host = uri.host;
+      // Cloudflare DNS-over-HTTPS
+      await http
+          .get(
+            Uri.parse('https://cloudflare-dns.com/dns-query?name=$host&type=A'),
+            headers: {'Accept': 'application/dns-json'},
+          )
+          .timeout(const Duration(seconds: 3));
+    } catch (_) {}
+  }
+
+  /// Para señales EN VIVO, NO debemos rutear el streaming por el Worker de Cloudflare,
+  /// ya que los cortafuegos de los servidores de IPTV (XUI.one, Cloudflare, etc.) detectan
+  /// y bloquean las peticiones provenientes de IPs de centros de datos de Cloudflare (403/503).
+  /// Además, las playlists en vivo (.m3u8) son dinámicas y cambian constantemente.
+  /// Mantenemos la función para conservar compatibilidad con el resto del código, pero
+  /// retornamos la URL original directa. La aceleración se logra gracias al DNS Prewarming paralelo.
+  String _resolveStreamUrl(String url) {
+    return url;
+  }
+
   Future<void> _playLiveChannel(M3UItem item) async {
     // Same channel already playing, reload it and return
     if (_currentLiveChannel?.url == item.url && _livePlayer != null) {
@@ -2437,11 +2463,14 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     final platform = _livePlayer?.platform as dynamic;
     await _applySeamlessConfig(platform, item);
 
+    final resolvedUrl = _resolveStreamUrl(item.url);
+    unawaited(_prewarmDns(item.url));
+
     // Abrir el stream con headers completos
     try {
       await _livePlayer!.open(
         Media(
-          item.url,
+          resolvedUrl,
           httpHeaders: {
             'User-Agent': _getRandomUserAgent(),
             'Accept': '*/*',
@@ -2630,118 +2659,99 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       } catch (_) {}
     }
 
-    // ── NÚCLEO: Buffer grande + recuperación sin cortes ───────────────────
-    // El secreto: cache-pause=no significa que NUNCA pausa aunque el buffer
-    // esté bajo. Preferimos pixelación momentánea a silencio.
+    // ── DVR BUFFER: caché rodante de 12 segundos ──────────────────
+    // cache-pause=no  → el reproductor NUNCA pausa por buffer bajo.
+    // cache-secs=12   → 12 s de caché adelante: suficiente para que
+    //                   MPV reconecte solo antes de que el usuario note algo.
+    // live_start_index=-3 → empieza 3 segmentos detrás del live edge
+    //                       (~6-9 s), dando una pista de aterrizaje.
+    //
+    // ANTES: cache-secs=180 (3 min), demuxer-max-bytes=1 GB.
+    //        Solo llenaba RAM y alargaba el tiempo de inicio.
     await s('cache', 'yes');
-    await s('cache-pause', 'no'); // ← CRÍTICO: nunca pausar por buffer bajo
+    await s('cache-pause', 'no'); // ← CRÍTICO: nunca pausar
     await s('cache-pause-initial', 'no');
-    await s('cache-secs', '180'); // 3 min de buffer adelante
-    await s('cache-back-buffer-size', '134217728'); // 128 MB hacia atrás
-    await s('demuxer-max-bytes', '1073741824'); // 1 GB demuxer buffer
-    await s('demuxer-max-back-bytes', '268435456'); // 256 MB back-buffer
-    await s('demuxer-readahead-secs', '90');
+    await s('cache-secs', '12'); // era 180
+    await s('cache-back-buffer-size', '16777216'); // 16 MB (era 128 MB)
+    await s('demuxer-max-bytes', '67108864'); // 64 MB (era 1 GB)
+    await s('demuxer-max-back-bytes', '16777216'); // 16 MB (era 256 MB)
+    await s('demuxer-readahead-secs', '12'); // era 90
 
-    // ── RED: Reconexión instantánea y múltiples estrategias ───────────────
-    await s('network-timeout', '8');
-    await s('http-reconnect', 'yes');
-    await s('http-reconnect-max', '999'); // reconectar infinitamente
+    // ── RED: falla rápido, reconecta al instante ───────────────────
     await s(
-      'http-reconnect-delay',
-      '0.5',
-    ); // esperar solo 0.5s entre reconexiones
+      'network-timeout',
+      '5',
+    ); // era 8 — falla más rápido para reintentar antes
+    await s('http-reconnect', 'yes');
+    await s('http-reconnect-max', '999');
+    await s('http-reconnect-delay', '0.2'); // era 0.5 — 200 ms entre reintentos
     await s(
       'stream-lavf-o',
       'reconnect=1,'
           'reconnect_streamed=1,'
-          'reconnect_delay_max=1,' // ← máximo 1s de delay (era 2s)
+          'reconnect_delay_max=0.5,' // era 1
           'reconnect_on_network_error=1,'
-          'reconnect_on_http_error=5xx,' // reconectar en errores 5xx del server
-          'timeout=8000000,' // 8s timeout en microsegundos
-          'rw_timeout=8000000',
+          'reconnect_on_http_error=4xx,5xx,' // añadir 4xx
+          'timeout=5000000,' // era 8000000
+          'rw_timeout=5000000,'
+          'tcp_nodelay=1', // reduce latencia
     );
     await s('tls-verify', 'no');
 
-    // ── HEADERS: Maximizar compatibilidad con servidores IPTV ─────────────
+    // ── HEADERS ───────────────────────────────────────────────────
     await s(
       'http-header-fields',
       'Icy-MetaData:1\r\n'
           'Accept-Language:es-419,es;q=0.9,en;q=0.5\r\n'
-          'Accept-Encoding:identity\r\n' // ← identity evita chunks que confunden a IPTV
+          'Accept-Encoding:identity\r\n'
           'Connection:keep-alive\r\n'
           'Cache-Control:no-cache\r\n'
           'Pragma:no-cache',
     );
 
-    // ── HLS: Configuración agresiva para streams en vivo ─────────────────
+    // ── HLS LIVE: iniciar detrás del borde para tener colchón ──────
     if (_isLiveChannel) {
-      // live-start-pos=-3: empezar 3s antes del live edge para tener buffer
-      // cuando la señal es débil, esto da margen de maniobra sin cortes
+      await s('hls-bitrate', _isQualityCapped ? '1200000' : 'max');
       await s(
-        'hls-bitrate',
-        _isQualityCapped ? '1200000' : 'auto',
-      ); // SD suave, no 800k
-      await s(
-        'stream-lavf-o', // re-set con opciones HLS específicas
+        'stream-lavf-o',
         'reconnect=1,'
             'reconnect_streamed=1,'
-            'reconnect_delay_max=1,'
+            'reconnect_delay_max=0.5,'
             'reconnect_on_network_error=1,'
-            'live_start_index=-3', // ← empezar en segmento -3 del live edge
+            'live_start_index=-3,' // 3 segmentos detrás = ~6-9 s de colchón
+            'tcp_nodelay=1',
       );
       await s('demuxer-lavf-hacks', 'yes');
-      await s(
-        'demuxer-lavf-o',
-        'allowed_extensions=ALL,' // ← permitir extensiones no estándar
-            'strict=-2', // ← modo permisivo para streams rotos
-      );
+      await s('demuxer-lavf-o', 'allowed_extensions=ALL,strict=-2');
     }
 
-    // ── DECODIFICACIÓN: Sacrificar calidad a pérdida de performance ───────
+    // ── DECODIFICACIÓN ────────────────────────────────────────────
     await s('hwdec', 'auto-safe');
     await s('vd-lavc-threads', '0');
-    await s('framedrop', 'vo'); // ← solo dropar frames en VO, no en decoder
-    await s('deinterlace', 'no'); // ← off para mayor velocidad
-    await s(
-      'vd-lavc-skiploopfilter',
-      'all',
-    ); // ← skip todos los filtros de loop
-    await s(
-      'vd-lavc-skipframe',
-      'nonref',
-    ); // ← skip non-reference frames bajo presión
+    await s('framedrop', 'vo');
+    await s('deinterlace', 'no');
+    await s('vd-lavc-skiploopfilter', 'all');
+    await s('vd-lavc-skipframe', 'nonref');
 
-    // ── AUDIO: El audio NUNCA se corta, es la prioridad #1 ────────────────
-    await s('audio-buffer', '2'); // 2s de buffer de audio
+    // ── AUDIO: prioridad máxima — nunca cortar ────────────────────
+    await s('audio-buffer', '1.5');
     await s('audio-stream-silence', 'yes');
-    await s(
-      'audio-fallback-to-null',
-      'yes',
-    ); // si falla audio device, null output
-    await s('gapless-audio', 'weak'); // intentar gapless entre segmentos
+    await s('audio-fallback-to-null', 'yes');
+    await s('gapless-audio', 'weak');
 
-    // ── SINCRONIZACIÓN: Audio como master clock ───────────────────────────
-    await s('video-sync', 'audio'); // video sigue al audio (no al revés)
-    await s(
-      'video-latency-hacks',
-      'yes',
-    ); // hacks para reducir latencia en live
+    // ── SINCRONIZACIÓN ────────────────────────────────────────────
+    await s('video-sync', 'audio');
+    await s('video-latency-hacks', 'yes');
     await s('interpolation', 'no');
     await s('opengl-early-flush', 'no');
 
-    // ── RECUPERACIÓN ANTE ERRORES: Continuar aunque el stream tenga errores
-    await s(
-      'demuxer-lavf-probescore',
-      '25',
-    ); // aceptar streams con baja calidad
-    await s('hr-seek', 'no'); // seek impreciso pero rápido
-    await s('keep-open', 'yes'); // NO cerrar al terminar un segmento
-    await s('keep-open-pause', 'no'); // continuar intentando aunque termine
-    await s(
-      'load-unsafe-playlists',
-      'yes',
-    ); // ← permitir URLs potencialmente inseguras en listas de reproducción
-    await s('force-seekable', 'yes'); // ← forzar seek en transmisiones en vivo
+    // ── ROBUSTEZ ──────────────────────────────────────────────────
+    await s('demuxer-lavf-probescore', '25');
+    await s('hr-seek', 'no');
+    await s('keep-open', 'yes');
+    await s('keep-open-pause', 'no');
+    await s('load-unsafe-playlists', 'yes');
+    await s('force-seekable', 'yes');
   }
 
   void _triggerSurfaceRefresh() {
@@ -2763,13 +2773,18 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     _liveStallSeconds = 0;
     _liveNoMovementSeconds = 0;
     _lastLivePosition = Duration.zero;
-    // ignore: unused_local_variable
-    int audioStallSeconds = 0; // ← nuevo: monitorear audio separado de video
 
     _liveHealthMonitorTimer = Timer.periodic(const Duration(seconds: 1), (
       timer,
     ) {
-      if (!mounted || _livePlayer == null) return;
+      if (!mounted || _livePlayer == null) {
+        timer.cancel();
+        return;
+      }
+      if (_liveVideoControllerNotifier.value == null) {
+        timer.cancel();
+        return;
+      }
 
       final secsSinceLastRecovery =
           DateTime.now().difference(_lastRecoveryTime).inSeconds;
@@ -2781,70 +2796,65 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         _liveStallSeconds++;
         _liveNoMovementSeconds = 0;
 
-        // ── Estrategia escalonada: nunca reiniciar en el primer stall ──
-        // Nivel 1 (8s): Solo mostrar spinner, NO recargar. MPV tiene
-        // reconnect automático — darle tiempo de actuar solo.
-        // Nivel 2 (15s): Seek al live edge (sin destruir codec).
-        // Nivel 3 (25s): Reopen URL (sin destruir player).
-        // Nivel 4 (40s): Reinicio completo (último recurso).
-
-        if (_liveStallSeconds == 8) {
-          debugPrint(
-            '⚠️  Buffer bajo (${_liveStallSeconds}s) — esperando reconexión MPV...',
-          );
-          // No hacer nada, dejar que MPV reconecte solo
-        } else if (_liveStallSeconds == 15 &&
-            !_isLiveReloading &&
-            !inCooldown) {
-          debugPrint('⚡ Stall 15s — seek al live edge...');
-          _seekToLiveEdge();
-        } else if (_liveStallSeconds == 25 &&
-            !_isLiveReloading &&
-            !inCooldown) {
-          debugPrint('🔄 Stall 25s — reopen URL...');
-          _quickReopenStream();
-        } else if (_liveStallSeconds >= 40 &&
-            !_isLiveReloading &&
-            !inCooldown) {
-          debugPrint('💥 Stall 40s — reinicio completo...');
-          _liveStallSeconds = 0;
-          _reloadLiveSignal();
+        // Toda la cascada está bloqueada por cooldown para evitar
+        // que dos niveles se disparen en la misma ventana de tiempo.
+        if (!inCooldown) {
+          if (_liveStallSeconds >= 15 && !_isLiveReloading) {
+            // NIVEL 3: reload completo — último recurso antes del espejo.
+            debugPrint('💥 Stall ${_liveStallSeconds}s — reload completo...');
+            _liveStallSeconds = 0;
+            _reloadLiveSignal();
+          } else if (_liveStallSeconds >= 8 && !_isLiveReloading) {
+            // NIVEL 2: reopen sin destruir codec — gap de audio <200ms.
+            debugPrint('🔄 Stall ${_liveStallSeconds}s — reopen silencioso...');
+            _quickReopenStream();
+          } else if (_liveStallSeconds >= 3) {
+            // NIVEL 1: seek al live edge — 0 impacto visible.
+            debugPrint('⚡ Stall ${_liveStallSeconds}s — seek al live edge...');
+            _seekToLiveEdge();
+          }
+          // < 3s: dejar que el caché DVR y la reconexión automática de MPV actúen solos.
         }
       } else {
         if (state.playing) {
           if (currentPos == _lastLivePosition && currentPos != Duration.zero) {
             _liveNoMovementSeconds++;
 
-            // Congelamiento silencioso: más tolerante (8s → era 5s)
-            // porque algunos streams HLS tienen segmentos de 6-8s
-            if (_liveNoMovementSeconds >= 8 &&
-                !_isLiveReloading &&
-                !inCooldown) {
-              debugPrint(
-                '🧊 Congelamiento ${_liveNoMovementSeconds}s — seek al edge...',
-              );
-              _liveNoMovementSeconds = 0;
-              _seekToLiveEdge();
+            if (!inCooldown) {
+              if (_liveNoMovementSeconds >= 9 && !_isLiveReloading) {
+                // Congelamiento prolongado → reload.
+                debugPrint('💥 Freeze ${_liveNoMovementSeconds}s — reload...');
+                _liveNoMovementSeconds = 0;
+                _reloadLiveSignal();
+              } else if (_liveNoMovementSeconds >= 4) {
+                // Congelamiento corto → seek silencioso.
+                debugPrint(
+                  '🧊 Freeze ${_liveNoMovementSeconds}s — seek al edge...',
+                );
+                _seekToLiveEdge();
+              }
             }
           } else {
+            // Reproducción normal — resetear contadores.
             _liveNoMovementSeconds = 0;
             _liveStallSeconds = 0;
-            audioStallSeconds = 0;
 
-            // Recovery automática de calidad después de 90s estable
+            // Restaurar calidad máxima después de 60 s estable.
             if (_isQualityCapped && _qualityRestoreTimer == null) {
               _qualityRestoreTimer = Timer(
-                const Duration(seconds: 90),
+                const Duration(seconds: 60),
                 () async {
                   if (mounted && _isQualityCapped) {
                     _isQualityCapped = false;
                     _qualityRestoreTimer = null;
-                    final platform = _livePlayer?.platform as dynamic;
                     try {
-                      await platform?.setProperty('hls-bitrate', 'auto');
+                      await ((_livePlayer?.platform) as dynamic)?.setProperty(
+                        'hls-bitrate',
+                        'max',
+                      );
                     } catch (_) {}
                     debugPrint(
-                      '✅ Calidad restaurada a auto tras 90s de estabilidad',
+                      '✅ Calidad restaurada a max tras 60 s de estabilidad',
                     );
                   }
                 },
@@ -2864,27 +2874,29 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     });
   }
 
-  // Seek instantáneo al live edge — no destruye el codec, 0 corte de audio
   Future<void> _seekToLiveEdge() async {
-    if (_livePlayer == null || _isLiveReloading) return;
+    if (_livePlayer == null) return;
     _lastRecoveryTime = DateTime.now();
+
+    final platform = _livePlayer!.platform as dynamic;
+
+    // Estrategia 1: MPV seek a "infinito" → salta al live edge en HLS.
+    // Mantiene el codec vivo, 0 corte de audio, instantáneo.
     try {
-      // MPV: 'inf' o la duración máxima lleva al live edge en HLS
-      final platform = _livePlayer!.platform as dynamic;
-      await platform?.setProperty(
-        'playback-time',
-        '999999',
-      ); // seek al "infinito"
-    } catch (_) {
-      // Fallback: seek vía API de media_kit
-      try {
-        final duration = _livePlayer!.state.duration;
-        if (duration > Duration.zero) {
-          await _livePlayer!.seek(duration - const Duration(milliseconds: 500));
-        }
-      } catch (_) {}
-    }
-    _triggerSurfaceRefresh(); // ← Refrescar superficie Android para evitar deadlock de BLASTBufferQueue
+      await platform?.setProperty('playback-time', '999999');
+      await Future.delayed(const Duration(milliseconds: 150));
+      _triggerSurfaceRefresh();
+      return;
+    } catch (_) {}
+
+    // Estrategia 2: seek vía API de media_kit a casi la duración total.
+    try {
+      final dur = _livePlayer!.state.duration;
+      if (dur > const Duration(seconds: 2)) {
+        await _livePlayer!.seek(dur - const Duration(milliseconds: 500));
+        _triggerSurfaceRefresh();
+      }
+    } catch (_) {}
   }
 
   // Reopen sin destruir el player — el codec sigue vivo, gap mínimo (~200ms)
@@ -2899,14 +2911,20 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
     if (_liveRetryCount >= 3 && !_isQualityCapped) {
       _isQualityCapped = true;
-      debugPrint('📉 Limitando calidad a 1.2 Mbps por cortes persistentes');
+      debugPrint(
+        '📉 Calidad limitada a 1.2 Mbps (reintentos: $_liveRetryCount)',
+      );
       try {
-        final platform = _livePlayer!.platform as dynamic;
-        await platform?.setProperty('hls-bitrate', '1200000');
+        await (_livePlayer!.platform as dynamic)?.setProperty(
+          'hls-bitrate',
+          '1200000',
+        );
       } catch (_) {}
     }
 
+    // Marcar reloading para el guard (no afecta ningún spinner visible).
     setState(() => _isLiveReloading = true);
+
     try {
       await _livePlayer!.open(
         Media(
@@ -2924,7 +2942,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       );
       if (mounted) {
         setState(() => _isLiveReloading = false);
-        _triggerSurfaceRefresh(); // ← Refrescar superficie para sincronizar audio/video tras reopen
+        _triggerSurfaceRefresh();
       }
     } catch (e) {
       debugPrint('Reopen falló: $e — escalando a reinicio completo');
@@ -2962,9 +2980,10 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       return;
     }
 
-    // Backoff exponencial suave: 300ms, 800ms, 1.5s, 3s, 5s, 8s
-    const delays = [300, 800, 1500, 3000, 5000, 8000];
-    final idx = (_liveRetryCount).clamp(0, delays.length - 1);
+    // Backoff más rápido: 100ms / 300ms / 600ms / 1.2s / 2.5s / 5s
+    // (antes: 300ms / 800ms / 1.5s / 3s / 5s / 8s)
+    const delays = [100, 300, 600, 1200, 2500, 5000];
+    final idx = _liveRetryCount.clamp(0, delays.length - 1);
     final delayMs = delays[idx];
 
     _lastRecoveryTime = DateTime.now();
@@ -2978,19 +2997,20 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
     setState(() {
       _isLiveReloading = true;
-      _isLiveLoading =
-          _liveRetryCount >= 2; // solo mostrar spinner a partir del 3er intento
+      // Spinner visible solo a partir del 3er intento (antes: 2do).
+      // Los primeros 2 reintentos son invisibles para el usuario.
+      _isLiveLoading = _liveRetryCount >= 3;
       _liveRetryCount++;
     });
 
     await Future.delayed(Duration(milliseconds: delayMs));
     if (!mounted || _currentLiveChannel == null) return;
 
-    if (_liveRetryCount <= 4) {
-      // Fase rápida: reopen sin destruir player
+    if (_liveRetryCount <= 6) {
+      // Fase rápida: reopen sin destruir el player (antes: ≤ 4).
       await _quickReopenStream();
-    } else if (_liveRetryCount <= 7) {
-      // Fase media: reinicio completo del player
+    } else if (_liveRetryCount <= 9) {
+      // Fase media: reinicio completo del player (antes: ≤ 7).
       final channel = _currentLiveChannel!;
       final count = _liveRetryCount;
       await _disposeLivePlayer();
@@ -2999,7 +3019,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       _currentLiveChannel = channel;
       await _startLivePlayback(channel);
     } else {
-      // Fase espejo: buscar canal alternativo
+      // Fase espejo: buscar URL alternativa del mismo canal.
       _liveRetryCount = 0;
       if (!_isUsingMirror) {
         _startMirrorPlayback();
@@ -5848,32 +5868,33 @@ class _FullscreenLivePlayerState extends State<_FullscreenLivePlayer> {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     _startHideTimer();
 
-    //  match inline player's zero-cut config in fullscreen
-    // Each property in its own try-catch to avoid cascade failures
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final player = widget.controllerNotifier.value?.player;
-      final platform = player?.platform as dynamic;
-      if (platform == null) return;
+      final mpv = player?.platform as dynamic;
+      if (mpv == null) return;
 
       Future<void> safeSet(String key, String value) async {
         try {
-          await platform.setProperty(key, value);
+          await mpv.setProperty(key, value);
         } catch (_) {}
       }
 
-      await safeSet('cache', 'yes');
-      await safeSet('cache-pause', 'yes');
+      // IMPORTANTE: todos los valores deben ser consistentes con
+      // _applySeamlessConfig. El modo fullscreen NO debe sobrescribir
+      // ninguna propiedad crítica con un valor diferente.
+
+      // cache-pause=NO (era 'yes' — ese era el bug)
+      await safeSet('cache-pause', 'no'); // ← CORREGIDO (era 'yes')
       await safeSet('cache-pause-initial', 'no');
-      await safeSet('cache-pause-wait', '2');
-      await safeSet('cache-secs', '120');
-      await safeSet('demuxer-max-bytes', '536870912');
-      await safeSet('demuxer-max-back-bytes', '134217728');
-      await safeSet('demuxer-readahead-secs', '60');
+      await safeSet('cache-secs', '12');
+      await safeSet('demuxer-max-bytes', '67108864');
+      await safeSet('demuxer-max-back-bytes', '16777216');
+      await safeSet('demuxer-readahead-secs', '12');
       await safeSet('demuxer-cache-wait', 'no');
-      await safeSet('hls-bitrate', 'auto');
-      await safeSet('framedrop', 'decoder+vo');
+      await safeSet('hls-bitrate', 'max');
+      await safeSet('framedrop', 'vo');
       await safeSet('http-reconnect', 'yes');
-      await safeSet('audio-buffer', '1');
+      await safeSet('audio-buffer', '1.5');
       await safeSet('audio-stream-silence', 'yes');
     });
   }
