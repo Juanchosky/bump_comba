@@ -2785,88 +2785,37 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         timer.cancel();
         return;
       }
+      if (_isLiveReloading) return; // solo esperar, no resetear contadores
 
-      final secsSinceLastRecovery =
-          DateTime.now().difference(_lastRecoveryTime).inSeconds;
-      final inCooldown = secsSinceLastRecovery < _recoveryCooldownSeconds;
       final state = _livePlayer!.state;
       final currentPos = state.position;
 
-      if (state.buffering) {
-        _liveStallSeconds++;
-        _liveNoMovementSeconds = 0;
+      final bool isStuck =
+          state.buffering ||
+          (state.playing &&
+              currentPos == _lastLivePosition &&
+              currentPos != Duration.zero);
 
-        // Toda la cascada está bloqueada por cooldown para evitar
-        // que dos niveles se disparen en la misma ventana de tiempo.
-        if (!inCooldown) {
-          if (_liveStallSeconds >= 15 && !_isLiveReloading) {
-            // NIVEL 3: reload completo — último recurso antes del espejo.
-            debugPrint('💥 Stall ${_liveStallSeconds}s — reload completo...');
-            _liveStallSeconds = 0;
-            _reloadLiveSignal();
-          } else if (_liveStallSeconds >= 8 && !_isLiveReloading) {
-            // NIVEL 2: reopen sin destruir codec — gap de audio <200ms.
-            debugPrint('🔄 Stall ${_liveStallSeconds}s — reopen silencioso...');
-            _quickReopenStream();
-          } else if (_liveStallSeconds >= 3) {
-            // NIVEL 1: seek al live edge — 0 impacto visible.
-            debugPrint('⚡ Stall ${_liveStallSeconds}s — seek al live edge...');
-            _seekToLiveEdge();
-          }
-          // < 3s: dejar que el caché DVR y la reconexión automática de MPV actúen solos.
+      if (isStuck) {
+        _liveStallSeconds++;
+
+        if (_liveStallSeconds == 1 && mounted) {
+          setState(() => _isLiveLoading = true);
+        }
+
+        if (_liveStallSeconds >= 3) {
+          debugPrint('⚡ Atasco ${_liveStallSeconds}s → recargando');
+          timer.cancel();
+          _doImmediateReload();
         }
       } else {
-        if (state.playing) {
-          if (currentPos == _lastLivePosition && currentPos != Duration.zero) {
-            _liveNoMovementSeconds++;
-
-            if (!inCooldown) {
-              if (_liveNoMovementSeconds >= 9 && !_isLiveReloading) {
-                // Congelamiento prolongado → reload.
-                debugPrint('💥 Freeze ${_liveNoMovementSeconds}s — reload...');
-                _liveNoMovementSeconds = 0;
-                _reloadLiveSignal();
-              } else if (_liveNoMovementSeconds >= 4) {
-                // Congelamiento corto → seek silencioso.
-                debugPrint(
-                  '🧊 Freeze ${_liveNoMovementSeconds}s — seek al edge...',
-                );
-                _seekToLiveEdge();
-              }
-            }
-          } else {
-            // Reproducción normal — resetear contadores.
-            _liveNoMovementSeconds = 0;
-            _liveStallSeconds = 0;
-
-            // Restaurar calidad máxima después de 60 s estable.
-            if (_isQualityCapped && _qualityRestoreTimer == null) {
-              _qualityRestoreTimer = Timer(
-                const Duration(seconds: 60),
-                () async {
-                  if (mounted && _isQualityCapped) {
-                    _isQualityCapped = false;
-                    _qualityRestoreTimer = null;
-                    try {
-                      await ((_livePlayer?.platform) as dynamic)?.setProperty(
-                        'hls-bitrate',
-                        'max',
-                      );
-                    } catch (_) {}
-                    debugPrint(
-                      '✅ Calidad restaurada a max tras 60 s de estabilidad',
-                    );
-                  }
-                },
-              );
-            }
-          }
-        }
-
         if (_liveStallSeconds > 0) {
-          debugPrint('✅ Buffer recuperado tras $_liveStallSeconds s.');
+          debugPrint('✅ Recuperado tras $_liveStallSeconds s');
           _liveStallSeconds = 0;
+          if (mounted) setState(() => _isLiveLoading = false);
         }
+        _liveStallSeconds = 0;
+        _liveNoMovementSeconds = 0;
       }
 
       _lastLivePosition = currentPos;
@@ -2874,46 +2823,79 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     });
   }
 
-  Future<void> _seekToLiveEdge() async {
-    if (_livePlayer == null) return;
+  Future<void> _doImmediateReload() async {
+    if (_livePlayer == null || _currentLiveChannel == null) return;
+
+    _liveRetryCount++;
     _lastRecoveryTime = DateTime.now();
 
-    final platform = _livePlayer!.platform as dynamic;
+    if (mounted)
+      setState(() {
+        _isLiveReloading = true;
+        _isLiveLoading = true;
+      });
 
-    // Estrategia 1: MPV seek a "infinito" → salta al live edge en HLS.
-    // Mantiene el codec vivo, 0 corte de audio, instantáneo.
     try {
-      await platform?.setProperty('playback-time', '999999');
-      await Future.delayed(const Duration(milliseconds: 150));
-      _triggerSurfaceRefresh();
-      return;
-    } catch (_) {}
+      await _livePlayer!
+          .open(
+            Media(
+              _currentLiveChannel!.url,
+              httpHeaders: {
+                'User-Agent': _getRandomUserAgent(),
+                'Accept': '*/*',
+                'Connection': 'keep-alive',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache',
+              },
+            ),
+            play: true,
+          )
+          .timeout(const Duration(seconds: 8));
 
-    // Estrategia 2: seek vía API de media_kit a casi la duración total.
-    try {
-      final dur = _livePlayer!.state.duration;
-      if (dur > const Duration(seconds: 2)) {
-        await _livePlayer!.seek(dur - const Duration(milliseconds: 500));
+      if (mounted) {
+        setState(() {
+          _isLiveReloading = false;
+          _isLiveLoading = false;
+        });
+        _liveStallSeconds = 0;
         _triggerSurfaceRefresh();
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('Reload falló ($e) → reinicio completo');
+      if (mounted) {
+        setState(() {
+          _isLiveReloading = false;
+          _isLiveLoading = false;
+        });
+      }
+      // Si open() falla totalmente, reinicio completo del player
+      if (_liveRetryCount <= 5) {
+        _doImmediateReload(); // reintentar directamente
+      } else {
+        _liveRetryCount = 0;
+        final channel = _currentLiveChannel!;
+        await _disposeLivePlayer();
+        if (mounted) _startLivePlayback(channel);
+        return;
+      }
+    }
+
+    // Reiniciar monitor solo si seguimos en el mismo canal
+    await Future.delayed(const Duration(seconds: 2));
+    if (mounted && _livePlayer != null && _currentLiveChannel != null) {
+      _startLiveStallMonitor();
+    }
   }
 
   // Reopen sin destruir el player — el codec sigue vivo, gap mínimo (~200ms)
   Future<void> _quickReopenStream() async {
-    if (_livePlayer == null ||
-        _isLiveReloading ||
-        _currentLiveChannel == null) {
-      return;
-    }
+    if (_livePlayer == null || _currentLiveChannel == null) return;
+
     _lastRecoveryTime = DateTime.now();
     _liveRetryCount++;
 
-    if (_liveRetryCount >= 3 && !_isQualityCapped) {
+    if (_liveRetryCount >= 5 && !_isQualityCapped) {
       _isQualityCapped = true;
-      debugPrint(
-        '📉 Calidad limitada a 1.2 Mbps (reintentos: $_liveRetryCount)',
-      );
       try {
         await (_livePlayer!.platform as dynamic)?.setProperty(
           'hls-bitrate',
@@ -2922,8 +2904,11 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       } catch (_) {}
     }
 
-    // Marcar reloading para el guard (no afecta ningún spinner visible).
-    setState(() => _isLiveReloading = true);
+    if (mounted)
+      setState(() {
+        _isLiveReloading = true;
+        _isLiveLoading = true;
+      });
 
     try {
       await _livePlayer!.open(
@@ -2940,12 +2925,23 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         ),
         play: true,
       );
+
       if (mounted) {
-        setState(() => _isLiveReloading = false);
+        setState(() {
+          _isLiveReloading = false;
+          _isLiveLoading = false;
+        });
         _triggerSurfaceRefresh();
       }
+
+      // Esperar que el codec termine de inicializar antes de
+      // reanudar el monitor — evita falsos positivos inmediatos
+      await Future.delayed(const Duration(seconds: 2));
+      if (mounted && _livePlayer != null) {
+        _startLiveStallMonitor(); // reiniciar fresco
+      }
     } catch (e) {
-      debugPrint('Reopen falló: $e — escalando a reinicio completo');
+      debugPrint('Reopen falló: $e → reload completo');
       if (mounted) _reloadLiveSignal();
     }
   }
@@ -2972,6 +2968,30 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     }
   }
 
+  Future<void> _seekToLiveEdge() async {
+    if (_livePlayer == null) return;
+    // Solo actualizar el cooldown si no es el primer intento (stall == 1)
+    // para no bloquear el seek inmediato
+    if (_liveStallSeconds > 1 || _liveNoMovementSeconds > 1) {
+      _lastRecoveryTime = DateTime.now();
+    }
+
+    try {
+      final platform = _livePlayer!.platform as dynamic;
+      await platform?.setProperty('playback-time', '999999');
+      await Future.delayed(const Duration(milliseconds: 150));
+      _triggerSurfaceRefresh();
+    } catch (_) {
+      try {
+        final dur = _livePlayer!.state.duration;
+        if (dur > const Duration(seconds: 2)) {
+          await _livePlayer!.seek(dur - const Duration(milliseconds: 500));
+          _triggerSurfaceRefresh();
+        }
+      } catch (_) {}
+    }
+  }
+
   Future<void> _reloadLiveSignal() async {
     if (!mounted ||
         _currentLiveChannel == null ||
@@ -2982,7 +3002,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
     // Backoff más rápido: 100ms / 300ms / 600ms / 1.2s / 2.5s / 5s
     // (antes: 300ms / 800ms / 1.5s / 3s / 5s / 8s)
-    const delays = [100, 300, 600, 1200, 2500, 5000];
+    const delays = [0, 100, 300, 600, 1200, 2500];
     final idx = _liveRetryCount.clamp(0, delays.length - 1);
     final delayMs = delays[idx];
 
@@ -2999,7 +3019,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       _isLiveReloading = true;
       // Spinner visible solo a partir del 3er intento (antes: 2do).
       // Los primeros 2 reintentos son invisibles para el usuario.
-      _isLiveLoading = _liveRetryCount >= 3;
+      _isLiveLoading = _liveRetryCount >= 1;
       _liveRetryCount++;
     });
 
