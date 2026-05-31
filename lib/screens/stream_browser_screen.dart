@@ -2732,7 +2732,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         timer.cancel();
         return;
       }
-      if (_isLiveReloading) return;
+      // CRÍTICO: doble guard — no disparar si ya estamos en medio de un reload
+      if (_isLiveReloading || _isDisposingLivePlayer) return;
 
       final state = _livePlayer!.state;
       final currentPos = state.position;
@@ -2746,14 +2747,13 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       if (isStuck) {
         _liveStallSeconds++;
 
-        // Spinner al primer segundo
         if (_liveStallSeconds == 1 && mounted) {
           setState(() => _isLiveLoading = true);
         }
 
-        // Reload al segundo 1 — inmediato
-        if (_liveStallSeconds >= 1) {
-          debugPrint('⚡ Atasco ${_liveStallSeconds}s → reload inmediato');
+        // Dispara al segundo 2 (2 confirmaciones consecutivas = stall real)
+        if (_liveStallSeconds >= 2) {
+          debugPrint('⚡ Stall confirmado ${_liveStallSeconds}s → reload');
           _liveStallSeconds = 0;
           timer.cancel();
           _doImmediateReload();
@@ -2771,12 +2771,12 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   }
 
   Future<void> _doImmediateReload() async {
+    // Guard estricto: si ya hay un reload en curso, no hacer nada
+    if (_isLiveReloading || _isDisposingLivePlayer) return;
     if (_livePlayer == null || _currentLiveChannel == null) return;
 
     _liveRetryCount++;
 
-    // Mostrar spinner pero NO tocar el controller notifier
-    // → el Video widget sigue mostrando el último frame (no pantalla negra)
     if (mounted)
       setState(() {
         _isLiveReloading = true;
@@ -2784,8 +2784,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       });
 
     try {
-      // open() hace flush+reinit del codec pero la Surface queda conectada
-      // → el usuario ve el spinner sobre el último frame, no negro
       await _livePlayer!
           .open(
             Media(
@@ -2800,14 +2798,14 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             ),
             play: true,
           )
-          .timeout(const Duration(seconds: 6));
+          .timeout(const Duration(seconds: 5)); // suficiente para HLS
 
       if (mounted) {
         setState(() {
           _isLiveReloading = false;
           _isLiveLoading = false;
         });
-        // NO llamar _triggerSurfaceRefresh() — eso causa el flash negro
+        // NO llamar _triggerSurfaceRefresh() — eso causa flash negro
       }
     } catch (e) {
       debugPrint('Reload falló: $e');
@@ -2817,9 +2815,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           _isLiveLoading = false;
         });
 
-      // Si falla, reinicio completo del player (último recurso)
       if (_liveRetryCount <= 5) {
-        await Future.delayed(const Duration(milliseconds: 500));
+        await Future.delayed(const Duration(milliseconds: 300));
         if (mounted) _doImmediateReload();
       } else {
         _liveRetryCount = 0;
@@ -2885,9 +2882,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
       // Esperar que el codec termine de inicializar antes de
       // reanudar el monitor — evita falsos positivos inmediatos
-      await Future.delayed(const Duration(seconds: 2));
+      await Future.delayed(const Duration(seconds: 1));
       if (mounted && _livePlayer != null) {
-        _startLiveStallMonitor(); // reiniciar fresco
+        _startLiveStallMonitor();
       }
     } catch (e) {
       debugPrint('Reopen falló: $e → reload completo');
@@ -2925,8 +2922,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       return;
     }
 
-    // Backoff más rápido: 100ms / 300ms / 600ms / 1.2s / 2.5s / 5s
-    // (antes: 300ms / 800ms / 1.5s / 3s / 5s / 8s)
     const delays = [0, 100, 300, 600, 1200, 2500];
     final idx = _liveRetryCount.clamp(0, delays.length - 1);
     final delayMs = delays[idx];
