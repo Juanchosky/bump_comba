@@ -144,11 +144,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   Timer? _liveHealthMonitorTimer;
   int _liveStallSeconds = 0;
   Duration _lastLivePosition = Duration.zero;
-  int _liveNoMovementSeconds = 0;
   bool _isLiveChannel = true;
-  // Cooldown: prevent cascading recoveries (codec init takes ~3-5s)
-  DateTime _lastRecoveryTime = DateTime.fromMillisecondsSinceEpoch(0);
-  static const int _recoveryCooldownSeconds = 8;
 
   // Calidad Adaptativa Dinámica
   bool _isQualityCapped = false;
@@ -2520,70 +2516,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       _startInlineHideTimer();
       WakelockPlus.enable();
       _startLiveStallMonitor();
-      _startLiveHealthMonitor();
     }
-  }
-
-  void _startLiveHealthMonitor() {
-    Timer.periodic(const Duration(seconds: 3), (timer) {
-      if (!mounted || _livePlayer == null) {
-        timer.cancel();
-        return;
-      }
-      if (_liveVideoControllerNotifier.value == null) {
-        timer.cancel();
-        return;
-      }
-
-      final state = _livePlayer!.state;
-
-      // ── Fix pantalla negra con audio ──────────────────────────────
-      // Si hay audio pero el video reporta 0x0, forzar re-render del widget
-      // sin reiniciar el stream (mucho más rápido y sin corte de audio)
-      if (state.playing &&
-          !state.buffering &&
-          state.width != null &&
-          state.height != null &&
-          state.width == 0 &&
-          state.height == 0 &&
-          !_isLiveReloading &&
-          !_isLiveLoading) {
-        debugPrint(
-          'Health: pantalla negra detectada (0x0). Forzando re-render...',
-        );
-
-        // Primero intentar re-render sin reiniciar el player
-        if (mounted) {
-          setState(() {
-            _liveVideoControllerNotifier.value = null;
-          });
-          Future.delayed(const Duration(milliseconds: 100), () {
-            if (mounted) {
-              setState(() {
-                _liveVideoControllerNotifier.value = _liveVideoController;
-              });
-            }
-          });
-        }
-
-        // Si después de 5s sigue sin video, ahí sí recargamos el stream
-        Future.delayed(const Duration(seconds: 5), () {
-          if (!mounted || _livePlayer == null) return;
-          final s = _livePlayer!.state;
-          final secsSinceLastRecovery =
-              DateTime.now().difference(_lastRecoveryTime).inSeconds;
-          final inCooldown = secsSinceLastRecovery < _recoveryCooldownSeconds;
-          if (s.width == 0 &&
-              s.height == 0 &&
-              !_isLiveReloading &&
-              !inCooldown) {
-            debugPrint('Health: re-render no resolvió. Recargando stream...');
-            timer.cancel();
-            _reloadLiveSignal();
-          }
-        });
-      }
-    });
   }
 
   void _onLiveDurationTick(Timer timer) {
@@ -2676,7 +2609,22 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     await s('demuxer-max-bytes', '67108864'); // 64 MB (era 1 GB)
     await s('demuxer-max-back-bytes', '16777216'); // 16 MB (era 256 MB)
     await s('demuxer-readahead-secs', '12'); // era 90
-
+    // Reemplaza las líneas de framedrop y video-sync existentes con estas:
+    await s('framedrop', 'vo');
+    await s('video-sync', 'audio');
+    await s(
+      'vd-lavc-dr',
+      'no',
+    ); // desactivar direct rendering — reduce BLASTBufferQueue overflow
+    await s('video-latency-hacks', 'yes');
+    await s(
+      'vo-queue-size',
+      '2',
+    ); // limitar cola de frames de salida a 2 (default es 8)
+    await s(
+      'opengl-early-flush',
+      'yes',
+    ); // flush anticipado, libera Surface más rápido
     // ── RED: falla rápido, reconecta al instante ───────────────────
     await s(
       'network-timeout',
@@ -2771,7 +2719,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   void _startLiveStallMonitor() {
     _liveHealthMonitorTimer?.cancel();
     _liveStallSeconds = 0;
-    _liveNoMovementSeconds = 0;
     _lastLivePosition = Duration.zero;
 
     _liveHealthMonitorTimer = Timer.periodic(const Duration(seconds: 1), (
@@ -2785,7 +2732,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         timer.cancel();
         return;
       }
-      if (_isLiveReloading) return; // solo esperar, no resetear contadores
+      if (_isLiveReloading) return;
 
       final state = _livePlayer!.state;
       final currentPos = state.position;
@@ -2799,23 +2746,23 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       if (isStuck) {
         _liveStallSeconds++;
 
+        // Spinner al primer segundo
         if (_liveStallSeconds == 1 && mounted) {
           setState(() => _isLiveLoading = true);
         }
 
-        if (_liveStallSeconds >= 3) {
-          debugPrint('⚡ Atasco ${_liveStallSeconds}s → recargando');
+        // Reload al segundo 1 — inmediato
+        if (_liveStallSeconds >= 1) {
+          debugPrint('⚡ Atasco ${_liveStallSeconds}s → reload inmediato');
+          _liveStallSeconds = 0;
           timer.cancel();
           _doImmediateReload();
         }
       } else {
         if (_liveStallSeconds > 0) {
-          debugPrint('✅ Recuperado tras $_liveStallSeconds s');
           _liveStallSeconds = 0;
           if (mounted) setState(() => _isLiveLoading = false);
         }
-        _liveStallSeconds = 0;
-        _liveNoMovementSeconds = 0;
       }
 
       _lastLivePosition = currentPos;
@@ -2827,8 +2774,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     if (_livePlayer == null || _currentLiveChannel == null) return;
 
     _liveRetryCount++;
-    _lastRecoveryTime = DateTime.now();
 
+    // Mostrar spinner pero NO tocar el controller notifier
+    // → el Video widget sigue mostrando el último frame (no pantalla negra)
     if (mounted)
       setState(() {
         _isLiveReloading = true;
@@ -2836,6 +2784,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       });
 
     try {
+      // open() hace flush+reinit del codec pero la Surface queda conectada
+      // → el usuario ve el spinner sobre el último frame, no negro
       await _livePlayer!
           .open(
             Media(
@@ -2850,27 +2800,27 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             ),
             play: true,
           )
-          .timeout(const Duration(seconds: 8));
+          .timeout(const Duration(seconds: 6));
 
       if (mounted) {
         setState(() {
           _isLiveReloading = false;
           _isLiveLoading = false;
         });
-        _liveStallSeconds = 0;
-        _triggerSurfaceRefresh();
+        // NO llamar _triggerSurfaceRefresh() — eso causa el flash negro
       }
     } catch (e) {
-      debugPrint('Reload falló ($e) → reinicio completo');
-      if (mounted) {
+      debugPrint('Reload falló: $e');
+      if (mounted)
         setState(() {
           _isLiveReloading = false;
           _isLiveLoading = false;
         });
-      }
-      // Si open() falla totalmente, reinicio completo del player
+
+      // Si falla, reinicio completo del player (último recurso)
       if (_liveRetryCount <= 5) {
-        _doImmediateReload(); // reintentar directamente
+        await Future.delayed(const Duration(milliseconds: 500));
+        if (mounted) _doImmediateReload();
       } else {
         _liveRetryCount = 0;
         final channel = _currentLiveChannel!;
@@ -2880,7 +2830,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       }
     }
 
-    // Reiniciar monitor solo si seguimos en el mismo canal
+    // Esperar que el codec inicialice antes de reanudar el monitor
     await Future.delayed(const Duration(seconds: 2));
     if (mounted && _livePlayer != null && _currentLiveChannel != null) {
       _startLiveStallMonitor();
@@ -2891,7 +2841,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   Future<void> _quickReopenStream() async {
     if (_livePlayer == null || _currentLiveChannel == null) return;
 
-    _lastRecoveryTime = DateTime.now();
     _liveRetryCount++;
 
     if (_liveRetryCount >= 5 && !_isQualityCapped) {
@@ -2968,30 +2917,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     }
   }
 
-  Future<void> _seekToLiveEdge() async {
-    if (_livePlayer == null) return;
-    // Solo actualizar el cooldown si no es el primer intento (stall == 1)
-    // para no bloquear el seek inmediato
-    if (_liveStallSeconds > 1 || _liveNoMovementSeconds > 1) {
-      _lastRecoveryTime = DateTime.now();
-    }
-
-    try {
-      final platform = _livePlayer!.platform as dynamic;
-      await platform?.setProperty('playback-time', '999999');
-      await Future.delayed(const Duration(milliseconds: 150));
-      _triggerSurfaceRefresh();
-    } catch (_) {
-      try {
-        final dur = _livePlayer!.state.duration;
-        if (dur > const Duration(seconds: 2)) {
-          await _livePlayer!.seek(dur - const Duration(milliseconds: 500));
-          _triggerSurfaceRefresh();
-        }
-      } catch (_) {}
-    }
-  }
-
   Future<void> _reloadLiveSignal() async {
     if (!mounted ||
         _currentLiveChannel == null ||
@@ -3005,8 +2930,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     const delays = [0, 100, 300, 600, 1200, 2500];
     final idx = _liveRetryCount.clamp(0, delays.length - 1);
     final delayMs = delays[idx];
-
-    _lastRecoveryTime = DateTime.now();
 
     if (_liveRetryCount >= 2 && !_isQualityCapped) {
       _isQualityCapped = true;
@@ -3861,60 +3784,72 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   }
 
   Widget _buildLiveChannelTile(M3UItem item, int index) {
+    final bool isPlaying = _currentLiveChannel?.url == item.url;
+
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      title: Row(
-        children: [
-          Text(
-            (index + 1).toString().padLeft(3, '0'),
-            style: const TextStyle(
-              color: Colors.red,
-              fontSize: 14,
-              fontWeight: FontWeight.bold,
-              fontFamily: 'monospace',
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              item.name,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 15,
-                fontWeight: FontWeight.w500,
-              ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ],
-      ),
-      subtitle: Padding(
-        padding: const EdgeInsets.only(left: 36),
-        child: Text(
-          item.category,
-          style: TextStyle(
-            color: Colors.white.withValues(alpha: 0.4),
-            fontSize: 12,
+      leading: Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          color: const Color(0xFF1a1a1a),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: isPlaying ? Colors.red : Colors.white12,
+            width: isPlaying ? 1.5 : 0.5,
           ),
         ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(7),
+          child:
+              item.logo != null && item.logo!.isNotEmpty
+                  ? FastThumbnail(
+                    url: item.logo,
+                    title: item.name,
+                    width: 48,
+                    height: 48,
+                    fit: BoxFit.contain,
+                    cacheWidth: 96,
+                  )
+                  : Center(
+                    child: Icon(
+                      CupertinoIcons.tv,
+                      size: 22,
+                      color: Colors.white.withValues(alpha: 0.3),
+                    ),
+                  ),
+        ),
+      ),
+      title: Text(
+        item.name,
+        style: TextStyle(
+          color: isPlaying ? Colors.red : Colors.white,
+          fontSize: 15,
+          fontWeight: isPlaying ? FontWeight.w600 : FontWeight.w500,
+        ),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      subtitle: Text(
+        item.category,
+        style: TextStyle(
+          color: Colors.white.withValues(alpha: 0.4),
+          fontSize: 12,
+        ),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
       ),
       trailing: IconButton(
         icon: Icon(
-          Icons.arrow_circle_right_outlined,
-          color:
-              _currentLiveChannel?.url == item.url
-                  ? Colors.red
-                  : Colors.white.withValues(alpha: 0.2),
+          isPlaying ? Icons.stop_circle_outlined : Icons.play_circle_outline,
+          color: isPlaying ? Colors.red : Colors.white.withValues(alpha: 0.3),
           size: 28,
         ),
         onPressed: () => _playLiveChannel(item),
       ),
       onTap: () => _playLiveChannel(item),
       onLongPress: () async {
-        // If removing favorite, always allow
         if (!item.isFavorite) {
-          // Check live-specific limit for free users
           final liveFavCount =
               _m3uService.getFavorites().where((i) => i.isLive).length;
           if (!PremiumService().canAddLiveFavorite(liveFavCount)) {
