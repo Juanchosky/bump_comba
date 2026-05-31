@@ -55,34 +55,44 @@ class PremiumService {
   static const String _pcManagementUrl =
       'https://bump-comba-landing.vercel.app/';
 
+  // Daily Promo (Sobre Rojo) State
+  static const String _dailyPromoExpiresKey = 'daily_promo_expires_at';
+  String? _dailyPromoExpiresAt;
+
   // Stream controller for premium status changes
   final _premiumStatusController = StreamController<bool>.broadcast();
   Stream<bool> get premiumStream => _premiumStatusController.stream;
 
   /// Get current premium status (cached, fast access)
-  /// bool get isPremium => _isPremium;
+  bool get isPremium => _isPremium;
 
   /// Check if user has any active premium entitlement
-  /// bool get hasActiveSubscription => _isPremium;
+  bool get hasActiveSubscription => _isPremium;
 
-  bool get isPremium => kDebugMode ? true : _isPremium;
+  /// bool get isPremium => kDebugMode ? true : _isPremium;
 
-  bool get hasActiveSubscription => isPremium;
+  /// bool get hasActiveSubscription => isPremium;
+
+  /// Whether premium came from a daily promo (Sobre Rojo)
+  bool get isDailyPromoPremium => _dailyPromoExpiresAt != null;
 
   /// Get the expiration date of the active subscription
   String? get expirationDate {
-    // 1. Check if we have a PC License active first
+    // 1. Daily promo takes priority over PC license when both are present
+    if (_dailyPromoExpiresAt != null) {
+      return _dailyPromoExpiresAt;
+    }
+
+    // 2. Check if we have a PC License active
     if (_pcExpirationDate != null) {
       return _pcExpirationDate;
     }
 
-    // 2. Fallback to Debug or RevenueCat
+    // 3. Fallback to Debug or RevenueCat
     if (kDebugMode) {
-      // Return a fake date for testing UI
       return DateTime.now().add(const Duration(days: 30)).toIso8601String();
     }
     if (_customerInfo?.entitlements.active.isNotEmpty ?? false) {
-      // Get the most recent active entitlement
       final entitlement = _customerInfo!.entitlements.active.values.first;
       return entitlement.expirationDate;
     }
@@ -100,14 +110,19 @@ class PremiumService {
     return null;
   }
 
-  /// Get unique device ID (Hardware ID) for Windows
+  /// Get unique device ID — supports Android, iOS, and Windows
   Future<String?> _getDeviceId() async {
     try {
       if (kIsWeb) return null;
       final deviceInfo = DeviceInfoPlugin();
-      if (defaultTargetPlatform == TargetPlatform.windows) {
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        final androidInfo = await deviceInfo.androidInfo;
+        return androidInfo.id; // Android ID (stable per device/user)
+      } else if (defaultTargetPlatform == TargetPlatform.iOS) {
+        final iosInfo = await deviceInfo.iosInfo;
+        return iosInfo.identifierForVendor;
+      } else if (defaultTargetPlatform == TargetPlatform.windows) {
         final windowsInfo = await deviceInfo.windowsInfo;
-        // deviceId on Windows is usually a unique hardware identifier
         return windowsInfo.deviceId;
       }
       return null;
@@ -116,6 +131,9 @@ class PremiumService {
       return null;
     }
   }
+
+  /// Public: get device ID for use in daily promo redemption
+  Future<String?> getDailyPromoDeviceId() => _getDeviceId();
 
   // ═══════════════════════════════════════════════════════════════════════════
   // INITIALIZATION
@@ -135,7 +153,17 @@ class PremiumService {
       // Ensure Supabase is initialized before checking PC license
       await M3UService.initializeSupabase();
 
-      // 1. Check PC License completely bypasses RevenueCat if valid
+      // 1. Check Daily Promo first (works on all platforms)
+      final dailyPromoResult = await _validateStoredDailyPromo();
+      if (dailyPromoResult) {
+        _isPremium = true;
+        _isInitialized = true;
+        _premiumStatusController.add(_isPremium);
+        debugPrint('Premium: Daily promo (Sobre Rojo) is valid and active');
+        // Still allow RevenueCat check to run for mobile users who also have a paid sub
+      }
+
+      // 2. Check PC License completely bypasses RevenueCat if valid
       if (!_isSupported) {
         final pcKeyResult = await _validateStoredPCLicense();
         if (pcKeyResult) {
@@ -145,6 +173,8 @@ class PremiumService {
           debugPrint('Premium: PC License is valid and active');
           return;
         }
+        if (dailyPromoResult)
+          return; // Daily promo already set, skip RevenueCat on PC
       }
 
       // Configure RevenueCat
@@ -457,6 +487,150 @@ class PremiumService {
         return true;
       }
       return false;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // DAILY PROMO (SOBRE ROJO) MANAGEMENT
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /// Validates a stored daily promo on app startup.
+  /// Returns true if a non-expired daily promo exists for this device.
+  Future<bool> _validateStoredDailyPromo() async {
+    try {
+      final storedExpires = _prefs?.getString(_dailyPromoExpiresKey);
+      if (storedExpires == null) return false;
+
+      final expiresAt = DateTime.tryParse(storedExpires);
+      if (expiresAt == null) {
+        await _clearDailyPromoCache();
+        return false;
+      }
+
+      if (DateTime.now().isAfter(expiresAt)) {
+        debugPrint('Premium: Daily promo expired');
+        await _clearDailyPromoCache();
+        return false;
+      }
+
+      // Server-side verification: ensure the redemption record still exists
+      final deviceId = await _getDeviceId();
+      if (deviceId != null) {
+        final redemption =
+            await Supabase.instance.client
+                .from('daily_redemptions')
+                .select('expires_at')
+                .eq('device_id', deviceId)
+                .gt('expires_at', DateTime.now().toIso8601String())
+                .maybeSingle();
+
+        if (redemption == null) {
+          debugPrint('Premium: Daily promo not found on server, revoking');
+          await _clearDailyPromoCache();
+          return false;
+        }
+
+        // Refresh local expiry from server (anti-patching)
+        final serverExpiry = redemption['expires_at'] as String;
+        _dailyPromoExpiresAt = serverExpiry;
+        await _prefs?.setString(_dailyPromoExpiresKey, serverExpiry);
+      } else {
+        // Offline fallback: trust local cache
+        _dailyPromoExpiresAt = storedExpires;
+      }
+
+      return true;
+    } catch (e) {
+      debugPrint('Premium: Error validating daily promo: $e');
+      // Offline: trust local cache to avoid locking users out
+      final storedExpires = _prefs?.getString(_dailyPromoExpiresKey);
+      if (storedExpires != null) {
+        final expiresAt = DateTime.tryParse(storedExpires);
+        if (expiresAt != null && DateTime.now().isBefore(expiresAt)) {
+          _dailyPromoExpiresAt = storedExpires;
+          return true;
+        }
+      }
+      return false;
+    }
+  }
+
+  Future<void> _clearDailyPromoCache() async {
+    _dailyPromoExpiresAt = null;
+    await _prefs?.remove(_dailyPromoExpiresKey);
+  }
+
+  /// UI-facing: Redeem a daily promo code (Sobre Rojo).
+  /// Calls the atomic Supabase function for server-side validation.
+  Future<Map<String, dynamic>> redeemDailyPromoCode(String code) async {
+    try {
+      final cleanCode = code.trim().toUpperCase();
+      if (cleanCode.isEmpty) {
+        return {'success': false, 'message': 'El código no puede estar vacío.'};
+      }
+
+      final deviceId = await _getDeviceId();
+      if (deviceId == null || deviceId.isEmpty) {
+        return {
+          'success': false,
+          'message': 'No se pudo identificar tu dispositivo. Intenta de nuevo.',
+        };
+      }
+
+      // Call the atomic Supabase function — all validation happens server-side
+      final response = await Supabase.instance.client.rpc(
+        'redeem_daily_promo_code',
+        params: {'p_code': cleanCode, 'p_device_id': deviceId},
+      );
+
+      if (response == null) {
+        return {
+          'success': false,
+          'message': 'Error de conexión. Intenta de nuevo.',
+        };
+      }
+
+      final result = Map<String, dynamic>.from(response as Map);
+
+      if (result['success'] == true) {
+        final expiresAt = result['expires_at'] as String;
+
+        // Activate premium locally
+        _dailyPromoExpiresAt = expiresAt;
+        _isPremium = true;
+        await _prefs?.setString(_dailyPromoExpiresKey, expiresAt);
+        _prefs?.setBool(_premiumCacheKey, true);
+        _premiumStatusController.add(true);
+
+        debugPrint('Premium: Daily promo activated. Expires: $expiresAt');
+      }
+
+      return result;
+    } catch (e) {
+      debugPrint('Premium: Daily promo redemption error: $e');
+      return {
+        'success': false,
+        'message': 'Error de conexión. Intenta de nuevo.',
+      };
+    }
+  }
+
+  /// UI-facing: Check a code status without redeeming it.
+  /// Use this to show live feedback as the user types.
+  Future<Map<String, dynamic>> checkDailyPromoCode(String code) async {
+    try {
+      final cleanCode = code.trim().toUpperCase();
+      if (cleanCode.length < 4) return {'valid': false, 'message': ''};
+
+      final deviceId = await _getDeviceId();
+      final response = await Supabase.instance.client.rpc(
+        'check_daily_promo_code',
+        params: {'p_code': cleanCode, 'p_device_id': deviceId ?? 'unknown'},
+      );
+      if (response == null) return {'valid': false, 'message': ''};
+      return Map<String, dynamic>.from(response as Map);
+    } catch (e) {
+      return {'valid': false, 'message': ''};
     }
   }
 

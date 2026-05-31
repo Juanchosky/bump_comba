@@ -1,6 +1,7 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../services/game_config_service.dart';
 import '../services/m3u_service.dart';
 import '../services/performance_service.dart';
@@ -23,6 +24,7 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
   final M3UService _m3uService = M3UService();
   final GameConfigService _gameConfigService = GameConfigService();
   final PerformanceService _performanceService = PerformanceService();
+  final PremiumService _premiumService = PremiumService();
   bool _isLoading = false;
   bool _wasDataChanged = false;
 
@@ -68,140 +70,120 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
               fontSize: 20,
             ),
           ),
-        actions: [
-          IconButton(
-            icon: const Icon(CupertinoIcons.add_circled, color: Colors.red),
-            onPressed: _showAddSourceDialog,
-          ),
-          const SizedBox(width: 4),
-        ],
-      ),
-      body: Stack(
-        children: [
-          ListView(
-            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-            children: [
-              // -- REPRODUCCIÓN ------------------------------------------
-              _buildSectionHeader('Reproducción'),
-              const SizedBox(height: 8),
-              _buildCard([
-                _buildSwitchRow(
-                  icon: CupertinoIcons.play_circle_fill,
-                  title: 'Inicio Directo',
-                  subtitle:
-                      _gameConfigService.skipGameIntro
-                          ? 'Salta el juego al iniciar'
-                          : 'Va al juego primero',
-                  value: _gameConfigService.skipGameIntro,
-                  onChanged: (val) async {
-                    await _gameConfigService.setSkipGameIntro(val);
-                    setState(() {});
-                  },
-                  isLast: false,
-                ),
-                _buildDivider(),
-                _buildSwitchRow(
-                  icon: CupertinoIcons.speaker_2_fill,
-                  title: 'Normalizar Volumen',
-                  subtitle: 'Volumen uniforme entre canales',
-                  value: _gameConfigService.volumeNormalize,
-                  onChanged: (val) async {
-                    await _gameConfigService.setVolumeNormalize(val);
-                    setState(() {});
-                  },
-                  isLast: false,
-                ),
-                _buildDivider(),
-                _buildTapRow(
-                  icon: CupertinoIcons.bolt_fill,
-                  title: 'Efectos Visuales',
-                  subtitle: _getPerformanceModeText(),
-                  onTap: _showPerformanceConfigDialog,
-                  isLast: false,
-                ),
-                _buildDivider(),
-                _buildSwitchRow(
-                  icon: CupertinoIcons.photo,
-                  title: 'Ahorro de Datos',
-                  subtitle: 'Imágenes en baja resolución (carga ultra rápida)',
-                  value: FastImageService.forceLowQuality,
-                  onChanged: (val) async {
-                    await FastImageService.setForceLowQuality(val);
-                    setState(() {});
-                  },
-                  isLast: true,
-                ),
-              ]),
-
-              const SizedBox(height: 24),
-
-              // -- FUENTES -----------------------------------------------
-              _buildSectionHeader('Fuentes de Contenido'),
-              const SizedBox(height: 8),
-
-              // Modo Unificado card
-              _buildCard([
-                _buildSwitchRow(
-                  icon: CupertinoIcons.square_stack_3d_up_fill,
-                  title: 'Modo Unificado',
-                  subtitle: 'Combina todas tus listas en una sola vista',
-                  value: _m3uService.isUnifiedMode,
-                  isPro: !PremiumService().isPremium,
-                  onChanged: (val) async {
-                    if (!PremiumService().isPremium) {
-                      final result = await Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => const SubscriptionScreen(),
-                        ),
-                      );
-                      if (result == true && mounted) setState(() {});
-                      return;
-                    }
-                    await _m3uService.setUnifiedMode(val);
-                    _wasDataChanged = true;
-                    setState(() {});
-                    if (mounted) {
-                      Navigator.pop(
-                        context,
-                        true,
-                      ); // Close config screen to trigger auto-refresh
-                    }
-                  },
-                  isLast: true,
-                ),
-              ]),
-
-              const SizedBox(height: 12),
-
-              // Sources list
-              if (sources.isEmpty)
-                _buildEmptySources()
-              else
-                ...List.generate(sources.length, (index) {
-                  final source = sources[index];
-                  final isActive = index == activeIndex;
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: _buildSourceCard(index, source, isActive),
-                  );
-                }),
-
-              const SizedBox(height: 40),
-            ],
-          ),
-          if (_isLoading)
-            Container(
-              color: Colors.black54,
-              child: const Center(
-                child: CircularProgressIndicator(color: Colors.red),
-              ),
+          actions: [
+            IconButton(
+              icon: const Icon(CupertinoIcons.add_circled, color: Colors.red),
+              onPressed: _showAddSourceDialog,
             ),
-        ],
+            const SizedBox(width: 4),
+          ],
+        ),
+        body: Stack(
+          children: [
+            ListView(
+              padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+              children: [
+                // -- REPRODUCCIÓN ------------------------------------------
+                _buildSectionHeader('Reproducción'),
+                const SizedBox(height: 8),
+                _buildCard([
+                  _buildSwitchRow(
+                    icon: CupertinoIcons.play_circle_fill,
+                    title: 'Inicio Directo',
+                    subtitle:
+                        _gameConfigService.skipGameIntro
+                            ? 'Salta el juego al iniciar'
+                            : 'Va al juego primero',
+                    value: _gameConfigService.skipGameIntro,
+                    onChanged: (val) async {
+                      await _gameConfigService.setSkipGameIntro(val);
+                      setState(() {});
+                    },
+                    isLast: false,
+                  ),
+                  _buildDivider(),
+                  _buildSwitchRow(
+                    icon: CupertinoIcons.speaker_2_fill,
+                    title: 'Normalizar Volumen',
+                    subtitle: 'Volumen uniforme entre canales',
+                    value: _gameConfigService.volumeNormalize,
+                    onChanged: (val) async {
+                      await _gameConfigService.setVolumeNormalize(val);
+                      setState(() {});
+                    },
+                    isLast: false,
+                  ),
+                  _buildDivider(),
+                  _buildTapRow(
+                    icon: CupertinoIcons.bolt_fill,
+                    title: 'Efectos Visuales',
+                    subtitle: _getPerformanceModeText(),
+                    onTap: _showPerformanceConfigDialog,
+                    isLast: true,
+                  ),
+                ]),
+
+                const SizedBox(height: 24),
+
+                // -- FUENTES -----------------------------------------------
+                _buildSectionHeader('Fuentes de Contenido'),
+                const SizedBox(height: 8),
+
+                // Sources list
+                if (sources.isEmpty)
+                  _buildEmptySources()
+                else
+                  ...List.generate(sources.length, (index) {
+                    final source = sources[index];
+                    final isActive = index == activeIndex;
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: _buildSourceCard(index, source, isActive),
+                    );
+                  }),
+
+                const SizedBox(height: 32),
+
+                // -- COMUNIDAD (solo para usuarios sin premium) -----------
+                if (!_premiumService.isPremium) ...[
+                  _buildSectionHeader('Comunidad'),
+                  const SizedBox(height: 8),
+                  _buildCard([
+                    _buildTapRow(
+                      icon: CupertinoIcons.gift_fill,
+                      title: 'Sobre Rojo',
+                      subtitle: 'Código de comunidad · cupo diario limitado',
+                      onTap: _showSobreRojoDialog,
+                      isLast: false,
+                      iconColor: Colors.red,
+                    ),
+                    _buildDivider(),
+                    _buildTapRow(
+                      icon: CupertinoIcons.paperplane_fill,
+                      title: 'Canal de Telegram',
+                      subtitle: 'Únete para recibir los códigos diarios',
+                      onTap: _openTelegram,
+                      isLast: true,
+                      iconColor: const Color(0xFF29B6F6),
+                    ),
+                  ]),
+                  const SizedBox(height: 40),
+                ] else
+                  const SizedBox(height: 40),
+              ],
+            ),
+            if (_isLoading)
+              Container(
+                color: Colors.black54,
+                child: const Center(
+                  child: CircularProgressIndicator(color: Colors.red),
+                ),
+              ),
+          ],
+        ),
       ),
-    ),
-  );
-}
+    );
+  }
 
   // -- SECTION HEADER ----------------------------------------------------------
 
@@ -588,6 +570,40 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
 
   // -- DIALOGS -----------------------------------------------------------------
 
+  /// Opens the Telegram channel for daily promo codes
+  Future<void> _openTelegram() async {
+    // TODO: Replace this URL with your actual Telegram channel link
+    const telegramUrl = 'https://t.me/+0og3wmaKjkIwMzlh';
+    final uri = Uri.parse(telegramUrl);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } else {
+      if (mounted) {
+        SnackBarUtils.showAppSnackBar(context, 'No se pudo abrir Telegram');
+      }
+    }
+  }
+
+  /// Shows the Sobre Rojo promo code bottom sheet
+  void _showSobreRojoDialog() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        return Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(context).viewInsets.bottom,
+          ),
+          child: _SobreRojoSheet(premiumService: _premiumService),
+        );
+      },
+    ).then((_) {
+      // Refresh UI in case premium status changed
+      if (mounted) setState(() {});
+    });
+  }
+
   void _showPerformanceConfigDialog() {
     showModalBottomSheet(
       context: context,
@@ -778,18 +794,18 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
                                 _m3uService.sources.length - 1,
                               );
                               setState(() => _isLoading = false);
-                                if (mounted) {
-                                  Navigator.pop(context, true);
-                                }
-                              } else {
-                                setState(() => _isLoading = false);
-                                if (mounted) {
-                                  SnackBarUtils.showAppSnackBar(
-                                    context,
-                                    'URL no válidos',
-                                  );
-                                }
+                              if (mounted) {
+                                Navigator.pop(context, true);
                               }
+                            } else {
+                              setState(() => _isLoading = false);
+                              if (mounted) {
+                                SnackBarUtils.showAppSnackBar(
+                                  context,
+                                  'URL no válidos',
+                                );
+                              }
+                            }
                           },
                           isPrimary: true,
                         ),
@@ -1000,5 +1016,462 @@ class _AppBottomSheet extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+// -- SOBRE ROJO BOTTOM SHEET --------------------------------------------------
+
+class _SobreRojoSheet extends StatefulWidget {
+  final PremiumService premiumService;
+  const _SobreRojoSheet({required this.premiumService});
+
+  @override
+  State<_SobreRojoSheet> createState() => _SobreRojoSheetState();
+}
+
+class _SobreRojoSheetState extends State<_SobreRojoSheet>
+    with SingleTickerProviderStateMixin {
+  final _controller = TextEditingController();
+  final _focusNode = FocusNode();
+
+  // State
+  bool _isLoading = false;
+  bool _isRedeeming = false;
+  bool _success = false;
+
+  // Live check result
+  String _statusMessage = '';
+  bool? _isCodeValid; // null = no check yet
+  int _spotsLeft = 0;
+  int _bonusDays = 1;
+
+  // Debounce
+  DateTime _lastCheck = DateTime(0);
+
+  // Animation
+  late AnimationController _shakeController;
+  late Animation<double> _shakeAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _shakeController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 400),
+    );
+    _shakeAnimation = Tween<double>(begin: 0, end: 1).animate(
+      CurvedAnimation(parent: _shakeController, curve: Curves.elasticIn),
+    );
+    _controller.addListener(_onCodeChanged);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _focusNode.dispose();
+    _shakeController.dispose();
+    super.dispose();
+  }
+
+  void _onCodeChanged() {
+    final code = _controller.text.trim();
+    if (code.length < 3) {
+      setState(() {
+        _isCodeValid = null;
+        _statusMessage = '';
+      });
+      return;
+    }
+    final now = DateTime.now();
+    if (now.difference(_lastCheck).inMilliseconds < 600) return;
+    _lastCheck = now;
+    _liveCheck(code);
+  }
+
+  Future<void> _liveCheck(String code) async {
+    setState(() => _isLoading = true);
+    final result = await widget.premiumService.checkDailyPromoCode(code);
+    if (!mounted) return;
+    setState(() {
+      _isLoading = false;
+      _isCodeValid = result['valid'] == true;
+      _statusMessage = result['message'] as String? ?? '';
+      _spotsLeft = (result['spots_left'] as int?) ?? 0;
+      _bonusDays = (result['bonus_days'] as int?) ?? 1;
+    });
+  }
+
+  Future<void> _redeem() async {
+    _focusNode.unfocus();
+    final code = _controller.text.trim();
+    if (code.isEmpty) return;
+
+    setState(() => _isRedeeming = true);
+    final result = await widget.premiumService.redeemDailyPromoCode(code);
+    if (!mounted) return;
+    setState(() => _isRedeeming = false);
+
+    if (result['success'] == true) {
+      setState(() => _success = true);
+      // Show success then close
+      await Future.delayed(const Duration(milliseconds: 1800));
+      if (mounted) Navigator.pop(context);
+    } else {
+      // Shake animation on error
+      _shakeController.forward(from: 0);
+      setState(() {
+        _isCodeValid = false;
+        _statusMessage = result['message'] as String? ?? 'Error desconocido';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: Color(0xFF111111),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 12),
+          // Handle
+          Center(
+            child: Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.2),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+
+          // Header
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Row(
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: Colors.red.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Icon(
+                    CupertinoIcons.gift_fill,
+                    color: Colors.red,
+                    size: 20,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Sobre Rojo',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    Text(
+                      'Código de comunidad · cupo limitado',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.4),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 16),
+          Divider(height: 1, color: Colors.white.withValues(alpha: 0.07)),
+          const SizedBox(height: 20),
+
+          if (_success) _buildSuccessState() else _buildInputState(),
+
+          SizedBox(height: MediaQuery.of(context).padding.bottom + 12),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSuccessState() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+      child: Column(
+        children: [
+          Container(
+            width: 72,
+            height: 72,
+            decoration: BoxDecoration(
+              color: Colors.green.withValues(alpha: 0.12),
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: Colors.green.withValues(alpha: 0.4),
+                width: 2,
+              ),
+            ),
+            child: const Icon(
+              CupertinoIcons.checkmark_alt_circle_fill,
+              color: Colors.green,
+              size: 36,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            '¡Acceso especial activado por $_bonusDays día${_bonusDays > 1 ? 's' : ''}!',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '¡Disfruta Bump Comba al máximo! 🎉',
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.5),
+              fontSize: 14,
+            ),
+          ),
+          const SizedBox(height: 24),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInputState() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Info banner
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.red.withValues(alpha: 0.07),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: Colors.red.withValues(alpha: 0.2),
+                width: 1,
+              ),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  CupertinoIcons.info_circle,
+                  color: Colors.red.withValues(alpha: 0.7),
+                  size: 16,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Los códigos se publican diariamente en el canal de Telegram. Válidos solo el día indicado.',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.55),
+                      fontSize: 12,
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // Code input with live feedback
+          AnimatedBuilder(
+            animation: _shakeAnimation,
+            builder: (context, child) {
+              final offset =
+                  _shakeController.isAnimating
+                      ? 6.0 *
+                          (0.5 - (_shakeAnimation.value - 0.5).abs()) *
+                          (_shakeAnimation.value < 0.5 ? 1 : -1)
+                      : 0.0;
+              return Transform.translate(
+                offset: Offset(offset * 8, 0),
+                child: child,
+              );
+            },
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color:
+                      _isCodeValid == null
+                          ? Colors.white.withValues(alpha: 0.1)
+                          : _isCodeValid!
+                          ? Colors.green.withValues(alpha: 0.5)
+                          : Colors.red.withValues(alpha: 0.5),
+                  width: 1.5,
+                ),
+              ),
+              child: Row(
+                children: [
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: TextField(
+                      controller: _controller,
+                      focusNode: _focusNode,
+                      autofocus: true,
+                      textCapitalization: TextCapitalization.characters,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 3,
+                      ),
+                      decoration: InputDecoration(
+                        hintText: 'CÓDIGO',
+                        hintStyle: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.2),
+                          fontSize: 18,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 3,
+                        ),
+                        border: InputBorder.none,
+                        contentPadding: const EdgeInsets.symmetric(
+                          vertical: 16,
+                        ),
+                      ),
+                    ),
+                  ),
+                  // Status indicator
+                  Padding(
+                    padding: const EdgeInsets.only(right: 12),
+                    child: _buildStatusIcon(),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 10),
+
+          // Status message
+          AnimatedOpacity(
+            opacity: _statusMessage.isNotEmpty ? 1.0 : 0.0,
+            duration: const Duration(milliseconds: 200),
+            child: Padding(
+              padding: const EdgeInsets.only(left: 4),
+              child: Row(
+                children: [
+                  if (_isCodeValid == true) ...[
+                    Text(
+                      '¡Valid! · $_bonusDays día${_bonusDays > 1 ? 's' : ''} de acceso',
+                      style: TextStyle(
+                        color: Colors.green.withValues(alpha: 0.9),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ] else if (_isCodeValid == false) ...[
+                    Icon(
+                      CupertinoIcons.xmark_circle_fill,
+                      size: 13,
+                      color: Colors.red.withValues(alpha: 0.8),
+                    ),
+                    const SizedBox(width: 5),
+                    Expanded(
+                      child: Text(
+                        _statusMessage,
+                        style: TextStyle(
+                          color: Colors.red.withValues(alpha: 0.8),
+                          fontSize: 12,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 20),
+
+          // Activate button
+          SizedBox(
+            width: double.infinity,
+            height: 52,
+            child: ElevatedButton(
+              onPressed:
+                  (_isRedeeming || _isCodeValid != true) ? null : _redeem,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                disabledBackgroundColor: Colors.white.withValues(alpha: 0.06),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                elevation: 0,
+              ),
+              child:
+                  _isRedeeming
+                      ? const SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(
+                          color: Colors.white,
+                          strokeWidth: 2.5,
+                        ),
+                      )
+                      : const Text(
+                        'Activar acceso',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+            ),
+          ),
+
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatusIcon() {
+    if (_isLoading) {
+      return SizedBox(
+        width: 18,
+        height: 18,
+        child: CircularProgressIndicator(
+          strokeWidth: 2,
+          color: Colors.white.withValues(alpha: 0.3),
+        ),
+      );
+    }
+    if (_isCodeValid == true) {
+      return const Icon(
+        CupertinoIcons.checkmark_circle_fill,
+        color: Colors.green,
+        size: 22,
+      );
+    }
+    if (_isCodeValid == false) {
+      return Icon(
+        CupertinoIcons.xmark_circle_fill,
+        color: Colors.red.withValues(alpha: 0.7),
+        size: 22,
+      );
+    }
+    return const SizedBox.shrink();
   }
 }
