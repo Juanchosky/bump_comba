@@ -5,12 +5,10 @@ import 'package:url_launcher/url_launcher.dart';
 import '../services/game_config_service.dart';
 import '../services/m3u_service.dart';
 import '../services/performance_service.dart';
-import '../services/fast_image_service.dart';
 
 import '../services/premium_service.dart';
 import '../utils/colors.dart';
 import '../utils/snack_bar_utils.dart';
-import 'subscription_screen.dart';
 
 class StreamBrowserConfigScreen extends StatefulWidget {
   const StreamBrowserConfigScreen({super.key});
@@ -1042,7 +1040,6 @@ class _SobreRojoSheetState extends State<_SobreRojoSheet>
   // Live check result
   String _statusMessage = '';
   bool? _isCodeValid; // null = no check yet
-  int _spotsLeft = 0;
   int _bonusDays = 1;
 
   // Debounce
@@ -1096,7 +1093,6 @@ class _SobreRojoSheetState extends State<_SobreRojoSheet>
       _isLoading = false;
       _isCodeValid = result['valid'] == true;
       _statusMessage = result['message'] as String? ?? '';
-      _spotsLeft = (result['spots_left'] as int?) ?? 0;
       _bonusDays = (result['bonus_days'] as int?) ?? 1;
     });
   }
