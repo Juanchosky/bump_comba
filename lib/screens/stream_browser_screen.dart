@@ -30,7 +30,6 @@ import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'subscription_screen.dart';
 import '../utils/colors.dart';
-import '../widgets/native_ad_widget.dart';
 import 'stream_browser_config_screen.dart';
 import 'settings_screen.dart';
 import '../services/social_rewards_service.dart';
@@ -118,7 +117,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   DateTime? _lastPressedAt;
 
   // Live TV Sub-state
-  String? _selectedLiveCategory; // Active category chip
+  // Active category chip
   Player? _livePlayer;
   VideoController? _liveVideoController;
   final ValueNotifier<VideoController?> _liveVideoControllerNotifier =
@@ -132,15 +131,12 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   int _liveRetryCount = 0;
   // Guard: prevents creating a new player while the previous one is draining
   bool _isDisposingLivePlayer = false;
-  bool _isFullscreen = false;
 
   // Channel Mirroring & Recovery
   M3UItem? _originalLiveChannel;
   bool _isUsingMirror = false;
   Timer? _recoveryTimer;
   final TextEditingController _liveSearchController = TextEditingController();
-  bool _showLiveSearch = false;
-  bool _showInlineControls = false;
   Timer? _inlineControlsTimer;
 
   // -- LIVE TV HEALTH MONITOR STATE --
@@ -208,24 +204,11 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     }
   }
 
-  void _toggleInlineControls() {
-    setState(() {
-      _showInlineControls = !_showInlineControls;
-    });
-    if (_showInlineControls) {
-      _startInlineHideTimer();
-    } else {
-      _inlineControlsTimer?.cancel();
-    }
-  }
-
   void _startInlineHideTimer() {
     _inlineControlsTimer?.cancel();
     _inlineControlsTimer = Timer(const Duration(seconds: 3), () {
       if (mounted) {
-        setState(() {
-          _showInlineControls = false;
-        });
+        setState(() {});
       }
     });
   }
@@ -295,7 +278,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       if (_livePlayer != null && _livePlayer!.state.playing) {
         _wasPlayingBeforeAd = true;
         _livePlayer!.pause();
-        if (mounted) setState(() => _showInlineControls = true);
+        if (mounted) {}
       }
     } else {
       if (_wasPlayingBeforeAd && _livePlayer != null) {
@@ -2527,44 +2510,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     return url;
   }
 
-  Future<void> _playLiveChannel(M3UItem item) async {
-    // Mismo canal ya reproduciendo → mostrar controles en lugar de recargar
-    if (_currentLiveChannel?.url == item.url && _livePlayer != null) {
-      // Si está reproduciendo bien, solo mostrar controles
-      if (_livePlayer!.state.playing && !_isLiveLoading) {
-        setState(() => _showInlineControls = true);
-        _startInlineHideTimer();
-        return;
-      }
-      // Si está atascado, hacer seamless reload
-      _seamlessReload();
-      return;
-    }
-
-    if (_isDisposingLivePlayer) {
-      await Future.delayed(const Duration(milliseconds: 600));
-      if (!mounted) return;
-    }
-
-    if (_livePlayer != null && _livePlayer!.state.playing) {
-      _livePlayer!.pause();
-      _liveAdCountdownNotifier.value = null;
-    }
-
-    AdService().showRewardedAdWithConfirmation(
-      context,
-      onUserEarnedReward: () async {
-        _startLivePlayback(item);
-      },
-      onAdFailed: () {
-        if (!mounted) return;
-        _startLivePlayback(item);
-      },
-      message:
-          '¡Señal disponible! Mira un breve anuncio para conectar con la transmisión en vivo y disfrutar sin límites.',
-    );
-  }
-
   Future<void> _startLivePlayback(M3UItem item) async {
     if (!mounted) return;
 
@@ -2677,7 +2622,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         _isLiveLoading = false;
         _isLiveReloading = false;
         _liveRetryCount = 0;
-        _showInlineControls = true;
         // Notificar el nuevo controller para forzar reconstrucción
         // del Video widget y evitar pantalla negra con audio
         _liveVideoControllerNotifier.value = null;
@@ -2750,7 +2694,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         _currentLiveChannel = null;
         _liveVideoController = null;
         _liveVideoControllerNotifier.value = null;
-        _showInlineControls = false;
       });
     }
     WakelockPlus.disable();
@@ -3330,838 +3273,64 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     if (!mounted || _livePlayer == null) return;
 
     _livePlayer!.pause();
-    if (mounted) setState(() => _showInlineControls = true);
-
-    AdService().showRewardedAdWithConfirmation(
-      context,
-      onUserEarnedReward: () {
-        if (mounted && _livePlayer != null) {
-          _livePlayer!.play();
-        }
-      },
-      onAdFailed: () {
-        if (mounted && _livePlayer != null) {
-          _livePlayer!.play();
-        }
-      },
-      onCancel: () {
-        // User dismissed the ad, stop everything and go back to placeholder
-        if (mounted) {
-          _stopLivePlayer();
-          setState(() {
-            _currentLiveChannel = null;
-            _liveVideoController = null;
-          });
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Row(
-                children: [
-                  const Icon(
-                    Icons.warning_amber_rounded,
-                    color: Colors.orangeAccent,
-                    size: 20,
-                  ),
-                  const SizedBox(width: 12),
-                  const Expanded(
-                    child: Text(
-                      'Debes ver el anuncio para continuar viendo.',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              backgroundColor: AppColors.background,
-              behavior: SnackBarBehavior.floating,
-              margin: const EdgeInsets.all(16),
-              duration: const Duration(seconds: 4),
-              shape: RoundedRectangleBorder(
-                side: const BorderSide(color: Colors.white12, width: 0.5),
-                borderRadius: BorderRadius.circular(8),
-              ),
-            ),
-          );
-        }
-      },
-      message: 'Para seguir disfrutando de la TV en vivo, mira un anuncio.',
-    );
-  }
-
-  void _showLiveReportOptions(M3UItem item) {
-    final reasons = [
-      'No carga el video',
-      'Se traba / Mucho buffering',
-      'Audio desincronizado / Sin audio',
-      'Mala calidad de imagen',
-      'Canal equivocado',
-      'Otro problema',
-    ];
-
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: const Color(0xFF1a1a1a),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (context) {
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                  vertical: 20,
-                  horizontal: 24,
-                ),
-                child: Text(
-                  'Reportar problema: ${item.name}',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                  ),
-                  textAlign: TextAlign.center,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              const Divider(color: Colors.white12, height: 1),
-              Flexible(
-                child: ListView.builder(
-                  shrinkWrap: true,
-                  itemCount: reasons.length,
-                  itemBuilder: (context, index) {
-                    return ListTile(
-                      title: Text(
-                        reasons[index],
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                        ),
-                      ),
-                      trailing: const Icon(
-                        Icons.chevron_right,
-                        color: Colors.white54,
-                      ),
-                      onTap: () async {
-                        Navigator.pop(context);
-                        final success = await _m3uService.reportContent(
-                          name: item.name,
-                          category: item.category,
-                          url: item.url,
-                          reason: reasons[index],
-                        );
-                        if (mounted) {
-                          SnackBarUtils.showAppSnackBar(
-                            context,
-                            success
-                                ? 'Reporte enviado. ¡Gracias!'
-                                : 'Error al enviar reporte',
-                          );
-                        }
-                      },
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Future<void> _enterFullscreen() async {
-    if (_liveVideoController == null) return;
-
-    final isDesktopOrWeb =
-        kIsWeb ||
-        defaultTargetPlatform == TargetPlatform.windows ||
-        defaultTargetPlatform == TargetPlatform.macOS ||
-        defaultTargetPlatform == TargetPlatform.linux;
-
-    if (!isDesktopOrWeb) {
-      // Force Landscape
-      await SystemChrome.setPreferredOrientations([
-        DeviceOrientation.landscapeLeft,
-        DeviceOrientation.landscapeRight,
-      ]);
-    }
-
-    if (!mounted) return;
-
-    // Reset search state when entering fullscreen
-    // _showLiveSearch = false;
-    // _liveSearchController.clear();
-
     if (mounted) {
-      setState(() {
-        _isFullscreen = true;
-      });
-    }
-
-    await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder:
-            (context) => _FullscreenLivePlayer(
-              controllerNotifier: _liveVideoControllerNotifier,
-              channelName: _currentLiveChannel?.name ?? 'Live TV',
-              adCountdownNotifier: _liveAdCountdownNotifier,
-              speedNotifier: _liveSpeedNotifier,
-              item: _currentLiveChannel!,
-              onReport: _showLiveReportOptions,
-              lastFrameBytesNotifier: _lastLiveFrameBytesNotifier,
-            ),
-      ),
-    );
-
-    if (mounted) {
-      setState(() {
-        _isFullscreen = false;
-      });
-    }
-
-    if (!isDesktopOrWeb) {
-      // Restore Portrait
-      await SystemChrome.setPreferredOrientations([
-        DeviceOrientation.portraitUp,
-      ]);
-    }
-  }
-
-  Widget _buildLiveContent() {
-    final liveItems = _m3uService.items.where((i) => i.isLive).toList();
-    final liveCategories =
-        liveItems.map((i) => i.category).toSet().toList()..sort();
-
-    if (liveCategories.isNotEmpty) {
-      liveCategories.insert(0, 'Todos');
-      liveCategories.insert(1, 'Mi Lista');
-    }
-
-    if (_selectedLiveCategory == null && liveCategories.isNotEmpty) {
-      _selectedLiveCategory = 'Todos';
-    }
-
-    var filteredItems = liveItems;
-    if (_selectedLiveCategory == 'Todos') {
-      filteredItems = liveItems;
-    } else if (_selectedLiveCategory == 'Mi Lista') {
-      filteredItems = liveItems.where((i) => i.isFavorite).toList();
-    } else {
-      filteredItems =
-          liveItems.where((i) => i.category == _selectedLiveCategory).toList();
-    }
-
-    if (_showLiveSearch && _liveSearchController.text.isNotEmpty) {
-      final query = _liveSearchController.text.toLowerCase();
-      filteredItems =
-          filteredItems
-              .where((i) => i.name.toLowerCase().contains(query))
-              .toList();
-    }
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        // Calculate video height: 16:9 ratio, but cap at 40% of available height
-        final videoWidth = constraints.maxWidth;
-        final idealVideoHeight = videoWidth * 9 / 16;
-        final maxVideoHeight = constraints.maxHeight * 0.40;
-        final videoHeight = idealVideoHeight.clamp(0.0, maxVideoHeight);
-
-        return Column(
-          children: [
-            // Fixed Search Header + Main Tabs
-            _buildScrollableHeader(),
-
-            // Fixed Inline Player
-            SizedBox(
-              width: double.infinity,
-              height: videoHeight,
-              child: Container(
-                color: const Color.fromARGB(255, 3, 3, 3),
-                child: ValueListenableBuilder<VideoController?>(
-                  valueListenable: _liveVideoControllerNotifier,
-                  builder: (context, controller, _) {
-                    if (controller == null || _isFullscreen) {
-                      return Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              CupertinoIcons.tv,
-                              size: 40,
-                              color: Colors.white.withOpacity(0.15),
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              _isFullscreen
-                                  ? 'Reproduciendo en pantalla completa'
-                                  : 'Selecciona un canal',
-                              style: TextStyle(
-                                color: Colors.white.withOpacity(0.3),
-                                fontSize: 14,
-                              ),
-                            ),
-                          ],
-                        ),
-                      );
-                    }
-
-                    return GestureDetector(
-                      onTap: _toggleInlineControls,
-                      behavior: HitTestBehavior.translucent,
-                      child: ValueListenableBuilder<Uint8List?>(
-                        valueListenable: _lastLiveFrameBytesNotifier,
-                        builder: (context, lastFrameBytes, _) {
-                          return Stack(
-                            fit: StackFit.expand,
-                            children: [
-                              Video(
-                                key: ValueKey(
-                                  'live_inline_${controller.hashCode}',
-                                ),
-                                controller: controller,
-                                fit: BoxFit.contain,
-                                fill: Colors.black,
-                                controls: (state) => const SizedBox.shrink(),
-                              ),
-                              if (lastFrameBytes != null)
-                                Image.memory(
-                                  lastFrameBytes,
-                                  fit: BoxFit.contain,
-                                ),
-                              ValueListenableBuilder<int?>(
-                                valueListenable: _liveAdCountdownNotifier,
-                                builder: (context, countdown, _) {
-                                  if (countdown == null) {
-                                    return const SizedBox.shrink();
-                                  }
-                                  return Positioned(
-                                    top: 10,
-                                    left: 10,
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 10,
-                                        vertical: 6,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: AppColors.background.withOpacity(
-                                          0.7,
-                                        ),
-                                        borderRadius: BorderRadius.circular(8),
-                                        border: Border.all(
-                                          color: Colors.white24,
-                                          width: 1,
-                                        ),
-                                      ),
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          const Icon(
-                                            Icons.info_outline,
-                                            color: Colors.yellow,
-                                            size: 17.8,
-                                          ),
-                                          const SizedBox(width: 8),
-                                          Text(
-                                            'Anuncio en $countdown...',
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 12,
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  );
-                                },
-                              ),
-                              Positioned(
-                                top: 10,
-                                left: 10,
-                                child: ValueListenableBuilder<String>(
-                                  valueListenable: _liveSpeedNotifier,
-                                  builder: (context, speed, _) {
-                                    return ValueListenableBuilder<int?>(
-                                      valueListenable: _liveAdCountdownNotifier,
-                                      builder: (context, countdown, _) {
-                                        return AnimatedPadding(
-                                          duration: const Duration(
-                                            milliseconds: 300,
-                                          ),
-                                          padding: EdgeInsets.only(
-                                            top: countdown != null ? 35 : 0,
-                                          ),
-                                          child: Container(
-                                            padding: const EdgeInsets.symmetric(
-                                              horizontal: 8,
-                                              vertical: 4,
-                                            ),
-                                            decoration: BoxDecoration(
-                                              color: Colors.black45,
-                                              borderRadius:
-                                                  BorderRadius.circular(6),
-                                              border: Border.all(
-                                                color: Colors.white10,
-                                                width: 0.5,
-                                              ),
-                                            ),
-                                            child: Row(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                const Icon(
-                                                  Icons.download_rounded,
-                                                  color: Colors.white60,
-                                                  size: 10,
-                                                ),
-                                                const SizedBox(width: 4),
-                                                Text(
-                                                  speed,
-                                                  style: const TextStyle(
-                                                    color: Colors.white,
-                                                    fontSize: 10,
-                                                    fontWeight: FontWeight.bold,
-                                                    fontFamily: 'monospace',
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          ),
-                                        );
-                                      },
-                                    );
-                                  },
-                                ),
-                              ),
-                              if (_isLiveLoading)
-                                Positioned.fill(
-                                  child: Container(
-                                    color: Colors.black.withOpacity(0.45),
-                                    child: const Center(
-                                      child: CircularProgressIndicator(
-                                        color: Colors.white,
-                                        strokeWidth: 2.5,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-
-                              // StreamBuilder de buffering eliminado — _isLiveLoading
-                              // ya maneja el spinner con delay de 4s para evitar parpadeos.
-                              Positioned.fill(
-                                child: IgnorePointer(
-                                  ignoring: !_showInlineControls,
-                                  child: AnimatedOpacity(
-                                    opacity: _showInlineControls ? 1.0 : 0.0,
-                                    duration: const Duration(milliseconds: 300),
-                                    child: Stack(
-                                      children: [
-                                        if (_currentLiveChannel != null)
-                                          Positioned(
-                                            top: 8,
-                                            right: 8,
-                                            child: Container(
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                    horizontal: 10,
-                                                    vertical: 4,
-                                                  ),
-                                              decoration: BoxDecoration(
-                                                color: Colors.black54,
-                                                borderRadius:
-                                                    BorderRadius.circular(4),
-                                              ),
-                                              child: Text(
-                                                _currentLiveChannel!.name,
-                                                style: const TextStyle(
-                                                  color: Colors.white,
-                                                  fontSize: 12,
-                                                  fontWeight: FontWeight.w500,
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-                                        Positioned(
-                                          bottom: 8,
-                                          left: 8,
-                                          child: StreamBuilder<bool>(
-                                            stream:
-                                                controller
-                                                    .player
-                                                    .stream
-                                                    .playing,
-                                            initialData:
-                                                controller.player.state.playing,
-                                            builder: (context, snapshot) {
-                                              final isPlaying =
-                                                  snapshot.data ?? false;
-                                              return IconButton(
-                                                icon: Icon(
-                                                  isPlaying
-                                                      ? Icons.pause
-                                                      : Icons.play_arrow,
-                                                  color: Colors.white,
-                                                  size: 32,
-                                                ),
-                                                onPressed: () {
-                                                  _startInlineHideTimer();
-                                                  controller.player
-                                                      .playOrPause();
-                                                },
-                                              );
-                                            },
-                                          ),
-                                        ),
-                                        Positioned(
-                                          bottom: 12,
-                                          right: 12,
-                                          child: IconButton(
-                                            icon: const Icon(
-                                              Icons.fullscreen,
-                                              color: Colors.white,
-                                              size: 28,
-                                            ),
-                                            onPressed: _enterFullscreen,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          );
-                        },
-                      ),
-                    );
-                  },
-                ),
-              ),
-            ),
-
-            // Fixed Category Chips + Search Bar
-            Container(
-              height: 54,
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
-              decoration: const BoxDecoration(
-                border: Border(
-                  bottom: BorderSide(color: Colors.white10, width: 1),
-                ),
-              ),
-              child:
-                  _showLiveSearch
-                      ? Row(
-                        children: [
-                          const Icon(
-                            Icons.search,
-                            color: Colors.white54,
-                            size: 20,
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: TextField(
-                              controller: _liveSearchController,
-                              style: const TextStyle(color: Colors.white),
-                              decoration: InputDecoration(
-                                hintText: 'Buscar en $_selectedLiveCategory...',
-                                hintStyle: TextStyle(
-                                  color: Colors.white.withOpacity(0.5),
-                                ),
-                                border: InputBorder.none,
-                                isDense: true,
-                                contentPadding: EdgeInsets.zero,
-                              ),
-                              onChanged: (val) => setState(() {}),
-                              autofocus: true,
-                            ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.close, color: Colors.white),
-                            onPressed: () {
-                              setState(() {
-                                _showLiveSearch = false;
-                                _liveSearchController.clear();
-                              });
-                            },
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(),
-                          ),
-                        ],
-                      )
-                      : Row(
-                        children: [
-                          Expanded(
-                            child: ListView.builder(
-                              scrollDirection: Axis.horizontal,
-                              itemCount: liveCategories.length,
-                              itemBuilder: (context, catIdx) {
-                                final category = liveCategories[catIdx];
-                                final isSelected =
-                                    _selectedLiveCategory == category;
-                                return Padding(
-                                  padding: const EdgeInsets.only(right: 8),
-                                  child: Material(
-                                    color: Colors.transparent,
-                                    child: InkWell(
-                                      onTap:
-                                          () => setState(
-                                            () =>
-                                                _selectedLiveCategory =
-                                                    category,
-                                          ),
-                                      borderRadius: BorderRadius.circular(9),
-                                      child: AnimatedContainer(
-                                        duration: const Duration(
-                                          milliseconds: 200,
-                                        ),
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 14,
-                                          vertical: 8,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          gradient:
-                                              isSelected
-                                                  ? const LinearGradient(
-                                                    colors: [
-                                                      Color.fromARGB(
-                                                        235,
-                                                        229,
-                                                        9,
-                                                        20,
-                                                      ),
-                                                      Color.fromARGB(
-                                                        255,
-                                                        206,
-                                                        31,
-                                                        31,
-                                                      ),
-                                                    ],
-                                                    begin: Alignment.topLeft,
-                                                    end: Alignment.bottomRight,
-                                                  )
-                                                  : null,
-                                          color:
-                                              isSelected
-                                                  ? null
-                                                  : const Color.fromARGB(
-                                                    0,
-                                                    20,
-                                                    20,
-                                                    20,
-                                                  ),
-                                          borderRadius: BorderRadius.circular(
-                                            12,
-                                          ),
-                                          border: Border.all(
-                                            color:
-                                                isSelected
-                                                    ? Colors.transparent
-                                                    : const Color.fromARGB(
-                                                      0,
-                                                      255,
-                                                      255,
-                                                      255,
-                                                    ),
-                                            width: 1,
-                                          ),
-                                        ),
-                                        child: Text(
-                                          category,
-                                          style: TextStyle(
-                                            color:
-                                                isSelected
-                                                    ? Colors.white
-                                                    : const Color.fromARGB(
-                                                      144,
-                                                      255,
-                                                      255,
-                                                      255,
-                                                    ),
-                                            fontSize: 13,
-                                            fontWeight:
-                                                isSelected
-                                                    ? FontWeight.w600
-                                                    : FontWeight.normal,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          IconButton(
-                            onPressed:
-                                () => setState(() => _showLiveSearch = true),
-                            icon: const Icon(
-                              Icons.search,
-                              color: Colors.white,
-                              size: 20,
-                            ),
-                          ),
-                        ],
-                      ),
-            ),
-
-            // Scrollable expanded area
-            Expanded(
-              child: ListView.builder(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: EdgeInsets.only(
-                  bottom: MediaQuery.viewPaddingOf(context).bottom + 20,
-                ),
-                itemCount:
-                    filteredItems.isEmpty
-                        ? 1
-                        : (filteredItems.length +
-                            (filteredItems.length / 7).floor()),
-                itemBuilder: (context, index) {
-                  if (filteredItems.isEmpty) {
-                    return Padding(
-                      padding: const EdgeInsets.only(top: 100),
-                      child: Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const Icon(
-                              CupertinoIcons.tv,
-                              size: 43,
-                              color: Color.fromARGB(59, 143, 143, 143),
-                            ),
-                            const SizedBox(height: 16),
-                            const Text(
-                              'No hay canales en esta categoría',
-                              style: TextStyle(
-                                color: Color.fromARGB(153, 153, 153, 153),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  }
-
-                  final isAd = (index + 1) % 8 == 0;
-                  if (isAd) return const NativeAdWidget(height: 130);
-
-                  final itemIndex = index - (index / 8).floor();
-                  if (itemIndex >= filteredItems.length) {
-                    return const SizedBox.shrink();
-                  }
-                  return _buildLiveChannelTile(
-                    filteredItems[itemIndex],
-                    itemIndex,
-                  );
-                },
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Widget _buildLiveChannelTile(M3UItem item, int index) {
-    final bool isPlaying = _currentLiveChannel?.url == item.url;
-
-    return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      leading: Container(
-        width: 48,
-        height: 48,
-        decoration: BoxDecoration(
-          color: const Color(0xFF1a1a1a),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(
-            color: isPlaying ? Colors.red : Colors.white12,
-            width: isPlaying ? 1.5 : 0.5,
-          ),
-        ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(7),
-          child:
-              item.logo != null && item.logo!.isNotEmpty
-                  ? FastThumbnail(
-                    url: item.logo,
-                    title: item.name,
-                    width: 48,
-                    height: 48,
-                    fit: BoxFit.contain,
-                    cacheWidth: 96,
-                  )
-                  : Center(
-                    child: Icon(
-                      CupertinoIcons.tv,
-                      size: 22,
-                      color: Colors.white.withValues(alpha: 0.3),
-                    ),
-                  ),
-        ),
-      ),
-      title: Text(
-        item.name,
-        style: TextStyle(
-          color: isPlaying ? Colors.red : Colors.white,
-          fontSize: 15,
-          fontWeight: isPlaying ? FontWeight.w600 : FontWeight.w500,
-        ),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      subtitle: Text(
-        item.category,
-        style: TextStyle(
-          color: Colors.white.withValues(alpha: 0.4),
-          fontSize: 12,
-        ),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      trailing: IconButton(
-        icon: Icon(
-          isPlaying ? Icons.stop_circle_outlined : Icons.play_circle_outline,
-          color: isPlaying ? Colors.red : Colors.white.withValues(alpha: 0.3),
-          size: 28,
-        ),
-        onPressed: () => _playLiveChannel(item),
-      ),
-      onTap: () => _playLiveChannel(item),
-      onLongPress: () async {
-        if (!item.isFavorite) {
-          final liveFavCount =
-              _m3uService.getFavorites().where((i) => i.isLive).length;
-          if (!PremiumService().canAddLiveFavorite(liveFavCount)) {
-            if (!context.mounted) return;
-            SnackBarUtils.showAppSnackBar(
-              context,
-              'Máximo 4 canales en Mi Lista. ¡Hazte Premium para ilimitados!',
-            );
-            return;
+      AdService().showRewardedAdWithConfirmation(
+        context,
+        onUserEarnedReward: () {
+          if (mounted && _livePlayer != null) {
+            _livePlayer!.play();
           }
-        }
-        try {
-          await _m3uService.toggleFavorite(item);
-        } catch (e) {
-          if (!mounted) return;
-          SnackBarUtils.showAppSnackBar(context, e.toString());
-          return;
-        }
-        setState(() {});
-        if (!mounted) return;
-        SnackBarUtils.showAppSnackBar(
-          context,
-          item.isFavorite ? 'Añadido a Mi lista' : 'Eliminado de Mi lista',
-        );
-      },
-    );
+        },
+        onAdFailed: () {
+          if (mounted && _livePlayer != null) {
+            _livePlayer!.play();
+          }
+        },
+        onCancel: () {
+          // User dismissed the ad, stop everything and go back to placeholder
+          if (mounted) {
+            _stopLivePlayer();
+            setState(() {
+              _currentLiveChannel = null;
+              _liveVideoController = null;
+            });
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Row(
+                  children: [
+                    const Icon(
+                      Icons.warning_amber_rounded,
+                      color: Colors.orangeAccent,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Text(
+                        'Debes ver el anuncio para continuar viendo.',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                backgroundColor: AppColors.background,
+                behavior: SnackBarBehavior.floating,
+                margin: const EdgeInsets.all(16),
+                duration: const Duration(seconds: 4),
+                shape: RoundedRectangleBorder(
+                  side: const BorderSide(color: Colors.white12, width: 0.5),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+            );
+          }
+        },
+        message: 'Para seguir disfrutando de la TV en vivo, mira un anuncio.',
+      );
+    }
   }
 
   // _performSearch removed
