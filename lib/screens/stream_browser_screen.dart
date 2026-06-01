@@ -4258,8 +4258,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   }
 
   void _loadMoreHomeCategories(List<String> categories) async {
-    if (_isHomeLoadingMore || _loadedHomeCategories >= categories.length)
+    if (_isHomeLoadingMore || _loadedHomeCategories >= categories.length) {
       return;
+    }
     setState(() {
       _isHomeLoadingMore = true;
     });
@@ -4288,8 +4289,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   }
 
   void _loadMoreMovieCategories(List<String> categories) async {
-    if (_isMoviesLoadingMore || _loadedMovieCategories >= categories.length)
+    if (_isMoviesLoadingMore || _loadedMovieCategories >= categories.length) {
       return;
+    }
     setState(() {
       _isMoviesLoadingMore = true;
     });
@@ -4322,8 +4324,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   }
 
   void _loadMoreSeriesCategories(List<String> categories) async {
-    if (_isSeriesLoadingMore || _loadedSeriesCategories >= categories.length)
+    if (_isSeriesLoadingMore || _loadedSeriesCategories >= categories.length) {
       return;
+    }
     setState(() {
       _isSeriesLoadingMore = true;
     });
@@ -4356,8 +4359,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   }
 
   void _loadMoreNovelaCategories(List<String> categories) async {
-    if (_isNovelasLoadingMore || _loadedNovelaCategories >= categories.length)
+    if (_isNovelasLoadingMore || _loadedNovelaCategories >= categories.length) {
       return;
+    }
     setState(() {
       _isNovelasLoadingMore = true;
     });

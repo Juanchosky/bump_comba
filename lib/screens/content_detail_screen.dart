@@ -2,7 +2,6 @@ import '../services/m3u_service.dart';
 import '../services/watch_progress_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
-import 'package:flutter/foundation.dart';
 import 'dart:ui';
 import 'dart:math' as math;
 import 'dart:async';
