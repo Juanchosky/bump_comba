@@ -11,21 +11,38 @@ workflows:
       - name: Flutter pub get
         script: |
           flutter pub get
+      - name: Preparar config de iOS (sin compilar)
+        script: |
+          flutter build ios --release --no-codesign --config-only
       - name: Pod install
         script: |
           cd ios && pod install
-      - name: Build iOS sin firmar
+      - name: Compilar con xcodebuild sin firma
         script: |
-          flutter build ios --release --no-codesign
+          cd ios
+          xcodebuild \
+            -workspace Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath ../build/ios-xcode \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            build
       - name: Empaquetar .app en .ipa sin firmar
         script: |
-          cd build/ios/iphoneos
+          cd build/ios-xcode/Build/Products/Release-iphoneos
           mkdir -p Payload
           cp -r Runner.app Payload/
           zip -r -y bump_comba_unsigned.ipa Payload
           rm -rf Payload
+          mkdir -p $CM_BUILD_DIR/build/ios/ipa
+          cp bump_comba_unsigned.ipa $CM_BUILD_DIR/build/ios/ipa/
     artifacts:
-      - build/ios/iphoneos/*.ipa
+      - build/ios/ipa/*.ipa
+      - build/ios-xcode/Build/Products/Release-iphoneos/*.ipa
     publishing:
       email:
         recipients:
