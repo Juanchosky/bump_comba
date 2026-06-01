@@ -38,6 +38,19 @@ workflows:
             CODE_SIGN_IDENTITY="" \
             CODE_SIGN_ENTITLEMENTS="" \
             build
+      - name: Firmar ad-hoc para que AltStore pueda re-firmar
+        script: |
+          cd build/ios-xcode/Build/Products/Release-iphoneos
+          # Firmar primero los frameworks/dylibs internos, luego la app completa
+          if [ -d "Runner.app/Frameworks" ]; then
+            find Runner.app/Frameworks -type f \( -name "*.dylib" -o -perm +111 \) -print0 2>/dev/null | xargs -0 -I {} codesign --force --sign - "{}" || true
+            for fw in Runner.app/Frameworks/*.framework; do
+              [ -d "$fw" ] && codesign --force --sign - "$fw"
+            done
+          fi
+          codesign --force --deep --sign - Runner.app
+          echo "Firma ad-hoc aplicada. Verificando:"
+          codesign -dv Runner.app 2>&1 || true
       - name: Empaquetar .app en .ipa sin firmar
         script: |
           cd build/ios-xcode/Build/Products/Release-iphoneos
