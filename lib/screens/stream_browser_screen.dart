@@ -2421,15 +2421,15 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       _liveVideoControllerNotifier.value = _liveVideoController;
 
       // Reload automático en fin de stream
+      // Watchdog reactivo: cuando buffering se activa, iniciar conteo
       _liveStreamSubscriptions.add(
-        _livePlayer!.stream.completed.listen((completed) {
-          if (completed && mounted && !_isLiveError) {
-            setState(() {
-              _isLiveReloading = false;
-            });
-            Future.delayed(const Duration(seconds: 2), () {
-              if (mounted) _reloadLiveSignal();
-            });
+        _livePlayer!.stream.buffering.listen((isBuffering) {
+          if (!mounted) return;
+          if (isBuffering) {
+            // Solo mostrar spinner — el timer periódico maneja el reload
+            setState(() => _isLiveLoading = true);
+          } else {
+            setState(() => _isLiveLoading = false);
           }
         }),
       );
@@ -2592,64 +2592,52 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       } catch (_) {}
     }
 
-    // ── DVR BUFFER: caché rodante de 12 segundos ──────────────────
-    // cache-pause=no  → el reproductor NUNCA pausa por buffer bajo.
-    // cache-secs=12   → 12 s de caché adelante: suficiente para que
-    //                   MPV reconecte solo antes de que el usuario note algo.
-    // live_start_index=-3 → empieza 3 segmentos detrás del live edge
-    //                       (~6-9 s), dando una pista de aterrizaje.
-    //
-    // ANTES: cache-secs=180 (3 min), demuxer-max-bytes=1 GB.
-    //        Solo llenaba RAM y alargaba el tiempo de inicio.
+    // ── CACHÉ: buffer grande + NUNCA pausar ──────────────────────────────────
+    // 60 s de readahead absorbe cualquier micro-corte de red sin que el usuario
+    // lo note. cache-pause=no es CRÍTICO: con 'yes' el reproductor para el video
+    // al bajar el buffer y el usuario ve pantalla negra.
     await s('cache', 'yes');
-    await s('cache-pause', 'no'); // ← CRÍTICO: nunca pausar
+    await s('cache-pause', 'no'); // NUNCA pausar por buffer bajo
     await s('cache-pause-initial', 'no');
-    await s('cache-secs', '12'); // era 180
-    await s('cache-back-buffer-size', '16777216'); // 16 MB (era 128 MB)
-    await s('demuxer-max-bytes', '67108864'); // 64 MB (era 1 GB)
-    await s('demuxer-max-back-bytes', '16777216'); // 16 MB (era 256 MB)
-    await s('demuxer-readahead-secs', '12'); // era 90
-    // Reemplaza las líneas de framedrop y video-sync existentes con estas:
-    await s('framedrop', 'vo');
+    await s('cache-pause-wait', '0');
+    await s('cache-secs', '60'); // 60 s de colchón adelante
+    await s('cache-back-buffer-size', '33554432'); // 32 MB atrás
+    await s('demuxer-max-bytes', '150000000'); // 150 MB
+    await s('demuxer-max-back-bytes', '33554432');
+    await s('demuxer-readahead-secs', '60'); // Hilo de descarga agresivo
+
+    // ── VIDEO: sin drops, superficie estable ────────────────────────────────
+    await s('framedrop', 'no'); // Sin framedrop = imagen más estable
     await s('video-sync', 'audio');
-    await s(
-      'vd-lavc-dr',
-      'no',
-    ); // desactivar direct rendering — reduce BLASTBufferQueue overflow
+    await s('vd-lavc-dr', 'no'); // Evita BLASTBufferQueue overflow
     await s('video-latency-hacks', 'yes');
-    await s(
-      'vo-queue-size',
-      '2',
-    ); // limitar cola de frames de salida a 2 (default es 8)
-    await s(
-      'opengl-early-flush',
-      'yes',
-    ); // flush anticipado, libera Surface más rápido
-    // ── RED: falla rápido, reconecta al instante ───────────────────
-    await s(
-      'network-timeout',
-      '5',
-    ); // era 8 — falla más rápido para reintentar antes
+    await s('vo-queue-size', '4');
+    await s('opengl-early-flush', 'no');
+
+    // ── RED: reconexión instantánea, sin timeouts agresivos ─────────────────
+    await s('network-timeout', '10'); // 10 s antes de declarar error
     await s('http-reconnect', 'yes');
     await s('http-reconnect-max', '999');
-    await s('http-reconnect-delay', '0.2'); // era 0.5 — 200 ms entre reintentos
+    await s('http-reconnect-delay', '0.1');
     await s(
       'stream-lavf-o',
       'reconnect=1,'
           'reconnect_streamed=1,'
-          'reconnect_delay_max=0.5,' // era 1
+          'reconnect_delay_max=1,'
           'reconnect_on_network_error=1,'
-          'reconnect_on_http_error=4xx,5xx,' // añadir 4xx
-          'timeout=5000000,' // era 8000000
-          'rw_timeout=5000000,'
-          'tcp_nodelay=1', // reduce latencia
-    );
+          'reconnect_on_http_error=4xx,5xx,'
+          'timeout=10000000,'
+          'rw_timeout=10000000,'
+          'tcp_nodelay=1,'
+          'fflags=nobuffer',
+    ); // Reduce latencia de ffmpeg
     await s('tls-verify', 'no');
 
-    // ── HEADERS ───────────────────────────────────────────────────
+    // ── HEADERS: simular un cliente legítimo ────────────────────────────────
     await s(
       'http-header-fields',
       'Icy-MetaData:1\r\n'
+          'Accept:*/*\r\n'
           'Accept-Language:es-419,es;q=0.9,en;q=0.5\r\n'
           'Accept-Encoding:identity\r\n'
           'Connection:keep-alive\r\n'
@@ -2657,47 +2645,49 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           'Pragma:no-cache',
     );
 
-    // ── HLS LIVE: iniciar detrás del borde para tener colchón ──────
+    // ── HLS LIVE ─────────────────────────────────────────────────────────────
     if (_isLiveChannel) {
       await s('hls-bitrate', _isQualityCapped ? '1200000' : 'max');
+      await s('hls-forward-for-live', 'yes');
       await s(
         'stream-lavf-o',
         'reconnect=1,'
             'reconnect_streamed=1,'
-            'reconnect_delay_max=0.5,'
+            'reconnect_delay_max=1,'
             'reconnect_on_network_error=1,'
-            'live_start_index=-3,' // 3 segmentos detrás = ~6-9 s de colchón
-            'tcp_nodelay=1',
+            'live_start_index=-3,' // 3 segmentos atrás = ~18-30 s de colchón
+            'tcp_nodelay=1,'
+            'fflags=nobuffer',
       );
       await s('demuxer-lavf-hacks', 'yes');
       await s('demuxer-lavf-o', 'allowed_extensions=ALL,strict=-2');
     }
 
-    // ── DECODIFICACIÓN ────────────────────────────────────────────
+    // ── DECODIFICACIÓN: hardware, relajada para live ─────────────────────────
     await s('hwdec', 'auto-safe');
     await s('vd-lavc-threads', '0');
-    await s('framedrop', 'vo');
     await s('deinterlace', 'no');
-    await s('vd-lavc-skiploopfilter', 'all');
-    await s('vd-lavc-skipframe', 'nonref');
+    await s('vd-lavc-skiploopfilter', 'nonref'); // menos agresivo que 'all'
+    await s('vd-lavc-skipframe', 'default'); // menos agresivo para live
 
-    // ── AUDIO: prioridad máxima — nunca cortar ────────────────────
-    await s('audio-buffer', '1.5');
+    // ── AUDIO: prioridad máxima ───────────────────────────────────────────────
+    await s('audio-buffer', '2.0'); // 2 s de buffer de audio
     await s('audio-stream-silence', 'yes');
     await s('audio-fallback-to-null', 'yes');
     await s('gapless-audio', 'weak');
 
-    // ── SINCRONIZACIÓN ────────────────────────────────────────────
-    await s('video-sync', 'audio');
-    await s('video-latency-hacks', 'yes');
+    // ── SINCRONIZACIÓN ────────────────────────────────────────────────────────
     await s('interpolation', 'no');
-    await s('opengl-early-flush', 'no');
+    await s('video-timing-offset', '0');
+    await s('audio-wait-open', '0');
 
-    // ── ROBUSTEZ ──────────────────────────────────────────────────
+    // ── ROBUSTEZ ─────────────────────────────────────────────────────────────
     await s('demuxer-lavf-probescore', '25');
     await s('hr-seek', 'no');
     await s('keep-open', 'yes');
     await s('keep-open-pause', 'no');
+    await s('idle', 'yes');
+    await s('force-window', 'yes');
     await s('load-unsafe-playlists', 'yes');
     await s('force-seekable', 'yes');
   }
@@ -2721,6 +2711,14 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     _liveStallSeconds = 0;
     _lastLivePosition = Duration.zero;
 
+    // Usamos tiempo de pared para detectar stall real.
+    // En live, la posición MPV puede ser inestable (vuelve a 0 al reconectar),
+    // así que solo nos fiamos de ella para detectar MOVIMIENTO, no para medir
+    // el tiempo exacto de stall.
+    int _consecutiveStillSeconds = 0;
+    Duration _prevPosition = Duration.zero;
+    bool _firstTick = true;
+
     _liveHealthMonitorTimer = Timer.periodic(const Duration(seconds: 1), (
       timer,
     ) {
@@ -2732,58 +2730,107 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         timer.cancel();
         return;
       }
-      // CRÍTICO: doble guard — no disparar si ya estamos en medio de un reload
-      if (_isLiveReloading || _isDisposingLivePlayer) return;
+      // Si estamos en medio de un reload, resetear el watchdog y esperar
+      if (_isLiveReloading || _isDisposingLivePlayer) {
+        _consecutiveStillSeconds = 0;
+        _prevPosition = Duration.zero;
+        _firstTick = true;
+        return;
+      }
 
       final state = _livePlayer!.state;
-      final currentPos = state.position;
+      final Duration currentPos = state.position;
 
-      final bool isStuck =
-          state.buffering ||
-          (state.playing &&
-              currentPos == _lastLivePosition &&
-              currentPos != Duration.zero);
+      if (state.buffering) {
+        // Buffering explícito: acumular pero esperar más tiempo
+        // antes de hacer algo (la red puede recuperarse sola)
+        _consecutiveStillSeconds++;
 
-      if (isStuck) {
-        _liveStallSeconds++;
-
-        if (_liveStallSeconds == 1 && mounted) {
+        // Mostrar spinner solo después de 4 s en buffering
+        if (_consecutiveStillSeconds == 4 && mounted) {
           setState(() => _isLiveLoading = true);
         }
 
-        // Dispara al segundo 2 (2 confirmaciones consecutivas = stall real)
-        if (_liveStallSeconds >= 2) {
-          debugPrint('⚡ Stall confirmado ${_liveStallSeconds}s → reload');
-          _liveStallSeconds = 0;
+        // Recargar solo si el buffering dura más de 12 s consecutivos
+        if (_consecutiveStillSeconds >= 12) {
+          debugPrint(
+            '🔴 Buffering ${_consecutiveStillSeconds}s → seamless reload',
+          );
+          _consecutiveStillSeconds = 0;
           timer.cancel();
-          _doImmediateReload();
+          _seamlessReload();
+        }
+        _prevPosition = currentPos;
+        return;
+      }
+
+      if (!state.playing) {
+        // Pausado por el usuario — no hacer nada
+        _consecutiveStillSeconds = 0;
+        _prevPosition = currentPos;
+        _firstTick = true;
+        if (mounted && _isLiveLoading) setState(() => _isLiveLoading = false);
+        return;
+      }
+
+      // Player dice que está reproduciendo y no hay buffering:
+      // verificar si la posición realmente avanza.
+      if (_firstTick) {
+        // El primer tick siempre es "sin movimiento" porque no tenemos
+        // una referencia previa — ignorarlo para evitar falsos positivos.
+        _prevPosition = currentPos;
+        _firstTick = false;
+        return;
+      }
+
+      final bool positionMoved = currentPos != _prevPosition;
+
+      if (positionMoved) {
+        // Hay movimiento → todo bien, reset watchdog
+        _consecutiveStillSeconds = 0;
+        if (mounted && _isLiveLoading) {
+          setState(() => _isLiveLoading = false);
         }
       } else {
-        if (_liveStallSeconds > 0) {
-          _liveStallSeconds = 0;
-          if (mounted) setState(() => _isLiveLoading = false);
+        // Posición quieta mientras el player dice que reproduce
+        _consecutiveStillSeconds++;
+
+        // Mostrar spinner a los 3 s quieto (el usuario empieza a notar)
+        if (_consecutiveStillSeconds == 3 && mounted) {
+          setState(() => _isLiveLoading = true);
+        }
+
+        // Recarga seamless a los 6 s quieto
+        if (_consecutiveStillSeconds >= 6) {
+          debugPrint(
+            '🔴 Stream congelado ${_consecutiveStillSeconds}s → seamless reload',
+          );
+          _consecutiveStillSeconds = 0;
+          timer.cancel();
+          _seamlessReload();
         }
       }
 
-      _lastLivePosition = currentPos;
+      _prevPosition = currentPos;
       _updateSpeedIndicator();
     });
   }
 
-  Future<void> _doImmediateReload() async {
-    // Guard estricto: si ya hay un reload en curso, no hacer nada
+  Future<void> _seamlessReload() async {
     if (_isLiveReloading || _isDisposingLivePlayer) return;
     if (_livePlayer == null || _currentLiveChannel == null) return;
 
     _liveRetryCount++;
+    _isLiveReloading = true;
 
-    if (mounted)
-      setState(() {
-        _isLiveReloading = true;
-        _isLiveLoading = true;
-      });
+    // NO hacer setState aquí → el último frame queda visible, sin pantalla negra.
+    // El spinner aparece solo si el _startLiveStallMonitor detecta que seguimos
+    // atascados después de la recarga (indicando un problema más profundo).
 
     try {
+      // player.open() en el mismo player = seamless switch:
+      // MPV cierra el demuxer viejo y abre uno nuevo SIN destruir el VO (surface).
+      // El usuario ve el último frame hasta que llega el primer frame nuevo.
       await _livePlayer!
           .open(
             Media(
@@ -2794,102 +2841,69 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                 'Connection': 'keep-alive',
                 'Cache-Control': 'no-cache',
                 'Pragma': 'no-cache',
+                'Accept-Encoding': 'identity',
               },
             ),
             play: true,
           )
-          .timeout(const Duration(seconds: 5)); // suficiente para HLS
+          .timeout(const Duration(seconds: 8));
 
-      if (mounted) {
-        setState(() {
-          _isLiveReloading = false;
-          _isLiveLoading = false;
-        });
-        // NO llamar _triggerSurfaceRefresh() — eso causa flash negro
-      }
+      _liveRetryCount = 0;
+      _isLiveReloading = false;
+      if (mounted) setState(() => _isLiveLoading = false);
     } catch (e) {
-      debugPrint('Reload falló: $e');
-      if (mounted)
-        setState(() {
-          _isLiveReloading = false;
-          _isLiveLoading = false;
-        });
+      debugPrint('Seamless reload falló ($e) → intento $_liveRetryCount');
+      _isLiveReloading = false;
 
-      if (_liveRetryCount <= 5) {
-        await Future.delayed(const Duration(milliseconds: 300));
-        if (mounted) _doImmediateReload();
-      } else {
-        _liveRetryCount = 0;
+      if (_liveRetryCount <= 4) {
+        // Backoff exponencial suave: 500 ms, 1 s, 2 s, 4 s
+        final delay = Duration(
+          milliseconds: 500 * (1 << (_liveRetryCount - 1).clamp(0, 3)),
+        );
+        await Future.delayed(delay);
+        if (mounted) _seamlessReload();
+      } else if (_liveRetryCount <= 7) {
+        // Reinicio completo del player (más invasivo, último recurso antes del mirror)
         final channel = _currentLiveChannel!;
+        final count = _liveRetryCount;
         await _disposeLivePlayer();
-        if (mounted) _startLivePlayback(channel);
-        return;
+        if (!mounted) return;
+        _liveRetryCount = count;
+        _currentLiveChannel = channel;
+        await _startLivePlayback(channel);
+      } else {
+        // Mirror o error final
+        _liveRetryCount = 0;
+        if (!_isUsingMirror) {
+          _startMirrorPlayback();
+        } else {
+          if (mounted)
+            setState(() {
+              _isLiveError = true;
+              _isLiveLoading = false;
+              _isLiveReloading = false;
+            });
+        }
       }
+      return;
     }
 
-    // Esperar que el codec inicialice antes de reanudar el monitor
+    // Reiniciar el monitor después de 2 s para que el codec se estabilice
     await Future.delayed(const Duration(seconds: 2));
     if (mounted && _livePlayer != null && _currentLiveChannel != null) {
       _startLiveStallMonitor();
     }
   }
 
-  // Reopen sin destruir el player — el codec sigue vivo, gap mínimo (~200ms)
+  Future<void> _doImmediateReload() async {
+    // Redirige al reload seamless — mismo comportamiento, sin pantalla negra
+    await _seamlessReload();
+  }
+
   Future<void> _quickReopenStream() async {
     if (_livePlayer == null || _currentLiveChannel == null) return;
-
-    _liveRetryCount++;
-
-    if (_liveRetryCount >= 5 && !_isQualityCapped) {
-      _isQualityCapped = true;
-      try {
-        await (_livePlayer!.platform as dynamic)?.setProperty(
-          'hls-bitrate',
-          '1200000',
-        );
-      } catch (_) {}
-    }
-
-    if (mounted)
-      setState(() {
-        _isLiveReloading = true;
-        _isLiveLoading = true;
-      });
-
-    try {
-      await _livePlayer!.open(
-        Media(
-          _currentLiveChannel!.url,
-          httpHeaders: {
-            'User-Agent': _getRandomUserAgent(),
-            'Accept': '*/*',
-            'Connection': 'keep-alive',
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache',
-            'Accept-Encoding': 'identity',
-          },
-        ),
-        play: true,
-      );
-
-      if (mounted) {
-        setState(() {
-          _isLiveReloading = false;
-          _isLiveLoading = false;
-        });
-        _triggerSurfaceRefresh();
-      }
-
-      // Esperar que el codec termine de inicializar antes de
-      // reanudar el monitor — evita falsos positivos inmediatos
-      await Future.delayed(const Duration(seconds: 1));
-      if (mounted && _livePlayer != null) {
-        _startLiveStallMonitor();
-      }
-    } catch (e) {
-      debugPrint('Reopen falló: $e → reload completo');
-      if (mounted) _reloadLiveSignal();
-    }
+    // Delegar al reload seamless unificado
+    await _seamlessReload();
   }
 
   void _updateSpeedIndicator() {
@@ -2918,57 +2932,21 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     if (!mounted ||
         _currentLiveChannel == null ||
         _isLiveReloading ||
-        _isLiveError) {
+        _isLiveError)
       return;
-    }
-
-    const delays = [0, 100, 300, 600, 1200, 2500];
-    final idx = _liveRetryCount.clamp(0, delays.length - 1);
-    final delayMs = delays[idx];
 
     if (_liveRetryCount >= 2 && !_isQualityCapped) {
       _isQualityCapped = true;
-      debugPrint(
-        '📉 Calidad limitada a 1.2 Mbps (reintentos: $_liveRetryCount)',
-      );
+      try {
+        await (_livePlayer!.platform as dynamic)?.setProperty(
+          'hls-bitrate',
+          '1200000',
+        );
+      } catch (_) {}
     }
 
-    setState(() {
-      _isLiveReloading = true;
-      // Spinner visible solo a partir del 3er intento (antes: 2do).
-      // Los primeros 2 reintentos son invisibles para el usuario.
-      _isLiveLoading = _liveRetryCount >= 1;
-      _liveRetryCount++;
-    });
-
-    await Future.delayed(Duration(milliseconds: delayMs));
-    if (!mounted || _currentLiveChannel == null) return;
-
-    if (_liveRetryCount <= 6) {
-      // Fase rápida: reopen sin destruir el player (antes: ≤ 4).
-      await _quickReopenStream();
-    } else if (_liveRetryCount <= 9) {
-      // Fase media: reinicio completo del player (antes: ≤ 7).
-      final channel = _currentLiveChannel!;
-      final count = _liveRetryCount;
-      await _disposeLivePlayer();
-      if (!mounted) return;
-      _liveRetryCount = count;
-      _currentLiveChannel = channel;
-      await _startLivePlayback(channel);
-    } else {
-      // Fase espejo: buscar URL alternativa del mismo canal.
-      _liveRetryCount = 0;
-      if (!_isUsingMirror) {
-        _startMirrorPlayback();
-      } else {
-        setState(() {
-          _isLiveError = true;
-          _isLiveLoading = false;
-          _isLiveReloading = false;
-        });
-      }
-    }
+    // Usar el reload seamless unificado — sin pantalla negra
+    await _seamlessReload();
   }
 
   Future<void> _startMirrorPlayback() async {
@@ -3447,27 +3425,32 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                             ),
                           ),
                           if (_isLiveLoading)
-                            const Center(
-                              child: CircularProgressIndicator(
-                                color: Colors.white,
-                                strokeWidth: 2,
+                            Positioned.fill(
+                              child: Container(
+                                color: Colors.black.withOpacity(0.45),
+                                child: const Center(
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2.5,
+                                  ),
+                                ),
                               ),
-                            )
-                          else
-                            StreamBuilder<bool>(
-                              stream: controller.player.stream.buffering,
-                              builder: (context, snapshot) {
-                                if (snapshot.data == true) {
-                                  return const Center(
-                                    child: CircularProgressIndicator(
-                                      color: Colors.white,
-                                      strokeWidth: 2,
-                                    ),
-                                  );
-                                }
-                                return const SizedBox.shrink();
-                              },
                             ),
+
+                          StreamBuilder<bool>(
+                            stream: controller.player.stream.buffering,
+                            builder: (context, snapshot) {
+                              if (snapshot.data == true) {
+                                return const Center(
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2,
+                                  ),
+                                );
+                              }
+                              return const SizedBox.shrink();
+                            },
+                          ),
                           Positioned.fill(
                             child: IgnorePointer(
                               ignoring: !_showInlineControls,
