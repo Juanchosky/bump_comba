@@ -73,7 +73,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   // Slow loading feedback
   bool _showSlowLoadingMessage = false;
   Timer? _slowLoadingTimer;
-  Timer? _stallTimer; // Timer for live stream stall detection
+  // _stallTimer removed — no longer used
 
   // Search
   // bool _isSearching = false; // REMOVED
@@ -123,6 +123,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   VideoController? _liveVideoController;
   final ValueNotifier<VideoController?> _liveVideoControllerNotifier =
       ValueNotifier<VideoController?>(null);
+  final ValueNotifier<Uint8List?> _lastLiveFrameBytesNotifier =
+      ValueNotifier<Uint8List?>(null);
   M3UItem? _currentLiveChannel;
   bool _isLiveLoading = false;
   bool _isLiveReloading = false; // Add guard for reloading
@@ -130,6 +132,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   int _liveRetryCount = 0;
   // Guard: prevents creating a new player while the previous one is draining
   bool _isDisposingLivePlayer = false;
+  bool _isFullscreen = false;
 
   // Channel Mirroring & Recovery
   M3UItem? _originalLiveChannel;
@@ -142,8 +145,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
   // -- LIVE TV HEALTH MONITOR STATE --
   Timer? _liveHealthMonitorTimer;
-  int _liveStallSeconds = 0;
-  Duration _lastLivePosition = Duration.zero;
+  // _liveStallSeconds and _lastLivePosition removed — now local vars in monitor
   bool _isLiveChannel = true;
 
   // Calidad Adaptativa Dinámica
@@ -305,6 +307,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   void dispose() {
     NetworkQualityService().quality.removeListener(_onNetworkQualityChanged);
     _watchProgressVersion.dispose();
+    _liveVideoControllerNotifier.dispose();
+    _lastLiveFrameBytesNotifier.dispose();
     _m3uService.removeListener(_onM3UServiceUpdated);
     WatchProgressService().removeListener(_onWatchProgressUpdated);
     _disposeLivePlayer();
@@ -2267,6 +2271,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     // while this one is still draining its native event queue.
     _isDisposingLivePlayer = true;
 
+    _lastLiveFrameBytesNotifier.value = null;
+
     _liveDurationTimer?.cancel();
     _liveDurationTimer = null;
     _liveSecondsWatched = 0;
@@ -2276,7 +2282,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
     _liveHealthMonitorTimer?.cancel();
     _liveHealthMonitorTimer = null;
-    _stallTimer?.cancel();
+    // _stallTimer removed
     _recoveryTimer?.cancel();
     _qualityRestoreTimer?.cancel();
     _qualityRestoreTimer = null;
@@ -2353,27 +2359,29 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   }
 
   Future<void> _playLiveChannel(M3UItem item) async {
-    // Same channel already playing, reload it and return
+    // Mismo canal ya reproduciendo → mostrar controles en lugar de recargar
     if (_currentLiveChannel?.url == item.url && _livePlayer != null) {
-      _reloadLiveSignal();
+      // Si está reproduciendo bien, solo mostrar controles
+      if (_livePlayer!.state.playing && !_isLiveLoading) {
+        setState(() => _showInlineControls = true);
+        _startInlineHideTimer();
+        return;
+      }
+      // Si está atascado, hacer seamless reload
+      _seamlessReload();
       return;
     }
 
-    // Guard: don't start a new player while the previous one is draining.
-    // The user tapped quickly — try again after the drain window completes.
     if (_isDisposingLivePlayer) {
       await Future.delayed(const Duration(milliseconds: 600));
       if (!mounted) return;
     }
 
-    // Pause current channel before showing ad to prevent background audio
     if (_livePlayer != null && _livePlayer!.state.playing) {
       _livePlayer!.pause();
       _liveAdCountdownNotifier.value = null;
     }
 
-    // Show rewarded ad with confirmation EVERY switch
-    // Premium users are handled inside showRewardedAdWithConfirmation (it auto-skips)
     AdService().showRewardedAdWithConfirmation(
       context,
       onUserEarnedReward: () async {
@@ -2391,6 +2399,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   Future<void> _startLivePlayback(M3UItem item) async {
     if (!mounted) return;
 
+    _lastLiveFrameBytesNotifier.value = null;
     setState(() => _isLiveLoading = true);
 
     if (_livePlayer == null) {
@@ -2600,11 +2609,13 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     await s('cache-pause', 'no'); // NUNCA pausar por buffer bajo
     await s('cache-pause-initial', 'no');
     await s('cache-pause-wait', '0');
-    await s('cache-secs', '60'); // 60 s de colchón adelante
+    // Para HLS en vivo, un buffer de readahead de 60s es irreal y puede confundir al reproductor.
+    // Usamos 15s para en vivo y 60s para VOD/series/películas.
+    await s('cache-secs', _isLiveChannel ? '15' : '60');
     await s('cache-back-buffer-size', '33554432'); // 32 MB atrás
-    await s('demuxer-max-bytes', '150000000'); // 150 MB
+    await s('demuxer-max-bytes', _isLiveChannel ? '20000000' : '150000000');
     await s('demuxer-max-back-bytes', '33554432');
-    await s('demuxer-readahead-secs', '60'); // Hilo de descarga agresivo
+    await s('demuxer-readahead-secs', _isLiveChannel ? '15' : '60');
 
     // ── VIDEO: sin drops, superficie estable ────────────────────────────────
     await s('framedrop', 'no'); // Sin framedrop = imagen más estable
@@ -2615,7 +2626,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     await s('opengl-early-flush', 'no');
 
     // ── RED: reconexión instantánea, sin timeouts agresivos ─────────────────
-    await s('network-timeout', '10'); // 10 s antes de declarar error
+    await s('network-timeout', '5'); // 5 s antes de declarar error
     await s('http-reconnect', 'yes');
     await s('http-reconnect-max', '999');
     await s('http-reconnect-delay', '0.1');
@@ -2623,11 +2634,12 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       'stream-lavf-o',
       'reconnect=1,'
           'reconnect_streamed=1,'
+          'reconnect_at_eof=1,'
           'reconnect_delay_max=1,'
           'reconnect_on_network_error=1,'
           'reconnect_on_http_error=4xx,5xx,'
-          'timeout=10000000,'
-          'rw_timeout=10000000,'
+          'timeout=3000000,'
+          'rw_timeout=3000000,'
           'tcp_nodelay=1,'
           'fflags=nobuffer',
     ); // Reduce latencia de ffmpeg
@@ -2653,8 +2665,12 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         'stream-lavf-o',
         'reconnect=1,'
             'reconnect_streamed=1,'
+            'reconnect_at_eof=1,'
             'reconnect_delay_max=1,'
             'reconnect_on_network_error=1,'
+            'reconnect_on_http_error=4xx,5xx,'
+            'timeout=3000000,'
+            'rw_timeout=3000000,'
             'live_start_index=-3,' // 3 segmentos atrás = ~18-30 s de colchón
             'tcp_nodelay=1,'
             'fflags=nobuffer',
@@ -2692,32 +2708,16 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     await s('force-seekable', 'yes');
   }
 
-  void _triggerSurfaceRefresh() {
-    if (!mounted || _liveVideoController == null) return;
-    setState(() {
-      _liveVideoControllerNotifier.value = null;
-    });
-    Future.delayed(const Duration(milliseconds: 150), () {
-      if (mounted && _livePlayer != null) {
-        setState(() {
-          _liveVideoControllerNotifier.value = _liveVideoController;
-        });
-      }
-    });
-  }
-
   void _startLiveStallMonitor() {
     _liveHealthMonitorTimer?.cancel();
-    _liveStallSeconds = 0;
-    _lastLivePosition = Duration.zero;
 
     // Usamos tiempo de pared para detectar stall real.
     // En live, la posición MPV puede ser inestable (vuelve a 0 al reconectar),
     // así que solo nos fiamos de ella para detectar MOVIMIENTO, no para medir
     // el tiempo exacto de stall.
-    int _consecutiveStillSeconds = 0;
-    Duration _prevPosition = Duration.zero;
-    bool _firstTick = true;
+    int consecutiveStillSeconds = 0;
+    Duration prevPosition = Duration.zero;
+    bool firstTick = true;
 
     _liveHealthMonitorTimer = Timer.periodic(const Duration(seconds: 1), (
       timer,
@@ -2732,9 +2732,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       }
       // Si estamos en medio de un reload, resetear el watchdog y esperar
       if (_isLiveReloading || _isDisposingLivePlayer) {
-        _consecutiveStillSeconds = 0;
-        _prevPosition = Duration.zero;
-        _firstTick = true;
+        consecutiveStillSeconds = 0;
+        prevPosition = Duration.zero;
+        firstTick = true;
         return;
       }
 
@@ -2744,74 +2744,72 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       if (state.buffering) {
         // Buffering explícito: acumular pero esperar más tiempo
         // antes de hacer algo (la red puede recuperarse sola)
-        _consecutiveStillSeconds++;
+        consecutiveStillSeconds++;
 
-        // Mostrar spinner solo después de 4 s en buffering
-        if (_consecutiveStillSeconds == 4 && mounted) {
+        // Mostrar spinner solo después de 2 s en buffering
+        if (consecutiveStillSeconds == 2 && mounted) {
           setState(() => _isLiveLoading = true);
         }
 
-        // Recargar solo si el buffering dura más de 12 s consecutivos
-        if (_consecutiveStillSeconds >= 12) {
+        // Recargar solo si el buffering dura más de 5 s consecutivos
+        if (consecutiveStillSeconds >= 5) {
           debugPrint(
-            '🔴 Buffering ${_consecutiveStillSeconds}s → seamless reload',
+            '🔴 Buffering ${consecutiveStillSeconds}s → seamless reload',
           );
-          _consecutiveStillSeconds = 0;
+          consecutiveStillSeconds = 0;
           timer.cancel();
           _seamlessReload();
         }
-        _prevPosition = currentPos;
+        prevPosition = currentPos;
         return;
       }
 
       if (!state.playing) {
         // Pausado por el usuario — no hacer nada
-        _consecutiveStillSeconds = 0;
-        _prevPosition = currentPos;
-        _firstTick = true;
+        consecutiveStillSeconds = 0;
+        prevPosition = currentPos;
+        firstTick = true;
         if (mounted && _isLiveLoading) setState(() => _isLiveLoading = false);
         return;
       }
 
       // Player dice que está reproduciendo y no hay buffering:
       // verificar si la posición realmente avanza.
-      if (_firstTick) {
-        // El primer tick siempre es "sin movimiento" porque no tenemos
-        // una referencia previa — ignorarlo para evitar falsos positivos.
-        _prevPosition = currentPos;
-        _firstTick = false;
+      if (firstTick) {
+        prevPosition = currentPos;
+        firstTick = false;
         return;
       }
 
-      final bool positionMoved = currentPos != _prevPosition;
+      final bool positionMoved = currentPos != prevPosition;
 
       if (positionMoved) {
         // Hay movimiento → todo bien, reset watchdog
-        _consecutiveStillSeconds = 0;
+        consecutiveStillSeconds = 0;
         if (mounted && _isLiveLoading) {
           setState(() => _isLiveLoading = false);
         }
       } else {
         // Posición quieta mientras el player dice que reproduce
-        _consecutiveStillSeconds++;
+        consecutiveStillSeconds++;
 
-        // Mostrar spinner a los 3 s quieto (el usuario empieza a notar)
-        if (_consecutiveStillSeconds == 3 && mounted) {
+        // Mostrar spinner a los 2 s quieto (el usuario empieza a notar)
+        if (consecutiveStillSeconds == 2 && mounted) {
           setState(() => _isLiveLoading = true);
         }
 
-        // Recarga seamless a los 6 s quieto
-        if (_consecutiveStillSeconds >= 6) {
+        // Recarga seamless a los 3 s quieto
+        if (consecutiveStillSeconds >= 3) {
           debugPrint(
-            '🔴 Stream congelado ${_consecutiveStillSeconds}s → seamless reload',
+            '🔴 Stream congelado ${consecutiveStillSeconds}s → seamless reload',
           );
-          _consecutiveStillSeconds = 0;
+          consecutiveStillSeconds = 0;
           timer.cancel();
           _seamlessReload();
         }
       }
 
-      _prevPosition = currentPos;
+      prevPosition = currentPos;
       _updateSpeedIndicator();
     });
   }
@@ -2819,6 +2817,14 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   Future<void> _seamlessReload() async {
     if (_isLiveReloading || _isDisposingLivePlayer) return;
     if (_livePlayer == null || _currentLiveChannel == null) return;
+
+    // Capturar screenshot antes del reload para evitar pantalla negra
+    try {
+      final bytes = await _livePlayer?.screenshot();
+      if (bytes != null && mounted) {
+        _lastLiveFrameBytesNotifier.value = bytes;
+      }
+    } catch (_) {}
 
     _liveRetryCount++;
     _isLiveReloading = true;
@@ -2846,11 +2852,33 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             ),
             play: true,
           )
-          .timeout(const Duration(seconds: 8));
+          .timeout(const Duration(seconds: 5));
 
       _liveRetryCount = 0;
       _isLiveReloading = false;
-      if (mounted) setState(() => _isLiveLoading = false);
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (mounted) {
+          _lastLiveFrameBytesNotifier.value = null;
+          setState(() => _isLiveLoading = false);
+        }
+      });
+
+      // Si la calidad estaba limitada y llevamos varios reintentos exitosos,
+      // restaurar la calidad máxima silenciosamente
+      if (_isQualityCapped && _liveRetryCount == 0) {
+        _qualityRestoreTimer?.cancel();
+        _qualityRestoreTimer = Timer(const Duration(minutes: 2), () async {
+          if (!mounted || !_isQualityCapped) return;
+          _isQualityCapped = false;
+          try {
+            await (_livePlayer?.platform as dynamic)?.setProperty(
+              'hls-bitrate',
+              'max',
+            );
+            debugPrint('✅ Calidad restaurada a máxima');
+          } catch (_) {}
+        });
+      }
     } catch (e) {
       debugPrint('Seamless reload falló ($e) → intento $_liveRetryCount');
       _isLiveReloading = false;
@@ -2877,12 +2905,14 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         if (!_isUsingMirror) {
           _startMirrorPlayback();
         } else {
-          if (mounted)
+          if (mounted) {
             setState(() {
               _isLiveError = true;
               _isLiveLoading = false;
               _isLiveReloading = false;
             });
+            _lastLiveFrameBytesNotifier.value = null;
+          }
         }
       }
       return;
@@ -2895,16 +2925,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     }
   }
 
-  Future<void> _doImmediateReload() async {
-    // Redirige al reload seamless — mismo comportamiento, sin pantalla negra
-    await _seamlessReload();
-  }
-
-  Future<void> _quickReopenStream() async {
-    if (_livePlayer == null || _currentLiveChannel == null) return;
-    // Delegar al reload seamless unificado
-    await _seamlessReload();
-  }
+  // _doImmediateReload y _quickReopenStream eliminados — todo pasa por _seamlessReload()
 
   void _updateSpeedIndicator() {
     try {
@@ -2932,8 +2953,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     if (!mounted ||
         _currentLiveChannel == null ||
         _isLiveReloading ||
-        _isLiveError)
+        _isLiveError) {
       return;
+    }
 
     if (_liveRetryCount >= 2 && !_isQualityCapped) {
       _isQualityCapped = true;
@@ -2955,29 +2977,87 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     final mirror = M3UService().findMirrorChannel(_currentLiveChannel!);
 
     if (mirror != null) {
-      debugPrint('Found mirror channel: ${mirror.name} (${mirror.url})');
+      debugPrint('Mirror encontrado: ${mirror.name} (${mirror.url})');
 
-      setState(() {
-        _originalLiveChannel = _currentLiveChannel;
-        _isUsingMirror = true;
-        _isLiveReloading = true;
-        _isLiveLoading = true;
-      });
+      // Guardar referencia al canal original ANTES de cambiar estado
+      _originalLiveChannel = _currentLiveChannel;
+      _isUsingMirror = true;
 
-      _disposeLivePlayer();
-      _startLivePlayback(mirror);
-
-      // Start background recovery check for the original channel
-      _startBackgroundRecovery();
-    } else {
-      debugPrint('No mirror found for ${_currentLiveChannel!.name}');
-      setState(() {
-        _isLiveReloading = false;
-        _isLiveLoading = false;
-        _isLiveError = true;
-      });
-      _stopLivePlayer();
       if (mounted) {
+        setState(() {
+          _isLiveLoading = true;
+          _isLiveReloading = true;
+        });
+      }
+
+      // Capturar screenshot antes del mirror para evitar pantalla negra
+      try {
+        final bytes = await _livePlayer?.screenshot();
+        if (bytes != null && mounted) {
+          _lastLiveFrameBytesNotifier.value = bytes;
+        }
+      } catch (_) {}
+
+      // Seamless: abrir el mirror en el MISMO player sin destruir el surface.
+      // El usuario ve el último frame del canal original mientras conecta el mirror.
+      try {
+        await _livePlayer!
+            .open(
+              Media(
+                mirror.url,
+                httpHeaders: {
+                  'User-Agent': _getRandomUserAgent(),
+                  'Accept': '*/*',
+                  'Connection': 'keep-alive',
+                  'Cache-Control': 'no-cache',
+                  'Pragma': 'no-cache',
+                  'Accept-Encoding': 'identity',
+                  'icy-metadata': '1',
+                },
+              ),
+              play: true,
+            )
+            .timeout(const Duration(seconds: 6));
+
+        if (mounted) {
+          setState(() {
+            _currentLiveChannel = mirror;
+            _isLiveReloading = false;
+            _liveRetryCount = 0;
+          });
+          Future.delayed(const Duration(milliseconds: 500), () {
+            if (mounted) {
+              _lastLiveFrameBytesNotifier.value = null;
+              setState(() => _isLiveLoading = false);
+            }
+          });
+          _startLiveStallMonitor();
+          _startBackgroundRecovery();
+        }
+      } catch (e) {
+        debugPrint('Mirror falló: $e → error final');
+        _isUsingMirror = false;
+        _originalLiveChannel = null;
+        if (mounted) {
+          setState(() {
+            _isLiveReloading = false;
+            _isLiveLoading = false;
+            _isLiveError = true;
+          });
+          SnackBarUtils.showAppSnackBar(
+            context,
+            'No se pudo restablecer la señal. Intenta con otro canal.',
+          );
+        }
+      }
+    } else {
+      debugPrint('Sin mirror para ${_currentLiveChannel!.name}');
+      if (mounted) {
+        setState(() {
+          _isLiveReloading = false;
+          _isLiveLoading = false;
+          _isLiveError = true;
+        });
         SnackBarUtils.showAppSnackBar(
           context,
           'No se pudo restablecer la señal. Intenta con otro canal.',
@@ -3001,7 +3081,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     }
 
     try {
-      debugPrint('Checking original channel: ${_originalLiveChannel!.url}');
       final response = await http
           .head(
             Uri.parse(_originalLiveChannel!.url),
@@ -3010,29 +3089,71 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           .timeout(const Duration(seconds: 5));
 
       if (response.statusCode >= 200 && response.statusCode < 400) {
-        debugPrint('Original channel is back! Swapping...');
+        debugPrint('Canal original recuperado → volviendo seamless');
         _recoveryTimer?.cancel();
 
-        if (mounted) {
-          setState(() {
-            _isUsingMirror = false;
-            _isLiveReloading = true; // Prevent other reloads during swap
-            _isLiveLoading = true;
-          });
+        if (!mounted) return;
 
-          final original = _originalLiveChannel!;
-          _originalLiveChannel = null;
+        final original = _originalLiveChannel!;
+        _originalLiveChannel = null;
+        _isUsingMirror = false;
 
-          _disposeLivePlayer();
-          _startLivePlayback(original);
+        // Capturar screenshot antes de volver al original para evitar pantalla negra
+        try {
+          final bytes = await _livePlayer?.screenshot();
+          if (bytes != null && mounted) {
+            _lastLiveFrameBytesNotifier.value = bytes;
+          }
+        } catch (_) {}
+
+        // Seamless: abrir original en el mismo player sin destruir surface
+        try {
+          await _livePlayer!
+              .open(
+                Media(
+                  original.url,
+                  httpHeaders: {
+                    'User-Agent': _getRandomUserAgent(),
+                    'Accept': '*/*',
+                    'Connection': 'keep-alive',
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache',
+                    'Accept-Encoding': 'identity',
+                  },
+                ),
+                play: true,
+              )
+              .timeout(const Duration(seconds: 6));
+
+          if (mounted) {
+            setState(() {
+              _currentLiveChannel = original;
+              _isLiveReloading = false;
+            });
+            Future.delayed(const Duration(milliseconds: 500), () {
+              if (mounted) {
+                _lastLiveFrameBytesNotifier.value = null;
+                setState(() => _isLiveLoading = false);
+              }
+            });
+            _startLiveStallMonitor();
+            SnackBarUtils.showAppSnackBar(
+              context,
+              '✓ Señal principal restaurada',
+            );
+          }
+        } catch (_) {
+          // Si el original falla al volver, quedarse en el mirror
+          _isUsingMirror = true;
+          _originalLiveChannel = original;
+          _lastLiveFrameBytesNotifier.value = null;
+          _startBackgroundRecovery(); // reintentar en 60s
         }
       } else {
-        debugPrint(
-          'Original channel still down (Status: ${response.statusCode})',
-        );
+        debugPrint('Canal original aún caído (${response.statusCode})');
       }
     } catch (e) {
-      debugPrint('Original channel still down (Error: $e)');
+      debugPrint('Canal original aún caído: $e');
     }
   }
 
@@ -3207,6 +3328,12 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     // _showLiveSearch = false;
     // _liveSearchController.clear();
 
+    if (mounted) {
+      setState(() {
+        _isFullscreen = true;
+      });
+    }
+
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder:
@@ -3217,9 +3344,16 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
               speedNotifier: _liveSpeedNotifier,
               item: _currentLiveChannel!,
               onReport: _showLiveReportOptions,
+              lastFrameBytesNotifier: _lastLiveFrameBytesNotifier,
             ),
       ),
     );
+
+    if (mounted) {
+      setState(() {
+        _isFullscreen = false;
+      });
+    }
 
     if (!isDesktopOrWeb) {
       // Restore Portrait
@@ -3283,7 +3417,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                 child: ValueListenableBuilder<VideoController?>(
                   valueListenable: _liveVideoControllerNotifier,
                   builder: (context, controller, _) {
-                    if (controller == null) {
+                    if (controller == null || _isFullscreen) {
                       return Center(
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
@@ -3295,7 +3429,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                             ),
                             const SizedBox(height: 8),
                             Text(
-                              'Selecciona un canal',
+                              _isFullscreen
+                                  ? 'Reproduciendo en pantalla completa'
+                                  : 'Selecciona un canal',
                               style: TextStyle(
                                 color: Colors.white.withOpacity(0.3),
                                 fontSize: 14,
@@ -3309,226 +3445,229 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                     return GestureDetector(
                       onTap: _toggleInlineControls,
                       behavior: HitTestBehavior.translucent,
-                      child: Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          Video(
-                            key: ValueKey('live_inline_${controller.hashCode}'),
-                            controller: controller,
-                            fit: BoxFit.contain,
-                            fill: Colors.black,
-                            controls: (state) => const SizedBox.shrink(),
-                          ),
-                          ValueListenableBuilder<int?>(
-                            valueListenable: _liveAdCountdownNotifier,
-                            builder: (context, countdown, _) {
-                              if (countdown == null) {
-                                return const SizedBox.shrink();
-                              }
-                              return Positioned(
-                                top: 10,
-                                left: 10,
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 10,
-                                    vertical: 6,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: AppColors.background.withOpacity(
-                                      0.7,
-                                    ),
-                                    borderRadius: BorderRadius.circular(8),
-                                    border: Border.all(
-                                      color: Colors.white24,
-                                      width: 1,
-                                    ),
-                                  ),
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      const Icon(
-                                        Icons.info_outline,
-                                        color: Colors.yellow,
-                                        size: 17.8,
-                                      ),
-                                      const SizedBox(width: 8),
-                                      Text(
-                                        'Anuncio en $countdown...',
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
+                      child: ValueListenableBuilder<Uint8List?>(
+                        valueListenable: _lastLiveFrameBytesNotifier,
+                        builder: (context, lastFrameBytes, _) {
+                          return Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              Video(
+                                key: ValueKey(
+                                  'live_inline_${controller.hashCode}',
                                 ),
-                              );
-                            },
-                          ),
-                          Positioned(
-                            top: 10,
-                            left: 10,
-                            child: ValueListenableBuilder<String>(
-                              valueListenable: _liveSpeedNotifier,
-                              builder: (context, speed, _) {
-                                return ValueListenableBuilder<int?>(
-                                  valueListenable: _liveAdCountdownNotifier,
-                                  builder: (context, countdown, _) {
-                                    return AnimatedPadding(
-                                      duration: const Duration(
-                                        milliseconds: 300,
-                                      ),
-                                      padding: EdgeInsets.only(
-                                        top: countdown != null ? 35 : 0,
-                                      ),
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 8,
-                                          vertical: 4,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: Colors.black45,
-                                          borderRadius: BorderRadius.circular(
-                                            6,
-                                          ),
-                                          border: Border.all(
-                                            color: Colors.white10,
-                                            width: 0.5,
-                                          ),
-                                        ),
-                                        child: Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            const Icon(
-                                              Icons.download_rounded,
-                                              color: Colors.white60,
-                                              size: 10,
-                                            ),
-                                            const SizedBox(width: 4),
-                                            Text(
-                                              speed,
-                                              style: const TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 10,
-                                                fontWeight: FontWeight.bold,
-                                                fontFamily: 'monospace',
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    );
-                                  },
-                                );
-                              },
-                            ),
-                          ),
-                          if (_isLiveLoading)
-                            Positioned.fill(
-                              child: Container(
-                                color: Colors.black.withOpacity(0.45),
-                                child: const Center(
-                                  child: CircularProgressIndicator(
-                                    color: Colors.white,
-                                    strokeWidth: 2.5,
-                                  ),
-                                ),
+                                controller: controller,
+                                fit: BoxFit.contain,
+                                fill: Colors.black,
+                                controls: (state) => const SizedBox.shrink(),
                               ),
-                            ),
-
-                          StreamBuilder<bool>(
-                            stream: controller.player.stream.buffering,
-                            builder: (context, snapshot) {
-                              if (snapshot.data == true) {
-                                return const Center(
-                                  child: CircularProgressIndicator(
-                                    color: Colors.white,
-                                    strokeWidth: 2,
-                                  ),
-                                );
-                              }
-                              return const SizedBox.shrink();
-                            },
-                          ),
-                          Positioned.fill(
-                            child: IgnorePointer(
-                              ignoring: !_showInlineControls,
-                              child: AnimatedOpacity(
-                                opacity: _showInlineControls ? 1.0 : 0.0,
-                                duration: const Duration(milliseconds: 300),
-                                child: Stack(
-                                  children: [
-                                    if (_currentLiveChannel != null)
-                                      Positioned(
-                                        top: 8,
-                                        right: 8,
-                                        child: Container(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 10,
-                                            vertical: 4,
+                              if (lastFrameBytes != null)
+                                Image.memory(
+                                  lastFrameBytes,
+                                  fit: BoxFit.contain,
+                                ),
+                              ValueListenableBuilder<int?>(
+                                valueListenable: _liveAdCountdownNotifier,
+                                builder: (context, countdown, _) {
+                                  if (countdown == null) {
+                                    return const SizedBox.shrink();
+                                  }
+                                  return Positioned(
+                                    top: 10,
+                                    left: 10,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 6,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: AppColors.background.withOpacity(
+                                          0.7,
+                                        ),
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(
+                                          color: Colors.white24,
+                                          width: 1,
+                                        ),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Icon(
+                                            Icons.info_outline,
+                                            color: Colors.yellow,
+                                            size: 17.8,
                                           ),
-                                          decoration: BoxDecoration(
-                                            color: Colors.black54,
-                                            borderRadius: BorderRadius.circular(
-                                              4,
-                                            ),
-                                          ),
-                                          child: Text(
-                                            _currentLiveChannel!.name,
+                                          const SizedBox(width: 8),
+                                          Text(
+                                            'Anuncio en $countdown...',
                                             style: const TextStyle(
                                               color: Colors.white,
                                               fontSize: 12,
-                                              fontWeight: FontWeight.w500,
+                                              fontWeight: FontWeight.bold,
                                             ),
                                           ),
-                                        ),
+                                        ],
                                       ),
-                                    Positioned(
-                                      bottom: 8,
-                                      left: 8,
-                                      child: StreamBuilder<bool>(
-                                        stream:
-                                            controller.player.stream.playing,
-                                        initialData:
-                                            controller.player.state.playing,
-                                        builder: (context, snapshot) {
-                                          final isPlaying =
-                                              snapshot.data ?? false;
-                                          return IconButton(
-                                            icon: Icon(
-                                              isPlaying
-                                                  ? Icons.pause
-                                                  : Icons.play_arrow,
-                                              color: Colors.white,
-                                              size: 32,
+                                    ),
+                                  );
+                                },
+                              ),
+                              Positioned(
+                                top: 10,
+                                left: 10,
+                                child: ValueListenableBuilder<String>(
+                                  valueListenable: _liveSpeedNotifier,
+                                  builder: (context, speed, _) {
+                                    return ValueListenableBuilder<int?>(
+                                      valueListenable: _liveAdCountdownNotifier,
+                                      builder: (context, countdown, _) {
+                                        return AnimatedPadding(
+                                          duration: const Duration(
+                                            milliseconds: 300,
+                                          ),
+                                          padding: EdgeInsets.only(
+                                            top: countdown != null ? 35 : 0,
+                                          ),
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 8,
+                                              vertical: 4,
                                             ),
-                                            onPressed: () {
-                                              _startInlineHideTimer();
-                                              controller.player.playOrPause();
-                                            },
-                                          );
-                                        },
-                                      ),
-                                    ),
-                                    Positioned(
-                                      bottom: 12,
-                                      right: 12,
-                                      child: IconButton(
-                                        icon: const Icon(
-                                          Icons.fullscreen,
-                                          color: Colors.white,
-                                          size: 28,
-                                        ),
-                                        onPressed: _enterFullscreen,
-                                      ),
-                                    ),
-                                  ],
+                                            decoration: BoxDecoration(
+                                              color: Colors.black45,
+                                              borderRadius:
+                                                  BorderRadius.circular(6),
+                                              border: Border.all(
+                                                color: Colors.white10,
+                                                width: 0.5,
+                                              ),
+                                            ),
+                                            child: Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                const Icon(
+                                                  Icons.download_rounded,
+                                                  color: Colors.white60,
+                                                  size: 10,
+                                                ),
+                                                const SizedBox(width: 4),
+                                                Text(
+                                                  speed,
+                                                  style: const TextStyle(
+                                                    color: Colors.white,
+                                                    fontSize: 10,
+                                                    fontWeight: FontWeight.bold,
+                                                    fontFamily: 'monospace',
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        );
+                                      },
+                                    );
+                                  },
                                 ),
                               ),
-                            ),
-                          ),
-                        ],
+                              if (_isLiveLoading)
+                                Positioned.fill(
+                                  child: Container(
+                                    color: Colors.black.withOpacity(0.45),
+                                    child: const Center(
+                                      child: CircularProgressIndicator(
+                                        color: Colors.white,
+                                        strokeWidth: 2.5,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+
+                              // StreamBuilder de buffering eliminado — _isLiveLoading
+                              // ya maneja el spinner con delay de 4s para evitar parpadeos.
+                              Positioned.fill(
+                                child: IgnorePointer(
+                                  ignoring: !_showInlineControls,
+                                  child: AnimatedOpacity(
+                                    opacity: _showInlineControls ? 1.0 : 0.0,
+                                    duration: const Duration(milliseconds: 300),
+                                    child: Stack(
+                                      children: [
+                                        if (_currentLiveChannel != null)
+                                          Positioned(
+                                            top: 8,
+                                            right: 8,
+                                            child: Container(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                    horizontal: 10,
+                                                    vertical: 4,
+                                                  ),
+                                              decoration: BoxDecoration(
+                                                color: Colors.black54,
+                                                borderRadius:
+                                                    BorderRadius.circular(4),
+                                              ),
+                                              child: Text(
+                                                _currentLiveChannel!.name,
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 12,
+                                                  fontWeight: FontWeight.w500,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        Positioned(
+                                          bottom: 8,
+                                          left: 8,
+                                          child: StreamBuilder<bool>(
+                                            stream:
+                                                controller
+                                                    .player
+                                                    .stream
+                                                    .playing,
+                                            initialData:
+                                                controller.player.state.playing,
+                                            builder: (context, snapshot) {
+                                              final isPlaying =
+                                                  snapshot.data ?? false;
+                                              return IconButton(
+                                                icon: Icon(
+                                                  isPlaying
+                                                      ? Icons.pause
+                                                      : Icons.play_arrow,
+                                                  color: Colors.white,
+                                                  size: 32,
+                                                ),
+                                                onPressed: () {
+                                                  _startInlineHideTimer();
+                                                  controller.player
+                                                      .playOrPause();
+                                                },
+                                              );
+                                            },
+                                          ),
+                                        ),
+                                        Positioned(
+                                          bottom: 12,
+                                          right: 12,
+                                          child: IconButton(
+                                            icon: const Icon(
+                                              Icons.fullscreen,
+                                              color: Colors.white,
+                                              size: 28,
+                                            ),
+                                            onPressed: _enterFullscreen,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          );
+                        },
                       ),
                     );
                   },
@@ -5771,6 +5910,7 @@ class _FullscreenLivePlayer extends StatefulWidget {
   final ValueNotifier<String> speedNotifier;
   final M3UItem item;
   final Function(M3UItem) onReport;
+  final ValueNotifier<Uint8List?> lastFrameBytesNotifier;
 
   const _FullscreenLivePlayer({
     required this.controllerNotifier,
@@ -5779,6 +5919,7 @@ class _FullscreenLivePlayer extends StatefulWidget {
     required this.speedNotifier,
     required this.item,
     required this.onReport,
+    required this.lastFrameBytesNotifier,
   });
 
   @override
@@ -5801,34 +5942,32 @@ class _FullscreenLivePlayerState extends State<_FullscreenLivePlayer> {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     _startHideTimer();
 
+    // NO tocar ninguna propiedad de MPV aquí.
+    // _applySeamlessConfig ya configuró todo correctamente antes de entrar
+    // a pantalla completa. Sobrescribir cache-secs=12 aquí deshacía el
+    // buffer de 60s y causaba micro-cortes en fullscreen.
+    //
+    // El único ajuste válido en fullscreen es asegurarse de que
+    // cache-pause siga en 'no', porque algunos dispositivos lo resetean
+    // al cambiar de surface. Lo hacemos en un microtask para no bloquear.
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final player = widget.controllerNotifier.value?.player;
       final mpv = player?.platform as dynamic;
       if (mpv == null) return;
 
+      // Solo los ajustes que pueden resetearse al cambiar de surface.
+      // NO tocar cache-secs, demuxer-max-bytes, ni ningún otro valor grande.
       Future<void> safeSet(String key, String value) async {
         try {
           await mpv.setProperty(key, value);
         } catch (_) {}
       }
 
-      // IMPORTANTE: todos los valores deben ser consistentes con
-      // _applySeamlessConfig. El modo fullscreen NO debe sobrescribir
-      // ninguna propiedad crítica con un valor diferente.
-
-      // cache-pause=NO (era 'yes' — ese era el bug)
-      await safeSet('cache-pause', 'no'); // ← CORREGIDO (era 'yes')
+      await safeSet('cache-pause', 'no'); // Crítico: nunca pausar
       await safeSet('cache-pause-initial', 'no');
-      await safeSet('cache-secs', '12');
-      await safeSet('demuxer-max-bytes', '67108864');
-      await safeSet('demuxer-max-back-bytes', '16777216');
-      await safeSet('demuxer-readahead-secs', '12');
-      await safeSet('demuxer-cache-wait', 'no');
-      await safeSet('hls-bitrate', 'max');
-      await safeSet('framedrop', 'vo');
-      await safeSet('http-reconnect', 'yes');
-      await safeSet('audio-buffer', '1.5');
+      await safeSet('framedrop', 'no'); // Consistente con inline
       await safeSet('audio-stream-silence', 'yes');
+      await safeSet('keep-open-pause', 'no');
     });
   }
 
@@ -5993,18 +6132,32 @@ class _FullscreenLivePlayerState extends State<_FullscreenLivePlayer> {
             child: Stack(
               children: [
                 Center(
-                  child: ValueListenableBuilder<VideoController?>(
-                    valueListenable: widget.controllerNotifier,
-                    builder: (context, controller, child) {
-                      if (controller == null) {
-                        return const Center(
-                          child: CircularProgressIndicator(color: Colors.white),
-                        );
-                      }
-                      return Video(
-                        key: ValueKey(controller.hashCode),
-                        controller: controller,
-                        controls: (state) => const SizedBox.shrink(),
+                  child: ValueListenableBuilder<Uint8List?>(
+                    valueListenable: widget.lastFrameBytesNotifier,
+                    builder: (context, lastFrameBytes, _) {
+                      return Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          ValueListenableBuilder<VideoController?>(
+                            valueListenable: widget.controllerNotifier,
+                            builder: (context, controller, child) {
+                              if (controller == null) {
+                                return const Center(
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                  ),
+                                );
+                              }
+                              return Video(
+                                key: ValueKey(controller.hashCode),
+                                controller: controller,
+                                controls: (state) => const SizedBox.shrink(),
+                              );
+                            },
+                          ),
+                          if (lastFrameBytes != null)
+                            Image.memory(lastFrameBytes, fit: BoxFit.contain),
+                        ],
                       );
                     },
                   ),
