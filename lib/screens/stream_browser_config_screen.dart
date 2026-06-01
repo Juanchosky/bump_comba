@@ -1,9 +1,12 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../services/game_config_service.dart';
 import '../services/m3u_service.dart';
 import '../services/performance_service.dart';
+import '../services/premium_service.dart';
+import 'subscription_screen.dart';
 
 import '../utils/colors.dart';
 import '../utils/snack_bar_utils.dart';
@@ -20,6 +23,7 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
   final M3UService _m3uService = M3UService();
   final GameConfigService _gameConfigService = GameConfigService();
   final PerformanceService _performanceService = PerformanceService();
+  final PremiumService _premiumService = PremiumService();
   bool _isLoading = false;
   bool _wasDataChanged = false;
 
@@ -116,6 +120,15 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
                     onTap: _showPerformanceConfigDialog,
                     isLast: true,
                   ),
+                ]),
+
+                const SizedBox(height: 24),
+
+                // -- SUSCRIPCIÓN -------------------------------------------
+                _buildSectionHeader('Suscripción'),
+                const SizedBox(height: 8),
+                _buildCard([
+                  _buildPremiumRow(),
                 ]),
 
                 const SizedBox(height: 24),
@@ -893,6 +906,262 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
         ),
       ),
     );
+  }
+
+  Widget _buildPremiumRow() {
+    final isPremium = _premiumService.isPremium;
+
+    return InkWell(
+      onTap: () async {
+        if (!isPremium) {
+          final result = await Navigator.push(
+            context,
+            MaterialPageRoute(builder: (context) => const SubscriptionScreen()),
+          );
+          if (result == true && mounted) {
+            setState(() {});
+          }
+        } else {
+          _showSubscriptionDetails();
+        }
+      },
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+        child: Row(
+          children: [
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: (isPremium ? const Color(0xFFFFD700) : Colors.amber).withValues(alpha: 0.07),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(
+                isPremium ? CupertinoIcons.checkmark_seal_fill : CupertinoIcons.checkmark_seal,
+                color: isPremium ? const Color(0xFFFFD700) : Colors.amber,
+                size: 18,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        isPremium ? '¡Ahora eres Premium!' : 'Hazte Premium',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      if (isPremium) ...[
+                        const SizedBox(width: 8),
+                        _buildPremiumBadge(),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    isPremium
+                        ? 'Disfruta de tu estatus exclusivo sin límites'
+                        : 'Sin anuncios  •  Contenido 4K  •  Soporte VIP',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.45),
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              CupertinoIcons.chevron_right,
+              color: Colors.white.withValues(alpha: 0.25),
+              size: 16,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPremiumBadge() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFD700).withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(
+          color: const Color(0xFFFFD700).withValues(alpha: 0.4),
+          width: 1,
+        ),
+      ),
+      child: const Text(
+        'PREMIUM',
+        style: TextStyle(
+          color: Color(0xFFFFD700),
+          fontSize: 9,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0.5,
+        ),
+      ),
+    );
+  }
+
+  void _showSubscriptionDetails() {
+    final expirationDateStr = _premiumService.expirationDate;
+    final managementUrl = _premiumService.managementUrl;
+
+    String dateDisplay = "Renovación automática activa";
+    if (expirationDateStr != null) {
+      try {
+        final date = DateTime.parse(expirationDateStr);
+        dateDisplay = "Vence el: ${date.day}/${date.month}/${date.year}";
+      } catch (e) {
+        debugPrint("Error parsing date: $e");
+      }
+    }
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.background,
+      isScrollControlled: true,
+      builder:
+          (context) => Container(
+            padding: const EdgeInsets.all(24),
+            decoration: const BoxDecoration(
+              color: Color.fromARGB(255, 20, 20, 20),
+              borderRadius: BorderRadius.only(
+                topLeft: Radius.circular(24),
+                topRight: Radius.circular(24),
+              ),
+              border: Border(
+                top: BorderSide(color: Color(0xFFFFD700), width: 2),
+              ),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Handle bar
+                Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                const SizedBox(height: 24),
+
+                // Icon
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFD700).withOpacity(0.1),
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: const Color(0xFFFFD700).withOpacity(0.5),
+                    ),
+                  ),
+                  child: const Icon(
+                    CupertinoIcons.checkmark_seal,
+                    color: Color(0xFFFFD700),
+                    size: 37,
+                  ),
+                ),
+                const SizedBox(height: 17),
+
+                // Title with Check
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Text(
+                      "Membresía Premium Activa",
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Container(
+                      padding: const EdgeInsets.all(2),
+                      child: const Icon(
+                        Icons.check_circle_outline_rounded,
+                        color: Color(0xFFFFD700),
+                        size: 23,
+                      ),
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 8),
+                Text(
+                  dateDisplay,
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.7),
+                    fontSize: 14,
+                  ),
+                ),
+
+                const SizedBox(height: 13),
+
+                // Manage Button
+                ElevatedButton(
+                  onPressed: () {
+                    final url =
+                        managementUrl ??
+                        (Theme.of(context).platform == TargetPlatform.android
+                            ? 'https://play.google.com/store/account/subscriptions'
+                            : 'https://apps.apple.com/account/subscriptions');
+                    _launchURL(url);
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color.fromARGB(255, 20, 20, 20),
+                    foregroundColor: const Color.fromARGB(255, 85, 85, 85),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 32,
+                      vertical: 12,
+                    ),
+                    minimumSize: const Size(200, 48), // Standard button size
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    elevation: 0,
+                  ),
+                  child: const Text(
+                    "Gestionar Suscripción",
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w400),
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+
+                Text(
+                  "Puedes cancelar tu suscripción en cualquier momento desde la tienda de aplicaciones. La cancelación entrará en vigor al finalizar el periodo actual.",
+                  style: TextStyle(
+                    color: const Color.fromARGB(255, 80, 80, 80),
+                    fontSize: 12,
+                    height: 1.5,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 10),
+              ],
+            ),
+          ),
+    );
+  }
+
+  Future<void> _launchURL(String url) async {
+    final uri = Uri.parse(url);
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+      if (mounted) {
+        SnackBarUtils.showAppSnackBar(context, "No se pudo abrir el enlace");
+      }
+    }
   }
 }
 
