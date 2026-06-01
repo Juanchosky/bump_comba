@@ -7,7 +7,14 @@ workflows:
       flutter: stable
       xcode: latest
       cocoapods: default
+      groups:
+        - bump_comba_env
     scripts:
+      - name: Reconstruir archivo .env desde variable segura
+        script: |
+          echo "$DOTENV_BASE64" | base64 --decode > .env
+          echo "Archivo .env creado. Variables encontradas:"
+          grep -o '^[A-Z_]*=' .env || true
       - name: Flutter pub get
         script: |
           flutter pub get
