@@ -953,7 +953,7 @@ class _RewardedAdConfirmationDialogState
       }
     });
 
-    // Proactivamente intentar cargar si es nulo
+    // Proactivamente intentar cargar si es nulom
     if (widget.adService._rewardedAd == null &&
         !widget.adService._isRewardedAdLoading) {
       widget.adService.loadRewardedAd();
