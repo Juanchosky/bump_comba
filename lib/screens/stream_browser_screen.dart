@@ -86,7 +86,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
   // Fixed Categories
   List<String> get _fixedTabs {
-    final tabs = ['Inicio', 'Películas', 'Series', 'Telenovelas', 'En Vivo'];
+    final tabs = ['Inicio', 'Películas', 'Series', 'Telenovelas', 'Animación'];
 
     final bool isPC =
         kIsWeb ||
@@ -176,11 +176,13 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   int _loadedMovieCategories = 3;
   int _loadedSeriesCategories = 3;
   int _loadedNovelaCategories = 3;
+  int _loadedAnimationCategories = 3;
 
   bool _isHomeLoadingMore = false;
   bool _isMoviesLoadingMore = false;
   bool _isSeriesLoadingMore = false;
   bool _isNovelasLoadingMore = false;
+  bool _isAnimationLoadingMore = false;
 
   String _getRandomUserAgent() {
     const agents = [
@@ -1878,8 +1880,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
               );
             },
           );
-        } else if (_selectedTab == 'En Vivo') {
-          return _buildLiveContent();
+        } else if (_selectedTab == 'Animación') {
+          return _buildAnimationContentScrollable();
         } else if (_selectedTab == 'Películas') {
           return _buildMoviesContentScrollable();
         } else if (_selectedTab == 'Series') {
@@ -2261,6 +2263,173 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         padding: const EdgeInsets.only(bottom: 20),
         itemCount: seriesSections.length,
         itemBuilder: (context, index) => seriesSections[index],
+      ),
+    );
+  }
+
+  Widget _buildAnimationContentScrollable() {
+    // Gather all animation-related categories
+    final animationCategories =
+        _m3uService.categories.where((cat) {
+          if (cat == 'Inicio') return false;
+          final c = cat.toLowerCase();
+          final isAnimation =
+              c.contains('anim') ||
+              c.contains('anime') ||
+              c.contains('cartoon') ||
+              c.contains('caricatura') ||
+              c.contains('dibujo') ||
+              c.contains('disney') ||
+              c.contains('pixar') ||
+              c.contains('manga') ||
+              c.contains('kids') ||
+              c.contains('infantil') ||
+              c.contains('nickelodeon') ||
+              c.contains('nick') ||
+              c.contains('toonami') ||
+              c.contains('crunchyroll') ||
+              c.contains('funimation');
+          if (!isAnimation) return false;
+          final items = _m3uService.getItemsByCategory(cat);
+          final filtered = _m3uService.filterValidItems(items);
+          return filtered.length > 2;
+        }).toList();
+
+    // Gather ALL items from the entire catalog and filter by animation keywords
+    final allItems = _m3uService.items;
+    final allAnimationItems =
+        allItems
+            .where((item) {
+              final nameLower = item.name.toLowerCase();
+              final catLower = item.category.toLowerCase();
+              return nameLower.contains('anim') ||
+                  nameLower.contains('anime') ||
+                  nameLower.contains('cartoon') ||
+                  nameLower.contains('caricatura') ||
+                  nameLower.contains('dibujo') ||
+                  nameLower.contains('disney') ||
+                  nameLower.contains('pixar') ||
+                  nameLower.contains('manga') ||
+                  nameLower.contains('kids') ||
+                  nameLower.contains('infantil') ||
+                  catLower.contains('anim') ||
+                  catLower.contains('anime') ||
+                  catLower.contains('cartoon') ||
+                  catLower.contains('caricatura') ||
+                  catLower.contains('dibujo') ||
+                  catLower.contains('disney') ||
+                  catLower.contains('pixar') ||
+                  catLower.contains('manga') ||
+                  catLower.contains('kids') ||
+                  catLower.contains('infantil') ||
+                  catLower.contains('nickelodeon') ||
+                  catLower.contains('nick') ||
+                  catLower.contains('toonami') ||
+                  catLower.contains('crunchyroll') ||
+                  catLower.contains('funimation');
+            })
+            .where((i) => !i.isLive)
+            .toList();
+
+    // Also collect items from animation categories
+    for (var cat in animationCategories) {
+      final catItems = _m3uService.getItemsByCategory(cat);
+      for (var item in catItems) {
+        if (!allAnimationItems.contains(item) && !item.isLive) {
+          allAnimationItems.add(item);
+        }
+      }
+    }
+
+    final curatedAnimationSections = ContentFilters.curatedAnimationSections;
+    final curatedAnimationLists = <Map<String, dynamic>>[];
+    for (var section in curatedAnimationSections) {
+      final keywords = section['keywords'] as List<String>;
+      final items =
+          allAnimationItems
+              .where((item) {
+                final nameLower = item.name.toLowerCase();
+                final catLower = item.category.toLowerCase();
+                for (var keyword in keywords) {
+                  if (nameLower.contains(keyword) ||
+                      catLower.contains(keyword)) {
+                    return true;
+                  }
+                }
+                return false;
+              })
+              .take(30)
+              .toList();
+      final filteredItems = _m3uService.filterValidItems(items);
+      if (filteredItems.length > 3) {
+        curatedAnimationLists.add({
+          'title': section['title'],
+          'items': filteredItems,
+        });
+      }
+    }
+
+    final animationSections = <Widget>[];
+    animationSections.add(_buildScrollableHeader());
+
+    if (allAnimationItems.isNotEmpty) {
+      animationSections.add(
+        _buildCategoryRow('Todo el Contenido Animado', allAnimationItems),
+      );
+    }
+
+    for (final curated in curatedAnimationLists) {
+      animationSections.add(
+        _buildCategoryRow(curated['title'], curated['items']),
+      );
+    }
+
+    final categoriesToLoad =
+        animationCategories.take(_loadedAnimationCategories).toList();
+    for (final cat in categoriesToLoad) {
+      animationSections.add(
+        _buildCategoryRow(cat, _m3uService.getItemsByCategory(cat)),
+      );
+    }
+
+    if (_isAnimationLoadingMore) {
+      animationSections.add(
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 20),
+          child: Center(
+            child: CupertinoActivityIndicator(radius: 14, color: Colors.white),
+          ),
+        ),
+      );
+    }
+
+    if (allAnimationItems.isEmpty && animationCategories.isEmpty) {
+      animationSections.add(
+        const Center(
+          child: Padding(
+            padding: EdgeInsets.all(40),
+            child: Text(
+              'No se encontró contenido de animación.',
+              style: TextStyle(color: Colors.white60, fontSize: 15),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return NotificationListener<ScrollNotification>(
+      onNotification: (scrollInfo) {
+        if (scrollInfo.metrics.pixels >=
+            scrollInfo.metrics.maxScrollExtent - 200) {
+          _loadMoreAnimationCategories(animationCategories);
+        }
+        return false;
+      },
+      child: ListView.builder(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.only(bottom: 20),
+        itemCount: animationSections.length,
+        itemBuilder: (context, index) => animationSections[index],
       ),
     );
   }
@@ -4017,10 +4186,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     bool isSelected = _selectedTab == title;
     return GestureDetector(
       onTap: () {
-        // Dispose live player when leaving En Vivo tab
-        if (_selectedTab == 'En Vivo' && title != 'En Vivo') {
-          _disposeLivePlayer();
-        }
+        // No live player disposal needed anymore
         setState(() {
           _selectedTab = title;
         });
@@ -5047,6 +5213,39 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         categories.length,
       );
       _isNovelasLoadingMore = false;
+    });
+  }
+
+  void _loadMoreAnimationCategories(List<String> categories) async {
+    if (_isAnimationLoadingMore ||
+        _loadedAnimationCategories >= categories.length) {
+      return;
+    }
+    setState(() {
+      _isAnimationLoadingMore = true;
+    });
+
+    final nextCats =
+        categories.skip(_loadedAnimationCategories).take(3).toList();
+    final urls = <String>[];
+    for (final cat in nextCats) {
+      final items = _m3uService.getItemsByCategory(cat);
+      final filtered = _m3uService.filterValidItems(items);
+      urls.addAll(filtered.take(6).map((i) => i.logo).whereType<String>());
+    }
+
+    await Future.wait([
+      Future.delayed(const Duration(milliseconds: 600)),
+      if (urls.isNotEmpty) FastImageService().prewarmAndAwait(urls, context),
+    ]);
+
+    if (!mounted) return;
+    setState(() {
+      _loadedAnimationCategories = (_loadedAnimationCategories + 3).clamp(
+        0,
+        categories.length,
+      );
+      _isAnimationLoadingMore = false;
     });
   }
 

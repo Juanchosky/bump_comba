@@ -499,7 +499,8 @@ class M3UService extends ChangeNotifier {
   /// Refined filtering: remove items with null/empty logos OR those known to fail.
   List<M3UItem> filterValidItems(List<M3UItem> items) {
     // No filtramos nada por falta de logo; usamos el placeholder con título.
-    return items;
+    // Filtramos canales en vivo — ya no se muestran en la app.
+    return items.where((i) => !i.isLive).toList();
   }
 
   /// Mark a logo as failed. Persists to disk and notifies listeners with debouncing.
@@ -2117,11 +2118,12 @@ class M3UService extends ChangeNotifier {
 
   /// Search items by name (synchronous for instant results).
   List<M3UItem> search(String query) {
-    if (query.isEmpty) return _items;
+    if (query.isEmpty) return _items.where((i) => !i.isLive).toList();
     if (_items.isEmpty) return [];
     final q = query.toLowerCase();
     final results = <M3UItem>[];
     for (final item in _items) {
+      if (item.isLive) continue; // Excluir canales en vivo
       if (item.name.toLowerCase().contains(q)) {
         results.add(item);
         if (results.length >= 100) break;
@@ -3292,7 +3294,15 @@ TransferableTypedData parseM3UInBackground(IsolateInput input) {
       if (liveM3u8Regex.hasMatch(urlLower)) liveScore += 20;
       if (liveUrlPatternRegex.hasMatch(urlLower)) liveScore += 25;
 
-      final bool isLive = liveScore > 0;
+      bool isLive = liveScore > 0;
+      if (!isLive) {
+        // Enforce the same rules used by the player to identify live content
+        if (urlLower.contains('/live/') ||
+            urlLower.contains('type=live') ||
+            (urlLower.contains('.m3u8') && !urlLower.contains('/vod/'))) {
+          isLive = true;
+        }
+      }
 
       if (!shouldInclude) {
         shouldInclude = true;
@@ -4081,10 +4091,23 @@ Map<String, dynamic> _indexItemsInBackground(Map<String, dynamic> input) {
   final List<M3UItem> movies = [];
   final List<M3UItem> series = [];
 
-  for (final item in items) {
-    // Index by category
-    catIndex.putIfAbsent(item.category, () => []).add(item);
-    catSet.add(item.category);
+  for (int i = 0; i < items.length; i++) {
+    var item = items[i];
+    final urlLower = item.url.toLowerCase();
+    if (urlLower.contains('/live/') ||
+        urlLower.contains('type=live') ||
+        (urlLower.contains('.m3u8') && !urlLower.contains('/vod/'))) {
+      if (!item.isLive) {
+        item = item.copyWith(isLive: true);
+        items[i] = item;
+      }
+    }
+
+    // Index by category (only for non-live content)
+    if (!item.isLive) {
+      catIndex.putIfAbsent(item.category, () => []).add(item);
+      catSet.add(item.category);
+    }
 
     // Individual item maps for search/lookup
     if (item.url.isNotEmpty) urlIndex[item.url] = item;

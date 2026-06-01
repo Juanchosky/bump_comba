@@ -209,4 +209,39 @@ class ContentFilters {
       'keywords': ['americana', 'american', 'usa', 'estados unidos', 'gringa'],
     },
   ];
+
+  static const List<Map<String, dynamic>> curatedAnimationSections = [
+    {
+      'title': 'Anime',
+      'keywords': ['anime', 'animes', 'animacion japonesa', 'japanese animation'],
+    },
+    {
+      'title': 'Disney & Pixar',
+      'keywords': ['disney', 'pixar', 'walt disney'],
+    },
+    {
+      'title': 'Caricaturas Clásicas',
+      'keywords': ['cartoon', 'caricatura', 'looney', 'tom y jerry', 'scooby', 'hanna barbera'],
+    },
+    {
+      'title': 'Anime de Acción',
+      'keywords': ['dragon ball', 'naruto', 'one piece', 'bleach', 'attack on titan', 'shingeki', 'demon slayer', 'kimetsu', 'jujutsu'],
+    },
+    {
+      'title': 'Para Niños',
+      'keywords': ['kids', 'infantil', 'nickelodeon', 'nick', 'paw patrol', 'peppa', 'bob esponja', 'spongebob', 'dora'],
+    },
+    {
+      'title': 'Películas Animadas',
+      'keywords': ['animada', 'animado', 'animated', 'animation', 'dreamworks', 'illumination', 'ghibli', 'studio ghibli'],
+    },
+    {
+      'title': 'Anime Romántico',
+      'keywords': ['romance', 'romantico', 'love', 'shoujo', 'shojo'],
+    },
+    {
+      'title': 'Superhéroes Animados',
+      'keywords': ['marvel', 'dc', 'superman', 'batman', 'spider', 'avenger', 'hero', 'heroe'],
+    },
+  ];
 }
