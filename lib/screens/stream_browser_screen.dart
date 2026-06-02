@@ -30,7 +30,6 @@ import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'subscription_screen.dart';
 import '../utils/colors.dart';
-import '../widgets/liquid_glass.dart';
 import 'stream_browser_config_screen.dart';
 import 'settings_screen.dart';
 import '../services/social_rewards_service.dart';
@@ -111,9 +110,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
   // Bottom nav
   int _bottomNavIndex = 0; // 0=Inicio, 1=Favoritos
-  // Posición en vivo de la "gota" de cristal al arrastrar (solo iOS). null
-  // cuando no se está arrastrando (la gota descansa sobre el ítem activo).
-  double? _navDragFraction;
 
   // State
   M3UItem? _heroItem;
@@ -625,9 +621,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         ),
         child: Scaffold(
           backgroundColor: AppColors.background,
-          // En iOS el cuerpo se extiende detrás de la barra de cristal flotante
-          // para lograr el efecto Liquid Glass (iOS 26). En Android queda normal.
-          extendBody: defaultTargetPlatform == TargetPlatform.iOS,
           body: PrimaryScrollController(
             controller: _homeScrollController,
             child: SafeArea(
@@ -1569,14 +1562,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                                 .floor()
                                 .clamp(3, 12);
                             return GridView.builder(
-                              padding: EdgeInsets.fromLTRB(
-                                16,
-                                16,
-                                16,
-                                defaultTargetPlatform == TargetPlatform.iOS
-                                    ? 96
-                                    : 16,
-                              ),
+                              padding: const EdgeInsets.all(16),
                               gridDelegate:
                                   SliverGridDelegateWithFixedCrossAxisCount(
                                     crossAxisCount: crossAxisCount,
@@ -1868,12 +1854,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                     child: ListView.builder(
                       controller: _homeScrollController,
                       physics: const AlwaysScrollableScrollPhysics(),
-                      padding: EdgeInsets.only(
-                        bottom:
-                            defaultTargetPlatform == TargetPlatform.iOS
-                                ? 96
-                                : 20,
-                      ),
+                      padding: const EdgeInsets.only(bottom: 20),
                       itemCount: homeSections.length,
                       itemBuilder: (context, index) => homeSections[index],
                     ),
@@ -4886,34 +4867,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   }
 
   Widget _buildBottomNav() {
-    // iOS 26: barra con Liquid Glass nativo (UIGlassEffect).
-    // Android y demás plataformas mantienen la barra Material de siempre.
-    if (defaultTargetPlatform == TargetPlatform.iOS) {
-      return _buildLiquidGlassNav();
-    }
-    return _buildMaterialNav();
-  }
-
-  // Lógica compartida al tocar un ítem de la barra.
-  void _onNavTap(int index) {
-    if (_bottomNavIndex == 0 && index == 0) {
-      if (_homeScrollController.hasClients) {
-        final offset = _homeScrollController.offset;
-        final ms = (offset / 3).clamp(350.0, 1000.0).toInt();
-        _homeScrollController.animateTo(
-          0.0,
-          duration: Duration(milliseconds: ms),
-          curve: Curves.easeInOutCubic,
-        );
-      }
-    }
-    setState(() {
-      _bottomNavIndex = index;
-    });
-  }
-
-  // ── Barra Material clásica (Android y resto de plataformas) ────────────────
-  Widget _buildMaterialNav() {
     return Container(
       decoration: BoxDecoration(
         gradient: LinearGradient(
@@ -4930,7 +4883,22 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       ),
       child: BottomNavigationBar(
         currentIndex: _bottomNavIndex,
-        onTap: _onNavTap,
+        onTap: (index) {
+          if (_bottomNavIndex == 0 && index == 0) {
+            if (_homeScrollController.hasClients) {
+              final offset = _homeScrollController.offset;
+              final ms = (offset / 3).clamp(350.0, 1000.0).toInt();
+              _homeScrollController.animateTo(
+                0.0,
+                duration: Duration(milliseconds: ms),
+                curve: Curves.easeInOutCubic,
+              );
+            }
+          }
+          setState(() {
+            _bottomNavIndex = index;
+          });
+        },
         backgroundColor: Colors.transparent,
         selectedItemColor: Colors.red,
         unselectedItemColor: Colors.white54,
@@ -4942,142 +4910,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             label: 'Inicio',
           ),
           BottomNavigationBarItem(icon: Icon(Icons.check), label: 'Mi lista'),
-        ],
-      ),
-    );
-  }
-
-  // ── Barra Liquid Glass NATIVA (solo iOS 26) ────────────────────────────────
-  Widget _buildLiquidGlassNav() {
-    final bottomInset = MediaQuery.of(context).padding.bottom;
-    return Padding(
-      padding: EdgeInsets.fromLTRB(
-        20,
-        0,
-        20,
-        bottomInset > 0 ? bottomInset : 12,
-      ),
-      child: Container(
-        // Sombra suave debajo de la cápsula de cristal.
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(30),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.30),
-              blurRadius: 24,
-              offset: const Offset(0, 10),
-            ),
-          ],
-        ),
-        child: SizedBox(
-          height: 60,
-          // Cristal real de Apple como fondo; iconos + gota deslizante encima.
-          child: LiquidGlass(cornerRadius: 30, child: _buildGlassNavContent()),
-        ),
-      ),
-    );
-  }
-
-  // Iconos (sin texto) + "gota" de cristal que se desliza al ítem activo y
-  // sigue el dedo al arrastrar (estilo oficial iOS 26).
-  Widget _buildGlassNavContent() {
-    const icons = <IconData>[Icons.home_filled, Icons.check];
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final itemW = constraints.maxWidth / icons.length;
-        // Posición de la gota: si se arrastra usa la fracción en vivo, si no,
-        // descansa sobre el ítem seleccionado.
-        final fraction = _navDragFraction ?? _bottomNavIndex.toDouble();
-        final selectedIndex = fraction.round().clamp(0, icons.length - 1);
-        final dragging = _navDragFraction != null;
-
-        return GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTapUp: (details) {
-            final idx = (details.localPosition.dx / itemW).floor().clamp(
-              0,
-              icons.length - 1,
-            );
-            _onNavTap(idx);
-          },
-          onHorizontalDragUpdate: (details) {
-            setState(() {
-              _navDragFraction = (details.localPosition.dx / itemW - 0.5).clamp(
-                0.0,
-                (icons.length - 1).toDouble(),
-              );
-            });
-          },
-          onHorizontalDragEnd: (_) {
-            final target = (_navDragFraction ?? _bottomNavIndex.toDouble())
-                .round()
-                .clamp(0, icons.length - 1);
-            setState(() => _navDragFraction = null);
-            _onNavTap(target);
-          },
-          child: Stack(
-            children: [
-              // ── Gota de cristal deslizante ──
-              AnimatedPositioned(
-                duration:
-                    dragging
-                        ? Duration.zero
-                        : const Duration(milliseconds: 340),
-                curve: Curves.easeOutCubic,
-                left: fraction * itemW,
-                top: 0,
-                bottom: 0,
-                width: itemW,
-                child: Center(child: _glassDroplet()),
-              ),
-              // ── Iconos ──
-              Row(
-                children: [
-                  for (int i = 0; i < icons.length; i++)
-                    Expanded(
-                      child: Center(
-                        child: AnimatedScale(
-                          duration: const Duration(milliseconds: 250),
-                          scale: i == selectedIndex ? 1.12 : 1.0,
-                          child: Icon(
-                            icons[i],
-                            size: 24,
-                            color:
-                                i == selectedIndex
-                                    ? Colors.white
-                                    : Colors.white.withValues(alpha: 0.55),
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  // La "gota" de cristal: cápsula translúcida brillante que resalta el ítem
-  // activo sin usar color rojo.
-  Widget _glassDroplet() {
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.18),
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(
-          color: Colors.white.withValues(alpha: 0.40),
-          width: 0.8,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.white.withValues(alpha: 0.18),
-            blurRadius: 14,
-            spreadRadius: -2,
-          ),
         ],
       ),
     );
