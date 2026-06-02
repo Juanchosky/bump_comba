@@ -111,6 +111,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
   // Bottom nav
   int _bottomNavIndex = 0; // 0=Inicio, 1=Favoritos
+  // Posición en vivo de la "gota" de cristal al arrastrar (solo iOS). null
+  // cuando no se está arrastrando (la gota descansa sobre el ítem activo).
+  double? _navDragFraction;
 
   // State
   M3UItem? _heroItem;
@@ -4968,78 +4971,114 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         ),
         child: SizedBox(
           height: 60,
-          // Cristal real de Apple como fondo; ítems dibujados encima.
-          child: LiquidGlass(
-            cornerRadius: 30,
-            child: Row(
-              children: [
-                _glassNavItem(
-                  index: 0,
-                  icon: Icons.home_filled,
-                  label: 'Inicio',
-                ),
-                _glassNavItem(index: 1, icon: Icons.check, label: 'Mi lista'),
-              ],
-            ),
-          ),
+          // Cristal real de Apple como fondo; iconos + gota deslizante encima.
+          child: LiquidGlass(cornerRadius: 30, child: _buildGlassNavContent()),
         ),
       ),
     );
   }
 
-  Widget _glassNavItem({
-    required int index,
-    required IconData icon,
-    required String label,
-  }) {
-    final selected = _bottomNavIndex == index;
-    return Expanded(
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: () => _onNavTap(index),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 250),
-          curve: Curves.easeOut,
-          margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
-          decoration: BoxDecoration(
-            color:
-                selected
-                    ? Colors.red.withValues(alpha: 0.22)
-                    : Colors.transparent,
-            borderRadius: BorderRadius.circular(22),
-            border:
-                selected
-                    ? Border.all(
-                      color: Colors.red.withValues(alpha: 0.45),
-                      width: 1,
-                    )
-                    : null,
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
+  // Iconos (sin texto) + "gota" de cristal que se desliza al ítem activo y
+  // sigue el dedo al arrastrar (estilo oficial iOS 26).
+  Widget _buildGlassNavContent() {
+    const icons = <IconData>[Icons.home_filled, Icons.check];
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final itemW = constraints.maxWidth / icons.length;
+        // Posición de la gota: si se arrastra usa la fracción en vivo, si no,
+        // descansa sobre el ítem seleccionado.
+        final fraction = _navDragFraction ?? _bottomNavIndex.toDouble();
+        final selectedIndex = fraction.round().clamp(0, icons.length - 1);
+        final dragging = _navDragFraction != null;
+
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapUp: (details) {
+            final idx = (details.localPosition.dx / itemW).floor().clamp(
+              0,
+              icons.length - 1,
+            );
+            _onNavTap(idx);
+          },
+          onHorizontalDragUpdate: (details) {
+            setState(() {
+              _navDragFraction = (details.localPosition.dx / itemW - 0.5).clamp(
+                0.0,
+                (icons.length - 1).toDouble(),
+              );
+            });
+          },
+          onHorizontalDragEnd: (_) {
+            final target = (_navDragFraction ?? _bottomNavIndex.toDouble())
+                .round()
+                .clamp(0, icons.length - 1);
+            setState(() => _navDragFraction = null);
+            _onNavTap(target);
+          },
+          child: Stack(
             children: [
-              Icon(
-                icon,
-                size: 22,
-                color: selected ? Colors.red : Colors.white70,
+              // ── Gota de cristal deslizante ──
+              AnimatedPositioned(
+                duration:
+                    dragging
+                        ? Duration.zero
+                        : const Duration(milliseconds: 340),
+                curve: Curves.easeOutCubic,
+                left: fraction * itemW,
+                top: 0,
+                bottom: 0,
+                width: itemW,
+                child: Center(child: _glassDroplet()),
               ),
-              if (selected) ...[
-                const SizedBox(width: 8),
-                Flexible(
-                  child: Text(
-                    label,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Colors.red,
-                      fontWeight: FontWeight.w600,
-                      fontSize: 13,
+              // ── Iconos ──
+              Row(
+                children: [
+                  for (int i = 0; i < icons.length; i++)
+                    Expanded(
+                      child: Center(
+                        child: AnimatedScale(
+                          duration: const Duration(milliseconds: 250),
+                          scale: i == selectedIndex ? 1.12 : 1.0,
+                          child: Icon(
+                            icons[i],
+                            size: 24,
+                            color:
+                                i == selectedIndex
+                                    ? Colors.white
+                                    : Colors.white.withValues(alpha: 0.55),
+                          ),
+                        ),
+                      ),
                     ),
-                  ),
-                ),
-              ],
+                ],
+              ),
             ],
           ),
+        );
+      },
+    );
+  }
+
+  // La "gota" de cristal: cápsula translúcida brillante que resalta el ítem
+  // activo sin usar color rojo.
+  Widget _glassDroplet() {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.18),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(
+          color: Colors.white.withValues(alpha: 0.40),
+          width: 0.8,
         ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.white.withValues(alpha: 0.18),
+            blurRadius: 14,
+            spreadRadius: -2,
+          ),
+        ],
       ),
     );
   }

@@ -59,12 +59,8 @@ class LiquidGlassPlatformView: NSObject, FlutterPlatformView {
     container = UIView(frame: frame)
 
     // Parámetros enviados desde Flutter.
-    var cornerRadius: CGFloat = 30
     var interactive = true
     if let dict = args as? [String: Any] {
-      if let r = dict["cornerRadius"] as? NSNumber {
-        cornerRadius = CGFloat(truncating: r)
-      }
       if let i = dict["interactive"] as? NSNumber {
         interactive = i.boolValue
       }
@@ -76,20 +72,20 @@ class LiquidGlassPlatformView: NSObject, FlutterPlatformView {
       glass.isInteractive = interactive
       effectView = UIVisualEffectView(effect: glass)
     } else {
-      // ── Fallback: material translúcido clásico ──
+      // ── Fallback: material translúcido claro ──
       effectView = UIVisualEffectView(
-        effect: UIBlurEffect(style: .systemUltraThinMaterialDark)
+        effect: UIBlurEffect(style: .systemThinMaterial)
       )
     }
 
     super.init()
 
+    // Fondo transparente: el rectángulo lo llena el cristal y el redondeo lo
+    // hace Flutter con ClipRRect (evita el borde negro del platform view).
     container.backgroundColor = .clear
+    container.isOpaque = false
     effectView.frame = container.bounds
     effectView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-    effectView.layer.cornerRadius = cornerRadius
-    effectView.layer.cornerCurve = .continuous
-    effectView.clipsToBounds = true
     container.addSubview(effectView)
   }
 

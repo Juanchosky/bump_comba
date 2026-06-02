@@ -26,21 +26,26 @@ class LiquidGlass extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (defaultTargetPlatform == TargetPlatform.iOS) {
-      return Stack(
-        fit: StackFit.expand,
-        children: [
-          // Cristal nativo de Apple.
-          UiKitView(
-            viewType: 'liquid_glass',
-            creationParams: <String, dynamic>{
-              'cornerRadius': cornerRadius,
-              'interactive': interactive,
-            },
-            creationParamsCodec: const StandardMessageCodec(),
-            hitTestBehavior: PlatformViewHitTestBehavior.transparent,
-          ),
-          if (child != null) child!,
-        ],
+      // El redondeo lo hace Flutter (ClipRRect): el platform view llena el
+      // rectángulo y lo de afuera queda transparente, sin borde negro.
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(cornerRadius),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            // Cristal nativo de Apple.
+            UiKitView(
+              viewType: 'liquid_glass',
+              creationParams: <String, dynamic>{
+                'cornerRadius': cornerRadius,
+                'interactive': interactive,
+              },
+              creationParamsCodec: const StandardMessageCodec(),
+              hitTestBehavior: PlatformViewHitTestBehavior.transparent,
+            ),
+            if (child != null) child!,
+          ],
+        ),
       );
     }
 
