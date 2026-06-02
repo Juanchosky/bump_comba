@@ -1207,6 +1207,11 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
     if (!isIOS) return scaffold;
 
+    // Radio de las esquinas superiores: crece de 0 → 22px a medida que el
+    // usuario desliza hacia abajo, igual que el gesto modal de iOS.
+    final cornerRadius =
+        (_dragOffset / 120.0).clamp(0.0, 1.0) * 22.0;
+
     // En iOS: Listener (no participa en el gesture arena, siempre dispara)
     // en lugar de GestureDetector que perdía contra el CustomScrollView.
     return Listener(
@@ -1216,7 +1221,12 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
       onPointerCancel: _onPointerCancel,
       child: Transform.translate(
         offset: Offset(0, _dragOffset),
-        child: scaffold,
+        child: ClipRRect(
+          borderRadius: BorderRadius.vertical(
+            top: Radius.circular(cornerRadius),
+          ),
+          child: scaffold,
+        ),
       ),
     );
   }
@@ -1253,21 +1263,6 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
               },
             ),
 
-            // Gradient Overlay
-            Container(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    const Color(0xFF0a0a0a).withValues(alpha: 0.7),
-                    Colors.transparent,
-                    Colors.transparent, // Removed heavy bottom shadow
-                  ],
-                  stops: const [0.0, 0.2, 1.0],
-                ),
-              ),
-            ),
           ],
         ),
       ),
@@ -2275,7 +2270,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                     final navigator = Navigator.of(context);
                     navigator
                         .push(
-                          FadeScalePageRoute(
+                          ContentDetailPageRoute(
                             page: ContentDetailScreen(
                               item: item,
                               similarItems: nextSimilarItems,
