@@ -171,6 +171,7 @@ class M3UService extends ChangeNotifier {
   Map<String, List<M3UItem>>? _categoryIndex;
   Map<String, M3UItem>? _urlIndex;
   Map<String, M3UItem>? _seriesNameIndex;
+  Map<String, M3UItem>? _movieNameIndex;
   // PERF-3: cache for getRecentItems() — invalidated on every content reload
   List<M3UItem>? _cachedRecentItems;
   // Session-level cache for recommendations — stays stable during session
@@ -1963,6 +1964,9 @@ class M3UService extends ChangeNotifier {
       _seriesNameIndex = Map<String, M3UItem>.from(
         result['seriesNameIndex'] ?? {},
       );
+      _movieNameIndex = Map<String, M3UItem>.from(
+        result['movieNameIndex'] ?? {},
+      );
       _cachedCategories = List<String>.from(result['sortedCats']);
 
       notifyListeners();
@@ -2092,6 +2096,9 @@ class M3UService extends ChangeNotifier {
   M3UItem? getSeriesByName(String name) =>
       _seriesNameIndex?[NormalizationUtils.normalizeSeriesName(name)];
 
+  M3UItem? getMovieByName(String name) =>
+      _movieNameIndex?[NormalizationUtils.normalizeSeriesName(name)];
+
   /// Resolves an M3UItem from a WatchProgress entry using URL match or series fallback.
   /// Always attempts to return the "Series Shell" if the item is a series episode.
   M3UItem? resolveItemFromProgress(WatchProgress progress) {
@@ -2111,6 +2118,14 @@ class M3UService extends ChangeNotifier {
     if (progress.seriesName != null && progress.seriesName!.isNotEmpty) {
       final shell = getSeriesByName(progress.seriesName!);
       if (shell != null) return shell;
+    }
+
+    // 3. Name-based resolution for movies (URL changed after M3U refresh)
+    if (progress.name != null &&
+        progress.name!.isNotEmpty &&
+        progress.seriesName == null) {
+      final movie = getMovieByName(progress.name!);
+      if (movie != null) return movie;
     }
 
     return null;
@@ -2908,6 +2923,7 @@ class M3UService extends ChangeNotifier {
       _sessionRecommendedItems = null; // Reset recommendations on cache clear
       _categoryIndex = null;
       _urlIndex = null;
+      _movieNameIndex = null;
 
       final cacheFile = await _getCacheFile();
       if (await cacheFile.exists()) await cacheFile.delete();
@@ -2941,6 +2957,7 @@ class M3UService extends ChangeNotifier {
       _cachedCategories = null;
       _categoryIndex = null;
       _urlIndex = null;
+      _movieNameIndex = null;
     } catch (e, stack) {
       // ROBUST-3: was swallowed before — now always visible in debug
       debugPrint('clearCache error: $e\n$stack');
@@ -4088,6 +4105,7 @@ Map<String, dynamic> _indexItemsInBackground(Map<String, dynamic> input) {
   final Set<String> catSet = {};
   final Map<String, M3UItem> urlIndex = {};
   final Map<String, M3UItem> seriesNameIndex = {};
+  final Map<String, M3UItem> movieNameIndex = {};
   final List<M3UItem> movies = [];
   final List<M3UItem> series = [];
 
@@ -4131,6 +4149,8 @@ Map<String, dynamic> _indexItemsInBackground(Map<String, dynamic> input) {
             item;
       } else {
         movies.add(item);
+        movieNameIndex[NormalizationUtils.normalizeSeriesName(item.name)] =
+            item;
       }
     }
   }
@@ -4146,6 +4166,7 @@ Map<String, dynamic> _indexItemsInBackground(Map<String, dynamic> input) {
     'catIndex': catIndex,
     'urlIndex': urlIndex,
     'seriesNameIndex': seriesNameIndex,
+    'movieNameIndex': movieNameIndex,
     'sortedCats': sortedCats,
   };
 }

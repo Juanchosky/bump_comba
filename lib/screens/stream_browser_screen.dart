@@ -1747,13 +1747,13 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                     final item = _m3uService.resolveItemFromProgress(progress);
 
                     if (item == null) continue;
+                    if (progress.isCompleted) continue;
 
                     if (item.seriesName != null &&
                         item.seriesName!.isNotEmpty) {
                       if (processedSeries.contains(item.seriesName)) continue;
                       processedSeries.add(item.seriesName!);
                     }
-                    if (progress.isCompleted) continue;
                     continueWatchingItems.add({
                       'item': item,
                       'progress': progress,

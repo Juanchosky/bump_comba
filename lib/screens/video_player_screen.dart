@@ -2505,6 +2505,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                     _lastSelectedTrack = track;
                                     _lastTrackChangeTime = DateTime.now();
                                     _player!.setSubtitleTrack(track);
+                                    // Siempre desactivar el renderizado nativo de MPV
+                                    // después de seleccionar la pista: el overlay Flutter
+                                    // es el único que debe mostrar los subtítulos.
+                                    final mpv = _player!.platform as dynamic;
+                                    await mpv?.setProperty(
+                                      'sub-visibility',
+                                      'no',
+                                    );
                                   } catch (_) {}
                                   if (mounted) {
                                     setState(() => _subtitlesEnabled = true);

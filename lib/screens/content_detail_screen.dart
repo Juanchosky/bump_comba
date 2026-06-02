@@ -1,5 +1,6 @@
 import '../services/m3u_service.dart';
 import '../services/watch_progress_service.dart';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
 import 'dart:ui';
@@ -70,6 +71,18 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
   late AnimationController _shineController;
   late AnimationController _pulseController;
+
+  // HD thumbnails — true when network quality is excellent or good
+  bool _isGoodNetwork = false;
+
+  // iOS swipe-down dismiss
+  final ScrollController _detailScrollController = ScrollController();
+  double _dragOffset = 0.0;
+  bool _draggingToDismiss = false;
+  bool _dismissAnimRunning = false;
+  late AnimationController _snapBackController;
+  Animation<double>? _snapAnim;
+
   List<M3UItem> get _allEpisodes =>
       _dynamicEpisodes.isNotEmpty ? _dynamicEpisodes : widget.item.episodes;
 
@@ -94,11 +107,15 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
       duration: const Duration(milliseconds: 1000),
     )..repeat(reverse: true);
 
+    _snapBackController = AnimationController(vsync: this);
+
     AdService().recordDetailsVisit();
     _initPrewarm();
 
-    _isOffline =
-        NetworkQualityService().quality.value == NetworkQuality.offline;
+    final currentQuality = NetworkQualityService().quality.value;
+    _isOffline = currentQuality == NetworkQuality.offline;
+    _isGoodNetwork = currentQuality == NetworkQuality.excellent ||
+        currentQuality == NetworkQuality.good;
     NetworkQualityService().quality.addListener(_onNetworkQualityChanged);
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -197,6 +214,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   void dispose() {
     _shineController.dispose();
     _pulseController.dispose();
+    _snapBackController.dispose();
+    _detailScrollController.dispose();
     NetworkQualityService().quality.removeListener(_onNetworkQualityChanged);
 
     // -- CRITICAL DISPOSAL SEQUENCE FOR MOTOROLA/ANDROID 15 --
@@ -224,13 +243,15 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   }
 
   void _onNetworkQualityChanged() {
-    final offline =
-        NetworkQualityService().quality.value == NetworkQuality.offline;
-    if (_isOffline != offline) {
+    final q = NetworkQualityService().quality.value;
+    final offline = q == NetworkQuality.offline;
+    final goodNet = q == NetworkQuality.excellent || q == NetworkQuality.good;
+    if (_isOffline != offline || _isGoodNetwork != goodNet) {
       if (mounted) {
         setState(() {
           _isOffline = offline;
           if (offline) _bannerDismissed = false;
+          _isGoodNetwork = goodNet;
         });
       }
     }
@@ -978,9 +999,81 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
     });
   }
 
+  // ── iOS swipe-down dismiss ───────────────────────────────────────────────
+
+  void _onDismissDragUpdate(DragUpdateDetails details) {
+    if (_dismissAnimRunning) return;
+    final dy = details.delta.dy;
+    if (!_draggingToDismiss) {
+      if (dy > 0) {
+        final atTop = !_detailScrollController.hasClients ||
+            _detailScrollController.offset <= 0.0;
+        if (atTop) _draggingToDismiss = true;
+      }
+    }
+    if (_draggingToDismiss) {
+      setState(() {
+        _dragOffset = (_dragOffset + dy).clamp(0.0, double.infinity);
+      });
+    }
+  }
+
+  void _onDismissDragEnd(DragEndDetails details) {
+    if (!_draggingToDismiss || _dismissAnimRunning) return;
+    final vy = details.velocity.pixelsPerSecond.dy;
+    if (_dragOffset > 120 || vy > 700) {
+      _startDismiss();
+    } else {
+      _snapBack();
+    }
+  }
+
+  void _onSnapAnimTick() {
+    if (mounted && _snapAnim != null) {
+      setState(() => _dragOffset = _snapAnim!.value);
+    }
+  }
+
+  void _snapBack() {
+    _dismissAnimRunning = true;
+    final start = _dragOffset;
+    _snapBackController.duration = const Duration(milliseconds: 320);
+    _snapAnim = Tween<double>(begin: start, end: 0.0).animate(
+      CurvedAnimation(parent: _snapBackController, curve: Curves.easeOutCubic),
+    );
+    _snapAnim!.addListener(_onSnapAnimTick);
+    _snapBackController.forward(from: 0.0).then((_) {
+      _snapAnim?.removeListener(_onSnapAnimTick);
+      if (mounted) {
+        setState(() {
+          _dragOffset = 0.0;
+          _draggingToDismiss = false;
+          _dismissAnimRunning = false;
+        });
+      }
+      _snapBackController.reset();
+    });
+  }
+
+  void _startDismiss() {
+    _dismissAnimRunning = true;
+    final height = MediaQuery.of(context).size.height;
+    final start = _dragOffset;
+    _snapBackController.duration = const Duration(milliseconds: 240);
+    _snapAnim = Tween<double>(begin: start, end: height).animate(
+      CurvedAnimation(parent: _snapBackController, curve: Curves.easeIn),
+    );
+    _snapAnim!.addListener(_onSnapAnimTick);
+    _snapBackController.forward(from: 0.0).then((_) {
+      _snapAnim?.removeListener(_onSnapAnimTick);
+      if (mounted) Navigator.of(context).pop();
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
-    return ListenableBuilder(
+    final isIOS = defaultTargetPlatform == TargetPlatform.iOS;
+    final scaffold = ListenableBuilder(
       listenable: Listenable.merge([PerformanceService(), _m3uService]),
       builder: (context, _) {
         return Scaffold(
@@ -989,6 +1082,10 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
             child: Stack(
               children: [
                 CustomScrollView(
+                  controller: _detailScrollController,
+                  // ClampingScrollPhysics evita el bounce de iOS que conflictuaría
+                  // con el gesto de cierre por deslizamiento hacia abajo.
+                  physics: isIOS ? const ClampingScrollPhysics() : null,
                   slivers: [
                     _buildSliverAppBar(),
                     SliverToBoxAdapter(
@@ -1082,6 +1179,19 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
         );
       },
     );
+
+    if (!isIOS) return scaffold;
+
+    // En iOS: envolver en GestureDetector para el gesto de cierre deslizando
+    // hacia abajo, con animación de rebote si el usuario no llega al umbral.
+    return GestureDetector(
+      onVerticalDragUpdate: _onDismissDragUpdate,
+      onVerticalDragEnd: _onDismissDragEnd,
+      child: Transform.translate(
+        offset: Offset(0, _dragOffset),
+        child: scaffold,
+      ),
+    );
   }
 
   Widget _buildSliverAppBar() {
@@ -1108,7 +1218,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
               width: double.infinity,
               height: double.infinity,
               fit: BoxFit.cover,
-              cacheWidth: null, // resolución completa para el hero
+              isHD: _isGoodNetwork && !PerformanceService().lowMemoryLimit,
               onError: () {
                 if (widget.item.logo != null && widget.item.logo!.isNotEmpty) {
                   _m3uService.reportFailedLogo(widget.item.logo!);
@@ -1834,10 +1944,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                               height: 70,
                               fit: BoxFit.cover,
                               borderRadius: BorderRadius.circular(8),
-                              cacheWidth:
-                                  PerformanceService().lowMemoryLimit
-                                      ? 150
-                                      : 300,
+                              isHD: _isGoodNetwork &&
+                                  !PerformanceService().lowMemoryLimit,
                               onError: () {
                                 final logo =
                                     (episode.logo != null &&
@@ -2174,10 +2282,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                                 width: double.infinity,
                                 height: double.infinity,
                                 fit: BoxFit.cover,
-                                cacheWidth:
-                                    PerformanceService().lowMemoryLimit
-                                        ? 150
-                                        : 300,
+                                isHD: _isGoodNetwork &&
+                                    !PerformanceService().lowMemoryLimit,
                                 onError: () {
                                   if (item.logo != null) {
                                     _m3uService.reportFailedLogo(item.logo!);
