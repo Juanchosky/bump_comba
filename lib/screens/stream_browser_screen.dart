@@ -30,6 +30,7 @@ import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'subscription_screen.dart';
 import '../utils/colors.dart';
+import '../widgets/liquid_glass.dart';
 import 'stream_browser_config_screen.dart';
 import 'settings_screen.dart';
 import '../services/social_rewards_service.dart';
@@ -621,6 +622,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         ),
         child: Scaffold(
           backgroundColor: AppColors.background,
+          // En iOS el cuerpo se extiende detrás de la barra de cristal flotante
+          // para lograr el efecto Liquid Glass (iOS 26). En Android queda normal.
+          extendBody: defaultTargetPlatform == TargetPlatform.iOS,
           body: PrimaryScrollController(
             controller: _homeScrollController,
             child: SafeArea(
@@ -1562,7 +1566,14 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                                 .floor()
                                 .clamp(3, 12);
                             return GridView.builder(
-                              padding: const EdgeInsets.all(16),
+                              padding: EdgeInsets.fromLTRB(
+                                16,
+                                16,
+                                16,
+                                defaultTargetPlatform == TargetPlatform.iOS
+                                    ? 96
+                                    : 16,
+                              ),
                               gridDelegate:
                                   SliverGridDelegateWithFixedCrossAxisCount(
                                     crossAxisCount: crossAxisCount,
@@ -1854,7 +1865,12 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                     child: ListView.builder(
                       controller: _homeScrollController,
                       physics: const AlwaysScrollableScrollPhysics(),
-                      padding: const EdgeInsets.only(bottom: 20),
+                      padding: EdgeInsets.only(
+                        bottom:
+                            defaultTargetPlatform == TargetPlatform.iOS
+                                ? 96
+                                : 20,
+                      ),
                       itemCount: homeSections.length,
                       itemBuilder: (context, index) => homeSections[index],
                     ),
@@ -4867,6 +4883,34 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   }
 
   Widget _buildBottomNav() {
+    // iOS 26: barra con Liquid Glass nativo (UIGlassEffect).
+    // Android y demás plataformas mantienen la barra Material de siempre.
+    if (defaultTargetPlatform == TargetPlatform.iOS) {
+      return _buildLiquidGlassNav();
+    }
+    return _buildMaterialNav();
+  }
+
+  // Lógica compartida al tocar un ítem de la barra.
+  void _onNavTap(int index) {
+    if (_bottomNavIndex == 0 && index == 0) {
+      if (_homeScrollController.hasClients) {
+        final offset = _homeScrollController.offset;
+        final ms = (offset / 3).clamp(350.0, 1000.0).toInt();
+        _homeScrollController.animateTo(
+          0.0,
+          duration: Duration(milliseconds: ms),
+          curve: Curves.easeInOutCubic,
+        );
+      }
+    }
+    setState(() {
+      _bottomNavIndex = index;
+    });
+  }
+
+  // ── Barra Material clásica (Android y resto de plataformas) ────────────────
+  Widget _buildMaterialNav() {
     return Container(
       decoration: BoxDecoration(
         gradient: LinearGradient(
@@ -4883,22 +4927,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       ),
       child: BottomNavigationBar(
         currentIndex: _bottomNavIndex,
-        onTap: (index) {
-          if (_bottomNavIndex == 0 && index == 0) {
-            if (_homeScrollController.hasClients) {
-              final offset = _homeScrollController.offset;
-              final ms = (offset / 3).clamp(350.0, 1000.0).toInt();
-              _homeScrollController.animateTo(
-                0.0,
-                duration: Duration(milliseconds: ms),
-                curve: Curves.easeInOutCubic,
-              );
-            }
-          }
-          setState(() {
-            _bottomNavIndex = index;
-          });
-        },
+        onTap: _onNavTap,
         backgroundColor: Colors.transparent,
         selectedItemColor: Colors.red,
         unselectedItemColor: Colors.white54,
@@ -4911,6 +4940,106 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           ),
           BottomNavigationBarItem(icon: Icon(Icons.check), label: 'Mi lista'),
         ],
+      ),
+    );
+  }
+
+  // ── Barra Liquid Glass NATIVA (solo iOS 26) ────────────────────────────────
+  Widget _buildLiquidGlassNav() {
+    final bottomInset = MediaQuery.of(context).padding.bottom;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        20,
+        0,
+        20,
+        bottomInset > 0 ? bottomInset : 12,
+      ),
+      child: Container(
+        // Sombra suave debajo de la cápsula de cristal.
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(30),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.30),
+              blurRadius: 24,
+              offset: const Offset(0, 10),
+            ),
+          ],
+        ),
+        child: SizedBox(
+          height: 60,
+          // Cristal real de Apple como fondo; ítems dibujados encima.
+          child: LiquidGlass(
+            cornerRadius: 30,
+            child: Row(
+              children: [
+                _glassNavItem(
+                  index: 0,
+                  icon: Icons.home_filled,
+                  label: 'Inicio',
+                ),
+                _glassNavItem(index: 1, icon: Icons.check, label: 'Mi lista'),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _glassNavItem({
+    required int index,
+    required IconData icon,
+    required String label,
+  }) {
+    final selected = _bottomNavIndex == index;
+    return Expanded(
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => _onNavTap(index),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeOut,
+          margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+          decoration: BoxDecoration(
+            color:
+                selected
+                    ? Colors.red.withValues(alpha: 0.22)
+                    : Colors.transparent,
+            borderRadius: BorderRadius.circular(22),
+            border:
+                selected
+                    ? Border.all(
+                      color: Colors.red.withValues(alpha: 0.45),
+                      width: 1,
+                    )
+                    : null,
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                icon,
+                size: 22,
+                color: selected ? Colors.red : Colors.white70,
+              ),
+              if (selected) ...[
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    label,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.red,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }
