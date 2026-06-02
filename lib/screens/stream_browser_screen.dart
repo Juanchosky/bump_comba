@@ -579,7 +579,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
     await Navigator.push(
       context,
-      FadeScalePageRoute(
+      ContentDetailPageRoute(
         page: ContentDetailScreen(
           item: item,
           similarItems: similarItems,
@@ -1388,7 +1388,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                       if (item.isSeries) {
                         Navigator.push(
                           context,
-                          MaterialFadePageRoute(
+                          ContentDetailPageRoute(
                             page: ContentDetailScreen(
                               item: item,
                               onToggleFavorite:
@@ -6228,7 +6228,7 @@ class _SearchPageState extends State<_SearchPage> {
         final similarItems = widget.m3uService.getSimilarItems(item);
         await Navigator.push(
           context,
-          FadeScalePageRoute(
+          ContentDetailPageRoute(
             page: ContentDetailScreen(
               item: item,
               similarItems: similarItems,
@@ -6466,7 +6466,7 @@ class _SearchPageState extends State<_SearchPage> {
         final similarItems = widget.m3uService.getSimilarItems(item);
         await Navigator.push(
           context,
-          FadeScalePageRoute(
+          ContentDetailPageRoute(
             page: ContentDetailScreen(
               item: item,
               similarItems: similarItems,

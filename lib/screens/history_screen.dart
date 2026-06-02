@@ -349,7 +349,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
         await Navigator.push(
           context,
-          FadeScalePageRoute(
+          ContentDetailPageRoute(
             page: ContentDetailScreen(
               item: targetItem,
               similarItems: similarItems,

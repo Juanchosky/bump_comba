@@ -106,7 +106,7 @@ class DeepLinkService {
         // Navigate to details
         Navigator.push(
           context,
-          FadeScalePageRoute(
+          ContentDetailPageRoute(
             page: ContentDetailScreen(
               item: target,
               similarItems: m3uService.getSimilarItems(target),

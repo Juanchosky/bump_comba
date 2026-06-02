@@ -165,7 +165,7 @@ class _CategoryScreenState extends State<CategoryScreen> {
 
                                 await Navigator.push(
                                   context,
-                                  FadeScalePageRoute(
+                                  ContentDetailPageRoute(
                                     page: ContentDetailScreen(
                                       item: item,
                                       similarItems: similarItems.take(10).toList(),

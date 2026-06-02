@@ -1,6 +1,7 @@
 import '../services/m3u_service.dart';
 import '../services/watch_progress_service.dart';
 import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
+import 'package:flutter/gestures.dart' show VelocityTracker, PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
 import 'dart:ui';
@@ -82,6 +83,9 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   bool _dismissAnimRunning = false;
   late AnimationController _snapBackController;
   Animation<double>? _snapAnim;
+  // VelocityTracker para calcular la velocidad del gesto de cierre
+  final VelocityTracker _velocityTracker =
+      VelocityTracker.withKind(PointerDeviceKind.touch);
 
   List<M3UItem> get _allEpisodes =>
       _dynamicEpisodes.isNotEmpty ? _dynamicEpisodes : widget.item.episodes;
@@ -1001,31 +1005,44 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
   // ── iOS swipe-down dismiss ───────────────────────────────────────────────
 
-  void _onDismissDragUpdate(DragUpdateDetails details) {
+  void _onPointerMove(PointerMoveEvent event) {
     if (_dismissAnimRunning) return;
-    final dy = details.delta.dy;
+    _velocityTracker.addPosition(event.timeStamp, event.localPosition);
+    final dy = event.delta.dy;
+
     if (!_draggingToDismiss) {
+      // Solo activar el dismiss cuando el scroll está en el tope y se arrastra
+      // hacia abajo. Listener dispara siempre, sin importar el gesture arena.
       if (dy > 0) {
         final atTop = !_detailScrollController.hasClients ||
             _detailScrollController.offset <= 0.0;
-        if (atTop) _draggingToDismiss = true;
+        if (atTop) {
+          setState(() {
+            _draggingToDismiss = true;
+            _dragOffset = dy;
+          });
+        }
       }
-    }
-    if (_draggingToDismiss) {
+    } else {
       setState(() {
         _dragOffset = (_dragOffset + dy).clamp(0.0, double.infinity);
+        if (_dragOffset == 0 && dy < 0) _draggingToDismiss = false;
       });
     }
   }
 
-  void _onDismissDragEnd(DragEndDetails details) {
+  void _onPointerUp(PointerUpEvent event) {
     if (!_draggingToDismiss || _dismissAnimRunning) return;
-    final vy = details.velocity.pixelsPerSecond.dy;
+    final vy = _velocityTracker.getVelocity().pixelsPerSecond.dy;
     if (_dragOffset > 120 || vy > 700) {
       _startDismiss();
     } else {
       _snapBack();
     }
+  }
+
+  void _onPointerCancel(PointerCancelEvent event) {
+    if (_draggingToDismiss && !_dismissAnimRunning) _snapBack();
   }
 
   void _onSnapAnimTick() {
@@ -1077,15 +1094,23 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
       listenable: Listenable.merge([PerformanceService(), _m3uService]),
       builder: (context, _) {
         return Scaffold(
-          backgroundColor: AppColors.background,
+          // Transparente para que la ruta con opaque:false permita ver la
+          // pantalla anterior durante el gesto de cierre en iOS.
+          backgroundColor: Colors.transparent,
           body: SafeArea(
             child: Stack(
               children: [
+                // Fondo opaco explícito que se mueve con la pantalla al cerrar.
+                Positioned.fill(child: Container(color: AppColors.background)),
                 CustomScrollView(
                   controller: _detailScrollController,
-                  // ClampingScrollPhysics evita el bounce de iOS que conflictuaría
-                  // con el gesto de cierre por deslizamiento hacia abajo.
-                  physics: isIOS ? const ClampingScrollPhysics() : null,
+                  // ClampingScrollPhysics + NeverScrollable cuando estamos en
+                  // modo dismiss para que el scroll no compita con el gesto.
+                  physics: isIOS
+                      ? (_draggingToDismiss || _dismissAnimRunning
+                          ? const NeverScrollableScrollPhysics()
+                          : const ClampingScrollPhysics())
+                      : null,
                   slivers: [
                     _buildSliverAppBar(),
                     SliverToBoxAdapter(
@@ -1182,11 +1207,13 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
     if (!isIOS) return scaffold;
 
-    // En iOS: envolver en GestureDetector para el gesto de cierre deslizando
-    // hacia abajo, con animación de rebote si el usuario no llega al umbral.
-    return GestureDetector(
-      onVerticalDragUpdate: _onDismissDragUpdate,
-      onVerticalDragEnd: _onDismissDragEnd,
+    // En iOS: Listener (no participa en el gesture arena, siempre dispara)
+    // en lugar de GestureDetector que perdía contra el CustomScrollView.
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerMove: _onPointerMove,
+      onPointerUp: _onPointerUp,
+      onPointerCancel: _onPointerCancel,
       child: Transform.translate(
         offset: Offset(0, _dragOffset),
         child: scaffold,
@@ -2198,7 +2225,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
               : () {
                 Navigator.pushReplacement(
                   context,
-                  FadeScalePageRoute(
+                  ContentDetailPageRoute(
                     page: ContentDetailScreen(
                       item: item,
                       similarItems: widget.similarItems,
