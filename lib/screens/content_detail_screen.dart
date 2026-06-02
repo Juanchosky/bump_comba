@@ -1094,14 +1094,10 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
       listenable: Listenable.merge([PerformanceService(), _m3uService]),
       builder: (context, _) {
         return Scaffold(
-          // Transparente para que la ruta con opaque:false permita ver la
-          // pantalla anterior durante el gesto de cierre en iOS.
-          backgroundColor: Colors.transparent,
+          backgroundColor: AppColors.background,
           body: SafeArea(
             child: Stack(
               children: [
-                // Fondo opaco explícito que se mueve con la pantalla al cerrar.
-                Positioned.fill(child: Container(color: AppColors.background)),
                 CustomScrollView(
                   controller: _detailScrollController,
                   // ClampingScrollPhysics + NeverScrollable cuando estamos en
@@ -1275,15 +1271,17 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
     final displayTitle =
         yearMatch != null ? name.substring(0, yearMatch.start).trim() : name;
     final year = yearMatch?.group(1);
+    final isPhone = defaultTargetPlatform == TargetPlatform.iOS &&
+        MediaQuery.of(context).size.width < 500;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
           displayTitle,
-          style: const TextStyle(
+          style: TextStyle(
             color: Colors.white,
-            fontSize: 22.5,
+            fontSize: isPhone ? 20.0 : 22.5,
             fontWeight: FontWeight.w700,
             letterSpacing: 0.2,
           ),
@@ -1393,12 +1391,14 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   }
 
   Widget _buildPlayButton() {
+    final isPhone = defaultTargetPlatform == TargetPlatform.iOS &&
+        MediaQuery.of(context).size.width < 500;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         SizedBox(
           width: double.infinity,
-          height: 50, // Fixed height for proper shine alignment
+          height: isPhone ? 44.0 : 50.0,
           child: ClipRRect(
             borderRadius: BorderRadius.circular(4),
             child: Stack(
@@ -1417,16 +1417,16 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                                 _playContent(widget.item);
                               }
                             },
-                    icon: const Icon(
+                    icon: Icon(
                       Icons.play_arrow,
-                      color: Color(0xFF0a0a0a),
-                      size: 22,
+                      color: const Color(0xFF0a0a0a),
+                      size: isPhone ? 20.0 : 22.0,
                     ),
                     label: Text(
                       _isLoadingEpisodes ? 'Ver' : 'Ver',
-                      style: const TextStyle(
-                        color: Color(0xFF0a0a0a),
-                        fontSize: 15,
+                      style: TextStyle(
+                        color: const Color(0xFF0a0a0a),
+                        fontSize: isPhone ? 14.0 : 15.0,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
@@ -1545,13 +1545,13 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
             icon: Icon(
               _isFavorite ? Icons.check : Icons.add,
               color: Colors.white,
-              size: 22,
+              size: isPhone ? 20.0 : 22.0,
             ),
             label: Text(
               _isFavorite ? 'En lista' : 'Mi lista',
-              style: const TextStyle(
+              style: TextStyle(
                 color: Colors.white,
-                fontSize: 15,
+                fontSize: isPhone ? 14.0 : 15.0,
                 fontWeight: FontWeight.bold,
               ),
             ),
@@ -1826,6 +1826,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
   Widget _buildEpisodesList() {
     final episodes = _seasonMap[_selectedSeason] ?? [];
+    final isPhone = defaultTargetPlatform == TargetPlatform.iOS &&
+        MediaQuery.of(context).size.width < 500;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1833,11 +1835,11 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            const Text(
+            Text(
               'Episodios',
               style: TextStyle(
                 color: Colors.white,
-                fontSize: 20,
+                fontSize: isPhone ? 17.0 : 20.0,
                 fontWeight: FontWeight.bold,
               ),
             ),
@@ -2162,14 +2164,16 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   }
 
   Widget _buildVersionSelector() {
+    final isPhone = defaultTargetPlatform == TargetPlatform.iOS &&
+        MediaQuery.of(context).size.width < 500;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
+        Text(
           'Opciones de Idioma / Versiones',
           style: TextStyle(
             color: Colors.white,
-            fontSize: 19.7,
+            fontSize: isPhone ? 17.0 : 19.7,
             fontWeight: FontWeight.bold,
           ),
         ),
@@ -2235,15 +2239,17 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   Widget _buildSimilarTitles() {
     final filteredSimilar = _m3uService.filterValidItems(widget.similarItems);
     if (filteredSimilar.isEmpty) return const SizedBox.shrink();
+    final isPhone = defaultTargetPlatform == TargetPlatform.iOS &&
+        MediaQuery.of(context).size.width < 500;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
+        Text(
           'Esto te puede gustar',
           style: TextStyle(
             color: Colors.white,
-            fontSize: 19.5,
+            fontSize: isPhone ? 17.0 : 19.5,
             fontWeight: FontWeight.w600,
           ),
         ),
