@@ -35,6 +35,12 @@ class AdService {
   factory AdService() => _instance;
   AdService._internal();
 
+  // ── PRUEBAS iOS ─────────────────────────────────────────────────────────────
+  // Cuando es true, se omite la "puerta" de anuncios (rewarded/confirmación) y
+  // el contenido se reproduce directamente, sin el modo offline.
+  // ⚠️ PONER EN false ANTES DE PUBLICAR para reactivar los anuncios.
+  static const bool kBypassAdGateForTesting = true;
+
   // ── Ads ───────────────────────────────────────────────────────────────────
   InterstitialAd? _interstitialAd;
   RewardedAd? _rewardedAd;
@@ -658,7 +664,7 @@ class AdService {
     required VoidCallback onUserEarnedReward,
     VoidCallback? onAdFailed,
   }) {
-    if (!isSupported || PremiumService().isPremium) {
+    if (kBypassAdGateForTesting || !isSupported || PremiumService().isPremium) {
       onUserEarnedReward();
       return;
     }
@@ -679,7 +685,7 @@ class AdService {
     String? message,
     int quarterTurns = 0,
   }) {
-    if (!isSupported || PremiumService().isPremium) {
+    if (kBypassAdGateForTesting || !isSupported || PremiumService().isPremium) {
       onUserEarnedReward();
       return;
     }
