@@ -1090,111 +1090,129 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   @override
   Widget build(BuildContext context) {
     final isIOS = defaultTargetPlatform == TargetPlatform.iOS;
+
     final scaffold = ListenableBuilder(
       listenable: Listenable.merge([PerformanceService(), _m3uService]),
       builder: (context, _) {
+        // cornerRadius se calcula aquí dentro para que el ListenableBuilder
+        // lo recalcule también cuando el padre hace setState por _dragOffset.
+        final cornerRadius = isIOS
+            ? (_dragOffset / 120.0).clamp(0.0, 1.0) * 22.0
+            : 0.0;
+
         return Scaffold(
-          backgroundColor: AppColors.background,
+          // Transparente: el fondo oscuro vive dentro del SafeArea junto al
+          // ClipRRect, así el redondeo ocurre exactamente donde empieza la
+          // imagen y no en la zona del status bar.
+          backgroundColor: Colors.transparent,
           body: SafeArea(
-            child: Stack(
-              children: [
-                CustomScrollView(
-                  controller: _detailScrollController,
-                  // ClampingScrollPhysics + NeverScrollable cuando estamos en
-                  // modo dismiss para que el scroll no compita con el gesto.
-                  physics: isIOS
-                      ? (_draggingToDismiss || _dismissAnimRunning
-                          ? const NeverScrollableScrollPhysics()
-                          : const ClampingScrollPhysics())
-                      : null,
-                  slivers: [
-                    _buildSliverAppBar(),
-                    SliverToBoxAdapter(
-                      child: Padding(
-                        padding: const EdgeInsets.all(16.0),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            _buildTitleSection(),
-                            const SizedBox(height: 20),
-                            _buildPlayButton(),
-                            const SizedBox(height: 20),
-                            _buildDescription(),
-                            const SizedBox(height: 12),
-                            _buildSocialButtons(),
-                            const SizedBox(height: 24),
-                            const Divider(color: Colors.white12, height: 1),
-                            if (widget.item.isSeries) ...[
+            child: ClipRRect(
+              borderRadius: BorderRadius.vertical(
+                top: Radius.circular(cornerRadius),
+              ),
+              child: Stack(
+                children: [
+                  // Fondo oscuro que se mueve y recorta con la pantalla.
+                  Positioned.fill(
+                    child: Container(color: AppColors.background),
+                  ),
+                  CustomScrollView(
+                    controller: _detailScrollController,
+                    physics: isIOS
+                        ? (_draggingToDismiss || _dismissAnimRunning
+                            ? const NeverScrollableScrollPhysics()
+                            : const ClampingScrollPhysics())
+                        : null,
+                    slivers: [
+                      _buildSliverAppBar(),
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.all(16.0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              _buildTitleSection(),
+                              const SizedBox(height: 20),
+                              _buildPlayButton(),
+                              const SizedBox(height: 20),
+                              _buildDescription(),
+                              const SizedBox(height: 12),
+                              _buildSocialButtons(),
                               const SizedBox(height: 24),
-                              _buildEpisodesList(),
+                              const Divider(color: Colors.white12, height: 1),
+                              if (widget.item.isSeries) ...[
+                                const SizedBox(height: 24),
+                                _buildEpisodesList(),
+                              ],
+                              if (_otherVersions.isNotEmpty) ...[
+                                const SizedBox(height: 24),
+                                _buildVersionSelector(),
+                              ],
+                              if (widget.similarItems.isNotEmpty) ...[
+                                const SizedBox(height: 24),
+                                _buildSimilarTitles(),
+                              ],
+                              const SizedBox(height: 30),
                             ],
-                            if (_otherVersions.isNotEmpty) ...[
-                              const SizedBox(height: 24),
-                              _buildVersionSelector(),
-                            ],
-                            if (widget.similarItems.isNotEmpty) ...[
-                              const SizedBox(height: 24),
-                              _buildSimilarTitles(),
-                            ],
-                            const SizedBox(height: 30),
-                          ],
+                          ),
                         ),
                       ),
-                    ),
-                  ],
-                ),
-                if (_isPageLoading)
-                  Positioned.fill(
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onTap:
-                          () {}, // Blocks click-through to background widgets
-                      child: Container(
-                        color: Colors.black.withValues(alpha: 0.65),
-                        child: const Center(
-                          child: CupertinoActivityIndicator(
-                            radius: 14,
-                            color: Colors.white,
+                    ],
+                  ),
+                  if (_isPageLoading)
+                    Positioned.fill(
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () {},
+                        child: Container(
+                          color: Colors.black.withValues(alpha: 0.65),
+                          child: const Center(
+                            child: CupertinoActivityIndicator(
+                              radius: 14,
+                              color: Colors.white,
+                            ),
                           ),
                         ),
                       ),
                     ),
-                  ),
-                Positioned(
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 450),
-                    transitionBuilder: (child, animation) {
-                      final slide = Tween<Offset>(
-                        begin: const Offset(0, -1.0),
-                        end: Offset.zero,
-                      ).animate(
-                        CurvedAnimation(
-                          parent: animation,
-                          curve: Curves.easeOutCubic,
-                        ),
-                      );
-                      return FadeTransition(
-                        opacity: animation,
-                        child: SlideTransition(position: slide, child: child),
-                      );
-                    },
-                    child:
-                        (_isOffline && !_bannerDismissed)
-                            ? NetflixOfflineBanner(
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 450),
+                      transitionBuilder: (child, animation) {
+                        final slide = Tween<Offset>(
+                          begin: const Offset(0, -1.0),
+                          end: Offset.zero,
+                        ).animate(
+                          CurvedAnimation(
+                            parent: animation,
+                            curve: Curves.easeOutCubic,
+                          ),
+                        );
+                        return FadeTransition(
+                          opacity: animation,
+                          child: SlideTransition(
+                            position: slide,
+                            child: child,
+                          ),
+                        );
+                      },
+                      child: (_isOffline && !_bannerDismissed)
+                          ? NetflixOfflineBanner(
                               key: const ValueKey('detail_banner_visible'),
                               onDismiss: () {
                                 setState(() => _bannerDismissed = true);
                               },
                             )
-                            : const SizedBox.shrink(
+                          : const SizedBox.shrink(
                               key: ValueKey('detail_banner_hidden'),
                             ),
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         );
@@ -1203,13 +1221,6 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
     if (!isIOS) return scaffold;
 
-    // Radio de las esquinas superiores: crece de 0 → 22px a medida que el
-    // usuario desliza hacia abajo, igual que el gesto modal de iOS.
-    final cornerRadius =
-        (_dragOffset / 120.0).clamp(0.0, 1.0) * 22.0;
-
-    // En iOS: Listener (no participa en el gesture arena, siempre dispara)
-    // en lugar de GestureDetector que perdía contra el CustomScrollView.
     return Listener(
       behavior: HitTestBehavior.translucent,
       onPointerMove: _onPointerMove,
@@ -1217,12 +1228,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
       onPointerCancel: _onPointerCancel,
       child: Transform.translate(
         offset: Offset(0, _dragOffset),
-        child: ClipRRect(
-          borderRadius: BorderRadius.vertical(
-            top: Radius.circular(cornerRadius),
-          ),
-          child: scaffold,
-        ),
+        child: scaffold,
       ),
     );
   }
