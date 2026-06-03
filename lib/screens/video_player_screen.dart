@@ -937,17 +937,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             debugPrint('Decoder seleccionado: $decoder (Retry: $_retryCount)');
           } else if (!kIsWeb &&
               defaultTargetPlatform == TargetPlatform.iOS) {
-            // iOS: clave del problema "audio sí, video negro".
-            // 'videotoolbox' (zero-copy) envuelve el CVPixelBuffer decodificado
-            // DIRECTAMENTE como textura Metal. Para ciertos formatos de píxel
-            // (HEVC 10-bit, layouts YUV poco comunes) ese wrapping directo falla
-            // silenciosamente → pantalla negra, mientras el audio (ruta aparte)
-            // sigue sonando. 'videotoolbox-copy' decodifica igual por hardware
-            // pero copia los frames a memoria estándar y los sube como textura
-            // normal → SIEMPRE renderiza. Es el equivalente iOS de
-            // 'mediacodec-copy' en Android.
-            // En el reintento caemos a software ('no') como último recurso.
-            final decoder = _retryCount > 0 ? 'no' : 'videotoolbox-copy';
+            // iOS: SIEMPRE hardware (VideoToolbox). El diagnóstico mostró que
+            // con software ('no') MPV reporta 0×0 — el ffmpeg de libmpv en iOS
+            // NO puede decodificar HEVC/H.265 por software. Solo VideoToolbox
+            // (hardware) decodifica HEVC en iOS. La variante '-copy' copia los
+            // frames a memoria estándar y los sube como textura normal,
+            // evitando el fallo de wrapping directo de CVPixelBuffer 10-bit.
+            // NO caemos a software: daría 0×0 (sin video).
+            const decoder = 'videotoolbox-copy';
             await mpv.setProperty('hwdec', decoder);
             _activeDecoder = decoder;
             debugPrint('Decoder iOS seleccionado: $decoder (Retry: $_retryCount)');
@@ -1681,7 +1678,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       final firstFrameRendered =
           rect != null && rect.width > 0 && rect.height > 0;
 
-      if (!_isLiveContent &&
+      // NOTA iOS: el reload a software se DESACTIVÓ. El diagnóstico mostró que
+      // en iOS el software ('no') da MPV 0×0 (libmpv no decodifica HEVC por
+      // software). Recargar a software empeoraba las cosas. En iOS solo sirve
+      // VideoToolbox por hardware, que ya es el decodificador fijo. Por eso
+      // este watchdog de "pantalla negra" solo aplica fuera de iOS.
+      final bool isIOSPlat = defaultTargetPlatform == TargetPlatform.iOS;
+      if (!isIOSPlat &&
+          !_isLiveContent &&
           !_isVideoLoading &&
           !_isSeeking &&
           !_isDragging &&
@@ -1694,11 +1698,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         _noVideoSeconds++;
         if (_noVideoSeconds >= 4) {
           debugPrint(
-            'Pantalla negra detectada (audio sin textura de video ${_noVideoSeconds}s). Recargando con fallback de decodificador...',
+            'Pantalla negra detectada (audio sin textura de video ${_noVideoSeconds}s). Recargando...',
           );
           _noVideoSeconds = 0;
           _blackScreenReloadDone = true;
-          // Forzar la rama de reintento para que iOS use software decode.
           if (_retryCount == 0) _retryCount = 1;
           _reloadVideo();
         }
