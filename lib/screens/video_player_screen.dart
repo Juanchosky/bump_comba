@@ -120,6 +120,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool _showDiagPanel = false;
   String _activeDecoder = '-';
   Timer? _diagTimer;
+  // Propiedades consultadas a MPV en vivo para el panel de diagnóstico.
+  String _diagCodec = '?';
+  String _diagHwdecActivo = '?';
+  int _diagVideoTracks = -1;
 
   static const platform = MethodChannel('com.juanchosky.bumpcomba/pip');
   bool get _isPiPSupported =>
@@ -4756,10 +4760,29 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _diagTimer?.cancel();
     if (_showDiagPanel) {
       // Refresca el panel cada 500ms para que los valores sean en vivo.
-      _diagTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
-        if (mounted && _showDiagPanel) {
-          setState(() {});
+      _diagTimer = Timer.periodic(const Duration(milliseconds: 500), (_) async {
+        if (!mounted || !_showDiagPanel) return;
+        // Consultar a MPV el códec real y si el hardware está activo.
+        final mpv = _player?.platform as dynamic;
+        if (mpv != null) {
+          try {
+            final c = await mpv.getProperty('video-codec');
+            _diagCodec = (c == null || c.toString().isEmpty)
+                ? 'null (sin video)'
+                : c.toString();
+          } catch (_) {
+            _diagCodec = 'err';
+          }
+          try {
+            final hw = await mpv.getProperty('hwdec-current');
+            _diagHwdecActivo =
+                (hw == null || hw.toString().isEmpty) ? 'null' : hw.toString();
+          } catch (_) {
+            _diagHwdecActivo = 'err';
+          }
         }
+        _diagVideoTracks = _player?.state.tracks.video.length ?? -1;
+        if (mounted && _showDiagPanel) setState(() {});
       });
     }
   }
@@ -4782,6 +4805,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       line('Buffering', (st?.buffering ?? false) ? 'sí' : 'no'),
       line('Posición', '${st?.position.inSeconds ?? 0}s'),
       line('MPV w×h', '$w×$h'),
+      line('Códec video', _diagCodec),
+      line('HW activo', _diagHwdecActivo),
+      line('Pistas video', _diagVideoTracks < 0 ? '?' : '$_diagVideoTracks'),
       line(
         'Textura (rect)',
         textureOk
