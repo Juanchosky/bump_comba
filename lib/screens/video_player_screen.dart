@@ -124,6 +124,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   String _diagCodec = '?';
   String _diagHwdecActivo = '?';
   int _diagVideoTracks = -1;
+  String _diagTrackCodecs = '?';
 
   static const platform = MethodChannel('com.juanchosky.bumpcomba/pip');
   bool get _isPiPSupported =>
@@ -438,6 +439,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _hasError = false;
     _noVideoSeconds = 0;
     _blackScreenReloadDone = false;
+    _diagTrackCodecs = '?';
 
     final progress = await _watchProgressService.getProgress(_currentItem.url);
     Duration? startFrom;
@@ -4799,6 +4801,30 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           } catch (_) {
             _diagHwdecActivo = 'err';
           }
+          // Leer el códec real de cada pista de video desde track-list,
+          // aunque ninguna esté seleccionada (video-codec sería null).
+          if (_diagTrackCodecs == '?' ||
+              _diagTrackCodecs == 'err' ||
+              _diagTrackCodecs.isEmpty) {
+            try {
+              final cntStr = await mpv.getProperty('track-list/count');
+              final cnt = int.tryParse(cntStr?.toString() ?? '0') ?? 0;
+              final codecs = <String>[];
+              for (var i = 0; i < cnt; i++) {
+                final type = await mpv.getProperty('track-list/$i/type');
+                if (type?.toString() == 'video') {
+                  final codec = await mpv.getProperty('track-list/$i/codec');
+                  final cd = (codec?.toString().isEmpty ?? true)
+                      ? '?'
+                      : codec.toString();
+                  if (!codecs.contains(cd)) codecs.add(cd);
+                }
+              }
+              _diagTrackCodecs = codecs.isEmpty ? 'sin pistas' : codecs.join(',');
+            } catch (_) {
+              _diagTrackCodecs = 'err';
+            }
+          }
         }
         _diagVideoTracks = _player?.state.tracks.video.length ?? -1;
         if (mounted && _showDiagPanel) setState(() {});
@@ -4824,7 +4850,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       line('Buffering', (st?.buffering ?? false) ? 'sí' : 'no'),
       line('Posición', '${st?.position.inSeconds ?? 0}s'),
       line('MPV w×h', '$w×$h'),
-      line('Códec video', _diagCodec),
+      line('Códec activo', _diagCodec),
+      line('Códecs pistas', _diagTrackCodecs),
       line('HW activo', _diagHwdecActivo),
       line('Pistas video', _diagVideoTracks < 0 ? '?' : '$_diagVideoTracks'),
       line(
