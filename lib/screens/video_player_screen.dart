@@ -992,10 +992,19 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             await mpv.setProperty('af', 'dynaudnorm');
           }
 
-          // Si estamos transmitiendo, desactivamos el track de video localmente
-          // para ahorrar recursos (CPU/GPU) y evitar errores de buffer.
+          // ── CAUSA RAÍZ del "audio sí, video negro/0×0" en iOS ───────────
+          // media_kit crea el Player con 'vid=no' por defecto y delega en el
+          // VideoController poner 'vid=auto' al adjuntarse. En iOS ese paso a
+          // veces NO surte efecto → el video queda desactivado: MPV ve las
+          // pistas (p.ej. 4) pero no activa ninguna, video-codec=null, 0×0, y
+          // solo se oye el audio. Forzamos 'vid=auto' explícitamente para
+          // garantizar que se seleccione y decodifique una pista de video.
           if (CastService().isCasting.value) {
+            // Si estamos transmitiendo, desactivamos el track de video local
+            // para ahorrar recursos (CPU/GPU) y evitar errores de buffer.
             await mpv.setProperty('vid', 'no');
+          } else {
+            await mpv.setProperty('vid', 'auto');
           }
         } catch (e) {
           debugPrint('Error configurando MPV: $e');
@@ -1075,6 +1084,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           Media(resolvedUrl, httpHeaders: _buildHeaders(currentUrl)),
           play: shouldPlayLocally,
         );
+        // REFUERZO del fix vid=auto: tras open(), volvemos a forzar la
+        // selección de pista de video (salvo en Cast). Cubre el caso en que
+        // el VideoController de media_kit no logró poner vid=auto al adjuntarse
+        // en iOS, dejando el video desactivado (audio sí, video 0×0).
+        if (!castService.isCasting.value) {
+          try {
+            final mpvActive = _player?.platform as dynamic;
+            await mpvActive?.setProperty('vid', 'auto');
+          } catch (_) {}
+        }
         // Durante Cast sin audio local, cerramos la descarga del player local
         // completamente para liberar el ancho de banda al Chromecast.
         // Un player pausado-pero-abierto sigue consumiendo red en background.
