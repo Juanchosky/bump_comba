@@ -110,6 +110,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool _isSeeking = false;
   Duration _lastPosition = Duration.zero;
   int _noMovementSeconds = 0;
+  // Detección de "audio sin video" (pantalla negra con audio) en VOD.
+  int _noVideoSeconds = 0;
+  bool _blackScreenReloadDone = false;
   double _dragValue = 0.0;
   Timer? _hideControlsTimer;
 
@@ -423,6 +426,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     if (!mounted) return;
     _retryCount = 0;
     _hasError = false;
+    _noVideoSeconds = 0;
+    _blackScreenReloadDone = false;
 
     final progress = await _watchProgressService.getProgress(_currentItem.url);
     Duration? startFrom;
@@ -900,6 +905,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                     : 'mediacodec';
             await mpv.setProperty('hwdec', decoder);
             debugPrint('Decoder seleccionado: $decoder (Retry: $_retryCount)');
+          } else if (!kIsWeb &&
+              defaultTargetPlatform == TargetPlatform.iOS) {
+            // iOS: VideoToolbox (hardware) en el primer intento. Si falló
+            // produciendo pantalla negra con audio, en el reintento caemos a
+            // decodificación por software ('no'), que reproduce códecs/perfiles
+            // que VideoToolbox rechaza silenciosamente (HEVC 10-bit, perfiles raros).
+            final decoder = _retryCount > 0 ? 'no' : 'videotoolbox';
+            await mpv.setProperty('hwdec', decoder);
+            debugPrint('Decoder iOS seleccionado: $decoder (Retry: $_retryCount)');
           } else {
             await mpv.setProperty('hwdec', 'auto-safe');
           }
@@ -1112,6 +1126,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
       if (!castService.isCasting.value) {
         int frameWait = 0;
+        // Cuántas iteraciones llevamos con audio reproduciéndose pero SIN video.
+        int audioOnlyWaits = 0;
         while (frameWait < 200 && mounted && _player != null) {
           final state = _player!.state;
           final hasVideo = (state.width ?? 0) > 0 && (state.height ?? 0) > 0;
@@ -1122,6 +1138,23 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           if (hasVideo && isPlayingAndAdvanced && hasBuffer) {
             break;
           }
+
+          // Si el audio ya está reproduciéndose con buffer pero el video sigue
+          // en 0x0, es el caso de "pantalla negra con audio". No esperamos los
+          // 20s completos: salimos a los ~5s para que el watchdog recargue
+          // rápido (en iOS, con decodificación por software).
+          if (isPlayingAndAdvanced && hasBuffer && !hasVideo) {
+            audioOnlyWaits++;
+            if (audioOnlyWaits >= 50) {
+              debugPrint(
+                'Arranque con audio pero sin video tras 5s — saliendo del wait para recuperación.',
+              );
+              break;
+            }
+          } else {
+            audioOnlyWaits = 0;
+          }
+
           await Future.delayed(const Duration(milliseconds: 100));
           frameWait++;
         }
@@ -1587,6 +1620,37 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           debugPrint('Buffer recuperado tras $_stallSeconds s.');
         }
         _stallSeconds = 0;
+      }
+
+      // ── Detección de "audio sin video" (pantalla negra con audio) ─────
+      // Solo VOD (los Live ya tienen su propio chequeo 0x0 más abajo).
+      // Si el audio avanza pero el decodificador de video no produce frames
+      // (width/height = 0), recargamos una vez. En iOS el reload usa
+      // decodificación por software, que resuelve códecs que VideoToolbox
+      // rechaza silenciosamente.
+      if (!_isLiveContent &&
+          !_isVideoLoading &&
+          !_isSeeking &&
+          !_isDragging &&
+          !_blackScreenReloadDone &&
+          !CastService().isCasting.value &&
+          playerState.playing &&
+          currentPos != _lastPosition && // el audio SÍ avanza
+          (playerState.width ?? 0) == 0 &&
+          (playerState.height ?? 0) == 0) {
+        _noVideoSeconds++;
+        if (_noVideoSeconds >= 4) {
+          debugPrint(
+            'Pantalla negra detectada (audio sin video ${_noVideoSeconds}s). Recargando con fallback de decodificador...',
+          );
+          _noVideoSeconds = 0;
+          _blackScreenReloadDone = true;
+          // Forzar la rama de reintento para que iOS use software decode.
+          if (_retryCount == 0) _retryCount = 1;
+          _reloadVideo();
+        }
+      } else {
+        _noVideoSeconds = 0;
       }
 
       _lastPosition = currentPos;
@@ -3792,22 +3856,31 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           ),
         Align(
           alignment: Alignment.center,
-          child: _AppLoadingAnimation(
-            size:
-                56.0 *
-                ((MediaQuery.of(context).size.shortestSide / 414.0).clamp(
-                      0.8,
-                      1.25,
-                    ) *
-                    1.02),
-            strokeWidth:
-                3.5 *
-                ((MediaQuery.of(context).size.shortestSide / 414.0).clamp(
-                      0.8,
-                      1.25,
-                    ) *
-                    1.02),
-          ),
+          child: defaultTargetPlatform == TargetPlatform.iOS
+              ? CupertinoActivityIndicator(
+                  radius:
+                      16.0 *
+                      ((MediaQuery.of(context).size.shortestSide / 414.0)
+                              .clamp(0.8, 1.25) *
+                          1.02),
+                  color: Colors.white,
+                )
+              : _AppLoadingAnimation(
+                  size:
+                      56.0 *
+                      ((MediaQuery.of(context).size.shortestSide / 414.0).clamp(
+                            0.8,
+                            1.25,
+                          ) *
+                          1.02),
+                  strokeWidth:
+                      3.5 *
+                      ((MediaQuery.of(context).size.shortestSide / 414.0).clamp(
+                            0.8,
+                            1.25,
+                          ) *
+                          1.02),
+                ),
         ),
         if (showBackground &&
             (context
