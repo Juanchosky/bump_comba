@@ -125,6 +125,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   String _diagHwdecActivo = '?';
   int _diagVideoTracks = -1;
   String _diagTrackCodecs = '?';
+  String _diagVidSel = '?';
 
   static const platform = MethodChannel('com.juanchosky.bumpcomba/pip');
   bool get _isPiPSupported =>
@@ -4801,26 +4802,41 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           } catch (_) {
             _diagHwdecActivo = 'err';
           }
-          // Leer el códec real de cada pista de video desde track-list,
-          // aunque ninguna esté seleccionada (video-codec sería null).
+          // Volcado detallado de pistas de video: id, códec, dimensiones,
+          // si es carátula (albumart) y si está seleccionada. Decisivo para
+          // saber por qué no se activa ninguna pista.
+          try {
+            final selVid = await mpv.getProperty('vid');
+            _diagVidSel = selVid?.toString() ?? '?';
+          } catch (_) {
+            _diagVidSel = 'err';
+          }
           if (_diagTrackCodecs == '?' ||
               _diagTrackCodecs == 'err' ||
               _diagTrackCodecs.isEmpty) {
             try {
               final cntStr = await mpv.getProperty('track-list/count');
               final cnt = int.tryParse(cntStr?.toString() ?? '0') ?? 0;
-              final codecs = <String>[];
+              final parts = <String>[];
               for (var i = 0; i < cnt; i++) {
                 final type = await mpv.getProperty('track-list/$i/type');
                 if (type?.toString() == 'video') {
+                  final id = await mpv.getProperty('track-list/$i/id');
                   final codec = await mpv.getProperty('track-list/$i/codec');
-                  final cd = (codec?.toString().isEmpty ?? true)
-                      ? '?'
-                      : codec.toString();
-                  if (!codecs.contains(cd)) codecs.add(cd);
+                  final dw = await mpv.getProperty('track-list/$i/demux-w');
+                  final dh = await mpv.getProperty('track-list/$i/demux-h');
+                  final art = await mpv.getProperty('track-list/$i/albumart');
+                  final sel = await mpv.getProperty('track-list/$i/selected');
+                  final isArt = art?.toString() == 'yes';
+                  final isSel = sel?.toString() == 'yes';
+                  parts.add(
+                    '${id ?? '?'}:${codec ?? '?'} '
+                    '${dw ?? '?'}x${dh ?? '?'}'
+                    '${isArt ? ' art' : ''}${isSel ? ' SEL' : ''}',
+                  );
                 }
               }
-              _diagTrackCodecs = codecs.isEmpty ? 'sin pistas' : codecs.join(',');
+              _diagTrackCodecs = parts.isEmpty ? 'sin pistas' : parts.join(' | ');
             } catch (_) {
               _diagTrackCodecs = 'err';
             }
@@ -4851,7 +4867,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       line('Posición', '${st?.position.inSeconds ?? 0}s'),
       line('MPV w×h', '$w×$h'),
       line('Códec activo', _diagCodec),
-      line('Códecs pistas', _diagTrackCodecs),
+      line('vid sel', _diagVidSel),
+      line('Pistas', _diagTrackCodecs),
       line('HW activo', _diagHwdecActivo),
       line('Pistas video', _diagVideoTracks < 0 ? '?' : '$_diagVideoTracks'),
       line(
