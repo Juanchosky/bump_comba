@@ -63,8 +63,9 @@ class SlideUpPageRoute<T> extends PageRouteBuilder<T> {
       );
 }
 
-/// Igual que FadeScalePageRoute pero con opaque: false, para que la pantalla
-/// anterior sea visible detrás durante el gesto de cierre por deslizamiento.
+/// Ruta para ContentDetailScreen: opaque:false para que la pantalla anterior
+/// se vea detrás durante el gesto de cierre, con animación de entrada
+/// tipo tarjeta (slide-up + fade) — distinta a FadeScalePageRoute.
 class ContentDetailPageRoute<T> extends PageRouteBuilder<T> {
   final Widget page;
 
@@ -74,22 +75,25 @@ class ContentDetailPageRoute<T> extends PageRouteBuilder<T> {
         barrierColor: Colors.transparent,
         pageBuilder: (context, animation, secondaryAnimation) => page,
         transitionsBuilder: (context, animation, secondaryAnimation, child) {
-          final curve = Curves.easeOutQuart;
-          final fadeAnimation = CurvedAnimation(
-            parent: animation,
-            curve: const Interval(0.0, 0.6, curve: Curves.easeOut),
+          // Sube desde ~12 % abajo con una curva suave, más un fade corto
+          // al principio para que la aparición se sienta fluida.
+          final slide = Tween<Offset>(
+            begin: const Offset(0.0, 0.12),
+            end: Offset.zero,
+          ).animate(
+            CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
           );
-          final scaleAnimation = Tween<double>(
-            begin: 0.92,
-            end: 1.0,
-          ).animate(CurvedAnimation(parent: animation, curve: curve));
+          final fade = CurvedAnimation(
+            parent: animation,
+            curve: const Interval(0.0, 0.4, curve: Curves.easeOut),
+          );
           return FadeTransition(
-            opacity: fadeAnimation,
-            child: ScaleTransition(scale: scaleAnimation, child: child),
+            opacity: fade,
+            child: SlideTransition(position: slide, child: child),
           );
         },
-        transitionDuration: const Duration(milliseconds: 500),
-        reverseTransitionDuration: const Duration(milliseconds: 400),
+        transitionDuration: const Duration(milliseconds: 400),
+        reverseTransitionDuration: const Duration(milliseconds: 300),
       );
 }
 

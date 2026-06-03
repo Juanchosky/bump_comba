@@ -1221,15 +1221,45 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
     if (!isIOS) return scaffold;
 
-    return Listener(
-      behavior: HitTestBehavior.translucent,
-      onPointerMove: _onPointerMove,
-      onPointerUp: _onPointerUp,
-      onPointerCancel: _onPointerCancel,
-      child: Transform.translate(
-        offset: Offset(0, _dragOffset),
-        child: scaffold,
-      ),
+    // El scrim se construye FUERA del Transform.translate: así permanece fijo
+    // en pantalla completa mientras el contenido se desliza hacia abajo.
+    // Usa la animación de la ruta para aparecer al entrar y se aclara
+    // proporcionalmente al desplazamiento del gesto de cierre.
+    final routeAnim = ModalRoute.of(context)?.animation;
+    final screenH = MediaQuery.of(context).size.height;
+
+    Widget scrim = AnimatedBuilder(
+      animation: routeAnim ?? const AlwaysStoppedAnimation(1.0),
+      builder: (ctx, _) {
+        final routeProgress = routeAnim?.value ?? 1.0;
+        final dismissProgress = (_dragOffset / screenH).clamp(0.0, 1.0);
+        final alpha =
+            (routeProgress * 0.52 * (1.0 - dismissProgress * 1.3))
+                .clamp(0.0, 0.52);
+        return IgnorePointer(
+          child: Container(
+            color: Colors.black.withValues(alpha: alpha),
+          ),
+        );
+      },
+    );
+
+    return Stack(
+      children: [
+        // 1. Scrim fijo sobre la pantalla anterior.
+        Positioned.fill(child: scrim),
+        // 2. Contenido deslizable.
+        Listener(
+          behavior: HitTestBehavior.translucent,
+          onPointerMove: _onPointerMove,
+          onPointerUp: _onPointerUp,
+          onPointerCancel: _onPointerCancel,
+          child: Transform.translate(
+            offset: Offset(0, _dragOffset),
+            child: scaffold,
+          ),
+        ),
+      ],
     );
   }
 
@@ -1247,25 +1277,22 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
         const SizedBox(width: 48), // Placeholder for balance
       ],
       flexibleSpace: FlexibleSpaceBar(
-        background: Stack(
-          fit: StackFit.expand,
-          children: [
-            // Background Image
-            FastThumbnail(
-              url: widget.item.logo,
-              title: widget.item.name,
-              width: double.infinity,
-              height: double.infinity,
-              fit: BoxFit.cover,
-              isHD: _isGoodNetwork && !PerformanceService().lowMemoryLimit,
-              onError: () {
-                if (widget.item.logo != null && widget.item.logo!.isNotEmpty) {
-                  _m3uService.reportFailedLogo(widget.item.logo!);
-                }
-              },
-            ),
-
-          ],
+        background: ClipRRect(
+          // Radio fijo en las esquinas superiores de la carátula.
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(14)),
+          child: FastThumbnail(
+            url: widget.item.logo,
+            title: widget.item.name,
+            width: double.infinity,
+            height: double.infinity,
+            fit: BoxFit.cover,
+            isHD: _isGoodNetwork && !PerformanceService().lowMemoryLimit,
+            onError: () {
+              if (widget.item.logo != null && widget.item.logo!.isNotEmpty) {
+                _m3uService.reportFailedLogo(widget.item.logo!);
+              }
+            },
+          ),
         ),
       ),
     );
