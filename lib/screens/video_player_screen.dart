@@ -3700,7 +3700,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                   !_showControls)
                                 _buildSeekFeedback(),
 
-                              _buildControls(),
+                              defaultTargetPlatform == TargetPlatform.iOS
+                                  ? _buildControlsIOS()
+                                  : _buildControls(),
                               if (_subtitlesEnabled &&
                                   _currentSubtitleText.isNotEmpty)
                                 _buildSubtitleOverlay(),
@@ -4606,6 +4608,627 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // CONTROLES iOS — estilo Apple / nativo
+  // ─────────────────────────────────────────────────────────────────────────
+  Widget _buildControlsIOS() {
+    final size = MediaQuery.of(context).size;
+    final isPiP = size.height < 300 || size.width < 300;
+    if (isPiP) return const SizedBox.shrink();
+
+    final double scale =
+        (size.shortestSide / 414.0).clamp(0.8, 1.25) * 1.02;
+    final double sideIconSize = 36.0 * scale;
+    final double playCircle = 64.0 * scale;
+    final double playIconSize = 28.0 * scale;
+
+    // ── helper: botón play/pause circular estilo iOS ──────────────────────
+    Widget playPauseButton(bool isPlaying) {
+      return GestureDetector(
+        onTap: _togglePlayback,
+        child: Container(
+          width: playCircle,
+          height: playCircle,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.white.withValues(alpha: 0.18),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: 0.35),
+              width: 1.2,
+            ),
+          ),
+          child: Center(
+            child: Icon(
+              isPlaying ? CupertinoIcons.pause_fill : CupertinoIcons.play_fill,
+              color: Colors.white,
+              size: playIconSize,
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Positioned.fill(
+      child: AnimatedBuilder(
+        animation: _controlsAnim,
+        builder: (context, child) {
+          final visible = _controlsAnim.value > 0;
+          return IgnorePointer(
+            ignoring: !visible,
+            child: Opacity(opacity: _controlsAnim.value, child: child),
+          );
+        },
+        child: Stack(
+          children: [
+            // ── Gradiente superior ────────────────────────────────────────
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: Container(
+                height: 180,
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [Color(0xD9000000), Colors.transparent],
+                    stops: [0.0, 1.0],
+                  ),
+                ),
+              ),
+            ),
+            // ── Gradiente inferior ────────────────────────────────────────
+            Positioned(
+              bottom: 0,
+              left: 0,
+              right: 0,
+              child: Container(
+                height: 220,
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.bottomCenter,
+                    end: Alignment.topCenter,
+                    colors: [Color(0xD9000000), Colors.transparent],
+                    stops: [0.0, 1.0],
+                  ),
+                ),
+              ),
+            ),
+
+            // ── Centro: seek ← | play/pause | seek → ─────────────────────
+            Align(
+              alignment: Alignment.center,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (!_currentItem.isLive) ...[
+                    CupertinoButton(
+                      padding: EdgeInsets.zero,
+                      minSize: 0,
+                      onPressed: _seekBackward,
+                      child: Icon(
+                        CupertinoIcons.gobackward_10,
+                        color: Colors.white,
+                        size: sideIconSize,
+                      ),
+                    ),
+                    SizedBox(width: 38 * scale),
+                  ],
+                  ValueListenableBuilder<bool>(
+                    valueListenable: CastService().isCasting,
+                    builder: (context, isCasting, _) {
+                      if (isCasting) {
+                        return ValueListenableBuilder<bool>(
+                          valueListenable: CastService().castPlaying,
+                          builder: (context, isPlaying, _) =>
+                              playPauseButton(isPlaying),
+                        );
+                      }
+                      return StreamBuilder<bool>(
+                        stream: _player?.stream.playing,
+                        initialData: _player?.state.playing,
+                        builder: (context, snap) =>
+                            playPauseButton(snap.data ?? false),
+                      );
+                    },
+                  ),
+                  if (!_currentItem.isLive) ...[
+                    SizedBox(width: 38 * scale),
+                    CupertinoButton(
+                      padding: EdgeInsets.zero,
+                      minSize: 0,
+                      onPressed: _seekForward,
+                      child: Icon(
+                        CupertinoIcons.goforward_10,
+                        color: Colors.white,
+                        size: sideIconSize,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+
+            // ── SafeArea: barra superior + inferior ───────────────────────
+            SafeArea(
+              child: Stack(
+                children: [
+                  // Barra superior
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 4,
+                        vertical: _isLandscape ? 2 : 8,
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Row(
+                            children: [
+                              // Botón atrás
+                              CupertinoButton(
+                                padding: const EdgeInsets.all(8),
+                                minSize: 0,
+                                onPressed: () async {
+                                  if (_player != null && !_isVideoLoading) {
+                                    final cs = CastService();
+                                    Duration pos = Duration.zero;
+                                    Duration dur = Duration.zero;
+                                    if (cs.isCasting.value) {
+                                      pos = cs.castPosition.value;
+                                      dur = cs.castDuration.value;
+                                    } else if (_player != null) {
+                                      pos = _player!.state.position;
+                                      dur = _player!.state.duration;
+                                    }
+                                    if (dur.inSeconds > 0) {
+                                      await _watchProgressService.saveProgress(
+                                        _currentItem.url,
+                                        pos,
+                                        dur,
+                                        name: _currentItem.name,
+                                        seriesName: _currentItem.seriesName,
+                                        seasonNumber:
+                                            _currentItem.seasonNumber,
+                                        episodeNumber:
+                                            _currentItem.episodeNumber,
+                                      );
+                                    }
+                                  }
+                                  if (mounted) Navigator.maybePop(context);
+                                },
+                                child: const Icon(
+                                  CupertinoIcons.chevron_left,
+                                  color: Colors.white,
+                                  size: 20,
+                                ),
+                              ),
+                              // Título
+                              Expanded(
+                                child: Text(
+                                  () {
+                                    final clean =
+                                        NormalizationUtils
+                                            .extractEpisodeTitle(
+                                              _currentItem.name,
+                                            );
+                                    final epNum =
+                                        _currentItem.episodeNumber ??
+                                        NormalizationUtils.parseEpisodeNumber(
+                                          _currentItem.name,
+                                        );
+                                    return clean.isEmpty
+                                        ? _currentItem.name
+                                        : (epNum != null
+                                            ? '$epNum. $clean'
+                                            : clean);
+                                  }(),
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 15 * scale,
+                                    fontWeight: FontWeight.w500,
+                                    letterSpacing: -0.3,
+                                  ),
+                                  textAlign: TextAlign.center,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              // Cast
+                              ValueListenableBuilder<bool>(
+                                valueListenable: CastService().isCasting,
+                                builder: (context, casting, _) =>
+                                    CupertinoButton(
+                                      padding: const EdgeInsets.all(8),
+                                      minSize: 0,
+                                      onPressed: _showCastSelection,
+                                      child: Icon(
+                                        casting
+                                            ? CupertinoIcons.tv_fill
+                                            : CupertinoIcons.tv,
+                                        color: casting
+                                            ? Colors.redAccent
+                                            : Colors.white,
+                                        size: 22 * scale,
+                                      ),
+                                    ),
+                              ),
+                              // PiP
+                              CupertinoButton(
+                                padding: const EdgeInsets.all(8),
+                                minSize: 0,
+                                onPressed: _togglePiP,
+                                child: Icon(
+                                  Icons.picture_in_picture_alt_rounded,
+                                  color: Colors.white,
+                                  size: 21 * scale,
+                                ),
+                              ),
+                              // Pantalla completa
+                              CupertinoButton(
+                                padding: const EdgeInsets.all(8),
+                                minSize: 0,
+                                onPressed: _toggleOrientation,
+                                child: Icon(
+                                  _isLandscape
+                                      ? Icons.fullscreen_exit_rounded
+                                      : Icons.fullscreen_rounded,
+                                  color: Colors.white,
+                                  size: 24 * scale,
+                                ),
+                              ),
+                            ],
+                          ),
+                          // Indicador de calidad de red
+                          ValueListenableBuilder<NetworkQuality>(
+                            valueListenable: _networkQuality.quality,
+                            builder: (context, q, _) {
+                              if (!_networkQuality.isMobileData.value ||
+                                  q.index < NetworkQuality.fair.index) {
+                                return const SizedBox.shrink();
+                              }
+                              return Padding(
+                                padding: const EdgeInsets.only(top: 2),
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(
+                                      q == NetworkQuality.poor
+                                          ? Icons.signal_cellular_0_bar
+                                          : Icons.signal_cellular_alt_1_bar,
+                                      size: 11 * scale,
+                                      color: q == NetworkQuality.poor
+                                          ? Colors.red
+                                          : Colors.amber,
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      q == NetworkQuality.poor
+                                          ? 'Señal muy débil — modo de emergencia activo'
+                                          : 'Señal débil — modo ahorro activo',
+                                      style: TextStyle(
+                                        color: q == NetworkQuality.poor
+                                            ? Colors.red.shade300
+                                            : Colors.amber.shade300,
+                                        fontSize: 10 * scale,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+                          if (_currentItem.isLive && !_isLandscape)
+                            Padding(
+                              padding: const EdgeInsets.only(left: 8, top: 6),
+                              child: Align(
+                                alignment: Alignment.centerLeft,
+                                child: _buildLiveBadge(),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                  // Barra inferior
+                  Positioned(
+                    bottom: 0,
+                    left: 0,
+                    right: 0,
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(
+                        14 * scale,
+                        0,
+                        14 * scale,
+                        18 * scale,
+                      ),
+                      child: _currentItem.isLive
+                          ? (_isLandscape
+                              ? Padding(
+                                  padding: const EdgeInsets.only(bottom: 8),
+                                  child: Row(
+                                    children: [_buildLiveBadge()],
+                                  ),
+                                )
+                              : const SizedBox.shrink())
+                          : StreamBuilder<Duration>(
+                              stream: _player?.stream.position
+                                  .where((_) => !_isDragging)
+                                  .map(
+                                    (d) => Duration(seconds: d.inSeconds),
+                                  )
+                                  .distinct(),
+                              initialData: _player?.state.position,
+                              builder: (context, posSnap) {
+                                return StreamBuilder<Duration>(
+                                  stream: _player?.stream.duration,
+                                  initialData: _player?.state.duration,
+                                  builder: (context, durSnap) {
+                                    return ValueListenableBuilder<bool>(
+                                      valueListenable:
+                                          CastService().isCasting,
+                                      builder: (context, isCasting, _) {
+                                        return ValueListenableBuilder<
+                                          Duration
+                                        >(
+                                          valueListenable:
+                                              CastService().castPosition,
+                                          builder: (context, castPos, _) {
+                                            return ValueListenableBuilder<
+                                              Duration
+                                            >(
+                                              valueListenable:
+                                                  CastService().castDuration,
+                                              builder: (
+                                                context,
+                                                castDur,
+                                                _,
+                                              ) {
+                                                final position = isCasting
+                                                    ? castPos
+                                                    : (posSnap.data ??
+                                                        Duration.zero);
+                                                final duration = isCasting
+                                                    ? castDur
+                                                    : (durSnap.data ??
+                                                        Duration.zero);
+                                                final maxMs = duration
+                                                    .inMilliseconds
+                                                    .toDouble();
+                                                final curMs = _isDragging
+                                                    ? _dragValue
+                                                    : position
+                                                        .inMilliseconds
+                                                        .toDouble()
+                                                        .clamp(
+                                                          0.0,
+                                                          maxMs > 0
+                                                              ? maxMs
+                                                              : 0.0,
+                                                        );
+
+                                                return GestureDetector(
+                                                  behavior:
+                                                      HitTestBehavior.opaque,
+                                                  onHorizontalDragUpdate:
+                                                      (_) {},
+                                                  child: Column(
+                                                    mainAxisSize:
+                                                        MainAxisSize.min,
+                                                    children: [
+                                                      // Slider iOS
+                                                      SliderTheme(
+                                                        data: SliderThemeData(
+                                                          trackHeight:
+                                                              2.5 * scale,
+                                                          activeTrackColor:
+                                                              Colors.white,
+                                                          inactiveTrackColor:
+                                                              Colors.white
+                                                                  .withValues(
+                                                                    alpha:
+                                                                        0.28,
+                                                                  ),
+                                                          thumbColor:
+                                                              Colors.white,
+                                                          thumbShape:
+                                                              RoundSliderThumbShape(
+                                                                enabledThumbRadius:
+                                                                    6 * scale,
+                                                              ),
+                                                          overlayShape:
+                                                              RoundSliderOverlayShape(
+                                                                overlayRadius:
+                                                                    16 * scale,
+                                                              ),
+                                                        ),
+                                                        child: Slider(
+                                                          min: 0,
+                                                          max: maxMs > 0
+                                                              ? maxMs
+                                                              : 1,
+                                                          value: curMs,
+                                                          onChangeStart: (v) =>
+                                                              setState(() {
+                                                                _isDragging =
+                                                                    true;
+                                                                _dragValue = v;
+                                                              }),
+                                                          onChanged: (v) =>
+                                                              setState(
+                                                                () =>
+                                                                    _dragValue =
+                                                                        v,
+                                                              ),
+                                                          onChangeEnd: (v) {
+                                                            final cs =
+                                                                CastService();
+                                                            if (cs.isCasting
+                                                                .value) {
+                                                              cs.seek(
+                                                                v / 1000.0,
+                                                              );
+                                                            } else {
+                                                              _player?.seek(
+                                                                Duration(
+                                                                  milliseconds:
+                                                                      v.toInt(),
+                                                                ),
+                                                              );
+                                                            }
+                                                            setState(() {
+                                                              _isDragging =
+                                                                  false;
+                                                              _isSeeking = true;
+                                                            });
+                                                            Future.delayed(
+                                                              const Duration(
+                                                                milliseconds:
+                                                                    1000,
+                                                              ),
+                                                              () {
+                                                                if (mounted &&
+                                                                    _isSeeking) {
+                                                                  setState(
+                                                                    () =>
+                                                                        _isSeeking =
+                                                                            false,
+                                                                  );
+                                                                }
+                                                              },
+                                                            );
+                                                          },
+                                                        ),
+                                                      ),
+                                                      // Tiempo + botones
+                                                      Padding(
+                                                        padding: EdgeInsets
+                                                            .symmetric(
+                                                              horizontal:
+                                                                  6 * scale,
+                                                            ),
+                                                        child: Row(
+                                                          children: [
+                                                            Text(
+                                                              WatchProgressService
+                                                                  .formatDuration(
+                                                                Duration(
+                                                                  milliseconds:
+                                                                      curMs
+                                                                          .toInt(),
+                                                                ),
+                                                              ),
+                                                              style: TextStyle(
+                                                                color: Colors
+                                                                    .white,
+                                                                fontSize:
+                                                                    13 * scale,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w400,
+                                                                letterSpacing:
+                                                                    0.1,
+                                                              ),
+                                                            ),
+                                                            const Spacer(),
+                                                            if (_playlist
+                                                                    .length >
+                                                                1) ...[
+                                                              CupertinoButton(
+                                                                padding:
+                                                                    EdgeInsets
+                                                                        .all(
+                                                                          6 *
+                                                                              scale,
+                                                                        ),
+                                                                minSize: 0,
+                                                                onPressed:
+                                                                    _showEpisodeSelection,
+                                                                child: Icon(
+                                                                  CupertinoIcons
+                                                                      .list_bullet,
+                                                                  color: Colors
+                                                                      .white,
+                                                                  size: 20 *
+                                                                      scale,
+                                                                ),
+                                                              ),
+                                                              SizedBox(
+                                                                width:
+                                                                    4 * scale,
+                                                              ),
+                                                            ],
+                                                            CupertinoButton(
+                                                              padding:
+                                                                  EdgeInsets
+                                                                      .all(
+                                                                        6 *
+                                                                            scale,
+                                                                      ),
+                                                              minSize: 0,
+                                                              onPressed:
+                                                                  _showSettingsMenu,
+                                                              child: Icon(
+                                                                CupertinoIcons
+                                                                    .gear,
+                                                                color: Colors
+                                                                    .white,
+                                                                size: 20 *
+                                                                    scale,
+                                                              ),
+                                                            ),
+                                                            SizedBox(
+                                                              width: 6 * scale,
+                                                            ),
+                                                            Text(
+                                                              WatchProgressService
+                                                                  .formatDuration(
+                                                                duration,
+                                                              ),
+                                                              style: TextStyle(
+                                                                color: Colors
+                                                                    .white70,
+                                                                fontSize:
+                                                                    13 * scale,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w400,
+                                                                letterSpacing:
+                                                                    0.1,
+                                                              ),
+                                                            ),
+                                                          ],
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                );
+                                              },
+                                            );
+                                          },
+                                        );
+                                      },
+                                    );
+                                  },
+                                );
+                              },
+                            ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
