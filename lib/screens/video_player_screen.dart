@@ -116,6 +116,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   double _dragValue = 0.0;
   Timer? _hideControlsTimer;
 
+  // ── Panel de diagnóstico en pantalla (toque largo en el título) ──────────
+  bool _showDiagPanel = false;
+  String _activeDecoder = '-';
+  Timer? _diagTimer;
+
   static const platform = MethodChannel('com.juanchosky.bumpcomba/pip');
   bool get _isPiPSupported =>
       !kIsWeb &&
@@ -332,6 +337,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _countdownTimer?.cancel();
     _progressSaveTimer?.cancel();
     _noticeTimer?.cancel();
+    _diagTimer?.cancel();
 
     for (final s in _streamSubscriptions) {
       s.cancel();
@@ -927,6 +933,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                     ? 'mediacodec-copy'
                     : 'mediacodec';
             await mpv.setProperty('hwdec', decoder);
+            _activeDecoder = decoder;
             debugPrint('Decoder seleccionado: $decoder (Retry: $_retryCount)');
           } else if (!kIsWeb &&
               defaultTargetPlatform == TargetPlatform.iOS) {
@@ -942,9 +949,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             // En el reintento caemos a software ('no') como último recurso.
             final decoder = _retryCount > 0 ? 'no' : 'videotoolbox-copy';
             await mpv.setProperty('hwdec', decoder);
+            _activeDecoder = decoder;
             debugPrint('Decoder iOS seleccionado: $decoder (Retry: $_retryCount)');
           } else {
             await mpv.setProperty('hwdec', 'auto-safe');
+            _activeDecoder = 'auto-safe';
           }
 
           // Threading and error detection
@@ -3816,6 +3825,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                 _buildSubtitleOverlay(),
                               _buildVisualNotice(),
 
+                              if (_showDiagPanel) _buildDiagPanel(),
+
                               if (_isFastForwarding)
                                 Positioned(
                                   top: 40,
@@ -4266,7 +4277,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                     mainAxisAlignment: MainAxisAlignment.center,
                                     children: [
                                       Flexible(
-                                        child: Builder(
+                                        child: GestureDetector(
+                                          behavior: HitTestBehavior.opaque,
+                                          onLongPress: _toggleDiagPanel,
+                                          child: Builder(
                                           builder: (context) {
                                             final clean =
                                                 NormalizationUtils.extractEpisodeTitle(
@@ -4294,6 +4308,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                               overflow: TextOverflow.ellipsis,
                                             );
                                           },
+                                          ),
                                         ),
                                       ),
                                     ],
@@ -4731,6 +4746,109 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  // PANEL DE DIAGNÓSTICO (toque largo en el título del reproductor)
+  // ─────────────────────────────────────────────────────────────────────────
+  void _toggleDiagPanel() {
+    setState(() => _showDiagPanel = !_showDiagPanel);
+    _diagTimer?.cancel();
+    if (_showDiagPanel) {
+      // Refresca el panel cada 500ms para que los valores sean en vivo.
+      _diagTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+        if (mounted && _showDiagPanel) {
+          setState(() {});
+        }
+      });
+    }
+  }
+
+  Widget _buildDiagPanel() {
+    final st = _player?.state;
+    final controller = _videoControllerNotifier.value;
+    final rect = controller?.rect.value;
+    final textureOk = rect != null && rect.width > 0 && rect.height > 0;
+    final w = st?.width ?? 0;
+    final h = st?.height ?? 0;
+
+    String line(String k, String v) => '$k: $v';
+
+    final lines = <String>[
+      line('Plataforma', defaultTargetPlatform.name),
+      line('Decoder', _activeDecoder),
+      line('Retry', '$_retryCount'),
+      line('Reproduciendo', (st?.playing ?? false) ? 'sí' : 'no'),
+      line('Buffering', (st?.buffering ?? false) ? 'sí' : 'no'),
+      line('Posición', '${st?.position.inSeconds ?? 0}s'),
+      line('MPV w×h', '$w×$h'),
+      line(
+        'Textura (rect)',
+        textureOk
+            ? 'OK ${rect.width.toInt()}×${rect.height.toInt()}'
+            : 'NO renderiza',
+      ),
+      line('Controller', controller == null ? 'null' : 'activo'),
+      line('Recarga negra', _blackScreenReloadDone ? 'hecha' : 'no'),
+    ];
+
+    return Positioned(
+      top: 60,
+      left: 12,
+      child: SafeArea(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.78),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: textureOk ? Colors.greenAccent : Colors.redAccent,
+              width: 1.5,
+            ),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    '🩺 DIAGNÓSTICO',
+                    style: TextStyle(
+                      color: Colors.amberAccent,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  GestureDetector(
+                    onTap: _toggleDiagPanel,
+                    child: const Icon(
+                      Icons.close,
+                      color: Colors.white70,
+                      size: 16,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              ...lines.map(
+                (t) => Text(
+                  t,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 11.5,
+                    height: 1.35,
+                    fontFamily: 'monospace',
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // CONTROLES iOS — estilo Apple / nativo
   // ─────────────────────────────────────────────────────────────────────────
   Widget _buildControlsIOS() {
@@ -4928,35 +5046,39 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                   size: 20,
                                 ),
                               ),
-                              // Título
+                              // Título (toque largo = panel de diagnóstico)
                               Expanded(
-                                child: Text(
-                                  () {
-                                    final clean =
-                                        NormalizationUtils
-                                            .extractEpisodeTitle(
-                                              _currentItem.name,
-                                            );
-                                    final epNum =
-                                        _currentItem.episodeNumber ??
-                                        NormalizationUtils.parseEpisodeNumber(
-                                          _currentItem.name,
-                                        );
-                                    return clean.isEmpty
-                                        ? _currentItem.name
-                                        : (epNum != null
-                                            ? '$epNum. $clean'
-                                            : clean);
-                                  }(),
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 15 * scale,
-                                    fontWeight: FontWeight.w500,
-                                    letterSpacing: -0.3,
+                                child: GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
+                                  onLongPress: _toggleDiagPanel,
+                                  child: Text(
+                                    () {
+                                      final clean =
+                                          NormalizationUtils
+                                              .extractEpisodeTitle(
+                                                _currentItem.name,
+                                              );
+                                      final epNum =
+                                          _currentItem.episodeNumber ??
+                                          NormalizationUtils.parseEpisodeNumber(
+                                            _currentItem.name,
+                                          );
+                                      return clean.isEmpty
+                                          ? _currentItem.name
+                                          : (epNum != null
+                                              ? '$epNum. $clean'
+                                              : clean);
+                                    }(),
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 15 * scale,
+                                      fontWeight: FontWeight.w500,
+                                      letterSpacing: -0.3,
+                                    ),
+                                    textAlign: TextAlign.center,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
                                   ),
-                                  textAlign: TextAlign.center,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
                                 ),
                               ),
                               // Cast
