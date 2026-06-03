@@ -677,11 +677,34 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
 
     try {
+      // iOS NUNCA reutiliza un player precalentado: media_kit necesita el
+      // VideoController adjunto al abrir el media para inicializar la salida de
+      // video (de lo contrario: audio OK, video negro). En iOS siempre abrimos
+      // un player fresco con la textura ya montada.
+      final bool isIOSPlatform =
+          defaultTargetPlatform == TargetPlatform.iOS;
       final isPrewarmed =
+          !isIOSPlatform &&
           widget.prewarmedPlayer != null &&
           widget.prewarmedPlayer!.platform != null &&
           _retryCount == 0 &&
           !isLocalReload;
+
+      // Si llegó un player precalentado en iOS (no debería, pero por seguridad),
+      // lo liberamos para que no quede consumiendo recursos en segundo plano.
+      if (isIOSPlatform &&
+          widget.prewarmedPlayer != null &&
+          _retryCount == 0 &&
+          !isLocalReload) {
+        try {
+          final pw = widget.prewarmedPlayer!;
+          final mpv = pw.platform as dynamic;
+          mpv?.setProperty('vid', 'no');
+          mpv?.setProperty('vo', 'null');
+          await pw.stop();
+          await pw.dispose();
+        } catch (_) {}
+      }
 
       if (!isPrewarmed) {
         await _cleanupPlayer();
@@ -1125,12 +1148,21 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       }
 
       if (!castService.isCasting.value) {
+        final bool isIOS = defaultTargetPlatform == TargetPlatform.iOS;
         int frameWait = 0;
         // Cuántas iteraciones llevamos con audio reproduciéndose pero SIN video.
         int audioOnlyWaits = 0;
         while (frameWait < 200 && mounted && _player != null) {
           final state = _player!.state;
-          final hasVideo = (state.width ?? 0) > 0 && (state.height ?? 0) > 0;
+          // En iOS, "tener video" significa que la TEXTURA está renderizando
+          // (rect del controller), no solo que MPV conozca las dimensiones.
+          final bool hasVideo;
+          if (isIOS) {
+            final r = _videoControllerNotifier.value?.rect.value;
+            hasVideo = r != null && r.width > 0 && r.height > 0;
+          } else {
+            hasVideo = (state.width ?? 0) > 0 && (state.height ?? 0) > 0;
+          }
           final isPlayingAndAdvanced =
               state.playing && state.position.inMilliseconds > 200;
           final hasBuffer = _isLiveContent || state.buffer.inSeconds >= 2;
@@ -1623,25 +1655,31 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       }
 
       // ── Detección de "audio sin video" (pantalla negra con audio) ─────
-      // Solo VOD (los Live ya tienen su propio chequeo 0x0 más abajo).
-      // Si el audio avanza pero el decodificador de video no produce frames
-      // (width/height = 0), recargamos una vez. En iOS el reload usa
-      // decodificación por software, que resuelve códecs que VideoToolbox
-      // rechaza silenciosamente.
+      // CLAVE iOS: MPV reporta width/height desde los metadatos del stream
+      // aunque VideoToolbox NO produzca frames a la textura. Por eso el chequeo
+      // de width/height==0 NO sirve aquí. La señal real es el `rect` del
+      // VideoController: queda en null hasta que la capa nativa renderiza el
+      // primer frame de verdad a la textura. Si el audio avanza pero el rect
+      // nunca se asigna → pantalla negra. Recargamos (iOS usa software decode).
+      final controller = _videoControllerNotifier.value;
+      final rect = controller?.rect.value;
+      final firstFrameRendered =
+          rect != null && rect.width > 0 && rect.height > 0;
+
       if (!_isLiveContent &&
           !_isVideoLoading &&
           !_isSeeking &&
           !_isDragging &&
           !_blackScreenReloadDone &&
           !CastService().isCasting.value &&
+          controller != null &&
           playerState.playing &&
           currentPos != _lastPosition && // el audio SÍ avanza
-          (playerState.width ?? 0) == 0 &&
-          (playerState.height ?? 0) == 0) {
+          !firstFrameRendered) {
         _noVideoSeconds++;
         if (_noVideoSeconds >= 4) {
           debugPrint(
-            'Pantalla negra detectada (audio sin video ${_noVideoSeconds}s). Recargando con fallback de decodificador...',
+            'Pantalla negra detectada (audio sin textura de video ${_noVideoSeconds}s). Recargando con fallback de decodificador...',
           );
           _noVideoSeconds = 0;
           _blackScreenReloadDone = true;

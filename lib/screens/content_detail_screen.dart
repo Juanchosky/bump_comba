@@ -145,6 +145,14 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   void _initPrewarm() {
     if (!PerformanceService().allowVideoPrewarm) return;
 
+    // iOS: NO precalentar. En iOS, media_kit necesita que el VideoController
+    // (contexto de render) exista al abrir el media para inicializar la salida
+    // de video. Un player precalentado abre el media SIN textura adjunta, así
+    // que al reutilizarlo el video queda en negro aunque el audio funcione.
+    // Además, en iOS no reutilizamos el player precalentado, por lo que sus
+    // datos se descartarían: precalentar sería desperdicio de recursos.
+    if (defaultTargetPlatform == TargetPlatform.iOS) return;
+
     // Solo pre-calentar si no es Live (los live gastan mucho ancho de banda)
     final url = widget.item.url.toLowerCase();
     final isLive =
