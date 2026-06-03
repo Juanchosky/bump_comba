@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 
 class FadeScalePageRoute<T> extends PageRouteBuilder<T> {
@@ -75,21 +76,35 @@ class ContentDetailPageRoute<T> extends PageRouteBuilder<T> {
         barrierColor: Colors.transparent,
         pageBuilder: (context, animation, secondaryAnimation) => page,
         transitionsBuilder: (context, animation, secondaryAnimation, child) {
-          // Sube desde ~12 % abajo con una curva suave, más un fade corto
-          // al principio para que la aparición se sienta fluida.
-          final slide = Tween<Offset>(
-            begin: const Offset(0.0, 0.12),
-            end: Offset.zero,
-          ).animate(
-            CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
-          );
-          final fade = CurvedAnimation(
+          // En iOS: slide-up tipo tarjeta modal + fade rápido.
+          // En Android y otros: fade + scale (igual que FadeScalePageRoute).
+          if (defaultTargetPlatform == TargetPlatform.iOS) {
+            final slide = Tween<Offset>(
+              begin: const Offset(0.0, 0.12),
+              end: Offset.zero,
+            ).animate(
+              CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
+            );
+            final fade = CurvedAnimation(
+              parent: animation,
+              curve: const Interval(0.0, 0.4, curve: Curves.easeOut),
+            );
+            return FadeTransition(
+              opacity: fade,
+              child: SlideTransition(position: slide, child: child),
+            );
+          }
+          // Android / otras plataformas — animación original.
+          final fadeAnimation = CurvedAnimation(
             parent: animation,
-            curve: const Interval(0.0, 0.4, curve: Curves.easeOut),
+            curve: const Interval(0.0, 0.6, curve: Curves.easeOut),
+          );
+          final scaleAnimation = Tween<double>(begin: 0.92, end: 1.0).animate(
+            CurvedAnimation(parent: animation, curve: Curves.easeOutQuart),
           );
           return FadeTransition(
-            opacity: fade,
-            child: SlideTransition(position: slide, child: child),
+            opacity: fadeAnimation,
+            child: ScaleTransition(scale: scaleAnimation, child: child),
           );
         },
         transitionDuration: const Duration(milliseconds: 400),

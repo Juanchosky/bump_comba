@@ -758,6 +758,19 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         await Future.delayed(const Duration(milliseconds: 200));
         if (mounted && !CastService().isCasting.value) {
           _videoControllerNotifier.value = currentController;
+
+          // iOS FIX: AVFoundation registra la textura de video en el SIGUIENTE
+          // frame tras montar el widget Video. Si player.open() se llama antes
+          // de ese frame, el stream arranca sin superficie → audio OK, video negro.
+          // Esperamos exactamente un frame para que Flutter renderice el Video
+          // widget con el controller antes de abrir el media.
+          if (defaultTargetPlatform == TargetPlatform.iOS && mounted) {
+            final frameReady = Completer<void>();
+            WidgetsBinding.instance.addPostFrameCallback(
+              (_) => frameReady.complete(),
+            );
+            await frameReady.future;
+          }
         }
       } else {
         // Durante Cast, nos aseguramos que no haya controlador de video activo en el móvil.
@@ -991,6 +1004,18 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       final shouldPlayLocally =
           !castService.isCasting.value ||
           (_localAudioDuringCast && castService.isCasting.value);
+
+      // iOS FIX (prewarmed): mismo principio — aseguramos que el Video widget
+      // ya tiene la textura lista antes de iniciar la reproducción.
+      if (defaultTargetPlatform == TargetPlatform.iOS &&
+          mounted &&
+          !CastService().isCasting.value) {
+        final frameReady = Completer<void>();
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => frameReady.complete(),
+        );
+        await frameReady.future;
+      }
 
       if (!isPrewarmed) {
         await _player!.open(

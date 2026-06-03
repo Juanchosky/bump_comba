@@ -1277,22 +1277,31 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
         const SizedBox(width: 48), // Placeholder for balance
       ],
       flexibleSpace: FlexibleSpaceBar(
-        background: ClipRRect(
-          // Radio fijo en las esquinas superiores de la carátula.
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(14)),
-          child: FastThumbnail(
-            url: widget.item.logo,
-            title: widget.item.name,
-            width: double.infinity,
-            height: double.infinity,
-            fit: BoxFit.cover,
-            isHD: _isGoodNetwork && !PerformanceService().lowMemoryLimit,
-            onError: () {
-              if (widget.item.logo != null && widget.item.logo!.isNotEmpty) {
-                _m3uService.reportFailedLogo(widget.item.logo!);
-              }
-            },
-          ),
+        background: Builder(
+          builder: (context) {
+            final image = FastThumbnail(
+              url: widget.item.logo,
+              title: widget.item.name,
+              width: double.infinity,
+              height: double.infinity,
+              fit: BoxFit.cover,
+              isHD: _isGoodNetwork && !PerformanceService().lowMemoryLimit,
+              onError: () {
+                if (widget.item.logo != null &&
+                    widget.item.logo!.isNotEmpty) {
+                  _m3uService.reportFailedLogo(widget.item.logo!);
+                }
+              },
+            );
+            // Bordes redondeados superiores solo en iOS.
+            if (defaultTargetPlatform != TargetPlatform.iOS) return image;
+            return ClipRRect(
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(14),
+              ),
+              child: image,
+            );
+          },
         ),
       ),
     );
