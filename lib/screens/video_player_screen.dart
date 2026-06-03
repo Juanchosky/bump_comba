@@ -930,11 +930,17 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             debugPrint('Decoder seleccionado: $decoder (Retry: $_retryCount)');
           } else if (!kIsWeb &&
               defaultTargetPlatform == TargetPlatform.iOS) {
-            // iOS: VideoToolbox (hardware) en el primer intento. Si falló
-            // produciendo pantalla negra con audio, en el reintento caemos a
-            // decodificación por software ('no'), que reproduce códecs/perfiles
-            // que VideoToolbox rechaza silenciosamente (HEVC 10-bit, perfiles raros).
-            final decoder = _retryCount > 0 ? 'no' : 'videotoolbox';
+            // iOS: clave del problema "audio sí, video negro".
+            // 'videotoolbox' (zero-copy) envuelve el CVPixelBuffer decodificado
+            // DIRECTAMENTE como textura Metal. Para ciertos formatos de píxel
+            // (HEVC 10-bit, layouts YUV poco comunes) ese wrapping directo falla
+            // silenciosamente → pantalla negra, mientras el audio (ruta aparte)
+            // sigue sonando. 'videotoolbox-copy' decodifica igual por hardware
+            // pero copia los frames a memoria estándar y los sube como textura
+            // normal → SIEMPRE renderiza. Es el equivalente iOS de
+            // 'mediacodec-copy' en Android.
+            // En el reintento caemos a software ('no') como último recurso.
+            final decoder = _retryCount > 0 ? 'no' : 'videotoolbox-copy';
             await mpv.setProperty('hwdec', decoder);
             debugPrint('Decoder iOS seleccionado: $decoder (Retry: $_retryCount)');
           } else {
