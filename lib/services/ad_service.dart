@@ -39,7 +39,7 @@ class AdService {
   // Cuando es true, se omite la "puerta" de anuncios (rewarded/confirmación) y
   // el contenido se reproduce directamente, sin el modo offline.
   // ⚠️ PONER EN false ANTES DE PUBLICAR para reactivar los anuncios.
-  static const bool kBypassAdGateForTesting = true;
+  static const bool kBypassAdGateForTesting = false;
 
   // ── Ads ───────────────────────────────────────────────────────────────────
   InterstitialAd? _interstitialAd;
