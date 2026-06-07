@@ -128,6 +128,14 @@ class LocalizationService {
       'share_desc': 'Consigue 10 monedas por compartir',
       'thanks_for_rating': '¡Gracias por tu valoración!',
       'thanks_for_sharing': '¡Gracias por compartir!',
+      // Notifications
+      'notifications': 'Notificaciones',
+      'notifications_desc': 'Recordatorios para seguir viendo',
+      'notif_continue_title': 'Sigue viendo 🍿',
+      'notif_continue_body': 'Continúa donde lo dejaste: {title}',
+      'notif_continue_series_body': 'Te quedaste en T{s}:E{e} de {series}',
+      'notif_comeback_title': 'Te echamos de menos 👋',
+      'notif_comeback_body': 'Tienes contenido esperándote',
       // Legal
       'legal': 'LEGAL',
       'privacy_policy': 'Política de Privacidad',
@@ -346,6 +354,14 @@ Si usted es una persona física sujeta al RGPD, puede leer más sobre sus derech
       'share_desc': 'Get 10 coins for sharing',
       'thanks_for_rating': 'Thanks for your rating!',
       'thanks_for_sharing': 'Thanks for sharing!',
+      // Notifications
+      'notifications': 'Notifications',
+      'notifications_desc': 'Reminders to keep watching',
+      'notif_continue_title': 'Keep watching 🍿',
+      'notif_continue_body': 'Pick up where you left off: {title}',
+      'notif_continue_series_body': 'You stopped at S{s}:E{e} of {series}',
+      'notif_comeback_title': 'We miss you 👋',
+      'notif_comeback_body': 'You have content waiting for you',
       // Legal
       'legal': 'LEGAL',
       'privacy_policy': 'Privacy Policy',
@@ -392,6 +408,14 @@ Si usted es una persona física sujeta al RGPD, puede leer más sobre sus derech
       'level_reached': 'Nível alcançado',
       'merges': 'Fusões',
       'coins_won': 'Moedas ganhas',
+      // Notifications
+      'notifications': 'Notificações',
+      'notifications_desc': 'Lembretes para continuar assistindo',
+      'notif_continue_title': 'Continue assistindo 🍿',
+      'notif_continue_body': 'Continue de onde parou: {title}',
+      'notif_continue_series_body': 'Você parou em T{s}:E{e} de {series}',
+      'notif_comeback_title': 'Sentimos sua falta 👋',
+      'notif_comeback_body': 'Há conteúdo esperando por você',
     },
     'fr': {
       'settings': 'PARAMÈTRES',

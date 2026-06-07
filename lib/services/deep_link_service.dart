@@ -33,6 +33,16 @@ class DeepLinkService {
     _linkSubscription?.cancel();
   }
 
+  /// Route a `comba://details?...` payload coming from a tapped local
+  /// notification, reusing the same navigation logic as real deep links.
+  void handleNotificationPayload(BuildContext context, String payload) {
+    if (payload.isEmpty) return;
+    final uri = Uri.tryParse(payload);
+    if (uri != null) {
+      _handleUri(context, uri);
+    }
+  }
+
   void _handleUri(BuildContext context, Uri uri) {
     debugPrint('Incoming deep link: $uri');
 

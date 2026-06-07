@@ -12,6 +12,7 @@ import 'services/m3u_service.dart';
 import 'services/onesignal_service.dart';
 import 'services/performance_service.dart';
 import 'services/premium_service.dart';
+import 'services/smart_notification_service.dart';
 
 import 'utils/colors.dart';
 import 'services/cast_audio_handler.dart';
@@ -143,6 +144,17 @@ void main() {
                 debugPrint('OneSignal init error (no crítico): $e');
               }),
             );
+            // Notificaciones locales inteligentes: tras inicializar, programa
+            // un único recordatorio personalizado según lo último que vio el
+            // usuario. refreshReminders se vuelve a llamar en cada cambio de
+            // ciclo de vida para no acumular notificaciones.
+            unawaited(
+              SmartNotificationService().initialize().then((_) {
+                return SmartNotificationService().refreshReminders();
+              }).catchError((e) {
+                debugPrint('SmartNotifications init error (no crítico): $e');
+              }),
+            );
           });
         });
       }
@@ -156,8 +168,38 @@ void main() {
   );
 }
 
-class BumpCombaApp extends StatelessWidget {
+class BumpCombaApp extends StatefulWidget {
   const BumpCombaApp({super.key});
+
+  @override
+  State<BumpCombaApp> createState() => _BumpCombaAppState();
+}
+
+class _BumpCombaAppState extends State<BumpCombaApp>
+    with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Cuando la app pasa a segundo plano, reprogramamos el recordatorio con el
+    // progreso de visionado más reciente. Como refreshReminders cancela antes
+    // de programar, nunca se acumulan notificaciones y un usuario activo no
+    // recibe ninguna mientras usa la app.
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      unawaited(SmartNotificationService().refreshReminders());
+    }
+  }
 
   @override
   Widget build(BuildContext context) {

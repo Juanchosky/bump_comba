@@ -10,6 +10,7 @@ import '../utils/snack_bar_utils.dart';
 import '../services/social_rewards_service.dart';
 import '../widgets/rate_dialog.dart';
 import '../services/deep_link_service.dart';
+import '../services/smart_notification_service.dart';
 
 class MainMenuScreen extends StatefulWidget {
   const MainMenuScreen({super.key, required this.highScore});
@@ -53,6 +54,15 @@ class _MainMenuScreenState extends State<MainMenuScreen>
 
     // Initialize Deep Link Listener
     DeepLinkService().init(context);
+
+    // If the app was opened by tapping a smart notification, route to the
+    // content the user was reminded about.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final payload = SmartNotificationService().consumePendingPayload();
+      if (payload != null && payload.isNotEmpty && mounted) {
+        DeepLinkService().handleNotificationPayload(context, payload);
+      }
+    });
   }
 
   @override
