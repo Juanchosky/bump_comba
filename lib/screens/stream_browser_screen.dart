@@ -109,7 +109,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   // Dynamic placeholder
 
   // Bottom nav
-  int _bottomNavIndex = 0; // 0=Inicio, 1=Favoritos
+  int _bottomNavIndex =
+      0; // 0=Inicio, 1=Buscar(acción), 2=Categorías, 3=Mi lista
 
   // State
   M3UItem? _heroItem;
@@ -573,7 +574,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
   // Removed internal player methods
 
-  Future<void> _onItemTap(M3UItem item) async {
+  Future<void> _onItemTap(M3UItem item, {String? heroTag}) async {
+    HapticFeedback.selectionClick();
     // Get similar items
     final similarItems = _m3uService.getSimilarItems(item);
 
@@ -583,6 +585,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         page: ContentDetailScreen(
           item: item,
           similarItems: similarItems,
+          heroTag: heroTag,
           onToggleFavorite: (favItem) async {
             await _m3uService.toggleFavorite(favItem);
             if (mounted) setState(() {});
@@ -621,77 +624,74 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         ),
         child: Scaffold(
           backgroundColor: AppColors.background,
-          body: PrimaryScrollController(
-            controller: _homeScrollController,
-            child: SafeArea(
-              child: Stack(
-                children: [
-                  Column(
-                    children: [
-                      _buildAppBar(),
-                      Expanded(
-                        child:
-                            (_isDesktopOrWeb() && !PremiumService().isPremium)
-                                ? _buildDesktopPremiumGate()
-                                : AnimatedSwitcher(
-                                  duration: const Duration(milliseconds: 400),
-                                  switchInCurve: Curves.easeOut,
-                                  switchOutCurve: Curves.easeIn,
-                                  child:
-                                      _isLoading
-                                          ? KeyedSubtree(
-                                            key: const ValueKey('loading'),
-                                            child: _buildLoading(),
-                                          )
-                                          : _hasError
-                                          ? KeyedSubtree(
-                                            key: const ValueKey('error'),
-                                            child: _buildError(),
-                                          )
-                                          : KeyedSubtree(
-                                            key: const ValueKey('content'),
-                                            child: _buildStreamContent(),
-                                          ),
-                                ),
-                      ),
-                    ],
-                  ),
-                  Positioned(
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    child: AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 450),
-                      transitionBuilder: (child, animation) {
-                        final slide = Tween<Offset>(
-                          begin: const Offset(0, -1.0),
-                          end: Offset.zero,
-                        ).animate(
-                          CurvedAnimation(
-                            parent: animation,
-                            curve: Curves.easeOutCubic,
-                          ),
-                        );
-                        return FadeTransition(
-                          opacity: animation,
-                          child: SlideTransition(position: slide, child: child),
-                        );
-                      },
+          body: SafeArea(
+            child: Stack(
+              children: [
+                Column(
+                  children: [
+                    _buildAppBar(),
+                    Expanded(
                       child:
-                          (_isOffline && !_bannerDismissed)
-                              ? NetflixOfflineBanner(
-                                key: const ValueKey('global_banner_visible'),
-                                onDismiss: () {
-                                  setState(() => _bannerDismissed = true);
-                                },
-                              )
-                              : const SizedBox.shrink(
-                                key: ValueKey('global_banner_hidden'),
+                          (_isDesktopOrWeb() && !PremiumService().isPremium)
+                              ? _buildDesktopPremiumGate()
+                              : AnimatedSwitcher(
+                                duration: const Duration(milliseconds: 400),
+                                switchInCurve: Curves.easeOut,
+                                switchOutCurve: Curves.easeIn,
+                                child:
+                                    _isLoading
+                                        ? KeyedSubtree(
+                                          key: const ValueKey('loading'),
+                                          child: _buildLoading(),
+                                        )
+                                        : _hasError
+                                        ? KeyedSubtree(
+                                          key: const ValueKey('error'),
+                                          child: _buildError(),
+                                        )
+                                        : KeyedSubtree(
+                                          key: const ValueKey('content'),
+                                          child: _buildStreamContent(),
+                                        ),
                               ),
                     ),
+                  ],
+                ),
+                Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 450),
+                    transitionBuilder: (child, animation) {
+                      final slide = Tween<Offset>(
+                        begin: const Offset(0, -1.0),
+                        end: Offset.zero,
+                      ).animate(
+                        CurvedAnimation(
+                          parent: animation,
+                          curve: Curves.easeOutCubic,
+                        ),
+                      );
+                      return FadeTransition(
+                        opacity: animation,
+                        child: SlideTransition(position: slide, child: child),
+                      );
+                    },
+                    child:
+                        (_isOffline && !_bannerDismissed)
+                            ? NetflixOfflineBanner(
+                              key: const ValueKey('global_banner_visible'),
+                              onDismiss: () {
+                                setState(() => _bannerDismissed = true);
+                              },
+                            )
+                            : const SizedBox.shrink(
+                              key: ValueKey('global_banner_hidden'),
+                            ),
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
           bottomNavigationBar: _isLoading ? null : _buildBottomNav(),
@@ -1352,7 +1352,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                 width: 3,
                 height: 18,
                 decoration: BoxDecoration(
-                  color: Colors.red,
+                  color: AppColors.accent,
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
@@ -1385,6 +1385,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                   width: 120,
                   child: GestureDetector(
                     onTap: () {
+                      HapticFeedback.selectionClick();
                       if (item.isSeries) {
                         Navigator.push(
                           context,
@@ -1441,11 +1442,18 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                                 bottom: 0,
                                 left: 0,
                                 right: 0,
-                                child: LinearProgressIndicator(
-                                  value: progress.progressPercentage / 100,
-                                  backgroundColor: Colors.black45,
-                                  color: Colors.red,
-                                  minHeight: 3,
+                                child: ClipRRect(
+                                  borderRadius: const BorderRadius.vertical(
+                                    bottom: Radius.circular(8),
+                                  ),
+                                  child: LinearProgressIndicator(
+                                    value: progress.progressPercentage / 100,
+                                    backgroundColor: Colors.black.withValues(
+                                      alpha: 0.45,
+                                    ),
+                                    color: AppColors.accent,
+                                    minHeight: 4,
+                                  ),
                                 ),
                               ),
                             ],
@@ -1480,7 +1488,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       listenable: Listenable.merge([PerformanceService(), _m3uService]),
       builder: (context, _) {
         if (_bottomNavIndex == 1) {
-          // My List (Favorites) — sin cambios
+          // My List (Favorites)
           final favorites =
               _m3uService.getFavorites().where((i) => !i.isLive).toList();
           return Column(
@@ -1735,8 +1743,12 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             valueListenable: _watchProgressVersion,
             builder: (context, version, _) {
               return FutureBuilder<List<WatchProgress>>(
-                // El "key" fuerza al FutureBuilder a re-ejecutar el future cuando version cambia
-                key: ValueKey(version),
+                // NOTE: No key here on purpose. FutureBuilder re-executes whenever
+                // the `future` object changes identity — and each call to getHistory()
+                // returns a new Future — so the key is redundant. Using key: ValueKey(version)
+                // caused the FutureBuilder's element tree to be replaced on every version
+                // bump, which unmounted and remounted the inner ListView, briefly attaching
+                // _homeScrollController to two scroll positions → assertion crash.
                 future: WatchProgressService().getHistory(),
                 builder: (context, snapshot) {
                   final history = snapshot.data ?? [];
@@ -1856,7 +1868,11 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                       physics: const AlwaysScrollableScrollPhysics(),
                       padding: const EdgeInsets.only(bottom: 20),
                       itemCount: homeSections.length,
-                      itemBuilder: (context, index) => homeSections[index],
+                      itemBuilder:
+                          (context, index) => _RevealOnMount(
+                            // Header (0) appears instantly; rows below cascade in.
+                            child: homeSections[index],
+                          ),
                     ),
                   );
                 },
@@ -2417,6 +2433,35 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     );
   }
 
+  /// Static helper: silences mpv, stops playback, waits for the native thread
+  /// to drain, then disposes. Because it is static and receives only the raw
+  /// [Player] value it does NOT hold a reference to the widget State, so it
+  /// can safely outlive `dispose()` without causing a use-after-free in the
+  /// Dart → native FFI callback bridge.
+  static Future<void> _drainAndDisposePlayer(Player player) async {
+    // Step A: Tell mpv to suppress all further log/event output.
+    try {
+      final mpv = player.platform as dynamic;
+      mpv?.setProperty('msg-level', 'all=no');
+      mpv?.setProperty('log-level', 'no');
+      mpv?.setProperty('vid', 'no');
+      mpv?.setProperty('vo', 'null');
+    } catch (_) {}
+
+    // Step B: Stop decoding synchronously (best-effort).
+    try {
+      await player.stop();
+    } catch (_) {}
+
+    // Step C: Extra window for Motorola/Android 15 slow Surface release.
+    await Future.delayed(const Duration(milliseconds: 900));
+
+    // Step D: Dispose the player now that the native queue has drained.
+    try {
+      player.dispose();
+    } catch (_) {}
+  }
+
   Future<void> _disposeLivePlayer() async {
     // -- CRITICAL DISPOSAL SEQUENCE FOR MOTOROLA/ANDROID 15 --
     // Set guard FIRST so _playLiveChannel won't create a new player
@@ -2434,7 +2479,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
     _liveHealthMonitorTimer?.cancel();
     _liveHealthMonitorTimer = null;
-    // _stallTimer removed
     _recoveryTimer?.cancel();
     _qualityRestoreTimer?.cancel();
     _qualityRestoreTimer = null;
@@ -2446,25 +2490,15 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     }
     _liveStreamSubscriptions.clear();
 
+    // 2. Capture the player reference before nulling our field.
     final pToStop = _livePlayer;
 
-    // 2. Silence the native MPV engine and kill video output.
-    try {
-      final mpv = pToStop?.platform as dynamic;
-      mpv?.setProperty('msg-level', 'all=no');
-      mpv?.setProperty('log-level', 'no');
-      mpv?.setProperty('vid', 'no');
-      mpv?.setProperty('vo', 'null');
-    } catch (_) {}
-
-    // 3. Stop decoding.
-    pToStop?.stop();
-
-    // 4. Unmount the Flutter video surface.
+    // 3. Unmount the Flutter video surface.
     _liveVideoControllerNotifier.value = null;
     _liveVideoController = null;
 
-    // 5. Null our Dart reference immediately.
+    // 4. Null our Dart reference immediately so the GC won't keep a second
+    //    path alive while the static helper drains the native queue.
     _livePlayer = null;
     _currentLiveChannel = null;
     _isLiveLoading = false;
@@ -2474,11 +2508,10 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     _liveSpeedNotifier.value = '0 B/s';
     WakelockPlus.disable();
 
+    // 5. Hand off to the static helper — this runs detached from the widget
+    //    so it is safe even when called from dispose() (which is void/sync).
     if (pToStop != null) {
-      // 6. Give the native thread 800ms to finish draining before disposal.
-      // This is the extra safety window for Motorola's slow Surface release.
-      await Future.delayed(const Duration(milliseconds: 800));
-      pToStop.dispose();
+      unawaited(_drainAndDisposePlayer(pToStop));
     }
 
     _isDisposingLivePlayer = false;
@@ -3355,7 +3388,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     bool isSelected = _selectedTab == title;
     return GestureDetector(
       onTap: () {
-        // No live player disposal needed anymore
+        if (_selectedTab == title) return;
+        HapticFeedback.selectionClick();
         setState(() {
           _selectedTab = title;
         });
@@ -3367,7 +3401,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           border:
               isSelected
                   ? const Border(
-                    bottom: BorderSide(color: Colors.red, width: 2),
+                    bottom: BorderSide(color: AppColors.accent, width: 2),
                   )
                   : null,
         ),
@@ -3478,7 +3512,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       child: Container(
         padding: const EdgeInsets.all(24),
         decoration: BoxDecoration(
-          color: const Color(0xFF1a1a1a),
+          color: AppColors.surface,
           borderRadius: BorderRadius.circular(24),
           border: Border.all(color: Colors.white10),
           boxShadow:
@@ -3769,7 +3803,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                     child: Container(
                       height: 43,
                       decoration: BoxDecoration(
-                        color: const Color(0xFF2B2B2B),
+                        color: AppColors.surfaceVariant,
                         borderRadius: BorderRadius.circular(24),
                       ),
                       child: Row(
@@ -3955,6 +3989,57 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     );
   }
 
+  /// Full-screen grid of category cards, shown by the "Categorías" tab.
+  Widget _buildCategoriesView(List<String> categories) {
+    if (categories.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.grid_view_rounded, size: 56, color: Colors.grey[800]),
+            const SizedBox(height: 10),
+            const Text(
+              'No hay categorías disponibles',
+              style: TextStyle(color: AppColors.textSecondary, fontSize: 16),
+            ),
+          ],
+        ),
+      );
+    }
+    final screenWidth = MediaQuery.of(context).size.width;
+    final crossAxisCount = (screenWidth / 200).floor().clamp(2, 6);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.fromLTRB(16, 12, 16, 8),
+          child: Text(
+            'Categorías',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+        Expanded(
+          child: GridView.builder(
+            padding: const EdgeInsets.all(16),
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: crossAxisCount,
+              childAspectRatio: 1.6,
+              crossAxisSpacing: 12,
+              mainAxisSpacing: 12,
+            ),
+            itemCount: categories.length,
+            itemBuilder:
+                (context, index) => _buildCategoryCard(categories[index]),
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildCategoryCard(String category) {
     // Generate a semi-random color based on name
     final hue = (category.hashCode.abs() % 360).toDouble();
@@ -4071,10 +4156,17 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   }
 
   Widget _buildHeroBanner(M3UItem item) {
+    final heroTag = 'hero_${item.url}';
+    // Responsive height: scales with the screen instead of a fixed 500 so it
+    // never dominates small phones nor looks lost on tablets.
+    final heroHeight = (MediaQuery.of(context).size.height * 0.6).clamp(
+      380.0,
+      560.0,
+    );
     return GestureDetector(
-      onTap: () => _onItemTap(item),
+      onTap: () => _onItemTap(item, heroTag: heroTag),
       child: Container(
-        height: 500,
+        height: heroHeight,
         margin: const EdgeInsets.symmetric(horizontal: 24, vertical: 22),
         child: Stack(
           clipBehavior: Clip.none,
@@ -4127,22 +4219,45 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    // Background Image (Poster)
-                    FastThumbnail(
-                      url: item.logo,
-                      title: item.name,
-                      width: double.infinity,
-                      height: double.infinity,
-                      fit: BoxFit.cover,
-                      cacheWidth: null, // resolución completa para el hero
-                      isHD: true,
-                      isSeries: item.isSeries,
-                      useTMDBFallback: !item.isLive,
-                      onError: () {
-                        if (item.logo != null && item.logo!.isNotEmpty) {
-                          _m3uService.reportFailedLogo(item.logo!);
-                        }
+                    // Background Image (Poster) — parallax + shared-element Hero.
+                    AnimatedBuilder(
+                      animation: _homeScrollController,
+                      builder: (context, child) {
+                        final offset =
+                            _homeScrollController.hasClients
+                                ? _homeScrollController.offset
+                                : 0.0;
+                        final dy = (offset * 0.12).clamp(-26.0, 26.0);
+                        return Transform(
+                          alignment: Alignment.center,
+                          // Slight overscale prevents edge gaps as the image
+                          // shifts during the parallax translation.
+                          transform:
+                              Matrix4.identity()
+                                ..translate(0.0, dy)
+                                ..scale(1.1, 1.1),
+                          child: child,
+                        );
                       },
+                      child: _heroPoster(
+                        heroTag,
+                        FastThumbnail(
+                          url: item.logo,
+                          title: item.name,
+                          width: double.infinity,
+                          height: double.infinity,
+                          fit: BoxFit.cover,
+                          cacheWidth: null, // resolución completa para el hero
+                          isHD: true,
+                          isSeries: item.isSeries,
+                          useTMDBFallback: !item.isLive,
+                          onError: () {
+                            if (item.logo != null && item.logo!.isNotEmpty) {
+                              _m3uService.reportFailedLogo(item.logo!);
+                            }
+                          },
+                        ),
+                      ),
                     ),
 
                     // Gradient Overlay (Bottom only for text legibility)
@@ -4490,7 +4605,10 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                     addAutomaticKeepAlives: false,
                     addRepaintBoundaries: true,
                     itemBuilder: (context, index) {
-                      return _buildHorizontalCard(filteredItems[index]);
+                      return _buildHorizontalCard(
+                        filteredItems[index],
+                        heroPrefix: title,
+                      );
                     },
                   ),
             ),
@@ -4591,9 +4709,11 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   }
 
   Widget _buildTop10Card(M3UItem item, int rank) {
+    final heroTag = 'top10_${item.url}';
     return GestureDetector(
-      onTap: () => _onItemTap(item),
+      onTap: () => _onItemTap(item, heroTag: heroTag),
       onLongPress: () async {
+        HapticFeedback.mediumImpact();
         await _m3uService.toggleFavorite(item);
         setState(() {});
         if (!mounted) return;
@@ -4637,27 +4757,30 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Expanded(
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          FastThumbnail(
-                            url: item.logo,
-                            title: item.name,
-                            width: double.infinity,
-                            height: double.infinity,
-                            fit: BoxFit.cover,
-                            cacheWidth: 300,
-                            isSeries: item.isSeries,
-                            useTMDBFallback: !item.isLive,
-                            onError: () {
-                              if (item.logo != null) {
-                                _m3uService.reportFailedLogo(item.logo!);
-                              }
-                            },
-                          ),
-                        ],
+                    child: _heroPoster(
+                      heroTag,
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            FastThumbnail(
+                              url: item.logo,
+                              title: item.name,
+                              width: double.infinity,
+                              height: double.infinity,
+                              fit: BoxFit.cover,
+                              cacheWidth: 300,
+                              isSeries: item.isSeries,
+                              useTMDBFallback: !item.isLive,
+                              onError: () {
+                                if (item.logo != null) {
+                                  _m3uService.reportFailedLogo(item.logo!);
+                                }
+                              },
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
@@ -4681,10 +4804,18 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     );
   }
 
-  Widget _buildHorizontalCard(M3UItem item) {
+  /// Wraps a poster in a Hero. The tag embeds the section prefix so the same
+  /// title appearing in several rows never produces a duplicate tag on screen.
+  Widget _heroPoster(String tag, Widget child) {
+    return Hero(tag: tag, child: child);
+  }
+
+  Widget _buildHorizontalCard(M3UItem item, {String heroPrefix = 'row'}) {
+    final heroTag = '${heroPrefix}_${item.url}';
     return GestureDetector(
-      onTap: () => _onItemTap(item),
+      onTap: () => _onItemTap(item, heroTag: heroTag),
       onLongPress: () async {
+        HapticFeedback.mediumImpact();
         await _m3uService.toggleFavorite(item);
         setState(() {});
         if (!mounted) return;
@@ -4706,7 +4837,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                 children: [
                   Container(
                     decoration: BoxDecoration(
-                      color: const Color(0xFF1a1a1a),
+                      color: AppColors.surface,
                       borderRadius: BorderRadius.circular(8),
                       boxShadow:
                           PerformanceService().shouldShowComplexShadows
@@ -4721,24 +4852,27 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                               ]
                               : null,
                     ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: FastThumbnail(
-                        url: item.logo,
-                        title: item.name,
-                        width: double.infinity,
-                        height: double.infinity,
-                        fit: BoxFit.cover,
+                    child: _heroPoster(
+                      heroTag,
+                      ClipRRect(
                         borderRadius: BorderRadius.circular(8),
-                        isSeries: item.isSeries,
-                        useTMDBFallback: !item.isLive,
-                        cacheWidth:
-                            PerformanceService().lowMemoryLimit ? 150 : 300,
-                        onError: () {
-                          if (item.logo != null && item.logo!.isNotEmpty) {
-                            _m3uService.reportFailedLogo(item.logo!);
-                          }
-                        },
+                        child: FastThumbnail(
+                          url: item.logo,
+                          title: item.name,
+                          width: double.infinity,
+                          height: double.infinity,
+                          fit: BoxFit.cover,
+                          borderRadius: BorderRadius.circular(8),
+                          isSeries: item.isSeries,
+                          useTMDBFallback: !item.isLive,
+                          cacheWidth:
+                              PerformanceService().lowMemoryLimit ? 150 : 300,
+                          onError: () {
+                            if (item.logo != null && item.logo!.isNotEmpty) {
+                              _m3uService.reportFailedLogo(item.logo!);
+                            }
+                          },
+                        ),
                       ),
                     ),
                   ),
@@ -4748,8 +4882,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             const SizedBox(height: 6),
             Text(
               item.name.replaceAll(RegExp(r'\s*\(\d{4}\)'), ''),
-              style: TextStyle(
-                color: Colors.white.withValues(alpha: 0.7),
+              style: const TextStyle(
+                color: AppColors.textSecondary,
                 fontSize: 12,
                 fontWeight: FontWeight.w500,
               ),
@@ -4765,10 +4899,12 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   // _buildSearchGrid removed
 
   Widget _buildGridCard(M3UItem item, {bool showTitle = true}) {
+    final heroTag = 'grid_${item.url}';
     return RepaintBoundary(
       child: GestureDetector(
-        onTap: () => _onItemTap(item),
+        onTap: () => _onItemTap(item, heroTag: heroTag),
         onLongPress: () async {
+          HapticFeedback.mediumImpact();
           await _m3uService.toggleFavorite(item);
           setState(() {});
           if (!mounted) return;
@@ -4785,7 +4921,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                 children: [
                   Container(
                     decoration: BoxDecoration(
-                      color: const Color(0xFF1a1a1a),
+                      color: AppColors.surface,
                       borderRadius: BorderRadius.circular(10),
                       boxShadow:
                           PerformanceService().shouldShowComplexShadows
@@ -4800,24 +4936,27 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                               ]
                               : null,
                     ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(10),
-                      child: FastThumbnail(
-                        url: item.logo,
-                        title: item.name,
-                        width: double.infinity,
-                        height: double.infinity,
-                        fit: BoxFit.cover,
+                    child: _heroPoster(
+                      heroTag,
+                      ClipRRect(
                         borderRadius: BorderRadius.circular(10),
-                        isSeries: item.isSeries,
-                        useTMDBFallback: !item.isLive,
-                        cacheWidth:
-                            PerformanceService().lowMemoryLimit ? 150 : 300,
-                        onError: () {
-                          if (item.logo != null) {
-                            _m3uService.reportFailedLogo(item.logo!);
-                          }
-                        },
+                        child: FastThumbnail(
+                          url: item.logo,
+                          title: item.name,
+                          width: double.infinity,
+                          height: double.infinity,
+                          fit: BoxFit.cover,
+                          borderRadius: BorderRadius.circular(10),
+                          isSeries: item.isSeries,
+                          useTMDBFallback: !item.isLive,
+                          cacheWidth:
+                              PerformanceService().lowMemoryLimit ? 150 : 300,
+                          onError: () {
+                            if (item.logo != null) {
+                              _m3uService.reportFailedLogo(item.logo!);
+                            }
+                          },
+                        ),
                       ),
                     ),
                   ),
@@ -4851,8 +4990,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
               const SizedBox(height: 6),
               Text(
                 item.name.replaceAll(RegExp(r'\s*\(\d{4}\)'), ''),
-                style: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.7),
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
                   fontSize: 12,
                   fontWeight: FontWeight.w500,
                 ),
@@ -4864,6 +5003,30 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         ),
       ),
     );
+  }
+
+  /// Opens the full search experience (also reachable from the header field).
+  void _openSearch() {
+    if (_isNavigating) return;
+    setState(() => _isNavigating = true);
+    Navigator.of(context)
+        .push(
+          PageRouteBuilder(
+            pageBuilder: (context, animation, secondaryAnimation) {
+              return FadeTransition(
+                opacity: animation,
+                child: _SearchPage(
+                  m3uService: _m3uService,
+                  itemBuilder: (ctx, item) => _buildGridCard(item),
+                ),
+              );
+            },
+            transitionDuration: const Duration(milliseconds: 300),
+          ),
+        )
+        .then((_) {
+          if (mounted) setState(() => _isNavigating = false);
+        });
   }
 
   Widget _buildBottomNav() {
@@ -4994,6 +5157,33 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       'US': 'Estados Unidos',
     };
     return countries[code.toUpperCase()] ?? '';
+  }
+}
+
+/// One-shot fade + slide used to cascade home rows into view. Because it only
+/// animates when its element is first created, rows reveal as they scroll in
+/// and never re-animate on rebuilds (e.g. setState / watch-progress refresh).
+class _RevealOnMount extends StatelessWidget {
+  final Widget child;
+  const _RevealOnMount({required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0.0, end: 1.0),
+      duration: const Duration(milliseconds: 360),
+      curve: Curves.easeOut,
+      builder: (context, t, child) {
+        return Opacity(
+          opacity: t,
+          child: Transform.translate(
+            offset: Offset(0, (1 - t) * 14),
+            child: child,
+          ),
+        );
+      },
+      child: child,
+    );
   }
 }
 
@@ -5128,7 +5318,7 @@ class _ShimmerBoxState extends State<_ShimmerBox>
         width: widget.width,
         height: widget.height,
         decoration: BoxDecoration(
-          color: const Color(0xFF1a1a1a),
+          color: AppColors.surface,
           borderRadius: widget.borderRadius,
         ),
       );
@@ -6027,8 +6217,8 @@ class _SearchPageState extends State<_SearchPage> {
 
   Widget _buildSearchShimmer() {
     return Shimmer.fromColors(
-      baseColor: const Color(0xFF1a1a1a),
-      highlightColor: const Color(0xFF2B2B2B),
+      baseColor: AppColors.surface,
+      highlightColor: AppColors.surfaceVariant,
       child: ListView.builder(
         padding: const EdgeInsets.symmetric(vertical: 8),
         itemCount: 15,
@@ -6084,7 +6274,7 @@ class _SearchPageState extends State<_SearchPage> {
                     child: Container(
                       height: 43,
                       decoration: BoxDecoration(
-                        color: const Color(0xFF2B2B2B),
+                        color: AppColors.surfaceVariant,
                         borderRadius: BorderRadius.circular(24),
                       ),
                       child: Row(

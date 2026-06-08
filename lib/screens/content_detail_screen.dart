@@ -29,11 +29,16 @@ class ContentDetailScreen extends StatefulWidget {
   final List<M3UItem> similarItems;
   final Function(M3UItem) onToggleFavorite;
 
+  /// Shared-element tag matching the poster of the card that opened this
+  /// screen, enabling a Hero flight from grid → detail. Null = no animation.
+  final String? heroTag;
+
   const ContentDetailScreen({
     super.key,
     required this.item,
     this.similarItems = const [],
     required this.onToggleFavorite,
+    this.heroTag,
   });
 
   @override
@@ -1302,13 +1307,23 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
               },
             );
             // Bordes redondeados superiores solo en iOS.
-            if (defaultTargetPlatform != TargetPlatform.iOS) return image;
-            return ClipRRect(
-              borderRadius: const BorderRadius.vertical(
-                top: Radius.circular(14),
-              ),
-              child: image,
-            );
+            Widget content =
+                defaultTargetPlatform != TargetPlatform.iOS
+                    ? image
+                    : ClipRRect(
+                      borderRadius: const BorderRadius.vertical(
+                        top: Radius.circular(14),
+                      ),
+                      child: image,
+                    );
+            // Shared-element flight from the originating card's poster.
+            if (widget.heroTag != null) {
+              content = Hero(
+                tag: widget.heroTag!,
+                child: content,
+              );
+            }
+            return content;
           },
         ),
       ),
