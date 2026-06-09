@@ -3989,57 +3989,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     );
   }
 
-  /// Full-screen grid of category cards, shown by the "Categorías" tab.
-  Widget _buildCategoriesView(List<String> categories) {
-    if (categories.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.grid_view_rounded, size: 56, color: Colors.grey[800]),
-            const SizedBox(height: 10),
-            const Text(
-              'No hay categorías disponibles',
-              style: TextStyle(color: AppColors.textSecondary, fontSize: 16),
-            ),
-          ],
-        ),
-      );
-    }
-    final screenWidth = MediaQuery.of(context).size.width;
-    final crossAxisCount = (screenWidth / 200).floor().clamp(2, 6);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Padding(
-          padding: EdgeInsets.fromLTRB(16, 12, 16, 8),
-          child: Text(
-            'Categorías',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 22,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        ),
-        Expanded(
-          child: GridView.builder(
-            padding: const EdgeInsets.all(16),
-            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: crossAxisCount,
-              childAspectRatio: 1.6,
-              crossAxisSpacing: 12,
-              mainAxisSpacing: 12,
-            ),
-            itemCount: categories.length,
-            itemBuilder:
-                (context, index) => _buildCategoryCard(categories[index]),
-          ),
-        ),
-      ],
-    );
-  }
-
   Widget _buildCategoryCard(String category) {
     // Generate a semi-random color based on name
     final hue = (category.hashCode.abs() % 360).toDouble();
@@ -5003,30 +4952,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         ),
       ),
     );
-  }
-
-  /// Opens the full search experience (also reachable from the header field).
-  void _openSearch() {
-    if (_isNavigating) return;
-    setState(() => _isNavigating = true);
-    Navigator.of(context)
-        .push(
-          PageRouteBuilder(
-            pageBuilder: (context, animation, secondaryAnimation) {
-              return FadeTransition(
-                opacity: animation,
-                child: _SearchPage(
-                  m3uService: _m3uService,
-                  itemBuilder: (ctx, item) => _buildGridCard(item),
-                ),
-              );
-            },
-            transitionDuration: const Duration(milliseconds: 300),
-          ),
-        )
-        .then((_) {
-          if (mounted) setState(() => _isNavigating = false);
-        });
   }
 
   Widget _buildBottomNav() {

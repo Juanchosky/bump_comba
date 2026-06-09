@@ -11,7 +11,6 @@ import 'package:media_kit/media_kit.dart';
 
 import '../utils/transitions.dart';
 import '../utils/snack_bar_utils.dart';
-import '../services/ad_service.dart';
 import 'package:share_plus/share_plus.dart';
 import '../services/tmdb_service.dart';
 import '../services/performance_service.dart';
@@ -118,7 +117,6 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
     _snapBackController = AnimationController(vsync: this);
 
-    AdService().recordDetailsVisit();
     _initPrewarm();
 
     final currentQuality = NetworkQualityService().quality.value;
