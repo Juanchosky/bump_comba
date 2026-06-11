@@ -21,6 +21,7 @@ import '../utils/colors.dart';
 import '../services/dynamic_scraper_service.dart';
 import '../services/cast_service.dart';
 import '../services/network_quality_service.dart';
+import '../services/ad_service.dart';
 import 'stream_browser_screen.dart';
 
 class ContentDetailScreen extends StatefulWidget {
@@ -126,8 +127,26 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
     NetworkQualityService().quality.addListener(_onNetworkQualityChanged);
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        _loadPageData();
+      if (!mounted) return;
+      _loadPageData();
+
+      // Trigger the ad visit counter only AFTER the entry animation finishes.
+      // Calling it immediately would interrupt the Hero flight / page transition.
+      final routeAnimation = ModalRoute.of(context)?.animation;
+      if (routeAnimation == null ||
+          routeAnimation.status == AnimationStatus.completed) {
+        // No animation (e.g. pushed without transition) — fire immediately.
+        AdService().recordDetailsVisit();
+      } else {
+        // Listen for completion and self-remove the listener after one call.
+        late final void Function(AnimationStatus) listener;
+        listener = (AnimationStatus status) {
+          if (status == AnimationStatus.completed) {
+            routeAnimation.removeStatusListener(listener);
+            AdService().recordDetailsVisit();
+          }
+        };
+        routeAnimation.addStatusListener(listener);
       }
     });
   }
@@ -1171,18 +1190,11 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                     ],
                   ),
                   if (_isPageLoading)
-                    Positioned.fill(
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () {},
-                        child: Container(
-                          color: Colors.black.withValues(alpha: 0.65),
-                          child: const Center(
-                            child: CupertinoActivityIndicator(
-                              radius: 14,
-                              color: Colors.white,
-                            ),
-                          ),
+                    const Positioned.fill(
+                      child: Center(
+                        child: CupertinoActivityIndicator(
+                          radius: 14,
+                          color: Colors.white,
                         ),
                       ),
                     ),
