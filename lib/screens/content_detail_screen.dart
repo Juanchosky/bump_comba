@@ -1,6 +1,7 @@
 import '../services/m3u_service.dart';
 import '../services/watch_progress_service.dart';
-import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/gestures.dart' show VelocityTracker, PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
@@ -89,8 +90,9 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   late AnimationController _snapBackController;
   Animation<double>? _snapAnim;
   // VelocityTracker para calcular la velocidad del gesto de cierre
-  final VelocityTracker _velocityTracker =
-      VelocityTracker.withKind(PointerDeviceKind.touch);
+  final VelocityTracker _velocityTracker = VelocityTracker.withKind(
+    PointerDeviceKind.touch,
+  );
 
   List<M3UItem> get _allEpisodes =>
       _dynamicEpisodes.isNotEmpty ? _dynamicEpisodes : widget.item.episodes;
@@ -122,7 +124,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
     final currentQuality = NetworkQualityService().quality.value;
     _isOffline = currentQuality == NetworkQuality.offline;
-    _isGoodNetwork = currentQuality == NetworkQuality.excellent ||
+    _isGoodNetwork =
+        currentQuality == NetworkQuality.excellent ||
         currentQuality == NetworkQuality.good;
     NetworkQualityService().quality.addListener(_onNetworkQualityChanged);
 
@@ -313,10 +316,15 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
       loadingTasks.add(_loadEpisodes());
     }
 
-    // 3. Prewarm and await the main hero image
+    // 3. Prewarm and await the main hero image at full HD resolution so the
+    //    cover art looks sharp in the SliverAppBar on good/excellent networks.
     if (widget.item.logo != null && widget.item.logo!.isNotEmpty) {
       loadingTasks.add(
-        FastImageService().prewarmAndAwait([widget.item.logo!], context),
+        FastImageService().prewarmAndAwait(
+          [widget.item.logo!],
+          context,
+          isHD: _isGoodNetwork && !PerformanceService().lowMemoryLimit,
+        ),
       );
     }
 
@@ -344,7 +352,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
         episodesList.take(8).map((i) => i.logo).whereType<String>(),
       );
     }
-    if (backgroundUrls.isNotEmpty) {
+    if (backgroundUrls.isNotEmpty && mounted) {
       FastImageService().prewarm(backgroundUrls.toSet().toList(), context);
     }
 
@@ -1044,7 +1052,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
       // Solo activar el dismiss cuando el scroll está en el tope y se arrastra
       // hacia abajo. Listener dispara siempre, sin importar el gesture arena.
       if (dy > 0) {
-        final atTop = !_detailScrollController.hasClients ||
+        final atTop =
+            !_detailScrollController.hasClients ||
             _detailScrollController.offset <= 0.0;
         if (atTop) {
           setState(() {
@@ -1126,9 +1135,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
       builder: (context, _) {
         // cornerRadius se calcula aquí dentro para que el ListenableBuilder
         // lo recalcule también cuando el padre hace setState por _dragOffset.
-        final cornerRadius = isIOS
-            ? (_dragOffset / 120.0).clamp(0.0, 1.0) * 22.0
-            : 0.0;
+        final cornerRadius =
+            isIOS ? (_dragOffset / 120.0).clamp(0.0, 1.0) * 22.0 : 0.0;
 
         return Scaffold(
           // Transparente: el fondo oscuro vive dentro del SafeArea junto al
@@ -1148,11 +1156,12 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                   ),
                   CustomScrollView(
                     controller: _detailScrollController,
-                    physics: isIOS
-                        ? (_draggingToDismiss || _dismissAnimRunning
-                            ? const NeverScrollableScrollPhysics()
-                            : const ClampingScrollPhysics())
-                        : null,
+                    physics:
+                        isIOS
+                            ? (_draggingToDismiss || _dismissAnimRunning
+                                ? const NeverScrollableScrollPhysics()
+                                : const ClampingScrollPhysics())
+                            : null,
                     slivers: [
                       _buildSliverAppBar(),
                       SliverToBoxAdapter(
@@ -1216,22 +1225,20 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                         );
                         return FadeTransition(
                           opacity: animation,
-                          child: SlideTransition(
-                            position: slide,
-                            child: child,
-                          ),
+                          child: SlideTransition(position: slide, child: child),
                         );
                       },
-                      child: (_isOffline && !_bannerDismissed)
-                          ? NetflixOfflineBanner(
-                              key: const ValueKey('detail_banner_visible'),
-                              onDismiss: () {
-                                setState(() => _bannerDismissed = true);
-                              },
-                            )
-                          : const SizedBox.shrink(
-                              key: ValueKey('detail_banner_hidden'),
-                            ),
+                      child:
+                          (_isOffline && !_bannerDismissed)
+                              ? NetflixOfflineBanner(
+                                key: const ValueKey('detail_banner_visible'),
+                                onDismiss: () {
+                                  setState(() => _bannerDismissed = true);
+                                },
+                              )
+                              : const SizedBox.shrink(
+                                key: ValueKey('detail_banner_hidden'),
+                              ),
                     ),
                   ),
                 ],
@@ -1256,13 +1263,10 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
       builder: (ctx, _) {
         final routeProgress = routeAnim?.value ?? 1.0;
         final dismissProgress = (_dragOffset / screenH).clamp(0.0, 1.0);
-        final alpha =
-            (routeProgress * 0.52 * (1.0 - dismissProgress * 1.3))
-                .clamp(0.0, 0.52);
+        final alpha = (routeProgress * 0.52 * (1.0 - dismissProgress * 1.3))
+            .clamp(0.0, 0.52);
         return IgnorePointer(
-          child: Container(
-            color: Colors.black.withValues(alpha: alpha),
-          ),
+          child: Container(color: Colors.black.withValues(alpha: alpha)),
         );
       },
     );
@@ -1310,8 +1314,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
               fit: BoxFit.cover,
               isHD: _isGoodNetwork && !PerformanceService().lowMemoryLimit,
               onError: () {
-                if (widget.item.logo != null &&
-                    widget.item.logo!.isNotEmpty) {
+                if (widget.item.logo != null && widget.item.logo!.isNotEmpty) {
                   _m3uService.reportFailedLogo(widget.item.logo!);
                 }
               },
@@ -1328,10 +1331,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                     );
             // Shared-element flight from the originating card's poster.
             if (widget.heroTag != null) {
-              content = Hero(
-                tag: widget.heroTag!,
-                child: content,
-              );
+              content = Hero(tag: widget.heroTag!, child: content);
             }
             return content;
           },
@@ -1346,7 +1346,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
     final displayTitle =
         yearMatch != null ? name.substring(0, yearMatch.start).trim() : name;
     final year = yearMatch?.group(1);
-    final isPhone = defaultTargetPlatform == TargetPlatform.iOS &&
+    final isPhone =
+        defaultTargetPlatform == TargetPlatform.iOS &&
         MediaQuery.of(context).size.width < 500;
 
     return Column(
@@ -1466,7 +1467,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   }
 
   Widget _buildPlayButton() {
-    final isPhone = defaultTargetPlatform == TargetPlatform.iOS &&
+    final isPhone =
+        defaultTargetPlatform == TargetPlatform.iOS &&
         MediaQuery.of(context).size.width < 500;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1901,7 +1903,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
   Widget _buildEpisodesList() {
     final episodes = _seasonMap[_selectedSeason] ?? [];
-    final isPhone = defaultTargetPlatform == TargetPlatform.iOS &&
+    final isPhone =
+        defaultTargetPlatform == TargetPlatform.iOS &&
         MediaQuery.of(context).size.width < 500;
 
     return Column(
@@ -2043,7 +2046,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                               height: 70,
                               fit: BoxFit.cover,
                               borderRadius: BorderRadius.circular(8),
-                              isHD: _isGoodNetwork &&
+                              isHD:
+                                  _isGoodNetwork &&
                                   !PerformanceService().lowMemoryLimit,
                               onError: () {
                                 final logo =
@@ -2239,7 +2243,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   }
 
   Widget _buildVersionSelector() {
-    final isPhone = defaultTargetPlatform == TargetPlatform.iOS &&
+    final isPhone =
+        defaultTargetPlatform == TargetPlatform.iOS &&
         MediaQuery.of(context).size.width < 500;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2314,7 +2319,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   Widget _buildSimilarTitles() {
     final filteredSimilar = _m3uService.filterValidItems(widget.similarItems);
     if (filteredSimilar.isEmpty) return const SizedBox.shrink();
-    final isPhone = defaultTargetPlatform == TargetPlatform.iOS &&
+    final isPhone =
+        defaultTargetPlatform == TargetPlatform.iOS &&
         MediaQuery.of(context).size.width < 500;
 
     return Column(
@@ -2385,7 +2391,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                                 width: double.infinity,
                                 height: double.infinity,
                                 fit: BoxFit.cover,
-                                isHD: _isGoodNetwork &&
+                                isHD:
+                                    _isGoodNetwork &&
                                     !PerformanceService().lowMemoryLimit,
                                 onError: () {
                                   if (item.logo != null) {

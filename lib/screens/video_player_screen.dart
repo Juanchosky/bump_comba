@@ -108,6 +108,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool _isDragging = false;
   bool _hasError = false;
   bool _isSeeking = false;
+  bool _isReloading = false; // Re-entrancy guard for _reloadVideo
   Duration _lastPosition = Duration.zero;
   int _noMovementSeconds = 0;
   // Detección de "audio sin video" (pantalla negra con audio) en VOD.
@@ -694,8 +695,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       // VideoController adjunto al abrir el media para inicializar la salida de
       // video (de lo contrario: audio OK, video negro). En iOS siempre abrimos
       // un player fresco con la textura ya montada.
-      final bool isIOSPlatform =
-          defaultTargetPlatform == TargetPlatform.iOS;
+      final bool isIOSPlatform = defaultTargetPlatform == TargetPlatform.iOS;
       final isPrewarmed =
           !isIOSPlatform &&
           widget.prewarmedPlayer != null &&
@@ -942,8 +942,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             await mpv.setProperty('hwdec', decoder);
             _activeDecoder = decoder;
             debugPrint('Decoder seleccionado: $decoder (Retry: $_retryCount)');
-          } else if (!kIsWeb &&
-              defaultTargetPlatform == TargetPlatform.iOS) {
+          } else if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
             // iOS: SIEMPRE hardware (VideoToolbox). El diagnóstico mostró que
             // con software ('no') MPV reporta 0×0 — el ffmpeg de libmpv en iOS
             // NO puede decodificar HEVC/H.265 por software. Solo VideoToolbox
@@ -954,7 +953,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             const decoder = 'videotoolbox-copy';
             await mpv.setProperty('hwdec', decoder);
             _activeDecoder = decoder;
-            debugPrint('Decoder iOS seleccionado: $decoder (Retry: $_retryCount)');
+            debugPrint(
+              'Decoder iOS seleccionado: $decoder (Retry: $_retryCount)',
+            );
           } else {
             await mpv.setProperty('hwdec', 'auto-safe');
             _activeDecoder = 'auto-safe';
@@ -1333,10 +1334,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             }
           }
 
-          if (!_isVideoLoading) {
+          if (!_isVideoLoading && !_isReloading) {
             debugPrint('Error de stream: $error. Recargando en 1s...');
             Future.delayed(const Duration(seconds: 1), () {
-              if (mounted) _reloadVideo();
+              if (mounted && !_isReloading) _reloadVideo();
             });
           }
         }
@@ -1600,7 +1601,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _stallSeconds = 0;
 
     _stallTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted || _player == null) return;
+      if (!mounted || _player == null || _isReloading) return;
 
       final playerState = _player!.state;
       final currentPos = playerState.position;
@@ -1768,7 +1769,23 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   Future<void> _reloadVideo() async {
-    if (!mounted || _isVideoLoading || _player == null) return;
+    // ── RE-ENTRANCY GUARD ─────────────────────────────────────────────────
+    // Without this, two concurrent reload cycles (from stall monitor +
+    // stream.error listener) would both call _initializePlayer, creating
+    // two VideoControllers fighting for the same GPU buffers, causing
+    // BpSurfaceComposerClient::Failed to transact → native crash.
+    if (!mounted || _isVideoLoading || _isReloading || _player == null) return;
+    _isReloading = true;
+
+    // ── STOP ALL CALLBACKS IMMEDIATELY ─────────────────────────────────────
+    // Cancel stall timer and stream subscriptions BEFORE any async work.
+    // Otherwise, the old player's error/stall events can re-trigger
+    // _reloadVideo while _cleanupPlayer is still draining buffers.
+    _stallTimer?.cancel();
+    for (final s in _streamSubscriptions) {
+      s.cancel();
+    }
+    _streamSubscriptions.clear();
 
     // Rotar User-Agent en cada intento
     _userAgentIndex++;
@@ -1784,42 +1801,46 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       currentPos = _player?.state.position ?? Duration.zero;
     }
 
-    if (!_isLiveContent) {
-      if (_retryCount < 2) {
-        _retryCount++;
-        debugPrint(
-          'VOD reload #$_retryCount at ${currentPos.inSeconds}s. UA: $_currentUserAgent',
-        );
-        await _initializePlayer(
-          _currentItem,
-          startFrom: currentPos.inSeconds > 5 ? currentPos : null,
-          isLocalReload: true,
-        );
-      } else if (_currentServerIndex < _serverUrls.length - 1) {
-        // Option exhausted for this server, try next alternative
-        _retryCount = 0;
-        _currentServerIndex++;
-        debugPrint(
-          'Primary server failed. Trying alternative server #$_currentServerIndex at ${currentPos.inSeconds}s',
-        );
-        if (mounted) {
-          _showAppSnackBar('Intentando con servidor alternativo...');
+    try {
+      if (!_isLiveContent) {
+        if (_retryCount < 2) {
+          _retryCount++;
+          debugPrint(
+            'VOD reload #$_retryCount at ${currentPos.inSeconds}s. UA: $_currentUserAgent',
+          );
+          await _initializePlayer(
+            _currentItem,
+            startFrom: currentPos.inSeconds > 5 ? currentPos : null,
+            isLocalReload: true,
+          );
+        } else if (_currentServerIndex < _serverUrls.length - 1) {
+          // Option exhausted for this server, try next alternative
+          _retryCount = 0;
+          _currentServerIndex++;
+          debugPrint(
+            'Primary server failed. Trying alternative server #$_currentServerIndex at ${currentPos.inSeconds}s',
+          );
+          if (mounted) {
+            _showAppSnackBar('Intentando con servidor alternativo...');
+          }
+          await _initializePlayer(
+            _currentItem,
+            startFrom: currentPos.inSeconds > 5 ? currentPos : null,
+            isLocalReload: true,
+          );
+        } else {
+          if (mounted) setState(() => _hasError = true);
         }
-        await _initializePlayer(
-          _currentItem,
-          startFrom: currentPos.inSeconds > 5 ? currentPos : null,
-          isLocalReload: true,
-        );
       } else {
-        setState(() => _hasError = true);
+        const backoffDelays = [1, 2, 4, 8, 12, 20];
+        final delay = backoffDelays[_retryCount < 6 ? _retryCount : 5];
+        _retryCount++;
+        if (mounted) setState(() => _isVideoLoading = true);
+        await Future.delayed(Duration(seconds: delay));
+        if (mounted) await _initializePlayer(_currentItem, isLocalReload: true);
       }
-    } else {
-      const backoffDelays = [1, 2, 4, 8, 12, 20];
-      final delay = backoffDelays[_retryCount < 6 ? _retryCount : 5];
-      _retryCount++;
-      setState(() => _isVideoLoading = true);
-      await Future.delayed(Duration(seconds: delay));
-      if (mounted) _initializePlayer(_currentItem, isLocalReload: true);
+    } finally {
+      _isReloading = false;
     }
   }
 
@@ -3940,31 +3961,28 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           ),
         Align(
           alignment: Alignment.center,
-          child: defaultTargetPlatform == TargetPlatform.iOS
-              ? CupertinoActivityIndicator(
-                  radius:
-                      16.0 *
-                      ((MediaQuery.of(context).size.shortestSide / 414.0)
-                              .clamp(0.8, 1.25) *
-                          1.02),
-                  color: Colors.white,
-                )
-              : _AppLoadingAnimation(
-                  size:
-                      56.0 *
-                      ((MediaQuery.of(context).size.shortestSide / 414.0).clamp(
-                            0.8,
-                            1.25,
-                          ) *
-                          1.02),
-                  strokeWidth:
-                      3.5 *
-                      ((MediaQuery.of(context).size.shortestSide / 414.0).clamp(
-                            0.8,
-                            1.25,
-                          ) *
-                          1.02),
-                ),
+          child:
+              defaultTargetPlatform == TargetPlatform.iOS
+                  ? CupertinoActivityIndicator(
+                    radius:
+                        16.0 *
+                        ((MediaQuery.of(context).size.shortestSide / 414.0)
+                                .clamp(0.8, 1.25) *
+                            1.02),
+                    color: Colors.white,
+                  )
+                  : _AppLoadingAnimation(
+                    size:
+                        56.0 *
+                        ((MediaQuery.of(context).size.shortestSide / 414.0)
+                                .clamp(0.8, 1.25) *
+                            1.02),
+                    strokeWidth:
+                        3.5 *
+                        ((MediaQuery.of(context).size.shortestSide / 414.0)
+                                .clamp(0.8, 1.25) *
+                            1.02),
+                  ),
         ),
         if (showBackground &&
             (context
@@ -4310,33 +4328,33 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                           behavior: HitTestBehavior.opaque,
                                           onLongPress: _toggleDiagPanel,
                                           child: Builder(
-                                          builder: (context) {
-                                            final clean =
-                                                NormalizationUtils.extractEpisodeTitle(
-                                                  _currentItem.name,
-                                                );
-                                            final epNum =
-                                                _currentItem.episodeNumber ??
-                                                NormalizationUtils.parseEpisodeNumber(
-                                                  _currentItem.name,
-                                                );
+                                            builder: (context) {
+                                              final clean =
+                                                  NormalizationUtils.extractEpisodeTitle(
+                                                    _currentItem.name,
+                                                  );
+                                              final epNum =
+                                                  _currentItem.episodeNumber ??
+                                                  NormalizationUtils.parseEpisodeNumber(
+                                                    _currentItem.name,
+                                                  );
 
-                                            return Text(
-                                              clean.isEmpty
-                                                  ? _currentItem.name
-                                                  : (epNum != null
-                                                      ? '$epNum. $clean'
-                                                      : clean),
-                                              style: TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 16 * scale,
-                                                fontWeight: FontWeight.w600,
-                                              ),
-                                              textAlign: TextAlign.center,
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                            );
-                                          },
+                                              return Text(
+                                                clean.isEmpty
+                                                    ? _currentItem.name
+                                                    : (epNum != null
+                                                        ? '$epNum. $clean'
+                                                        : clean),
+                                                style: TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 16 * scale,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                                textAlign: TextAlign.center,
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                              );
+                                            },
                                           ),
                                         ),
                                       ),
@@ -4789,9 +4807,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         if (mpv != null) {
           try {
             final c = await mpv.getProperty('video-codec');
-            _diagCodec = (c == null || c.toString().isEmpty)
-                ? 'null (sin video)'
-                : c.toString();
+            _diagCodec =
+                (c == null || c.toString().isEmpty)
+                    ? 'null (sin video)'
+                    : c.toString();
           } catch (_) {
             _diagCodec = 'err';
           }
@@ -4836,7 +4855,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                   );
                 }
               }
-              _diagTrackCodecs = parts.isEmpty ? 'sin pistas' : parts.join(' | ');
+              _diagTrackCodecs =
+                  parts.isEmpty ? 'sin pistas' : parts.join(' | ');
             } catch (_) {
               _diagTrackCodecs = 'err';
             }
@@ -4948,8 +4968,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     final isPiP = size.height < 300 || size.width < 300;
     if (isPiP) return const SizedBox.shrink();
 
-    final double scale =
-        (size.shortestSide / 414.0).clamp(0.8, 1.25) * 1.02;
+    final double scale = (size.shortestSide / 414.0).clamp(0.8, 1.25) * 1.02;
     final double sideIconSize = 36.0 * scale;
     final double playCircle = 64.0 * scale;
     final double playIconSize = 28.0 * scale;
@@ -5052,15 +5071,17 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                       if (isCasting) {
                         return ValueListenableBuilder<bool>(
                           valueListenable: CastService().castPlaying,
-                          builder: (context, isPlaying, _) =>
-                              playPauseButton(isPlaying),
+                          builder:
+                              (context, isPlaying, _) =>
+                                  playPauseButton(isPlaying),
                         );
                       }
                       return StreamBuilder<bool>(
                         stream: _player?.stream.playing,
                         initialData: _player?.state.playing,
-                        builder: (context, snap) =>
-                            playPauseButton(snap.data ?? false),
+                        builder:
+                            (context, snap) =>
+                                playPauseButton(snap.data ?? false),
                       );
                     },
                   ),
@@ -5123,8 +5144,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                         dur,
                                         name: _currentItem.name,
                                         seriesName: _currentItem.seriesName,
-                                        seasonNumber:
-                                            _currentItem.seasonNumber,
+                                        seasonNumber: _currentItem.seasonNumber,
                                         episodeNumber:
                                             _currentItem.episodeNumber,
                                       );
@@ -5146,10 +5166,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                   child: Text(
                                     () {
                                       final clean =
-                                          NormalizationUtils
-                                              .extractEpisodeTitle(
-                                                _currentItem.name,
-                                              );
+                                          NormalizationUtils.extractEpisodeTitle(
+                                            _currentItem.name,
+                                          );
                                       final epNum =
                                           _currentItem.episodeNumber ??
                                           NormalizationUtils.parseEpisodeNumber(
@@ -5176,8 +5195,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                               // Cast
                               ValueListenableBuilder<bool>(
                                 valueListenable: CastService().isCasting,
-                                builder: (context, casting, _) =>
-                                    CupertinoButton(
+                                builder:
+                                    (context, casting, _) => CupertinoButton(
                                       padding: const EdgeInsets.all(8),
                                       minSize: 0,
                                       onPressed: _showCastSelection,
@@ -5185,9 +5204,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                         casting
                                             ? CupertinoIcons.tv_fill
                                             : CupertinoIcons.tv,
-                                        color: casting
-                                            ? Colors.redAccent
-                                            : Colors.white,
+                                        color:
+                                            casting
+                                                ? Colors.redAccent
+                                                : Colors.white,
                                         size: 22 * scale,
                                       ),
                                     ),
@@ -5236,9 +5256,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                           ? Icons.signal_cellular_0_bar
                                           : Icons.signal_cellular_alt_1_bar,
                                       size: 11 * scale,
-                                      color: q == NetworkQuality.poor
-                                          ? Colors.red
-                                          : Colors.amber,
+                                      color:
+                                          q == NetworkQuality.poor
+                                              ? Colors.red
+                                              : Colors.amber,
                                     ),
                                     const SizedBox(width: 4),
                                     Text(
@@ -5246,9 +5267,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                           ? 'Señal muy débil — modo de emergencia activo'
                                           : 'Señal débil — modo ahorro activo',
                                       style: TextStyle(
-                                        color: q == NetworkQuality.poor
-                                            ? Colors.red.shade300
-                                            : Colors.amber.shade300,
+                                        color:
+                                            q == NetworkQuality.poor
+                                                ? Colors.red.shade300
+                                                : Colors.amber.shade300,
                                         fontSize: 10 * scale,
                                         fontWeight: FontWeight.w500,
                                       ),
@@ -5283,277 +5305,286 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                         14 * scale,
                         18 * scale,
                       ),
-                      child: _currentItem.isLive
-                          ? (_isLandscape
-                              ? Padding(
-                                  padding: const EdgeInsets.only(bottom: 8),
-                                  child: Row(
-                                    children: [_buildLiveBadge()],
-                                  ),
-                                )
-                              : const SizedBox.shrink())
-                          : StreamBuilder<Duration>(
-                              stream: _player?.stream.position
-                                  .where((_) => !_isDragging)
-                                  .map(
-                                    (d) => Duration(seconds: d.inSeconds),
+                      child:
+                          _currentItem.isLive
+                              ? (_isLandscape
+                                  ? Padding(
+                                    padding: const EdgeInsets.only(bottom: 8),
+                                    child: Row(children: [_buildLiveBadge()]),
                                   )
-                                  .distinct(),
-                              initialData: _player?.state.position,
-                              builder: (context, posSnap) {
-                                return StreamBuilder<Duration>(
-                                  stream: _player?.stream.duration,
-                                  initialData: _player?.state.duration,
-                                  builder: (context, durSnap) {
-                                    return ValueListenableBuilder<bool>(
-                                      valueListenable:
-                                          CastService().isCasting,
-                                      builder: (context, isCasting, _) {
-                                        return ValueListenableBuilder<
-                                          Duration
-                                        >(
-                                          valueListenable:
-                                              CastService().castPosition,
-                                          builder: (context, castPos, _) {
-                                            return ValueListenableBuilder<
-                                              Duration
-                                            >(
-                                              valueListenable:
-                                                  CastService().castDuration,
-                                              builder: (
-                                                context,
-                                                castDur,
-                                                _,
-                                              ) {
-                                                final position = isCasting
-                                                    ? castPos
-                                                    : (posSnap.data ??
-                                                        Duration.zero);
-                                                final duration = isCasting
-                                                    ? castDur
-                                                    : (durSnap.data ??
-                                                        Duration.zero);
-                                                final maxMs = duration
-                                                    .inMilliseconds
-                                                    .toDouble();
-                                                final curMs = _isDragging
-                                                    ? _dragValue
-                                                    : position
-                                                        .inMilliseconds
-                                                        .toDouble()
-                                                        .clamp(
-                                                          0.0,
-                                                          maxMs > 0
-                                                              ? maxMs
-                                                              : 0.0,
-                                                        );
+                                  : const SizedBox.shrink())
+                              : StreamBuilder<Duration>(
+                                stream:
+                                    _player?.stream.position
+                                        .where((_) => !_isDragging)
+                                        .map(
+                                          (d) => Duration(seconds: d.inSeconds),
+                                        )
+                                        .distinct(),
+                                initialData: _player?.state.position,
+                                builder: (context, posSnap) {
+                                  return StreamBuilder<Duration>(
+                                    stream: _player?.stream.duration,
+                                    initialData: _player?.state.duration,
+                                    builder: (context, durSnap) {
+                                      return ValueListenableBuilder<bool>(
+                                        valueListenable:
+                                            CastService().isCasting,
+                                        builder: (context, isCasting, _) {
+                                          return ValueListenableBuilder<
+                                            Duration
+                                          >(
+                                            valueListenable:
+                                                CastService().castPosition,
+                                            builder: (context, castPos, _) {
+                                              return ValueListenableBuilder<
+                                                Duration
+                                              >(
+                                                valueListenable:
+                                                    CastService().castDuration,
+                                                builder: (context, castDur, _) {
+                                                  final position =
+                                                      isCasting
+                                                          ? castPos
+                                                          : (posSnap.data ??
+                                                              Duration.zero);
+                                                  final duration =
+                                                      isCasting
+                                                          ? castDur
+                                                          : (durSnap.data ??
+                                                              Duration.zero);
+                                                  final maxMs =
+                                                      duration.inMilliseconds
+                                                          .toDouble();
+                                                  final curMs =
+                                                      _isDragging
+                                                          ? _dragValue
+                                                          : position
+                                                              .inMilliseconds
+                                                              .toDouble()
+                                                              .clamp(
+                                                                0.0,
+                                                                maxMs > 0
+                                                                    ? maxMs
+                                                                    : 0.0,
+                                                              );
 
-                                                return GestureDetector(
-                                                  behavior:
-                                                      HitTestBehavior.opaque,
-                                                  onHorizontalDragUpdate:
-                                                      (_) {},
-                                                  child: Column(
-                                                    mainAxisSize:
-                                                        MainAxisSize.min,
-                                                    children: [
-                                                      // Slider iOS
-                                                      SliderTheme(
-                                                        data: SliderThemeData(
-                                                          trackHeight:
-                                                              2.5 * scale,
-                                                          activeTrackColor:
-                                                              Colors.white,
-                                                          inactiveTrackColor:
-                                                              Colors.white
-                                                                  .withValues(
-                                                                    alpha:
-                                                                        0.28,
+                                                  return GestureDetector(
+                                                    behavior:
+                                                        HitTestBehavior.opaque,
+                                                    onHorizontalDragUpdate:
+                                                        (_) {},
+                                                    child: Column(
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      children: [
+                                                        // Slider iOS
+                                                        SliderTheme(
+                                                          data: SliderThemeData(
+                                                            trackHeight:
+                                                                2.5 * scale,
+                                                            activeTrackColor:
+                                                                Colors.white,
+                                                            inactiveTrackColor:
+                                                                Colors.white
+                                                                    .withValues(
+                                                                      alpha:
+                                                                          0.28,
+                                                                    ),
+                                                            thumbColor:
+                                                                Colors.white,
+                                                            thumbShape:
+                                                                RoundSliderThumbShape(
+                                                                  enabledThumbRadius:
+                                                                      6 * scale,
+                                                                ),
+                                                            overlayShape:
+                                                                RoundSliderOverlayShape(
+                                                                  overlayRadius:
+                                                                      16 *
+                                                                      scale,
+                                                                ),
+                                                          ),
+                                                          child: Slider(
+                                                            min: 0,
+                                                            max:
+                                                                maxMs > 0
+                                                                    ? maxMs
+                                                                    : 1,
+                                                            value: curMs,
+                                                            onChangeStart:
+                                                                (v) => setState(
+                                                                  () {
+                                                                    _isDragging =
+                                                                        true;
+                                                                    _dragValue =
+                                                                        v;
+                                                                  },
+                                                                ),
+                                                            onChanged:
+                                                                (v) => setState(
+                                                                  () =>
+                                                                      _dragValue =
+                                                                          v,
+                                                                ),
+                                                            onChangeEnd: (v) {
+                                                              final cs =
+                                                                  CastService();
+                                                              if (cs
+                                                                  .isCasting
+                                                                  .value) {
+                                                                cs.seek(
+                                                                  v / 1000.0,
+                                                                );
+                                                              } else {
+                                                                _player?.seek(
+                                                                  Duration(
+                                                                    milliseconds:
+                                                                        v.toInt(),
                                                                   ),
-                                                          thumbColor:
-                                                              Colors.white,
-                                                          thumbShape:
-                                                              RoundSliderThumbShape(
-                                                                enabledThumbRadius:
-                                                                    6 * scale,
-                                                              ),
-                                                          overlayShape:
-                                                              RoundSliderOverlayShape(
-                                                                overlayRadius:
-                                                                    16 * scale,
-                                                              ),
-                                                        ),
-                                                        child: Slider(
-                                                          min: 0,
-                                                          max: maxMs > 0
-                                                              ? maxMs
-                                                              : 1,
-                                                          value: curMs,
-                                                          onChangeStart: (v) =>
+                                                                );
+                                                              }
                                                               setState(() {
                                                                 _isDragging =
+                                                                    false;
+                                                                _isSeeking =
                                                                     true;
-                                                                _dragValue = v;
-                                                              }),
-                                                          onChanged: (v) =>
-                                                              setState(
-                                                                () =>
-                                                                    _dragValue =
-                                                                        v,
-                                                              ),
-                                                          onChangeEnd: (v) {
-                                                            final cs =
-                                                                CastService();
-                                                            if (cs.isCasting
-                                                                .value) {
-                                                              cs.seek(
-                                                                v / 1000.0,
-                                                              );
-                                                            } else {
-                                                              _player?.seek(
-                                                                Duration(
+                                                              });
+                                                              Future.delayed(
+                                                                const Duration(
                                                                   milliseconds:
-                                                                      v.toInt(),
+                                                                      1000,
                                                                 ),
+                                                                () {
+                                                                  if (mounted &&
+                                                                      _isSeeking) {
+                                                                    setState(
+                                                                      () =>
+                                                                          _isSeeking =
+                                                                              false,
+                                                                    );
+                                                                  }
+                                                                },
                                                               );
-                                                            }
-                                                            setState(() {
-                                                              _isDragging =
-                                                                  false;
-                                                              _isSeeking = true;
-                                                            });
-                                                            Future.delayed(
-                                                              const Duration(
-                                                                milliseconds:
-                                                                    1000,
-                                                              ),
-                                                              () {
-                                                                if (mounted &&
-                                                                    _isSeeking) {
-                                                                  setState(
-                                                                    () =>
-                                                                        _isSeeking =
-                                                                            false,
-                                                                  );
-                                                                }
-                                                              },
-                                                            );
-                                                          },
+                                                            },
+                                                          ),
                                                         ),
-                                                      ),
-                                                      // Tiempo + botones
-                                                      Padding(
-                                                        padding: EdgeInsets
-                                                            .symmetric(
-                                                              horizontal:
-                                                                  6 * scale,
-                                                            ),
-                                                        child: Row(
-                                                          children: [
-                                                            Text(
-                                                              WatchProgressService
-                                                                  .formatDuration(
-                                                                Duration(
-                                                                  milliseconds:
-                                                                      curMs
-                                                                          .toInt(),
+                                                        // Tiempo + botones
+                                                        Padding(
+                                                          padding:
+                                                              EdgeInsets.symmetric(
+                                                                horizontal:
+                                                                    6 * scale,
+                                                              ),
+                                                          child: Row(
+                                                            children: [
+                                                              Text(
+                                                                WatchProgressService.formatDuration(
+                                                                  Duration(
+                                                                    milliseconds:
+                                                                        curMs
+                                                                            .toInt(),
+                                                                  ),
+                                                                ),
+                                                                style: TextStyle(
+                                                                  color:
+                                                                      Colors
+                                                                          .white,
+                                                                  fontSize:
+                                                                      13 *
+                                                                      scale,
+                                                                  fontWeight:
+                                                                      FontWeight
+                                                                          .w400,
+                                                                  letterSpacing:
+                                                                      0.1,
                                                                 ),
                                                               ),
-                                                              style: TextStyle(
-                                                                color: Colors
-                                                                    .white,
-                                                                fontSize:
-                                                                    13 * scale,
-                                                                fontWeight:
-                                                                    FontWeight
-                                                                        .w400,
-                                                                letterSpacing:
-                                                                    0.1,
-                                                              ),
-                                                            ),
-                                                            const Spacer(),
-                                                            if (_playlist
-                                                                    .length >
-                                                                1) ...[
+                                                              const Spacer(),
+                                                              if (_playlist
+                                                                      .length >
+                                                                  1) ...[
+                                                                CupertinoButton(
+                                                                  padding:
+                                                                      EdgeInsets.all(
+                                                                        6 * scale,
+                                                                      ),
+                                                                  minSize: 0,
+                                                                  onPressed:
+                                                                      _showEpisodeSelection,
+                                                                  child: Icon(
+                                                                    CupertinoIcons
+                                                                        .list_bullet,
+                                                                    color:
+                                                                        Colors
+                                                                            .white,
+                                                                    size:
+                                                                        20 *
+                                                                        scale,
+                                                                  ),
+                                                                ),
+                                                                SizedBox(
+                                                                  width:
+                                                                      4 * scale,
+                                                                ),
+                                                              ],
                                                               CupertinoButton(
                                                                 padding:
-                                                                    EdgeInsets
-                                                                        .all(
-                                                                          6 *
-                                                                              scale,
-                                                                        ),
+                                                                    EdgeInsets.all(
+                                                                      6 * scale,
+                                                                    ),
                                                                 minSize: 0,
                                                                 onPressed:
-                                                                    _showEpisodeSelection,
+                                                                    _showSettingsMenu,
                                                                 child: Icon(
                                                                   CupertinoIcons
-                                                                      .list_bullet,
-                                                                  color: Colors
-                                                                      .white,
-                                                                  size: 20 *
+                                                                      .gear,
+                                                                  color:
+                                                                      Colors
+                                                                          .white,
+                                                                  size:
+                                                                      20 *
                                                                       scale,
                                                                 ),
                                                               ),
                                                               SizedBox(
                                                                 width:
-                                                                    4 * scale,
+                                                                    6 * scale,
+                                                              ),
+                                                              Text(
+                                                                WatchProgressService.formatDuration(
+                                                                  duration,
+                                                                ),
+                                                                style: TextStyle(
+                                                                  color:
+                                                                      Colors
+                                                                          .white70,
+                                                                  fontSize:
+                                                                      13 *
+                                                                      scale,
+                                                                  fontWeight:
+                                                                      FontWeight
+                                                                          .w400,
+                                                                  letterSpacing:
+                                                                      0.1,
+                                                                ),
                                                               ),
                                                             ],
-                                                            CupertinoButton(
-                                                              padding:
-                                                                  EdgeInsets
-                                                                      .all(
-                                                                        6 *
-                                                                            scale,
-                                                                      ),
-                                                              minSize: 0,
-                                                              onPressed:
-                                                                  _showSettingsMenu,
-                                                              child: Icon(
-                                                                CupertinoIcons
-                                                                    .gear,
-                                                                color: Colors
-                                                                    .white,
-                                                                size: 20 *
-                                                                    scale,
-                                                              ),
-                                                            ),
-                                                            SizedBox(
-                                                              width: 6 * scale,
-                                                            ),
-                                                            Text(
-                                                              WatchProgressService
-                                                                  .formatDuration(
-                                                                duration,
-                                                              ),
-                                                              style: TextStyle(
-                                                                color: Colors
-                                                                    .white70,
-                                                                fontSize:
-                                                                    13 * scale,
-                                                                fontWeight:
-                                                                    FontWeight
-                                                                        .w400,
-                                                                letterSpacing:
-                                                                    0.1,
-                                                              ),
-                                                            ),
-                                                          ],
+                                                          ),
                                                         ),
-                                                      ),
-                                                    ],
-                                                  ),
-                                                );
-                                              },
-                                            );
-                                          },
-                                        );
-                                      },
-                                    );
-                                  },
-                                );
-                              },
-                            ),
+                                                      ],
+                                                    ),
+                                                  );
+                                                },
+                                              );
+                                            },
+                                          );
+                                        },
+                                      );
+                                    },
+                                  );
+                                },
+                              ),
                     ),
                   ),
                 ],

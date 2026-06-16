@@ -237,7 +237,8 @@ class _ValidatingImageFileService extends FileService {
     HttpClientRequest? req;
     try {
       final host = Uri.tryParse(url)?.host ?? '';
-      final shouldProxy = host.contains('ultratvsv.site') ||
+      final shouldProxy =
+          host.contains('ultratvsv.site') ||
           host.contains('image.tmdb.org') ||
           host.contains('yt3.googleusercontent.com') ||
           host.contains('red4tv.lat');
@@ -252,7 +253,10 @@ class _ValidatingImageFileService extends FileService {
         ];
 
         for (final proxyTemplate in proxies) {
-          final proxyUrl = proxyTemplate.replaceAll('{URL}', Uri.encodeComponent(url));
+          final proxyUrl = proxyTemplate.replaceAll(
+            '{URL}',
+            Uri.encodeComponent(url),
+          );
           try {
             // Solo loguear en modo debug — en producción estos logs saturan la consola
             assert(() {
@@ -260,7 +264,9 @@ class _ValidatingImageFileService extends FileService {
               return true;
             }());
             final uri = Uri.parse(proxyUrl);
-            req = await _sharedHttpClient.getUrl(uri).timeout(_adaptiveTimeout());
+            req = await _sharedHttpClient
+                .getUrl(uri)
+                .timeout(_adaptiveTimeout());
             req.headers.set('Accept', 'image/webp,image/*,*/*;q=0.8');
 
             final ioResponse = await req.close().timeout(_adaptiveTimeout());
@@ -269,7 +275,9 @@ class _ValidatingImageFileService extends FileService {
 
             if (contentType.contains('text/html') ||
                 contentType.contains('text/plain') ||
-                contentType.contains('application/json') || // ← NUEVO: rechazar JSON
+                contentType.contains(
+                  'application/json',
+                ) || // ← NUEVO: rechazar JSON
                 ioResponse.statusCode >= 400) {
               req.abort();
               // Este proxy falló, probar el siguiente
@@ -284,9 +292,10 @@ class _ValidatingImageFileService extends FileService {
             final streamedResponse = http.StreamedResponse(
               ioResponse,
               ioResponse.statusCode,
-              contentLength: ioResponse.contentLength == -1
-                  ? null
-                  : ioResponse.contentLength,
+              contentLength:
+                  ioResponse.contentLength == -1
+                      ? null
+                      : ioResponse.contentLength,
               request: http.Request('GET', uri),
               headers: responseHeaders,
               isRedirect: ioResponse.isRedirect,
@@ -294,15 +303,18 @@ class _ValidatingImageFileService extends FileService {
               reasonPhrase: ioResponse.reasonPhrase,
             );
             return _ValidatingHttpGetResponse(streamedResponse, req);
-
           } catch (proxyError) {
             req?.abort();
-            debugPrint('Proxy $proxyTemplate failed: $proxyError. Trying next...');
+            debugPrint(
+              'Proxy $proxyTemplate failed: $proxyError. Trying next...',
+            );
             continue;
           }
         }
 
-        debugPrint('All proxies failed for $url. Falling back to direct fetch...');
+        debugPrint(
+          'All proxies failed for $url. Falling back to direct fetch...',
+        );
       }
 
       final uri = Uri.parse(url);
@@ -425,10 +437,10 @@ class _DownloadSemaphore {
   void updateLimit(NetworkQuality quality) {
     _maxConcurrent = switch (quality) {
       NetworkQuality.excellent => 4,
-      NetworkQuality.good      => 3,
-      NetworkQuality.fair      => 2,
-      NetworkQuality.poor      => 1,
-      NetworkQuality.offline   => 0,
+      NetworkQuality.good => 3,
+      NetworkQuality.fair => 2,
+      NetworkQuality.poor => 1,
+      NetworkQuality.offline => 0,
     };
     // Si ahora hay slots libres, despertar waiters
     _drainWaiters();
@@ -613,24 +625,9 @@ class FastImageService {
     }
   }
 
-  /// Adaptive thumbnail width — smaller images on slow networks load
-  /// 3-4x faster while still looking acceptable on phone screens.
-  int get _thumbWidth {
-    if (forceLowQuality || PerformanceService().lowMemoryLimit) return 120;
-    final quality = NetworkQualityService().quality.value;
-    switch (quality) {
-      case NetworkQuality.excellent:
-        return 300;
-      case NetworkQuality.good:
-        return 300;
-      case NetworkQuality.fair:
-        return 200;
-      case NetworkQuality.poor:
-        return 120;
-      case NetworkQuality.offline:
-        return 120;
-    }
-  }
+  /// Nullable thumbnail width — returns null to ensure cover arts are cached
+  /// at their full/original resolution for maximum visual quality.
+  int? get _thumbWidth => null;
 
   /// Llamar cuando se recarga la lista con forceRefresh
   void clearQueue() => _queued.clear();
@@ -655,13 +652,19 @@ class FastImageService {
     _queued.addAll(fresh);
 
     SchedulerBinding.instance.addPostFrameCallback((_) {
-      _warmBatch(fresh, context);
+      // Guard: context may already be unmounted by the time the frame fires.
+      if ((context as Element).mounted) {
+        _warmBatch(fresh, context);
+      }
     });
   }
 
   Future<void> _warmBatch(List<String> urls, BuildContext context) async {
     final batchSz = _batchSize; // Capture once per warm cycle
     for (int start = 0; start < urls.length; start += batchSz) {
+      // Stop if the context element has been unmounted between batches.
+      if (!(context as Element).mounted) return;
+
       final end = (start + batchSz).clamp(0, urls.length);
       final batch = urls.sublist(start, end);
 
@@ -682,19 +685,25 @@ class FastImageService {
   }
 
   Future<void> _precacheOne(String url, BuildContext context) async {
+    if (!(context as Element).mounted) return;
     try {
-      await precacheImage(
-        ResizeImage(
-          CachedNetworkImageProvider(
-            url,
-            headers: _kImageHeaders,
-            cacheManager: AppCacheManager.instance,
-          ),
-          width: _thumbWidth,
-        ),
-        context,
-        onError: (_, _) {},
-      );
+      final thumbW = _thumbWidth;
+      final ImageProvider provider =
+          thumbW == null
+              ? CachedNetworkImageProvider(
+                url,
+                headers: _kImageHeaders,
+                cacheManager: AppCacheManager.instance,
+              )
+              : ResizeImage(
+                CachedNetworkImageProvider(
+                  url,
+                  headers: _kImageHeaders,
+                  cacheManager: AppCacheManager.instance,
+                ),
+                width: thumbW,
+              );
+      await precacheImage(provider, context, onError: (_, _) {});
     } catch (_) {}
   }
 
@@ -709,22 +718,31 @@ class FastImageService {
     for (final url in urls.take(maxPriority)) {
       if (!isValidImageUrl(url) || _queued.contains(url)) continue;
       _queued.add(url);
-      precacheImage(
-        ResizeImage(
-          CachedNetworkImageProvider(
-            url,
-            headers: _kImageHeaders,
-            cacheManager: AppCacheManager.instance,
-          ),
-          width: _thumbWidth,
-        ),
-        context,
-        onError: (_, _) {},
-      );
+      final thumbW = _thumbWidth;
+      final ImageProvider provider =
+          thumbW == null
+              ? CachedNetworkImageProvider(
+                url,
+                headers: _kImageHeaders,
+                cacheManager: AppCacheManager.instance,
+              )
+              : ResizeImage(
+                CachedNetworkImageProvider(
+                  url,
+                  headers: _kImageHeaders,
+                  cacheManager: AppCacheManager.instance,
+                ),
+                width: thumbW,
+              );
+      precacheImage(provider, context, onError: (_, _) {});
     }
   }
 
-  Future<void> prewarmAndAwait(List<String> urls, BuildContext context) async {
+  Future<void> prewarmAndAwait(
+    List<String> urls,
+    BuildContext context, {
+    bool isHD = false,
+  }) async {
     if (urls.isEmpty) return;
 
     // Skip awaiting online network images when offline to render cached/fallback items instantly
@@ -736,22 +754,30 @@ class FastImageService {
     final validUrls = urls.where((u) => isValidImageUrl(u)).toList();
     if (validUrls.isEmpty) return;
 
+    final thumbW = _thumbWidth;
+
     // Run precaching for all of them in parallel
     await Future.wait(
       validUrls.map((url) async {
+        // Bail out if the context element has been unmounted (e.g. user navigated away).
+        if (!(context as Element).mounted) return;
         try {
-          await precacheImage(
-            ResizeImage(
-              CachedNetworkImageProvider(
-                url,
-                headers: _kImageHeaders,
-                cacheManager: AppCacheManager.instance,
-              ),
-              width: _thumbWidth,
-            ),
-            context,
-            onError: (_, _) {},
-          );
+          final ImageProvider provider =
+              thumbW == null
+                  ? CachedNetworkImageProvider(
+                    url,
+                    headers: _kImageHeaders,
+                    cacheManager: AppCacheManager.instance,
+                  )
+                  : ResizeImage(
+                    CachedNetworkImageProvider(
+                      url,
+                      headers: _kImageHeaders,
+                      cacheManager: AppCacheManager.instance,
+                    ),
+                    width: thumbW,
+                  );
+          await precacheImage(provider, context, onError: (_, _) {});
         } catch (_) {}
       }),
       eagerError: false,
@@ -857,28 +883,9 @@ class _FastThumbnailState extends State<FastThumbnail>
   }
 
   int? _computeCacheWidth() {
-    if (widget.isHD) {
-      if (PerformanceService().lowMemoryLimit) return 300;
-      if (FastImageService.forceLowQuality) return 400;
-      return null; // Full HD resolution (original size, no resizing)
-    }
-    if (widget.cacheWidth != null) return widget.cacheWidth;
-    if (FastImageService.forceLowQuality) return 120;
-    final performance = PerformanceService();
-    if (performance.isLowPerformance) return 120;
-    // Adapt resolution to network quality — smaller images on slow
-    // networks load significantly faster and still look good on phones.
-    final quality = NetworkQualityService().quality.value;
-    switch (quality) {
-      case NetworkQuality.excellent:
-      case NetworkQuality.good:
-        return 300;
-      case NetworkQuality.fair:
-        return 200;
-      case NetworkQuality.poor:
-      case NetworkQuality.offline:
-        return 120;
-    }
+    // Return null to ensure cover arts are always rendered at full resolution/original size,
+    // avoiding any pixelation or low-quality scaling as requested by the user.
+    return null;
   }
 
   @override

@@ -6,3 +6,17 @@
 
 # Optionally keep OpenTelemetry just in case, though the above is usually enough
 -keep class io.opentelemetry.** { *; }
+
+# OneSignal rules
+-keep class com.onesignal.** { *; }
+-keep interface com.onesignal.** { *; }
+-dontwarn com.onesignal.**
+
+# Google Play Billing rules (just in case they are stripped and cause OneSignal to NPE)
+-keep class com.android.billingclient.** { *; }
+-dontwarn com.android.billingclient.**
+
+# RevenueCat / purchases_flutter rules
+-keep class com.revenuecat.purchases.** { *; }
+-dontwarn com.revenuecat.purchases.**
+

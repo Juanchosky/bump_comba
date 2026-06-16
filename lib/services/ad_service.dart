@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'dart:ui';
 import 'dart:async';
+import 'dart:io';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'premium_service.dart';
@@ -317,44 +318,44 @@ class AdService {
   // ANTI-ADBLOCKER
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /// Detección silenciosa: intenta cargar un rewarded en background.
-  /// Si falla con un código de error específico de ad blocker → activar paywall suave.
+  Future<bool> _isAdHostBlocked() async {
+    try {
+      // 1. Check if we can resolve a standard non-ad host (like google.com or cloudflare.com)
+      final normalAddresses = await InternetAddress.lookup('google.com')
+          .timeout(const Duration(seconds: 3));
+      if (normalAddresses.isEmpty || normalAddresses.first.address.isEmpty) {
+        // No internet connection at all, so ad host is not blocked, they are just offline
+        return false;
+      }
+
+      // 2. Try to resolve the AdMob host
+      final adAddresses = await InternetAddress.lookup('pubads.g.doubleclick.net')
+          .timeout(const Duration(seconds: 3));
+      
+      // If we can resolve it, the host is NOT blocked
+      return adAddresses.isEmpty || adAddresses.first.address.isEmpty;
+    } catch (e) {
+      // If resolving google.com succeeded but pubads.g.doubleclick.net threw a SocketException (e.g. Host not found / connection refused),
+      // then the ad host is blocked!
+      try {
+        final checkNormal = await InternetAddress.lookup('google.com')
+            .timeout(const Duration(seconds: 3));
+        return checkNormal.isNotEmpty && checkNormal.first.address.isNotEmpty;
+      } catch (_) {
+        // Both failed, meaning the user is simply offline
+        return false;
+      }
+    }
+  }
+
+  /// Detección silenciosa: comprueba si los dominios de anuncios están bloqueados mediante DNS.
   /// Sin alertas al usuario — solo registramos el estado internamente.
   Future<void> _detectAdBlocker() async {
     if (!isSupported) return;
-
-    bool probeLoaded = false;
-
-    await RewardedAd.load(
-      adUnitId: rewardedAdUnitId,
-      request: const AdRequest(),
-      rewardedAdLoadCallback: RewardedAdLoadCallback(
-        onAdLoaded: (ad) {
-          probeLoaded = true;
-          _adBlockerDetected = false;
-          // Reutilizar el ad cargado como el rewarded principal
-          _rewardedAd = ad;
-          _setupRewardedCallbacks(ad);
-          _isRewardedAdLoading = false;
-        },
-        onAdFailedToLoad: (error) {
-          // Códigos 2 y 3 suelen indicar bloqueo de red (adblocker)
-          if (error.code == 2 || error.code == 3) {
-            _adBlockerDetected = true;
-            debugPrint(
-              'AdMob: Posible adblocker detectado (código ${error.code})',
-            );
-          } else {
-            _adBlockerDetected = false;
-          }
-          probeLoaded = false;
-          _isRewardedAdLoading = false;
-        },
-      ),
-    );
-
-    // Si el probe cargó el rewarded, marcamos la carga como completa
-    if (probeLoaded) _isRewardedAdLoading = false;
+    _adBlockerDetected = await _isAdHostBlocked();
+    if (_adBlockerDetected) {
+      debugPrint('AdMob: Adblocker/VPN block detected via DNS lookup.');
+    }
   }
 
   /// Verifica si el usuario bloqueado ha superado el límite de acciones gratuitas.
@@ -627,12 +628,14 @@ class AdService {
           _isRewardedAdLoading = false;
           _setupRewardedCallbacks(ad);
         },
-        onAdFailedToLoad: (error) {
+        onAdFailedToLoad: (error) async {
           _rewardedAd = null;
           _isRewardedAdLoading = false;
           _lastLoadErrorCode = error.code;
-          if (error.code == 2 || error.code == 3) {
-            _adBlockerDetected = true;
+          if (error.code == 2) {
+            _adBlockerDetected = await _isAdHostBlocked();
+          } else {
+            _adBlockerDetected = false;
           }
         },
       ),

@@ -43,12 +43,26 @@ void main() {
       final originalOnError = FlutterError.onError;
       FlutterError.onError = (FlutterErrorDetails details) {
         final msg = details.exception.toString();
+
+        // Silenciar errores de fuentes de Google
         if (msg.contains('font') ||
             msg.contains('gstatic') ||
             msg.contains('GoogleFonts')) {
           debugPrint('Font load error (ignorado): ${details.exception}');
           return;
         }
+
+        // Silenciar el error de contexto desmontado que ya se maneja
+        // defensivamente en fast_image_service.dart y content_detail_screen.dart.
+        // Llega aquí solo cuando algún precacheImage interno de Flutter lo atrapa
+        // antes de que nuestro guard pueda bloquearlo.
+        if (msg.contains('unmounted') ||
+            msg.contains('no longer has a context') ||
+            msg.contains('considered defunct')) {
+          debugPrint('Unmounted-context error ignorado (manejado): $msg');
+          return;
+        }
+
         originalOnError?.call(details);
       };
 
@@ -160,10 +174,19 @@ void main() {
       }
     },
     (error, stack) {
-      debugPrint('Global unhandled error caught: $error');
-      if (error is! SocketException) {
-        debugPrint('$stack');
+      final msg = error.toString();
+
+      // Errores esperados y ya manejados defensivamente — solo logear sin stack
+      if (error is SocketException ||
+          msg.contains('unmounted') ||
+          msg.contains('no longer has a context') ||
+          msg.contains('considered defunct')) {
+        debugPrint('Global error ignorado (esperado): $msg');
+        return;
       }
+
+      debugPrint('Global unhandled error caught: $error');
+      debugPrint('$stack');
     },
   );
 }

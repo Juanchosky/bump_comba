@@ -114,8 +114,11 @@ class SmartNotificationService {
       // Local notifications share the OS POST_NOTIFICATIONS grant with
       // OneSignal; requesting again is a no-op if already decided, so this is
       // safe and keeps the feature working even if push is disabled.
-      final android = _plugin.resolvePlatformSpecificImplementation<
-          AndroidFlutterLocalNotificationsPlugin>();
+      final android =
+          _plugin
+              .resolvePlatformSpecificImplementation<
+                AndroidFlutterLocalNotificationsPlugin
+              >();
       await android?.requestNotificationsPermission();
 
       _initialized = true;
@@ -126,8 +129,11 @@ class SmartNotificationService {
   }
 
   Future<void> _createChannel() async {
-    final android = _plugin.resolvePlatformSpecificImplementation<
-        AndroidFlutterLocalNotificationsPlugin>();
+    final android =
+        _plugin
+            .resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin
+            >();
     // Default importance (not high) → shows in the tray with sound but never
     // a heads-up banner, so reminders feel calm rather than intrusive.
     await android?.createNotificationChannel(
@@ -175,8 +181,11 @@ class SmartNotificationService {
     try {
       await _plugin.cancel(id: _reminderId);
 
-      final android = _plugin.resolvePlatformSpecificImplementation<
-          AndroidFlutterLocalNotificationsPlugin>();
+      final android =
+          _plugin
+              .resolvePlatformSpecificImplementation<
+                AndroidFlutterLocalNotificationsPlugin
+              >();
       // No point scheduling if the user denied notifications.
       if ((await android?.areNotificationsEnabled()) == false) return;
 
@@ -225,8 +234,7 @@ class SmartNotificationService {
           android: AndroidNotificationDetails(
             _channelId,
             'Recordatorios',
-            channelDescription:
-                'Recordatorios para seguir viendo tu contenido',
+            channelDescription: 'Recordatorios para seguir viendo tu contenido',
             importance: Importance.defaultImportance,
             priority: Priority.defaultPriority,
             icon: 'ic_stat_onesignal_default',
