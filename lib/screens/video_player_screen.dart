@@ -3588,6 +3588,18 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
   }
 
+  Widget _buildSeekButton({
+    required IconData icon,
+    required VoidCallback onTap,
+    required double iconSize,
+  }) {
+    return IconButton(
+      icon: Icon(icon, color: Colors.white),
+      iconSize: iconSize,
+      onPressed: onTap,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -4160,6 +4172,46 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     );
   }
 
+  /// Botón de la barra inferior — ícono a la izquierda, texto a la derecha
+  Widget _buildNetflixBarButton({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+    required double scale,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Padding(
+        padding: EdgeInsets.symmetric(
+          horizontal: 6 * scale,
+          vertical: 8 * scale,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, color: Colors.white, size: 22 * scale),
+            SizedBox(width: 5 * scale),
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 13 * scale,
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: 0.1,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildControls() {
     final size = MediaQuery.of(context).size;
     final isPiP = size.height < 300 || size.width < 300;
@@ -4168,9 +4220,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // 1. Lógica de escalado responsivo
     final double shortestSide = size.shortestSide;
     final double scale = (shortestSide / 414.0).clamp(0.8, 1.25) * 1.02;
-    final double centralIconSize = 56.0 * scale;
-    final double sideIconSize = 36.0 * scale;
-    final double horizontalGap = (_isLandscape ? 20.0 : 36.0) * scale;
+    final double centralIconSize = 60.0 * scale;
+    final double seekIconSize = centralIconSize * 0.67;
+    final double seekGap = (size.width * (_isLandscape ? 0.18 : 0.09)).clamp(
+      36.0,
+      100.0,
+    );
 
     return Positioned.fill(
       child: AnimatedBuilder(
@@ -4194,12 +4249,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     if (!_currentItem.isLive) ...[
-                      IconButton(
-                        iconSize: sideIconSize,
-                        icon: const Icon(Icons.replay_10, color: Colors.white),
-                        onPressed: _seekBackward,
+                      _buildSeekButton(
+                        icon: Icons.replay_10_rounded,
+                        onTap: _seekBackward,
+                        iconSize: seekIconSize,
                       ),
-                      SizedBox(width: horizontalGap),
+                      SizedBox(width: seekGap),
                     ],
                     ValueListenableBuilder<bool>(
                       valueListenable: CastService().isCasting,
@@ -4240,11 +4295,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                       },
                     ),
                     if (!_currentItem.isLive) ...[
-                      SizedBox(width: horizontalGap),
-                      IconButton(
-                        iconSize: sideIconSize,
-                        icon: const Icon(Icons.forward_10, color: Colors.white),
-                        onPressed: _seekForward,
+                      SizedBox(width: seekGap),
+                      _buildSeekButton(
+                        icon: Icons.forward_10_rounded,
+                        onTap: _seekForward,
+                        iconSize: seekIconSize,
                       ),
                     ],
                   ],
@@ -4573,7 +4628,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                           SliderTheme(
                                                             data: SliderThemeData(
                                                               trackHeight:
-                                                                  1.5 * scale,
+                                                                  2.0 * scale,
                                                               activeTrackColor:
                                                                   Colors.white,
                                                               inactiveTrackColor:
@@ -4669,6 +4724,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                               },
                                                             ),
                                                           ),
+                                                          // ── Fila de tiempos ──────────────
                                                           Padding(
                                                             padding:
                                                                 EdgeInsets.symmetric(
@@ -4698,56 +4754,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                   ),
                                                                 ),
                                                                 const Spacer(),
-                                                                if (_playlist
-                                                                        .length >
-                                                                    1) ...[
-                                                                  IconButton(
-                                                                    icon: Icon(
-                                                                      Icons
-                                                                          .list_alt,
-                                                                      color:
-                                                                          Colors
-                                                                              .white,
-                                                                      size:
-                                                                          20 *
-                                                                          scale,
-                                                                    ),
-                                                                    padding:
-                                                                        EdgeInsets.all(
-                                                                          6 *
-                                                                              scale,
-                                                                        ),
-                                                                    onPressed:
-                                                                        _showEpisodeSelection,
-                                                                  ),
-                                                                  SizedBox(
-                                                                    width:
-                                                                        8 *
-                                                                        scale,
-                                                                  ),
-                                                                ],
-                                                                IconButton(
-                                                                  icon: Icon(
-                                                                    Icons
-                                                                        .settings,
-                                                                    color:
-                                                                        Colors
-                                                                            .white,
-                                                                    size:
-                                                                        20 *
-                                                                        scale,
-                                                                  ),
-                                                                  padding:
-                                                                      EdgeInsets.all(
-                                                                        6 * scale,
-                                                                      ),
-                                                                  onPressed:
-                                                                      _showSettingsMenu,
-                                                                ),
-                                                                SizedBox(
-                                                                  width:
-                                                                      8 * scale,
-                                                                ),
                                                                 Text(
                                                                   WatchProgressService.formatDuration(
                                                                     duration,
@@ -4764,6 +4770,115 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                             .w500,
                                                                   ),
                                                                 ),
+                                                              ],
+                                                            ),
+                                                          ),
+                                                          // ── Barra Netflix ─────────────────
+                                                          Padding(
+                                                            padding:
+                                                                EdgeInsets.only(
+                                                                  top:
+                                                                      6 * scale,
+                                                                  left:
+                                                                      2 * scale,
+                                                                  right:
+                                                                      2 * scale,
+                                                                ),
+                                                            child: Row(
+                                                              children: [
+                                                                // Velocidad
+                                                                Expanded(
+                                                                  child: Center(
+                                                                    child: StreamBuilder<
+                                                                      double
+                                                                    >(
+                                                                      stream:
+                                                                          _player
+                                                                              ?.stream
+                                                                              .rate,
+                                                                      initialData:
+                                                                          _player
+                                                                              ?.state
+                                                                              .rate ??
+                                                                          1.0,
+                                                                      builder: (
+                                                                        context,
+                                                                        rateSnap,
+                                                                      ) {
+                                                                        final rate =
+                                                                            rateSnap.data ??
+                                                                            1.0;
+                                                                        final label =
+                                                                            rate ==
+                                                                                    rate.roundToDouble()
+                                                                                ? '${rate.toInt()}x'
+                                                                                : '${rate}x';
+                                                                        return _buildNetflixBarButton(
+                                                                          icon:
+                                                                              Icons.speed_rounded,
+                                                                          label:
+                                                                              'Velocidad ($label)',
+                                                                          onTap:
+                                                                              _showSpeedSelection,
+                                                                          scale:
+                                                                              scale,
+                                                                        );
+                                                                      },
+                                                                    ),
+                                                                  ),
+                                                                ),
+                                                                // Episodios
+                                                                if (_playlist
+                                                                        .length >
+                                                                    1)
+                                                                  Expanded(
+                                                                    child: Center(
+                                                                      child: _buildNetflixBarButton(
+                                                                        icon:
+                                                                            Icons.video_library_outlined,
+                                                                        label:
+                                                                            'Episodios',
+                                                                        onTap:
+                                                                            _showEpisodeSelection,
+                                                                        scale:
+                                                                            scale,
+                                                                      ),
+                                                                    ),
+                                                                  ),
+                                                                // Audio y subtítulos
+                                                                Expanded(
+                                                                  child: Center(
+                                                                    child: _buildNetflixBarButton(
+                                                                      icon:
+                                                                          Icons
+                                                                              .subtitles_outlined,
+                                                                      label:
+                                                                          'Audio y subtítulos',
+                                                                      onTap:
+                                                                          _showSettingsMenu,
+                                                                      scale:
+                                                                          scale,
+                                                                    ),
+                                                                  ),
+                                                                ),
+                                                                // Siguiente episodio
+                                                                if (_playlist
+                                                                        .length >
+                                                                    1)
+                                                                  Expanded(
+                                                                    child: Center(
+                                                                      child: _buildNetflixBarButton(
+                                                                        icon:
+                                                                            Icons.skip_next_rounded,
+                                                                        label:
+                                                                            'Siguiente ep.',
+                                                                        onTap:
+                                                                            _playNextEpisode,
+                                                                        scale:
+                                                                            scale,
+                                                                      ),
+                                                                    ),
+                                                                  ),
                                                               ],
                                                             ),
                                                           ),
@@ -4969,7 +5084,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     if (isPiP) return const SizedBox.shrink();
 
     final double scale = (size.shortestSide / 414.0).clamp(0.8, 1.25) * 1.02;
-    final double sideIconSize = 36.0 * scale;
+    final double sideIconSize = 28.0 * scale;
     final double playCircle = 64.0 * scale;
     final double playIconSize = 28.0 * scale;
 
@@ -5053,15 +5168,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   if (!_currentItem.isLive) ...[
-                    CupertinoButton(
-                      padding: EdgeInsets.zero,
-                      minSize: 0,
-                      onPressed: _seekBackward,
-                      child: Icon(
-                        CupertinoIcons.gobackward_10,
-                        color: Colors.white,
-                        size: sideIconSize,
-                      ),
+                    _buildSeekButton(
+                      icon: Icons.replay_10_rounded,
+                      onTap: _seekBackward,
+                      iconSize: sideIconSize,
                     ),
                     SizedBox(width: 38 * scale),
                   ],
@@ -5087,15 +5197,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                   ),
                   if (!_currentItem.isLive) ...[
                     SizedBox(width: 38 * scale),
-                    CupertinoButton(
-                      padding: EdgeInsets.zero,
-                      minSize: 0,
-                      onPressed: _seekForward,
-                      child: Icon(
-                        CupertinoIcons.goforward_10,
-                        color: Colors.white,
-                        size: sideIconSize,
-                      ),
+                    _buildSeekButton(
+                      icon: Icons.forward_10_rounded,
+                      onTap: _seekForward,
+                      iconSize: sideIconSize,
                     ),
                   ],
                 ],
@@ -5158,13 +5263,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                   size: 20,
                                 ),
                               ),
+                              const SizedBox(width: 8),
                               // Título (toque largo = panel de diagnóstico)
                               Expanded(
                                 child: GestureDetector(
                                   behavior: HitTestBehavior.opaque,
                                   onLongPress: _toggleDiagPanel,
-                                  child: Text(
-                                    () {
+                                  child: Builder(
+                                    builder: (context) {
+                                      final seriesName =
+                                          _currentItem.seriesName;
                                       final clean =
                                           NormalizationUtils.extractEpisodeTitle(
                                             _currentItem.name,
@@ -5174,24 +5282,66 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                           NormalizationUtils.parseEpisodeNumber(
                                             _currentItem.name,
                                           );
-                                      return clean.isEmpty
-                                          ? _currentItem.name
-                                          : (epNum != null
-                                              ? '$epNum. $clean'
-                                              : clean);
-                                    }(),
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 15 * scale,
-                                      fontWeight: FontWeight.w500,
-                                      letterSpacing: -0.3,
-                                    ),
-                                    textAlign: TextAlign.center,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
+                                      final episodeLabel =
+                                          clean.isEmpty
+                                              ? _currentItem.name
+                                              : (epNum != null
+                                                  ? '$epNum. $clean'
+                                                  : clean);
+                                      if (seriesName != null &&
+                                          seriesName.isNotEmpty &&
+                                          seriesName != episodeLabel) {
+                                        return Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              seriesName,
+                                              style: TextStyle(
+                                                color: Colors.white.withValues(
+                                                  alpha: 0.55,
+                                                ),
+                                                fontSize: 11 * scale,
+                                                fontWeight: FontWeight.w400,
+                                                letterSpacing: 0.2,
+                                              ),
+                                              textAlign: TextAlign.start,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                            const SizedBox(height: 2),
+                                            Text(
+                                              episodeLabel,
+                                              style: TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 15 * scale,
+                                                fontWeight: FontWeight.w700,
+                                                letterSpacing: -0.2,
+                                              ),
+                                              textAlign: TextAlign.start,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ],
+                                        );
+                                      }
+                                      return Text(
+                                        episodeLabel,
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 16 * scale,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                        textAlign: TextAlign.start,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      );
+                                    },
                                   ),
                                 ),
                               ),
+                              const SizedBox(width: 8),
                               // Cast
                               ValueListenableBuilder<bool>(
                                 valueListenable: CastService().isCasting,
@@ -5382,7 +5532,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                         SliderTheme(
                                                           data: SliderThemeData(
                                                             trackHeight:
-                                                                2.5 * scale,
+                                                                2.0 * scale,
                                                             activeTrackColor:
                                                                 Colors.white,
                                                             inactiveTrackColor:
