@@ -29,7 +29,7 @@ void _onBackgroundNotificationTap(NotificationResponse response) {
 ///    opened or backgrounded we cancel and reschedule, so an active user is
 ///    never reminded, and an absent user gets a single ping per absence.
 ///  * Universal — uses inexact alarms (no SCHEDULE_EXACT_ALARM permission), a
-///    default-importance channel, and survives reboot via the manifest
+///    high-importance channel, and survives reboot via the manifest
 ///    receiver, so it works on every Android device without special grants.
 class SmartNotificationService {
   static final SmartNotificationService _instance =
@@ -44,8 +44,8 @@ class SmartNotificationService {
   // Prime-time slot (local hour) and minimum lead so we never fire at night or
   // while the user is clearly still inside the app.
   static const int _primeHour = 19; // 7 PM
-  static const int _minLeadHours = 5;
-  static const int _comebackDays = 3;
+  static const int _minLeadHours = 2;
+  static const int _comebackDays = 1;
 
   final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
@@ -78,6 +78,7 @@ class SmartNotificationService {
       try {
         final info = await FlutterTimezone.getLocalTimezone();
         tz.setLocalLocation(tz.getLocation(info.identifier));
+        debugPrint('SmartNotifications: timezone = ${info.identifier}');
       } catch (e) {
         debugPrint('SmartNotifications: timezone fallback (UTC): $e');
       }
@@ -85,10 +86,11 @@ class SmartNotificationService {
       const androidInit = AndroidInitializationSettings(
         'ic_stat_onesignal_default',
       );
+      // Request permissions on iOS so local notifications can be displayed.
       const darwinInit = DarwinInitializationSettings(
-        requestAlertPermission: false,
-        requestBadgePermission: false,
-        requestSoundPermission: false,
+        requestAlertPermission: true,
+        requestBadgePermission: true,
+        requestSoundPermission: true,
       );
 
       await _plugin.initialize(
@@ -111,20 +113,24 @@ class SmartNotificationService {
 
       await _createChannel();
 
-      // Local notifications share the OS POST_NOTIFICATIONS grant with
-      // OneSignal; requesting again is a no-op if already decided, so this is
-      // safe and keeps the feature working even if push is disabled.
-      final android =
-          _plugin
-              .resolvePlatformSpecificImplementation<
-                AndroidFlutterLocalNotificationsPlugin
-              >();
-      await android?.requestNotificationsPermission();
+      // Request POST_NOTIFICATIONS permission on Android 13+.
+      // This is a no-op if already granted or denied, and it's safe to call
+      // even though OneSignal may have already requested this.
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        final android =
+            _plugin
+                .resolvePlatformSpecificImplementation<
+                  AndroidFlutterLocalNotificationsPlugin
+                >();
+        final granted = await android?.requestNotificationsPermission();
+        debugPrint('SmartNotifications: Android permission granted=$granted');
+      }
 
       _initialized = true;
       debugPrint('SmartNotifications: initialized (enabled=$_enabled)');
-    } catch (e) {
+    } catch (e, stack) {
       debugPrint('SmartNotifications: init error: $e');
+      debugPrint('SmartNotifications: $stack');
     }
   }
 
@@ -134,14 +140,13 @@ class SmartNotificationService {
             .resolvePlatformSpecificImplementation<
               AndroidFlutterLocalNotificationsPlugin
             >();
-    // Default importance (not high) → shows in the tray with sound but never
-    // a heads-up banner, so reminders feel calm rather than intrusive.
+    // High importance → shows as a heads-up popup so the user actually sees it.
     await android?.createNotificationChannel(
       const AndroidNotificationChannel(
         _channelId,
         'Recordatorios',
         description: 'Recordatorios para seguir viendo tu contenido',
-        importance: Importance.defaultImportance,
+        importance: Importance.high,
       ),
     );
   }
@@ -176,22 +181,37 @@ class SmartNotificationService {
   /// notifications. Call this on app start and whenever the app is backgrounded
   /// so the reminder always reflects the most recent activity.
   Future<void> refreshReminders() async {
-    if (!_initialized || !_enabled) return;
+    if (!_initialized || !_enabled) {
+      debugPrint(
+        'SmartNotifications: skip refresh (init=$_initialized, enabled=$_enabled)',
+      );
+      return;
+    }
 
     try {
       await _plugin.cancel(id: _reminderId);
 
-      final android =
-          _plugin
-              .resolvePlatformSpecificImplementation<
-                AndroidFlutterLocalNotificationsPlugin
-              >();
-      // No point scheduling if the user denied notifications.
-      if ((await android?.areNotificationsEnabled()) == false) return;
+      // On Android, check if notifications are enabled in system settings.
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        final android =
+            _plugin
+                .resolvePlatformSpecificImplementation<
+                  AndroidFlutterLocalNotificationsPlugin
+                >();
+        if ((await android?.areNotificationsEnabled()) == false) {
+          debugPrint(
+            'SmartNotifications: notifications disabled in system settings',
+          );
+          return;
+        }
+      }
 
       await _loc.init();
       final history = await _watch.getHistory();
-      if (history.isEmpty) return; // Nothing personalised to say; stay silent.
+      if (history.isEmpty) {
+        debugPrint('SmartNotifications: no watch history, skip scheduling');
+        return;
+      }
 
       final inProgress = _pickResumeCandidate(history);
 
@@ -235,8 +255,8 @@ class SmartNotificationService {
             _channelId,
             'Recordatorios',
             channelDescription: 'Recordatorios para seguir viendo tu contenido',
-            importance: Importance.defaultImportance,
-            priority: Priority.defaultPriority,
+            importance: Importance.high,
+            priority: Priority.high,
             icon: 'ic_stat_onesignal_default',
             color: Color(0xFFFF6B6B),
             autoCancel: true,
@@ -248,9 +268,46 @@ class SmartNotificationService {
         androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
       );
 
-      debugPrint('SmartNotifications: scheduled "$title" for $when');
-    } catch (e) {
+      debugPrint(
+        'SmartNotifications: scheduled "$title" for $when (payload=$payload)',
+      );
+    } catch (e, stack) {
       debugPrint('SmartNotifications: schedule error: $e');
+      debugPrint('SmartNotifications: $stack');
+    }
+  }
+
+  /// Send an immediate test notification to verify the system is working.
+  /// Call this from a debug button or during development to confirm setup.
+  Future<void> sendTestNotification() async {
+    if (!_initialized) {
+      debugPrint('SmartNotifications: not initialized, cannot send test');
+      return;
+    }
+
+    try {
+      await _plugin.show(
+        id: 9999,
+        title: '🔔 Test Notification',
+        body: 'Las notificaciones locales están funcionando correctamente.',
+        notificationDetails: const NotificationDetails(
+          android: AndroidNotificationDetails(
+            _channelId,
+            'Recordatorios',
+            channelDescription: 'Recordatorios para seguir viendo tu contenido',
+            importance: Importance.high,
+            priority: Priority.high,
+            icon: 'ic_stat_onesignal_default',
+            color: Color(0xFFFF6B6B),
+            autoCancel: true,
+          ),
+          iOS: DarwinNotificationDetails(),
+        ),
+      );
+      debugPrint('SmartNotifications: test notification sent');
+    } catch (e, stack) {
+      debugPrint('SmartNotifications: test notification error: $e');
+      debugPrint('SmartNotifications: $stack');
     }
   }
 
@@ -287,6 +344,9 @@ class SmartNotificationService {
     while (candidate.isBefore(earliest)) {
       candidate = candidate.add(const Duration(days: 1));
     }
+    debugPrint(
+      'SmartNotifications: _nextPrimeTime → $candidate (now=$now, minDays=$minDays)',
+    );
     return candidate;
   }
 }

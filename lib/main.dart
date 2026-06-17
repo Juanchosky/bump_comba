@@ -218,8 +218,9 @@ class _BumpCombaAppState extends State<BumpCombaApp>
     // progreso de visionado más reciente. Como refreshReminders cancela antes
     // de programar, nunca se acumulan notificaciones y un usuario activo no
     // recibe ninguna mientras usa la app.
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.detached) {
+    // Solo en paused (no detached), porque en detached la app se está cerrando
+    // y queremos que la notificación ya programada se mantenga.
+    if (state == AppLifecycleState.paused) {
       unawaited(SmartNotificationService().refreshReminders());
     }
   }
