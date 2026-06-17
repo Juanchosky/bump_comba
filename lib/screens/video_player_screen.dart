@@ -4723,9 +4723,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                               activeTrackColor:
                                                                   const Color.fromARGB(
                                                                     255,
-                                                                    177,
-                                                                    17,
-                                                                    17,
+                                                                    190,
+                                                                    19,
+                                                                    19,
                                                                   ),
                                                               inactiveTrackColor:
                                                                   Colors.white
@@ -4734,11 +4734,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                             0.24,
                                                                       ),
                                                               thumbColor:
-                                                                  const Color.fromARGB(
-                                                                    255,
-                                                                    196,
-                                                                    18,
-                                                                    18,
+                                                                  const Color(
+                                                                    0xFFC41212,
                                                                   ),
                                                               thumbShape:
                                                                   RoundSliderThumbShape(
