@@ -84,4 +84,6 @@ flutter:
     - assets/images/logo.png
     - assets/images/logodepremium.png
     - assets/images/background.jpg
+    - assets/images/Avanzar.png
+    - assets/images/Retroceder.png
     - .env

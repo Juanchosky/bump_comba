@@ -3589,12 +3589,17 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   Widget _buildSeekButton({
-    required IconData icon,
+    required String assetPath,
     required VoidCallback onTap,
     required double iconSize,
   }) {
     return IconButton(
-      icon: Icon(icon, color: Colors.white),
+      icon: Image.asset(
+        assetPath,
+        width: iconSize,
+        height: iconSize,
+        color: Colors.white,
+      ),
       iconSize: iconSize,
       onPressed: onTap,
     );
@@ -4109,16 +4114,67 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 // Nombre del Contenido
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 40),
-                  child: Text(
-                    _currentItem.name,
-                    style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.7),
-                      fontSize: (_isLandscape ? 15 : 14) * scale,
-                      fontWeight: FontWeight.w400,
-                    ),
-                    textAlign: TextAlign.center,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
+                  child: Builder(
+                    builder: (context) {
+                      final clean = NormalizationUtils.extractEpisodeTitle(
+                        _currentItem.name,
+                      );
+                      final epNum =
+                          _currentItem.episodeNumber ??
+                          NormalizationUtils.parseEpisodeNumber(
+                            _currentItem.name,
+                          );
+                      final episodeLabel =
+                          clean.isEmpty
+                              ? _currentItem.name
+                              : (epNum != null ? '$epNum. $clean' : clean);
+                      final seriesName = _currentItem.seriesName;
+
+                      if (seriesName != null &&
+                          seriesName.isNotEmpty &&
+                          seriesName != episodeLabel) {
+                        return Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              seriesName,
+                              style: TextStyle(
+                                color: Colors.white.withValues(alpha: 0.5),
+                                fontSize: (_isLandscape ? 15 : 14) * scale,
+                                fontWeight: FontWeight.w400,
+                              ),
+                              textAlign: TextAlign.center,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              episodeLabel,
+                              style: TextStyle(
+                                color: Colors.white.withValues(alpha: 0.8),
+                                fontSize: (_isLandscape ? 17 : 16) * scale,
+                                fontWeight: FontWeight.w500,
+                              ),
+                              textAlign: TextAlign.center,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
+                        );
+                      }
+
+                      return Text(
+                        episodeLabel,
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.7),
+                          fontSize: (_isLandscape ? 15 : 14) * scale,
+                          fontWeight: FontWeight.w400,
+                        ),
+                        textAlign: TextAlign.center,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      );
+                    },
                   ),
                 ),
                 SizedBox(height: 48 * scale),
@@ -4199,7 +4255,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                  color: Colors.white,
+                  color: const Color.fromARGB(255, 236, 236, 236),
                   fontSize: 13 * scale,
                   fontWeight: FontWeight.w500,
                   letterSpacing: 0.1,
@@ -4220,11 +4276,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // 1. Lógica de escalado responsivo
     final double shortestSide = size.shortestSide;
     final double scale = (shortestSide / 414.0).clamp(0.8, 1.25) * 1.02;
-    final double centralIconSize = 60.0 * scale;
-    final double seekIconSize = centralIconSize * 0.67;
-    final double seekGap = (size.width * (_isLandscape ? 0.18 : 0.09)).clamp(
-      36.0,
-      100.0,
+    final double centralIconSize = 72.0 * scale;
+    final double seekIconSize = centralIconSize * 0.75;
+    final double seekGap = (size.width * (_isLandscape ? 0.10 : 0.05)).clamp(
+      16.0,
+      60.0,
     );
 
     return Positioned.fill(
@@ -4250,7 +4306,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                   children: [
                     if (!_currentItem.isLive) ...[
                       _buildSeekButton(
-                        icon: Icons.replay_10_rounded,
+                        assetPath: 'assets/images/Retroceder.png',
                         onTap: _seekBackward,
                         iconSize: seekIconSize,
                       ),
@@ -4264,14 +4320,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                               valueListenable: CastService().castPlaying,
                               builder: (context, isPlaying, _) {
                                 return IconButton(
-                                  iconSize: centralIconSize,
-                                  icon: Icon(
-                                    isPlaying
-                                        ? Icons.pause_circle_filled
-                                        : Icons.play_circle_fill,
-                                    color: Colors.white,
-                                  ),
                                   onPressed: _togglePlayback,
+                                  icon: _PremiumPlayPauseIcon(
+                                    isPlaying: isPlaying,
+                                    size: centralIconSize,
+                                  ),
                                 );
                               },
                             )
@@ -4281,14 +4334,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                               builder: (context, snapshot) {
                                 final isPlaying = snapshot.data ?? false;
                                 return IconButton(
-                                  iconSize: centralIconSize,
-                                  icon: Icon(
-                                    isPlaying
-                                        ? Icons.pause_circle_filled
-                                        : Icons.play_circle_fill,
-                                    color: Colors.white,
-                                  ),
                                   onPressed: _togglePlayback,
+                                  icon: _PremiumPlayPauseIcon(
+                                    isPlaying: isPlaying,
+                                    size: centralIconSize,
+                                  ),
                                 );
                               },
                             );
@@ -4297,7 +4347,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                     if (!_currentItem.isLive) ...[
                       SizedBox(width: seekGap),
                       _buildSeekButton(
-                        icon: Icons.forward_10_rounded,
+                        assetPath: 'assets/images/Avanzar.png',
                         onTap: _seekForward,
                         iconSize: seekIconSize,
                       ),
@@ -4376,8 +4426,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                 ),
                                 Expanded(
                                   child: Row(
-                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    mainAxisAlignment: MainAxisAlignment.start,
                                     children: [
+                                      const SizedBox(width: 8),
                                       Flexible(
                                         child: GestureDetector(
                                           behavior: HitTestBehavior.opaque,
@@ -4394,18 +4445,70 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                     _currentItem.name,
                                                   );
 
+                                              final episodeLabel =
+                                                  clean.isEmpty
+                                                      ? _currentItem.name
+                                                      : (epNum != null
+                                                          ? '$epNum. $clean'
+                                                          : clean);
+                                              final seriesName =
+                                                  _currentItem.seriesName;
+
+                                              if (seriesName != null &&
+                                                  seriesName.isNotEmpty &&
+                                                  seriesName != episodeLabel) {
+                                                return Column(
+                                                  mainAxisSize:
+                                                      MainAxisSize.min,
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment.start,
+                                                  children: [
+                                                    Text(
+                                                      seriesName,
+                                                      style: TextStyle(
+                                                        color: Colors.white
+                                                            .withValues(
+                                                              alpha: 0.55,
+                                                            ),
+                                                        fontSize: 14 * scale,
+                                                        fontWeight:
+                                                            FontWeight.w400,
+                                                        letterSpacing: 0.2,
+                                                      ),
+                                                      textAlign:
+                                                          TextAlign.start,
+                                                      maxLines: 1,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                    ),
+                                                    const SizedBox(height: 2),
+                                                    Text(
+                                                      episodeLabel,
+                                                      style: TextStyle(
+                                                        color: Colors.white,
+                                                        fontSize: 16 * scale,
+                                                        fontWeight:
+                                                            FontWeight.w600,
+                                                        letterSpacing: -0.2,
+                                                      ),
+                                                      textAlign:
+                                                          TextAlign.start,
+                                                      maxLines: 1,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                    ),
+                                                  ],
+                                                );
+                                              }
+
                                               return Text(
-                                                clean.isEmpty
-                                                    ? _currentItem.name
-                                                    : (epNum != null
-                                                        ? '$epNum. $clean'
-                                                        : clean),
+                                                episodeLabel,
                                                 style: TextStyle(
                                                   color: Colors.white,
                                                   fontSize: 16 * scale,
                                                   fontWeight: FontWeight.w600,
                                                 ),
-                                                textAlign: TextAlign.center,
+                                                textAlign: TextAlign.start,
                                                 maxLines: 1,
                                                 overflow: TextOverflow.ellipsis,
                                               );
@@ -4628,9 +4731,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                           SliderTheme(
                                                             data: SliderThemeData(
                                                               trackHeight:
-                                                                  2.0 * scale,
+                                                                  1.5 * scale,
                                                               activeTrackColor:
-                                                                  Colors.white,
+                                                                  const Color.fromARGB(
+                                                                    255,
+                                                                    155,
+                                                                    31,
+                                                                    17,
+                                                                  ),
                                                               inactiveTrackColor:
                                                                   Colors.white
                                                                       .withValues(
@@ -4638,11 +4746,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                             0.24,
                                                                       ),
                                                               thumbColor:
-                                                                  Colors.white,
+                                                                  const Color.fromARGB(
+                                                                    255,
+                                                                    170,
+                                                                    10,
+                                                                    26,
+                                                                  ),
                                                               thumbShape:
                                                                   RoundSliderThumbShape(
                                                                     enabledThumbRadius:
-                                                                        6 *
+                                                                        7.5 *
                                                                         scale,
                                                                   ),
                                                               overlayShape:
@@ -5084,9 +5197,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     if (isPiP) return const SizedBox.shrink();
 
     final double scale = (size.shortestSide / 414.0).clamp(0.8, 1.25) * 1.02;
-    final double sideIconSize = 28.0 * scale;
-    final double playCircle = 64.0 * scale;
-    final double playIconSize = 28.0 * scale;
+    final double sideIconSize = 34.0 * scale;
+    final double playCircle = 72.0 * scale;
+    final double playIconSize = 36.0 * scale;
 
     // ── helper: botón play/pause circular estilo iOS ──────────────────────
     Widget playPauseButton(bool isPlaying) {
@@ -5104,9 +5217,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             ),
           ),
           child: Center(
-            child: Icon(
-              isPlaying ? CupertinoIcons.pause_fill : CupertinoIcons.play_fill,
-              color: Colors.white,
+            child: _PremiumPlayPauseIcon(
+              isPlaying: isPlaying,
               size: playIconSize,
             ),
           ),
@@ -5169,11 +5281,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 children: [
                   if (!_currentItem.isLive) ...[
                     _buildSeekButton(
-                      icon: Icons.replay_10_rounded,
+                      assetPath: 'assets/images/Retroceder.png',
                       onTap: _seekBackward,
                       iconSize: sideIconSize,
                     ),
-                    SizedBox(width: 38 * scale),
+                    SizedBox(width: 20 * scale),
                   ],
                   ValueListenableBuilder<bool>(
                     valueListenable: CastService().isCasting,
@@ -5196,9 +5308,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                     },
                   ),
                   if (!_currentItem.isLive) ...[
-                    SizedBox(width: 38 * scale),
+                    SizedBox(width: 20 * scale),
                     _buildSeekButton(
-                      icon: Icons.forward_10_rounded,
+                      assetPath: 'assets/images/Avanzar.png',
                       onTap: _seekForward,
                       iconSize: sideIconSize,
                     ),
@@ -5302,7 +5414,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                 color: Colors.white.withValues(
                                                   alpha: 0.55,
                                                 ),
-                                                fontSize: 11 * scale,
+                                                fontSize: 14 * scale,
                                                 fontWeight: FontWeight.w400,
                                                 letterSpacing: 0.2,
                                               ),
@@ -5315,8 +5427,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                               episodeLabel,
                                               style: TextStyle(
                                                 color: Colors.white,
-                                                fontSize: 15 * scale,
-                                                fontWeight: FontWeight.w700,
+                                                fontSize: 16 * scale,
+                                                fontWeight: FontWeight.w600,
                                                 letterSpacing: -0.2,
                                               ),
                                               textAlign: TextAlign.start,
@@ -5532,9 +5644,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                         SliderTheme(
                                                           data: SliderThemeData(
                                                             trackHeight:
-                                                                2.0 * scale,
+                                                                1.5 * scale,
                                                             activeTrackColor:
-                                                                Colors.white,
+                                                                const Color(
+                                                                  0xFFE50914,
+                                                                ),
                                                             inactiveTrackColor:
                                                                 Colors.white
                                                                     .withValues(
@@ -5542,7 +5656,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                           0.28,
                                                                     ),
                                                             thumbColor:
-                                                                Colors.white,
+                                                                const Color(
+                                                                  0xFFE50914,
+                                                                ),
                                                             thumbShape:
                                                                 RoundSliderThumbShape(
                                                                   enabledThumbRadius:
@@ -5989,13 +6105,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             angle: rotation,
             child: Transform.scale(
               scale: scale,
-              child: Icon(
+              child: Image.asset(
                 _seekFeedbackForward
-                    ? Icons.forward_10_outlined
-                    : Icons.replay_10_outlined,
+                    ? 'assets/images/Avanzar.png'
+                    : 'assets/images/Retroceder.png',
                 color: const Color.fromARGB(255, 247, 247, 247),
-                size: iconSize,
-                shadows: const [Shadow(color: Colors.black45, blurRadius: 8)],
+                width: iconSize,
+                height: iconSize,
               ),
             ),
           ),
@@ -6543,6 +6659,62 @@ class _AppLoadingAnimationState extends State<_AppLoadingAnimation>
           ),
         ],
       ),
+    );
+  }
+}
+
+class _PremiumPlayPauseIcon extends StatefulWidget {
+  final bool isPlaying;
+  final double size;
+
+  const _PremiumPlayPauseIcon({required this.isPlaying, required this.size});
+
+  @override
+  _PremiumPlayPauseIconState createState() => _PremiumPlayPauseIconState();
+}
+
+class _PremiumPlayPauseIconState extends State<_PremiumPlayPauseIcon>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 350),
+      value: widget.isPlaying ? 1.0 : 0.0,
+    );
+  }
+
+  @override
+  void didUpdateWidget(_PremiumPlayPauseIcon oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isPlaying != oldWidget.isPlaying) {
+      if (widget.isPlaying) {
+        _controller.forward();
+      } else {
+        _controller.reverse();
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedIcon(
+      icon: AnimatedIcons.play_pause,
+      progress: CurvedAnimation(
+        parent: _controller,
+        curve: Curves.easeInOutCubic,
+      ),
+      color: Colors.white,
+      size: widget.size,
     );
   }
 }
