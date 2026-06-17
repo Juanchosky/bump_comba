@@ -3157,259 +3157,266 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                         ? Border.all(color: Colors.white12, width: 1)
                         : null,
               ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text(
-                            'Transmitiendo',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
+              child: SafeArea(
+                top: false,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              'Transmitiendo',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
-                          ),
-                          IconButton(
-                            onPressed: () => Navigator.pop(context),
-                            icon: const Icon(
-                              Icons.close,
-                              color: Colors.white70,
+                            IconButton(
+                              onPressed: () => Navigator.pop(context),
+                              icon: const Icon(
+                                Icons.close,
+                                color: Colors.white70,
+                              ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
-                    ),
-                    const Divider(color: Colors.white10, height: 1),
-                    Padding(
-                      padding: const EdgeInsets.all(20),
-                      child: Column(
-                        children: [
-                          // Toggle de audio local
-                          StatefulBuilder(
-                            builder: (context, setInnerState) {
-                              return Container(
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withValues(alpha: 0.06),
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                child: Column(
-                                  children: [
-                                    SwitchListTile(
-                                      contentPadding:
-                                          const EdgeInsets.symmetric(
-                                            horizontal: 16,
-                                            vertical: 2,
+                      const Divider(color: Colors.white10, height: 1),
+                      Padding(
+                        padding: const EdgeInsets.all(20),
+                        child: Column(
+                          children: [
+                            // Toggle de audio local
+                            StatefulBuilder(
+                              builder: (context, setInnerState) {
+                                return Container(
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withValues(alpha: 0.06),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Column(
+                                    children: [
+                                      SwitchListTile(
+                                        contentPadding:
+                                            const EdgeInsets.symmetric(
+                                              horizontal: 16,
+                                              vertical: 2,
+                                            ),
+                                        title: const Text(
+                                          'Escuchar audio en el teléfono',
+                                          style: TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 14,
                                           ),
-                                      title: const Text(
-                                        'Escuchar audio en el teléfono',
-                                        style: TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 14,
                                         ),
-                                      ),
-                                      subtitle: Text(
-                                        _localAudioDuringCast
-                                            ? 'Activo. Ajusta el retraso si hay eco.'
-                                            : 'Solo se reproduce en el TV',
-                                        style: TextStyle(
-                                          color: Colors.white.withValues(
-                                            alpha: 0.5,
+                                        subtitle: Text(
+                                          _localAudioDuringCast
+                                              ? 'Activo. Ajusta el retraso si hay eco.'
+                                              : 'Solo se reproduce en el TV',
+                                          style: TextStyle(
+                                            color: Colors.white.withValues(
+                                              alpha: 0.5,
+                                            ),
+                                            fontSize: 11,
                                           ),
-                                          fontSize: 11,
                                         ),
-                                      ),
-                                      secondary: Icon(
-                                        _localAudioDuringCast
-                                            ? Icons.volume_up_rounded
-                                            : Icons.volume_off_rounded,
-                                        color:
-                                            _localAudioDuringCast
-                                                ? Colors.redAccent
-                                                : Colors.white38,
-                                      ),
-                                      value: _localAudioDuringCast,
-                                      activeThumbColor: Colors.redAccent,
-                                      onChanged: (value) {
-                                        setInnerState(() {});
-                                        setState(() {
-                                          _localAudioDuringCast = value;
-                                          if (!value) {
-                                            _syncOffsetMs = 0; // Reset
+                                        secondary: Icon(
+                                          _localAudioDuringCast
+                                              ? Icons.volume_up_rounded
+                                              : Icons.volume_off_rounded,
+                                          color:
+                                              _localAudioDuringCast
+                                                  ? Colors.redAccent
+                                                  : Colors.white38,
+                                        ),
+                                        value: _localAudioDuringCast,
+                                        activeThumbColor: Colors.redAccent,
+                                        onChanged: (value) {
+                                          setInnerState(() {});
+                                          setState(() {
+                                            _localAudioDuringCast = value;
+                                            if (!value) {
+                                              _syncOffsetMs = 0; // Reset
+                                            }
+                                          });
+                                          if (value) {
+                                            final castPos =
+                                                CastService()
+                                                    .castPosition
+                                                    .value;
+                                            _player?.seek(castPos);
+                                            _player?.play();
+                                          } else {
+                                            _player?.pause();
                                           }
-                                        });
-                                        if (value) {
-                                          final castPos =
-                                              CastService().castPosition.value;
-                                          _player?.seek(castPos);
-                                          _player?.play();
-                                        } else {
-                                          _player?.pause();
-                                        }
-                                      },
-                                    ),
-                                    Padding(
-                                      padding: const EdgeInsets.fromLTRB(
-                                        16,
-                                        0,
-                                        16,
-                                        12,
+                                        },
                                       ),
-                                      child: Row(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Expanded(
-                                            child: Text(
-                                              'Recomendado para cuando no se escucha el audio en el TV, se puede reproducir con un parlante bluetooth o audífonos.',
-                                              style: TextStyle(
-                                                color: Colors.white.withValues(
-                                                  alpha: 0.6,
+                                      Padding(
+                                        padding: const EdgeInsets.fromLTRB(
+                                          16,
+                                          0,
+                                          16,
+                                          12,
+                                        ),
+                                        child: Row(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Expanded(
+                                              child: Text(
+                                                'Recomendado para cuando no se escucha el audio en el TV, se puede reproducir con un parlante bluetooth o audífonos.',
+                                                style: TextStyle(
+                                                  color: Colors.white
+                                                      .withValues(alpha: 0.6),
+                                                  fontSize: 11,
+                                                  height: 1.2,
                                                 ),
-                                                fontSize: 11,
-                                                height: 1.2,
                                               ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
+                            ),
+                            if (_localAudioDuringCast) ...[
+                              const SizedBox(height: 20),
+                              StatefulBuilder(
+                                builder: (context, setInnerState) {
+                                  return Column(
+                                    children: [
+                                      Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          const Text(
+                                            'Sincronización de audio',
+                                            style: TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 13,
+                                            ),
+                                          ),
+                                          Text(
+                                            '${_syncOffsetMs >= 0 ? '+' : ''}${_syncOffsetMs.toInt()} ms',
+                                            style: const TextStyle(
+                                              color: Colors.redAccent,
+                                              fontSize: 13,
+                                              fontWeight: FontWeight.bold,
                                             ),
                                           ),
                                         ],
                                       ),
-                                    ),
-                                  ],
+                                      SliderTheme(
+                                        data: SliderThemeData(
+                                          trackHeight: 2.0,
+                                          activeTrackColor: Colors.redAccent,
+                                          inactiveTrackColor: Colors.white24,
+                                          thumbColor: Colors.redAccent,
+                                          overlayColor: Colors.redAccent
+                                              .withValues(alpha: 0.2),
+                                          thumbShape:
+                                              const RoundSliderThumbShape(
+                                                enabledThumbRadius: 6,
+                                              ),
+                                        ),
+                                        child: Slider(
+                                          min: -3000,
+                                          max: 3000,
+                                          divisions: 60,
+                                          value: _syncOffsetMs,
+                                          onChanged: (val) {
+                                            setInnerState(
+                                              () => _syncOffsetMs = val,
+                                            );
+                                            setState(() => _syncOffsetMs = val);
+                                          },
+                                          onChangeEnd: (val) {
+                                            final targetPos =
+                                                CastService()
+                                                    .castPosition
+                                                    .value +
+                                                Duration(
+                                                  milliseconds: val.toInt(),
+                                                );
+                                            _player?.seek(targetPos);
+                                          },
+                                        ),
+                                      ),
+                                      Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          Text(
+                                            'Atrasar',
+                                            style: TextStyle(
+                                              color: Colors.white.withValues(
+                                                alpha: 0.5,
+                                              ),
+                                              fontSize: 10,
+                                            ),
+                                          ),
+                                          Text(
+                                            'Adelantar',
+                                            style: TextStyle(
+                                              color: Colors.white.withValues(
+                                                alpha: 0.5,
+                                              ),
+                                              fontSize: 10,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  );
+                                },
+                              ),
+                            ],
+                            const SizedBox(height: 24),
+                            SizedBox(
+                              width: double.infinity,
+                              child: ElevatedButton.icon(
+                                icon: const Icon(Icons.cast_rounded, size: 20),
+                                label: const Text('Dejar de transmitir'),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.red.withValues(
+                                    alpha: 0.2,
+                                  ),
+                                  foregroundColor: Colors.red,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 14,
+                                  ),
+                                  elevation: 0,
                                 ),
-                              );
-                            },
-                          ),
-                          if (_localAudioDuringCast) ...[
-                            const SizedBox(height: 20),
-                            StatefulBuilder(
-                              builder: (context, setInnerState) {
-                                return Column(
-                                  children: [
-                                    Row(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.spaceBetween,
-                                      children: [
-                                        const Text(
-                                          'Sincronización de audio',
-                                          style: TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 13,
-                                          ),
-                                        ),
-                                        Text(
-                                          '${_syncOffsetMs >= 0 ? '+' : ''}${_syncOffsetMs.toInt()} ms',
-                                          style: const TextStyle(
-                                            color: Colors.redAccent,
-                                            fontSize: 13,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    SliderTheme(
-                                      data: SliderThemeData(
-                                        trackHeight: 2.0,
-                                        activeTrackColor: Colors.redAccent,
-                                        inactiveTrackColor: Colors.white24,
-                                        thumbColor: Colors.redAccent,
-                                        overlayColor: Colors.redAccent
-                                            .withValues(alpha: 0.2),
-                                        thumbShape: const RoundSliderThumbShape(
-                                          enabledThumbRadius: 6,
-                                        ),
-                                      ),
-                                      child: Slider(
-                                        min: -3000,
-                                        max: 3000,
-                                        divisions: 60,
-                                        value: _syncOffsetMs,
-                                        onChanged: (val) {
-                                          setInnerState(
-                                            () => _syncOffsetMs = val,
-                                          );
-                                          setState(() => _syncOffsetMs = val);
-                                        },
-                                        onChangeEnd: (val) {
-                                          final targetPos =
-                                              CastService().castPosition.value +
-                                              Duration(
-                                                milliseconds: val.toInt(),
-                                              );
-                                          _player?.seek(targetPos);
-                                        },
-                                      ),
-                                    ),
-                                    Row(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.spaceBetween,
-                                      children: [
-                                        Text(
-                                          'Atrasar',
-                                          style: TextStyle(
-                                            color: Colors.white.withValues(
-                                              alpha: 0.5,
-                                            ),
-                                            fontSize: 10,
-                                          ),
-                                        ),
-                                        Text(
-                                          'Adelantar',
-                                          style: TextStyle(
-                                            color: Colors.white.withValues(
-                                              alpha: 0.5,
-                                            ),
-                                            fontSize: 10,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ],
-                                );
-                              },
+                                onPressed: () {
+                                  castService.disconnect();
+                                  setState(() => _localAudioDuringCast = false);
+                                  // Re-activar track de video y reanudar
+                                  try {
+                                    final mpv = _player?.platform as dynamic;
+                                    mpv?.setProperty('vid', 'auto');
+                                  } catch (_) {}
+                                  _player?.play();
+                                  Navigator.pop(context);
+                                  _showVisualNotice('Transmisión finalizada');
+                                },
+                              ),
                             ),
                           ],
-                          const SizedBox(height: 24),
-                          SizedBox(
-                            width: double.infinity,
-                            child: ElevatedButton.icon(
-                              icon: const Icon(Icons.cast_rounded, size: 20),
-                              label: const Text('Dejar de transmitir'),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.red.withValues(
-                                  alpha: 0.2,
-                                ),
-                                foregroundColor: Colors.red,
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 14,
-                                ),
-                                elevation: 0,
-                              ),
-                              onPressed: () {
-                                castService.disconnect();
-                                setState(() => _localAudioDuringCast = false);
-                                // Re-activar track de video y reanudar
-                                try {
-                                  final mpv = _player?.platform as dynamic;
-                                  mpv?.setProperty('vid', 'auto');
-                                } catch (_) {}
-                                _player?.play();
-                                Navigator.pop(context);
-                                _showVisualNotice('Transmisión finalizada');
-                              },
-                            ),
-                          ),
-                        ],
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 8),
-                  ],
+                      const SizedBox(height: 8),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -4716,8 +4723,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                               activeTrackColor:
                                                                   const Color.fromARGB(
                                                                     255,
-                                                                    155,
-                                                                    31,
+                                                                    177,
+                                                                    17,
                                                                     17,
                                                                   ),
                                                               inactiveTrackColor:
@@ -4729,9 +4736,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                               thumbColor:
                                                                   const Color.fromARGB(
                                                                     255,
-                                                                    170,
-                                                                    10,
-                                                                    26,
+                                                                    196,
+                                                                    18,
+                                                                    18,
                                                                   ),
                                                               thumbShape:
                                                                   RoundSliderThumbShape(
@@ -6382,206 +6389,218 @@ class _CastDeviceSelectorState extends State<_CastDeviceSelector> {
                 ? Border.all(color: Colors.white12, width: 1)
                 : null,
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      Icons.cast_rounded,
-                      color: Colors.white,
-                      size: 22,
-                    ),
-                    const SizedBox(width: 10),
-                    const Text(
-                      'Transmitir a TV',
-                      style: TextStyle(
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.cast_rounded,
                         color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ],
-                ),
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (!_isSearching)
-                      IconButton(
-                        onPressed: _searchDevices,
-                        icon: const Icon(
-                          Icons.refresh_rounded,
-                          color: Colors.white70,
-                        ),
-                        tooltip: 'Buscar de nuevo',
-                      ),
-                    IconButton(
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.close, color: Colors.white70),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          const Divider(color: Colors.white10, height: 1),
-          if (_isSearching)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 40),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  SizedBox(
-                    width: 32,
-                    height: 32,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2.5,
-                      color: Colors.redAccent.withValues(alpha: 0.8),
-                      strokeCap: StrokeCap.round,
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  Text(
-                    'Buscando dispositivos...',
-                    style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.6),
-                      fontSize: 14,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Asegúrate de estar en la misma red Wi-Fi',
-                    style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.35),
-                      fontSize: 12,
-                    ),
-                  ),
-                ],
-              ),
-            )
-          else if (_error != null)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 24),
-              child: Column(
-                children: [
-                  Icon(
-                    Icons.wifi_off_rounded,
-                    color: Colors.red.withValues(alpha: 0.6),
-                    size: 40,
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    _error!,
-                    style: const TextStyle(color: Colors.white70, fontSize: 14),
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 16),
-                  TextButton.icon(
-                    icon: const Icon(Icons.refresh, size: 18),
-                    label: const Text('Reintentar'),
-                    style: TextButton.styleFrom(
-                      foregroundColor: Colors.redAccent,
-                    ),
-                    onPressed: _searchDevices,
-                  ),
-                ],
-              ),
-            )
-          else if (_devices != null && _devices!.isEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 24),
-              child: Column(
-                children: [
-                  Icon(
-                    Icons.tv_off_rounded,
-                    color: Colors.white.withValues(alpha: 0.4),
-                    size: 40,
-                  ),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'No se encontraron dispositivos',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w500,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Verifica que tu TV/Chromecast esté encendido\ny conectado a la misma red Wi-Fi.',
-                    style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.5),
-                      fontSize: 13,
-                      height: 1.5,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 20),
-                  TextButton.icon(
-                    icon: const Icon(Icons.refresh, size: 18),
-                    label: const Text('Buscar de nuevo'),
-                    style: TextButton.styleFrom(
-                      foregroundColor: Colors.redAccent,
-                    ),
-                    onPressed: _searchDevices,
-                  ),
-                ],
-              ),
-            )
-          else if (_devices != null)
-            Flexible(
-              child: ListView.builder(
-                padding: EdgeInsets.zero,
-                shrinkWrap: true,
-                itemCount: _devices!.length,
-                itemBuilder: (context, index) {
-                  final device = _devices![index];
-                  return ListTile(
-                    leading: Container(
-                      width: 40,
-                      height: 40,
-                      decoration: BoxDecoration(
-                        color: Colors.redAccent.withValues(alpha: 0.12),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: const Icon(
-                        Icons.tv_rounded,
-                        color: Colors.redAccent,
                         size: 22,
                       ),
-                    ),
-                    title: Text(
-                      device.name,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w500,
+                      const SizedBox(width: 10),
+                      const Text(
+                        'Transmitir a TV',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (!_isSearching)
+                        IconButton(
+                          onPressed: _searchDevices,
+                          icon: const Icon(
+                            Icons.refresh_rounded,
+                            color: Colors.white70,
+                          ),
+                          tooltip: 'Buscar de nuevo',
+                        ),
+                      IconButton(
+                        onPressed: () => Navigator.pop(context),
+                        icon: const Icon(Icons.close, color: Colors.white70),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const Divider(color: Colors.white10, height: 1),
+            if (_isSearching)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 40),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(
+                      width: 32,
+                      height: 32,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.5,
+                        color: Colors.redAccent.withValues(alpha: 0.8),
+                        strokeCap: StrokeCap.round,
                       ),
                     ),
-                    subtitle: Text(
-                      device.host,
+                    const SizedBox(height: 20),
+                    Text(
+                      'Buscando dispositivos...',
                       style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.4),
+                        color: Colors.white.withValues(alpha: 0.6),
+                        fontSize: 14,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Asegúrate de estar en la misma red Wi-Fi',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.35),
                         fontSize: 12,
                       ),
                     ),
-                    trailing: const Icon(
-                      Icons.chevron_right,
-                      color: Colors.white38,
+                  ],
+                ),
+              )
+            else if (_error != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  vertical: 40,
+                  horizontal: 24,
+                ),
+                child: Column(
+                  children: [
+                    Icon(
+                      Icons.wifi_off_rounded,
+                      color: Colors.red.withValues(alpha: 0.6),
+                      size: 40,
                     ),
-                    onTap: () => widget.onDeviceSelected(device),
-                  );
-                },
+                    const SizedBox(height: 16),
+                    Text(
+                      _error!,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 14,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 16),
+                    TextButton.icon(
+                      icon: const Icon(Icons.refresh, size: 18),
+                      label: const Text('Reintentar'),
+                      style: TextButton.styleFrom(
+                        foregroundColor: Colors.redAccent,
+                      ),
+                      onPressed: _searchDevices,
+                    ),
+                  ],
+                ),
+              )
+            else if (_devices != null && _devices!.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  vertical: 40,
+                  horizontal: 24,
+                ),
+                child: Column(
+                  children: [
+                    Icon(
+                      Icons.tv_off_rounded,
+                      color: Colors.white.withValues(alpha: 0.4),
+                      size: 40,
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'No se encontraron dispositivos',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w500,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Verifica que tu TV/Chromecast esté encendido\ny conectado a la misma red Wi-Fi.',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.5),
+                        fontSize: 13,
+                        height: 1.5,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 20),
+                    TextButton.icon(
+                      icon: const Icon(Icons.refresh, size: 18),
+                      label: const Text('Buscar de nuevo'),
+                      style: TextButton.styleFrom(
+                        foregroundColor: Colors.redAccent,
+                      ),
+                      onPressed: _searchDevices,
+                    ),
+                  ],
+                ),
+              )
+            else if (_devices != null)
+              Flexible(
+                child: ListView.builder(
+                  padding: EdgeInsets.zero,
+                  shrinkWrap: true,
+                  itemCount: _devices!.length,
+                  itemBuilder: (context, index) {
+                    final device = _devices![index];
+                    return ListTile(
+                      leading: Container(
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          color: Colors.redAccent.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(
+                          Icons.tv_rounded,
+                          color: Colors.redAccent,
+                          size: 22,
+                        ),
+                      ),
+                      title: Text(
+                        device.name,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      subtitle: Text(
+                        device.host,
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.4),
+                          fontSize: 12,
+                        ),
+                      ),
+                      trailing: const Icon(
+                        Icons.chevron_right,
+                        color: Colors.white38,
+                      ),
+                      onTap: () => widget.onDeviceSelected(device),
+                    );
+                  },
+                ),
               ),
-            ),
-          const SizedBox(height: 16),
-        ],
+            const SizedBox(height: 16),
+          ],
+        ),
       ),
     );
   }
