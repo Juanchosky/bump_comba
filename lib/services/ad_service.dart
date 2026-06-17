@@ -40,7 +40,7 @@ class AdService {
   // Cuando es true, se omite la "puerta" de anuncios (rewarded/confirmación) y
   // el contenido se reproduce directamente, sin el modo offline.
   // ⚠️ PONER EN false ANTES DE PUBLICAR para reactivar los anuncios.
-  static const bool kBypassAdGateForTesting = false;
+  static const bool kBypassAdGateForTesting = true;
 
   // ── Ads ───────────────────────────────────────────────────────────────────
   InterstitialAd? _interstitialAd;
@@ -859,12 +859,79 @@ class AdService {
 
   bool shouldShowMidRoll(int videoDurationMinutes) => _isCooldownElapsed();
 
-  int getMidRollPosition(int videoDurationSeconds) {
-    if (videoDurationSeconds < 300) return -1;
-    return (videoDurationSeconds ~/ 2) + 120;
+  // ── Timestamp de cuando comenzó la reproducción (tras el pre-roll ad) ────
+  DateTime? _videoStartTime;
+
+  /// Registra que el usuario acaba de ver el pre-roll y comenzó a reproducir.
+  /// El mid-roll usará este timestamp para calcular cuánto tiempo "limpio"
+  /// (sin anuncios) ha tenido el usuario antes de interrumpir de nuevo.
+  void recordVideoStart() {
+    _videoStartTime = DateTime.now();
+    debugPrint('AdMob: recordVideoStart → $_videoStartTime');
   }
 
-  void recordVideoStart() {}
+  /// Mínimo de segundos de visualización ininterrumpida que garantizamos
+  /// después de un pre-roll antes de meter otro anuncio. Varía según score:
+  ///  - Score alto (usuario tolerante): 8 min
+  ///  - Score medio: 12 min
+  ///  - Score bajo (usuario irritable): 18 min
+  int get _minAdFreeViewingSeconds {
+    if (_toleranceScore >= 70) return 480;  // 8 min
+    if (_toleranceScore >= 50) return 720;  // 12 min
+    return 1080;                             // 18 min
+  }
+
+  /// Calcula en qué segundo del video debería aparecer el mid-roll.
+  /// Devuelve -1 si el video no merece un mid-roll.
+  ///
+  /// Reglas:
+  ///  1. Videos < 10 min: NUNCA mid-roll (demasiado cortos, es molesto).
+  ///  2. Videos < 20 min: mid-roll solo si el pre-roll fue hace más de
+  ///     [_minAdFreeViewingSeconds] — en la práctica, esto elimina el mid-roll
+  ///     para contenido que ya mostró pre-roll, manteniendo ingresos en
+  ///     contenido largo.
+  ///  3. Videos >= 20 min: siempre mid-roll, pero la posición se ajusta
+  ///     para respetar el mínimo de tiempo "limpio".
+  ///  4. La posición nunca cae en el último 15% del video para no
+  ///     interrumpir el clímax/desenlace.
+  int getMidRollPosition(int videoDurationSeconds) {
+    // Videos cortos: nunca mid-roll
+    if (videoDurationSeconds < 600) return -1;
+
+    // Calcular cuánto tiempo lleva sin ver un anuncio.
+    // Si _lastAdShownTime es null, asumimos que no se mostró pre-roll.
+    final secsSinceLastAd = _lastAdShownTime != null
+        ? DateTime.now().difference(_lastAdShownTime!).inSeconds
+        : 9999;
+
+    // Para videos entre 10-20 min: solo mid-roll si ya pasó suficiente
+    // tiempo desde el pre-roll. Esto hace que si el usuario JUSTO vio
+    // el pre-roll, no le salga otro al poco rato.
+    if (videoDurationSeconds < 1200) {
+      // Si el pre-roll fue reciente, no programar mid-roll en videos medianos.
+      if (secsSinceLastAd < _minAdFreeViewingSeconds) return -1;
+    }
+
+    // Posición ideal: mitad del video + margen para que no sea predecible
+    int idealPos = (videoDurationSeconds * 0.55).round();
+
+    // Pero NUNCA antes de que hayan pasado _minAdFreeViewingSeconds
+    // desde el pre-roll. Si la posición ideal cae "demasiado pronto"
+    // respecto al pre-roll, la empujamos hacia adelante.
+    if (_videoStartTime != null) {
+      final minPos = _minAdFreeViewingSeconds;
+      if (idealPos < minPos) {
+        idealPos = minPos;
+      }
+    }
+
+    // Nunca en el último 15% (no arruinar el final)
+    final maxPos = (videoDurationSeconds * 0.85).round();
+    if (idealPos > maxPos) return -1; // No queda espacio razonable
+
+    return idealPos;
+  }
+
 
   Map<String, dynamic> getAdStats() {
     return {

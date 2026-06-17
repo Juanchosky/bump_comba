@@ -1422,7 +1422,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           duration.inSeconds,
         );
         if (midRollPosition >= 0) {
-          final noticePoint = midRollPosition - 120;
+          final noticePoint = midRollPosition - 30;
 
           if (position.inSeconds >= noticePoint &&
               !_midRollNoticeShown &&
@@ -1574,7 +1574,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   void _showMidRollNotice() {
     if (mounted) {
-      _showAppSnackBar('Anuncio en 2 minutos...');
+      _showAppSnackBar('Anuncio en 30 segundos...');
     }
   }
 
