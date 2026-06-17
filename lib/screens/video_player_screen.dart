@@ -4276,8 +4276,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // 1. Lógica de escalado responsivo
     final double shortestSide = size.shortestSide;
     final double scale = (shortestSide / 414.0).clamp(0.8, 1.25) * 1.02;
-    final double centralIconSize = 72.0 * scale;
-    final double seekIconSize = centralIconSize * 0.75;
+    final double centralIconSize = 64.0 * scale;
+    final double seekIconSize = centralIconSize * 0.85;
     final double seekGap = (size.width * (_isLandscape ? 0.10 : 0.05)).clamp(
       16.0,
       60.0,
@@ -5197,9 +5197,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     if (isPiP) return const SizedBox.shrink();
 
     final double scale = (size.shortestSide / 414.0).clamp(0.8, 1.25) * 1.02;
-    final double sideIconSize = 34.0 * scale;
-    final double playCircle = 72.0 * scale;
-    final double playIconSize = 36.0 * scale;
+    final double sideIconSize = 32.0 * scale;
+    final double playCircle = 64.0 * scale;
+    final double playIconSize = 32.0 * scale;
 
     // ── helper: botón play/pause circular estilo iOS ──────────────────────
     Widget playPauseButton(bool isPlaying) {
