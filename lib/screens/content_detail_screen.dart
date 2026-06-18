@@ -1257,45 +1257,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
       },
     );
 
-    if (!isIOS) return scaffold;
-
-    // El scrim se construye FUERA del Transform.translate: así permanece fijo
-    // en pantalla completa mientras el contenido se desliza hacia abajo.
-    // Usa la animación de la ruta para aparecer al entrar y se aclara
-    // proporcionalmente al desplazamiento del gesto de cierre.
-    final routeAnim = ModalRoute.of(context)?.animation;
-    final screenH = MediaQuery.of(context).size.height;
-
-    Widget scrim = AnimatedBuilder(
-      animation: routeAnim ?? const AlwaysStoppedAnimation(1.0),
-      builder: (ctx, _) {
-        final routeProgress = routeAnim?.value ?? 1.0;
-        final dismissProgress = (_dragOffset / screenH).clamp(0.0, 1.0);
-        final alpha = (routeProgress * 0.52 * (1.0 - dismissProgress * 1.3))
-            .clamp(0.0, 0.52);
-        return IgnorePointer(
-          child: Container(color: Colors.black.withValues(alpha: alpha)),
-        );
-      },
-    );
-
-    return Stack(
-      children: [
-        // 1. Scrim fijo sobre la pantalla anterior.
-        Positioned.fill(child: scrim),
-        // 2. Contenido deslizable.
-        Listener(
-          behavior: HitTestBehavior.translucent,
-          onPointerMove: _onPointerMove,
-          onPointerUp: _onPointerUp,
-          onPointerCancel: _onPointerCancel,
-          child: Transform.translate(
-            offset: Offset(0, _dragOffset),
-            child: scaffold,
-          ),
-        ),
-      ],
-    );
+    return scaffold;
   }
 
   Widget _buildSliverAppBar() {
@@ -1337,10 +1299,11 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                       ),
                       child: image,
                     );
-            // Shared-element flight from the originating card's poster.
-            if (widget.heroTag != null) {
-              content = Hero(tag: widget.heroTag!, child: content);
-            }
+            // Shared-element flight se desactivó porque al usuario no le gusta
+            // el efecto de vuelo/zoom de la imagen y prefiere un fade puro.
+            // if (widget.heroTag != null) {
+            //   content = Hero(tag: widget.heroTag!, child: content);
+            // }
             return content;
           },
         ),
