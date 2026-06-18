@@ -23,6 +23,7 @@ import '../services/dynamic_scraper_service.dart';
 import '../services/cast_service.dart';
 import '../services/network_quality_service.dart';
 import '../services/ad_service.dart';
+import '../widgets/banner_ad_widget.dart';
 import 'stream_browser_screen.dart';
 
 class ContentDetailScreen extends StatefulWidget {
@@ -139,14 +140,22 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
       if (routeAnimation == null ||
           routeAnimation.status == AnimationStatus.completed) {
         // No animation (e.g. pushed without transition) — fire immediately.
-        AdService().recordDetailsVisit();
+        AdService().recordDetailsVisit(
+          onUnrewarded: () {
+            if (mounted) Navigator.pop(context);
+          },
+        );
       } else {
         // Listen for completion and self-remove the listener after one call.
         late final void Function(AnimationStatus) listener;
         listener = (AnimationStatus status) {
           if (status == AnimationStatus.completed) {
             routeAnimation.removeStatusListener(listener);
-            AdService().recordDetailsVisit();
+            AdService().recordDetailsVisit(
+              onUnrewarded: () {
+                if (mounted) Navigator.pop(context);
+              },
+            );
           }
         };
         routeAnimation.addStatusListener(listener);
@@ -1179,6 +1188,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                               _buildSocialButtons(),
                               const SizedBox(height: 24),
                               const Divider(color: Colors.white12, height: 1),
+                              const SizedBox(height: 16),
+                              const Center(child: BannerAdWidget()),
                               if (widget.item.isSeries) ...[
                                 const SizedBox(height: 24),
                                 _buildEpisodesList(),

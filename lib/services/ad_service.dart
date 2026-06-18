@@ -40,7 +40,7 @@ class AdService {
   // Cuando es true, se omite la "puerta" de anuncios (rewarded/confirmación) y
   // el contenido se reproduce directamente, sin el modo offline.
   // ⚠️ PONER EN false ANTES DE PUBLICAR para reactivar los anuncios.
-  static const bool kBypassAdGateForTesting = true;
+  static const bool kBypassAdGateForTesting = false;
 
   // ── Ads ───────────────────────────────────────────────────────────────────
   InterstitialAd? _interstitialAd;
@@ -103,6 +103,7 @@ class AdService {
   static const String _toleranceScoreKey = 'ad_tolerance_score';
   static const String _lastAdDateKey = 'ad_last_date';
   static const String _adsShownTodayKey = 'ad_shown_today';
+  static const String _detailsVisitCountKey = 'ad_details_visit_count';
 
   SharedPreferences? _prefs;
 
@@ -118,6 +119,8 @@ class AdService {
       'ca-app-pub-4239841158013104/1766987477';
   static String get _realNativeId =>
       dotenv.env['ADMOB_NATIVE_ID'] ?? 'ca-app-pub-4239841158013104/9574791316';
+  static String get _realBannerId =>
+      dotenv.env['ADMOB_BANNER_ID'] ?? 'ca-app-pub-4239841158013104/1234567890';
 
   static const String _testInterstitialId =
       'ca-app-pub-3940256099942544/1033173712';
@@ -126,6 +129,7 @@ class AdService {
   static const String _testRewardedInterstitialId =
       'ca-app-pub-3940256099942544/5354046379';
   static const String _testNativeId = 'ca-app-pub-3940256099942544/2247696110';
+  static const String _testBannerId = 'ca-app-pub-3940256099942544/6300978111';
 
   String get interstitialAdUnitId =>
       kDebugMode ? _testInterstitialId : _realInterstitialId;
@@ -133,6 +137,7 @@ class AdService {
   String get rewardedInterstitialAdUnitId =>
       kDebugMode ? _testRewardedInterstitialId : _realRewardedInterstitialId;
   String get nativeAdUnitId => kDebugMode ? _testNativeId : _realNativeId;
+  String get bannerAdUnitId => kDebugMode ? _testBannerId : _realBannerId;
 
   // ═══════════════════════════════════════════════════════════════════════════
   // CONFIG DINÁMICA POR SCORE + SEGMENTO
@@ -165,9 +170,10 @@ class AdService {
 
   // Cada cuántas visitas a detalles se dispara un interstitial
   int get _detailVisitsPerAd {
-    if (_userSegment == _UserSegment.newUser) return 3; // menos agresivo
-    if (_toleranceScore >= 60) return 1;
-    return 2;
+    if (_userSegment == _UserSegment.newUser)
+      return 4; // menos agresivo para nuevos
+    if (_toleranceScore >= 60) return 2; // tolerante
+    return 3; // promedio
   }
 
   // Periodo de gracia al inicio de sesión (segundos)
@@ -185,6 +191,7 @@ class AdService {
     _prefs = await SharedPreferences.getInstance();
     _sessionStartTime = DateTime.now();
     _adsShownThisSession = 0;
+    _detailsVisitCount = _prefs?.getInt(_detailsVisitCountKey) ?? 0;
 
     await _initUserSegment();
     _toleranceScore = (_prefs?.getInt(_toleranceScoreKey) ?? 50).clamp(20, 100);
@@ -321,25 +328,28 @@ class AdService {
   Future<bool> _isAdHostBlocked() async {
     try {
       // 1. Check if we can resolve a standard non-ad host (like google.com or cloudflare.com)
-      final normalAddresses = await InternetAddress.lookup('google.com')
-          .timeout(const Duration(seconds: 3));
+      final normalAddresses = await InternetAddress.lookup(
+        'google.com',
+      ).timeout(const Duration(seconds: 3));
       if (normalAddresses.isEmpty || normalAddresses.first.address.isEmpty) {
         // No internet connection at all, so ad host is not blocked, they are just offline
         return false;
       }
 
       // 2. Try to resolve the AdMob host
-      final adAddresses = await InternetAddress.lookup('pubads.g.doubleclick.net')
-          .timeout(const Duration(seconds: 3));
-      
+      final adAddresses = await InternetAddress.lookup(
+        'pubads.g.doubleclick.net',
+      ).timeout(const Duration(seconds: 3));
+
       // If we can resolve it, the host is NOT blocked
       return adAddresses.isEmpty || adAddresses.first.address.isEmpty;
     } catch (e) {
       // If resolving google.com succeeded but pubads.g.doubleclick.net threw a SocketException (e.g. Host not found / connection refused),
       // then the ad host is blocked!
       try {
-        final checkNormal = await InternetAddress.lookup('google.com')
-            .timeout(const Duration(seconds: 3));
+        final checkNormal = await InternetAddress.lookup(
+          'google.com',
+        ).timeout(const Duration(seconds: 3));
         return checkNormal.isNotEmpty && checkNormal.first.address.isNotEmpty;
       } catch (_) {
         // Both failed, meaning the user is simply offline
@@ -440,6 +450,8 @@ class AdService {
     _lastAdShownTime = DateTime.now();
     _lastInterstitialShownTime = DateTime.now();
     _adsShownThisSession++;
+    _detailsVisitCount = 0;
+    _prefs?.setInt(_detailsVisitCountKey, 0);
 
     final today = DateTime.now().toIso8601String().substring(0, 10);
     final todayAds = (_prefs?.getInt(_adsShownTodayKey) ?? 0) + 1;
@@ -462,6 +474,7 @@ class AdService {
     VoidCallback? onAdDismissed,
     VoidCallback? onAdFailed,
     bool force = false,
+    VoidCallback? onAdDismissedUnrewarded,
   }) {
     if (!isSupported || PremiumService().isPremium) {
       onAdDismissed?.call();
@@ -479,16 +492,28 @@ class AdService {
 
     // Score ≤ 35: preferir rewarded para evitar fricción
     if (_toleranceScore <= 35 && _rewardedAd != null) {
+      _rewardEarned = false;
+      _onAdDismissedUnrewarded = onAdDismissedUnrewarded;
       _recordAdShown();
-      _rewardedAd!.show(onUserEarnedReward: (_, _) => onAdDismissed?.call());
+      _rewardedAd!.show(
+        onUserEarnedReward: (_, _) {
+          _rewardEarned = true;
+          onAdDismissed?.call();
+        },
+      );
       return;
     }
 
     // Score ≥ 70 + rewarded interstitial disponible: mayor CPM
     if (_toleranceScore >= 70 && _rewardedInterstitialAd != null) {
+      _rewardEarned = false;
+      _onAdDismissedUnrewarded = onAdDismissedUnrewarded;
       _recordAdShown();
       _rewardedInterstitialAd!.show(
-        onUserEarnedReward: (_, _) => onAdDismissed?.call(),
+        onUserEarnedReward: (_, _) {
+          _rewardEarned = true;
+          onAdDismissed?.call();
+        },
       );
       _rewardedInterstitialAd = null;
       loadRewardedInterstitialAd();
@@ -642,14 +667,23 @@ class AdService {
     );
   }
 
+  bool _rewardEarned = false;
+  VoidCallback? _onAdDismissedUnrewarded;
+
   void _setupRewardedCallbacks(RewardedAd ad) {
     ad.fullScreenContentCallback = FullScreenContentCallback(
       onAdShowedFullScreenContent: (_) => isAdInProgress.value = true,
       onAdDismissedFullScreenContent: (ad) {
         isAdInProgress.value = false;
-        // Doble bonus — rewarded es voluntario
-        _onAdWatchedCompletely();
-        _onAdWatchedCompletely();
+        if (_rewardEarned) {
+          // Doble bonus — rewarded es voluntario
+          _onAdWatchedCompletely();
+          _onAdWatchedCompletely();
+        } else {
+          // El usuario cerró el anuncio sin terminarlo
+          _onAdDismissedUnrewarded?.call();
+        }
+        _onAdDismissedUnrewarded = null;
         ad.dispose();
         _rewardedAd = null;
         loadRewardedAd();
@@ -666,14 +700,22 @@ class AdService {
   void showRewardedAd({
     required VoidCallback onUserEarnedReward,
     VoidCallback? onAdFailed,
+    VoidCallback? onAdDismissedUnrewarded,
   }) {
     if (kBypassAdGateForTesting || !isSupported || PremiumService().isPremium) {
       onUserEarnedReward();
       return;
     }
     if (_rewardedAd != null) {
+      _rewardEarned = false;
+      _onAdDismissedUnrewarded = onAdDismissedUnrewarded;
       _recordAdShown();
-      _rewardedAd!.show(onUserEarnedReward: (_, _) => onUserEarnedReward());
+      _rewardedAd!.show(
+        onUserEarnedReward: (_, _) {
+          _rewardEarned = true;
+          onUserEarnedReward();
+        },
+      );
     } else {
       loadRewardedAd();
       onAdFailed?.call();
@@ -716,6 +758,7 @@ class AdService {
               adService: this,
               onUserEarnedReward: onUserEarnedReward,
               onAdFailed: onAdFailed,
+              onCancel: onCancel,
             ),
           );
 
@@ -766,6 +809,7 @@ class AdService {
       rewardedInterstitialAdLoadCallback: RewardedInterstitialAdLoadCallback(
         onAdLoaded: (ad) {
           _rewardedInterstitialAd = ad;
+          _setupRewardedInterstitialCallbacks(ad);
           _isRewardedInterstitialLoading = false;
         },
         onAdFailedToLoad: (_) {
@@ -773,6 +817,28 @@ class AdService {
           _isRewardedInterstitialLoading = false;
         },
       ),
+    );
+  }
+
+  void _setupRewardedInterstitialCallbacks(RewardedInterstitialAd ad) {
+    ad.fullScreenContentCallback = FullScreenContentCallback(
+      onAdShowedFullScreenContent: (_) => isAdInProgress.value = true,
+      onAdDismissedFullScreenContent: (ad) {
+        isAdInProgress.value = false;
+        if (!_rewardEarned) {
+          _onAdDismissedUnrewarded?.call();
+        }
+        _onAdDismissedUnrewarded = null;
+        ad.dispose();
+        _rewardedInterstitialAd = null;
+        loadRewardedInterstitialAd();
+      },
+      onAdFailedToShowFullScreenContent: (ad, _) {
+        isAdInProgress.value = false;
+        ad.dispose();
+        _rewardedInterstitialAd = null;
+        loadRewardedInterstitialAd();
+      },
     );
   }
 
@@ -798,11 +864,12 @@ class AdService {
   // SMART TRIGGERS
   // ═══════════════════════════════════════════════════════════════════════════
 
-  void recordDetailsVisit() {
+  void recordDetailsVisit({VoidCallback? onUnrewarded}) {
     _detailsVisitCount++;
-    if (_detailsVisitCount % _detailVisitsPerAd == 0) {
-      // Usar showBestAvailableAd en lugar de forzar siempre interstitial
-      showBestAvailableAd(force: false);
+    _prefs?.setInt(_detailsVisitCountKey, _detailsVisitCount);
+
+    if (_detailsVisitCount >= _detailVisitsPerAd) {
+      showBestAvailableAd(force: false, onAdDismissedUnrewarded: onUnrewarded);
     }
   }
 
@@ -859,79 +926,66 @@ class AdService {
 
   bool shouldShowMidRoll(int videoDurationMinutes) => _isCooldownElapsed();
 
-  // ── Timestamp de cuando comenzó la reproducción (tras el pre-roll ad) ────
+  // ── Estado de anuncios para la reproducción actual ──────────────────────
   DateTime? _videoStartTime;
+  bool _preRollShownForCurrentVideo = false;
 
   /// Registra que el usuario acaba de ver el pre-roll y comenzó a reproducir.
-  /// El mid-roll usará este timestamp para calcular cuánto tiempo "limpio"
-  /// (sin anuncios) ha tenido el usuario antes de interrumpir de nuevo.
-  void recordVideoStart() {
+  /// Cuando se sabe que el pre-roll fue exitoso, el mid-roll se desactiva
+  /// para esta reproducción — el usuario NUNCA verá dos anuncios forzados
+  /// en la misma sesión de visualización.
+  void recordVideoStart({bool preRollWasShown = true}) {
     _videoStartTime = DateTime.now();
-    debugPrint('AdMob: recordVideoStart → $_videoStartTime');
-  }
-
-  /// Mínimo de segundos de visualización ininterrumpida que garantizamos
-  /// después de un pre-roll antes de meter otro anuncio. Varía según score:
-  ///  - Score alto (usuario tolerante): 8 min
-  ///  - Score medio: 12 min
-  ///  - Score bajo (usuario irritable): 18 min
-  int get _minAdFreeViewingSeconds {
-    if (_toleranceScore >= 70) return 480;  // 8 min
-    if (_toleranceScore >= 50) return 720;  // 12 min
-    return 1080;                             // 18 min
+    _preRollShownForCurrentVideo = preRollWasShown;
+    debugPrint(
+      'AdMob: recordVideoStart → preRoll=$preRollWasShown, time=$_videoStartTime',
+    );
   }
 
   /// Calcula en qué segundo del video debería aparecer el mid-roll.
-  /// Devuelve -1 si el video no merece un mid-roll.
+  /// Devuelve -1 si no debe mostrarse mid-roll.
   ///
-  /// Reglas:
-  ///  1. Videos < 10 min: NUNCA mid-roll (demasiado cortos, es molesto).
-  ///  2. Videos < 20 min: mid-roll solo si el pre-roll fue hace más de
-  ///     [_minAdFreeViewingSeconds] — en la práctica, esto elimina el mid-roll
-  ///     para contenido que ya mostró pre-roll, manteniendo ingresos en
-  ///     contenido largo.
-  ///  3. Videos >= 20 min: siempre mid-roll, pero la posición se ajusta
-  ///     para respetar el mínimo de tiempo "limpio".
-  ///  4. La posición nunca cae en el último 15% del video para no
-  ///     interrumpir el clímax/desenlace.
+  /// REGLA DE ORO: pre-roll y mid-roll son MUTUAMENTE EXCLUYENTES.
+  ///
+  /// • Si el usuario YA vio un pre-roll al entrar al video → NO mid-roll.
+  ///   El pre-roll ya generó la impresión, no castigamos al usuario con dos
+  ///   interrupciones forzadas en el mismo contenido.
+  ///
+  /// • Si el usuario NO vio pre-roll (ad falló, bloqueador, cortesía) →
+  ///   SÍ mid-roll, para que al menos haya una oportunidad de ingreso.
+  ///   Esto es la "red de seguridad" de ingresos.
+  ///
+  /// Posición del mid-roll (cuando aplica):
+  ///   - Videos < 10 min: nunca mid-roll
+  ///   - Videos 10-30 min: al 55% de la duración
+  ///   - Videos > 30 min: al 45% (no hacer esperar tanto en películas)
+  ///   - Nunca en el último 12% (no arruinar el final)
   int getMidRollPosition(int videoDurationSeconds) {
-    // Videos cortos: nunca mid-roll
-    if (videoDurationSeconds < 600) return -1;
+    // REGLA 1: Si el pre-roll fue exitoso → NO mid-roll. Punto.
+    if (_preRollShownForCurrentVideo) return -1;
 
-    // Calcular cuánto tiempo lleva sin ver un anuncio.
-    // Si _lastAdShownTime es null, asumimos que no se mostró pre-roll.
-    final secsSinceLastAd = _lastAdShownTime != null
-        ? DateTime.now().difference(_lastAdShownTime!).inSeconds
-        : 9999;
+    // REGLA 2: Videos muy cortos → no vale la pena interrumpir.
+    if (videoDurationSeconds < 600) return -1; // < 10 min
 
-    // Para videos entre 10-20 min: solo mid-roll si ya pasó suficiente
-    // tiempo desde el pre-roll. Esto hace que si el usuario JUSTO vio
-    // el pre-roll, no le salga otro al poco rato.
-    if (videoDurationSeconds < 1200) {
-      // Si el pre-roll fue reciente, no programar mid-roll en videos medianos.
-      if (secsSinceLastAd < _minAdFreeViewingSeconds) return -1;
+    // REGLA 3: Posición inteligente según duración
+    double fraction;
+    if (videoDurationSeconds >= 1800) {
+      fraction = 0.45; // Películas: al 45%
+    } else {
+      fraction = 0.55; // Episodios: al 55%
     }
 
-    // Posición ideal: mitad del video + margen para que no sea predecible
-    int idealPos = (videoDurationSeconds * 0.55).round();
+    int idealPos = (videoDurationSeconds * fraction).round();
 
-    // Pero NUNCA antes de que hayan pasado _minAdFreeViewingSeconds
-    // desde el pre-roll. Si la posición ideal cae "demasiado pronto"
-    // respecto al pre-roll, la empujamos hacia adelante.
-    if (_videoStartTime != null) {
-      final minPos = _minAdFreeViewingSeconds;
-      if (idealPos < minPos) {
-        idealPos = minPos;
-      }
-    }
+    // Mínimo absoluto: al menos 5 minutos de contenido antes del ad
+    if (idealPos < 300) idealPos = 300;
 
-    // Nunca en el último 15% (no arruinar el final)
-    final maxPos = (videoDurationSeconds * 0.85).round();
-    if (idealPos > maxPos) return -1; // No queda espacio razonable
+    // Nunca en el último 12% (no arruinar clímax/final)
+    final maxPos = (videoDurationSeconds * 0.88).round();
+    if (idealPos > maxPos) return -1;
 
     return idealPos;
   }
-
 
   Map<String, dynamic> getAdStats() {
     return {
@@ -961,12 +1015,14 @@ class _RewardedAdConfirmationDialog extends StatefulWidget {
   final AdService adService;
   final VoidCallback onUserEarnedReward;
   final VoidCallback? onAdFailed;
+  final VoidCallback? onCancel;
 
   const _RewardedAdConfirmationDialog({
     this.message,
     required this.adService,
     required this.onUserEarnedReward,
     this.onAdFailed,
+    this.onCancel,
   });
 
   @override
@@ -1016,6 +1072,7 @@ class _RewardedAdConfirmationDialogState
         widget.adService.showRewardedAd(
           onUserEarnedReward: widget.onUserEarnedReward,
           onAdFailed: widget.onAdFailed,
+          onAdDismissedUnrewarded: widget.onCancel,
         );
         return;
       }

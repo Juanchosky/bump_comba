@@ -435,13 +435,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
   }
 
-  Future<void> _playVideo() async {
+  Future<void> _playVideo({bool preRollWasShown = false}) async {
     if (!mounted) return;
     _retryCount = 0;
     _hasError = false;
     _noVideoSeconds = 0;
     _blackScreenReloadDone = false;
     _diagTrackCodecs = '?';
+
+    AdService().recordVideoStart(preRollWasShown: preRollWasShown);
 
     final progress = await _watchProgressService.getProgress(_currentItem.url);
     Duration? startFrom;
@@ -472,7 +474,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     AdService().showRewardedAdWithConfirmation(
       context,
       quarterTurns: _isLandscape ? 1 : 0,
-      onUserEarnedReward: _playVideo,
+      onUserEarnedReward: () => _playVideo(preRollWasShown: true),
       onAdFailed: () {
         if (mounted) {
           if (AdService().adBlockerDetected) {
@@ -722,8 +724,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       if (!isPrewarmed) {
         await _cleanupPlayer();
       }
-
-      AdService().recordVideoStart();
 
       setState(() {
         _isVideoLoading = true;
@@ -2881,6 +2881,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       _serverUrls = [];
       _currentServerIndex = 0;
     });
+    AdService().recordVideoStart(preRollWasShown: false);
     _initializePlayer(newEpisode);
   }
 
