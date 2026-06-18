@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'dart:ui';
@@ -36,7 +36,6 @@ import '../services/social_rewards_service.dart';
 import '../widgets/rate_dialog.dart';
 import '../services/deep_link_service.dart';
 import '../services/network_quality_service.dart';
-import '../widgets/banner_ad_widget.dart';
 
 Future<void> _safeToggleFavoriteGlobal(
   BuildContext context,
@@ -50,7 +49,7 @@ Future<void> _safeToggleFavoriteGlobal(
     if (context.mounted) {
       SnackBarUtils.showAppSnackBar(
         context,
-        item.isFavorite ? 'AÃ±adido a Mi lista' : 'Eliminado de Mi lista',
+        item.isFavorite ? 'Añadido a Mi lista' : 'Eliminado de Mi lista',
       );
     }
   } catch (e) {
@@ -123,7 +122,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
   // Fixed Categories
   List<String> get _fixedTabs {
-    final tabs = ['Inicio', 'PelÃ­culas', 'Series', 'Telenovelas', 'AnimaciÃ³n'];
+    final tabs = ['Inicio', 'Películas', 'Series', 'Telenovelas', 'Animación'];
 
     final bool isPC =
         kIsWeb ||
@@ -148,7 +147,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
   // Bottom nav
   int _bottomNavIndex =
-      0; // 0=Inicio, 1=Buscar(acciÃ³n), 2=CategorÃ­as, 3=Mi lista
+      0; // 0=Inicio, 1=Buscar(acción), 2=Categorías, 3=Mi lista
 
   // State
   M3UItem? _heroItem;
@@ -183,7 +182,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   // _liveStallSeconds and _lastLivePosition removed â€” now local vars in monitor
   bool _isLiveChannel = true;
 
-  // Calidad Adaptativa DinÃ¡mica
+  // Calidad Adaptativa Dinámica
   bool _isQualityCapped = false;
   Timer? _qualityRestoreTimer;
 
@@ -273,8 +272,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     _detectCountry();
     // Listen to global ad state to pause live player
     AdService.isAdInProgress.addListener(_handleAdStateChange);
-    // FIX: Escuchar al M3UService para cuando el cÃ³mputo async de items
-    // recientes termine y asÃ­ actualizar las secciones del home.
+    // FIX: Escuchar al M3UService para cuando el cómputo async de items
+    // recientes termine y así actualizar las secciones del home.
     _m3uService.addListener(_onM3UServiceUpdated);
     WatchProgressService().addListener(_onWatchProgressUpdated);
     _checkRateDialog();
@@ -295,7 +294,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       if (mounted) {
         setState(() {
           _isOffline = offline;
-          // Volver a mostrar el banner cuando se pierde la conexiÃ³n de nuevo
+          // Volver a mostrar el banner cuando se pierde la conexión de nuevo
           if (offline) _bannerDismissed = false;
         });
       }
@@ -353,9 +352,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     super.dispose();
   }
 
-  /// FIX: Llamado por M3UService.notifyListeners() cuando el cÃ³mputo async
-  /// de items recientes termina (sea porque se cargÃ³ desde cachÃ© o fresco).
-  /// Recarga _recommendedItems si aÃºn estÃ¡n vacÃ­os y dispara un rebuild.
+  /// FIX: Llamado por M3UService.notifyListeners() cuando el cómputo async
+  /// de items recientes termina (sea porque se cargó desde caché o fresco).
+  /// Recarga _recommendedItems si aún están vacíos y dispara un rebuild.
   void _onWatchProgressUpdated() {
     if (mounted) {
       _watchProgressVersion.value++;
@@ -365,7 +364,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   void _onM3UServiceUpdated() {
     if (!mounted || _isLoading) return;
 
-    // â”€â”€ TMDB TRENDING HERO: Si el hero no se ha establecido aÃºn,
+    // â”€â”€ TMDB TRENDING HERO: Si el hero no se ha establecido aún,
     // intentar usar trending TMDB cuando los datos llegan async â”€â”€
     if (_heroItem == null) {
       final trendingItems = _m3uService.getTrendingBannerItems();
@@ -377,8 +376,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     final recentItems = _m3uService.getRecentItems();
     if (recentItems.isNotEmpty &&
         (_recommendedItems == null || _recommendedItems!.isEmpty)) {
-      // Limpiar cachÃ© de sesiÃ³n del servicio para forzar recompute con la
-      // lÃ³gica corregida (que ahora prioriza categorÃ­as con contenido no-live)
+      // Limpiar caché de sesión del servicio para forzar recompute con la
+      // lógica corregida (que ahora prioriza categorías con contenido no-live)
       _m3uService.clearSessionRecommendations();
       WatchProgressService().getHistory().then((history) {
         if (!mounted) return;
@@ -401,7 +400,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       setState(() {
         _showSlowLoadingMessage = false;
         _downloadDetail = null;
-        // FIX: Resetear para que se recalcule con los datos del cachÃ© al reiniciar
+        // FIX: Resetear para que se recalcule con los datos del caché al reiniciar
         _recommendedItems = null;
       });
       _slowLoadingTimer?.cancel();
@@ -420,17 +419,17 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
       bool success = false;
 
-      // FastBoot: Intentar cargar del cachÃ© instantÃ¡neamente para restaurar la UI
+      // FastBoot: Intentar cargar del caché instantáneamente para restaurar la UI
       final cachedOk = await _m3uService.loadFromCache();
       if (cachedOk && mounted) {
         success = true;
         setState(() => _isLoading = false);
-        // Si cargamos de cachÃ©, refrescamos en background silenciosamente
+        // Si cargamos de caché, refrescamos en background silenciosamente
         unawaited(
           _m3uService.loadM3UContent(useRetry: false).then((refreshSuccess) {
             if (refreshSuccess && mounted) {
-              // Re-pick hero si cambiÃ³ algo importante
-              // Solo elegir el hÃ©roe una vez por sesiÃ³n al entrar en la pestaÃ±a "Inicio"
+              // Re-pick hero si cambió algo importante
+              // Solo elegir el héroe una vez por sesión al entrar en la pestaña "Inicio"
               if (_heroItem == null) {
                 _pickHeroItem(_m3uService.latestItems);
               }
@@ -441,7 +440,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       }
 
       if (_isLoading) {
-        // Solo si NO pudimos cargar del cachÃ©, procedemos con la carga normal bloqueante
+        // Solo si NO pudimos cargar del caché, procedemos con la carga normal bloqueante
         success = await _m3uService.loadM3UContent(
           useRetry: true,
           retryAttempts: 3,
@@ -479,7 +478,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         }
 
         // â”€â”€ Mover trabajo pesado fuera del UI thread â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        // getRecommendedItems() y la construcciÃ³n de priorityUrls iteran
+        // getRecommendedItems() y la construcción de priorityUrls iteran
         // sobre toda la lista y bloquean el main thread, congelando el shimmer.
         // Future.microtask() cede el control al event loop (y al animationFrame)
         // antes de ejecutar el bloque, eliminando el freeze visible.
@@ -490,8 +489,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           });
         }
 
-        // Precarga de imÃ¡genes â€” tambiÃ©n diferida al microtask siguiente
-        // para que el setState de `_isLoading = false` llegue primero al Ã¡rbol
+        // Precarga de imágenes â€” también diferida al microtask siguiente
+        // para que el setState de `_isLoading = false` llegue primero al árbol
         // y el usuario vea el contenido antes de que empiece la precarga.
         if (mounted) {
           final priorityUrls = [
@@ -503,8 +502,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                 .map((i) => i.logo!),
           ];
 
-          // prewarmPriority y prewarm son sÃ­ncronos internamente pero rÃ¡pidos;
-          // envolverlos en un delay evita que bloqueen el frame de transiciÃ³n.
+          // prewarmPriority y prewarm son síncronos internamente pero rápidos;
+          // envolverlos en un delay evita que bloqueen el frame de transición.
           Future.delayed(const Duration(milliseconds: 50), () {
             if (!mounted) return;
             FastImageService().prewarmPriority(priorityUrls, context);
@@ -534,7 +533,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         if (isSourceMissing) {
           // If source is missing, we don't treat it as a hard error page,
           // instead we show the StreamContent which will show the input field
-          // in the PelÃ­culas tab (or we can just show the input field directly here).
+          // in the Películas tab (or we can just show the input field directly here).
           _hasError = false;
           _selectedTab =
               'Inicio'; // Suggest navigating to Inicio where input is
@@ -792,7 +791,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
               ),
               const SizedBox(height: 32),
               const Text(
-                'VersiÃ³n de Escritorio',
+                'Versión de Escritorio',
                 style: TextStyle(
                   color: Colors.white,
                   fontSize: 28,
@@ -803,7 +802,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
               ),
               const SizedBox(height: 16),
               Text(
-                'Esta versiÃ³n es exclusiva para nuestros suscriptores Premium. Disfruta de una experiencia sin lÃ­mites, sin anuncios y con la mejor calidad en tu PC.',
+                'Esta versión es exclusiva para nuestros suscriptores Premium. Disfruta de una experiencia sin límites, sin anuncios y con la mejor calidad en tu PC.',
                 style: TextStyle(
                   color: Colors.white.withOpacity(0.7),
                   fontSize: 16,
@@ -847,7 +846,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'Si compraste la versiÃ³n PC por \$3.99, ingresa tu cÃ³digo de licencia aquÃ­:',
+                      'Si compraste la versión PC por \$3.99, ingresa tu código de licencia aquí:',
                       style: TextStyle(
                         color: Colors.white.withOpacity(0.6),
                         fontSize: 13,
@@ -938,7 +937,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                                   ),
                                 )
                                 : const Text(
-                                  'Verificar CÃ³digo',
+                                  'Verificar Código',
                                   style: TextStyle(
                                     fontSize: 16,
                                     fontWeight: FontWeight.bold,
@@ -960,7 +959,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                   }
                 },
                 child: const Text(
-                  'Â¿No tienes cÃ³digo? Obtenlo aquÃ­ por \$3.99/mes',
+                  '¿No tienes código? Obtenlo aquí por \$3.99/mes',
                   style: TextStyle(
                     color: Colors.amber,
                     decoration: TextDecoration.underline,
@@ -978,7 +977,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   Future<void> _validatePCLicense() async {
     final code = _pcLicenseController.text.trim();
     if (code.isEmpty) {
-      setState(() => _licenseErrorMessage = 'Por favor ingresa un cÃ³digo.');
+      setState(() => _licenseErrorMessage = 'Por favor ingresa un código.');
       return;
     }
 
@@ -1147,7 +1146,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                       ),
                       const SizedBox(height: 12),
                       Text(
-                        'â€¢ Prueba conectarte a una VPN\nâ€¢ Reinicia tu router de internet\nâ€¢ El servidor podrÃ­a estar saturado, intenta en unos minutos',
+                        'â€¢ Prueba conectarte a una VPN\nâ€¢ Reinicia tu router de internet\nâ€¢ El servidor podría estar saturado, intenta en unos minutos',
                         style: TextStyle(
                           color: Colors.white.withValues(alpha: 0.5),
                           fontSize: 13,
@@ -1174,7 +1173,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                   },
                   icon: const Icon(CupertinoIcons.refresh_circled, size: 22),
                   label: const Text(
-                    'Reintentar ConexiÃ³n',
+                    'Reintentar Conexión',
                     style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                   ),
                   style: ElevatedButton.styleFrom(
@@ -1231,22 +1230,22 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   void _pickHeroItem(List<M3UItem> items) {
     if (items.isEmpty) return;
 
-    // Solo elegir un nuevo Ã­tem si no estÃ¡ establecido (persistencia por sesiÃ³n).
+    // Solo elegir un nuevo ítem si no está establecido (persistencia por sesión).
     if (_heroItem != null) return;
 
     // â”€â”€ PRIORIDAD TMDB: Intentar usar contenido trending de TMDB â”€â”€
     final trendingItems = _m3uService.getTrendingBannerItems();
     if (trendingItems.isNotEmpty) {
       _setHeroRandomly(trendingItems);
-      if (_heroItem != null) return; // Si se estableciÃ³, no continuar
+      if (_heroItem != null) return; // Si se estableció, no continuar
     }
 
-    // 1. Obtener un pool base de pelÃ­culas y series recientes.
+    // 1. Obtener un pool base de películas y series recientes.
     final List<M3UItem> moviePool = _m3uService.movies.take(100).toList();
     final List<M3UItem> seriesPool = _m3uService.series.take(100).toList();
     final List<M3UItem> combinedPool = [...moviePool, ...seriesPool];
 
-    // Si los pools estÃ¡n vacÃ­os, usamos el fallback de items.
+    // Si los pools están vacíos, usamos el fallback de items.
     final rawPool =
         combinedPool.isNotEmpty
             ? combinedPool
@@ -1267,15 +1266,15 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
     if (validPool.isEmpty) return;
 
-    // 3. Agrupar pelÃ­culas por aÃ±o detectado.
+    // 3. Agrupar películas por año detectado.
     final Map<int, List<M3UItem>> moviesByYear = {};
-    // Regex mÃ¡s flexible para capturar aÃ±os incluso pegados a parÃ©ntesis o corchetes.
+    // Regex más flexible para capturar años incluso pegados a paréntesis o corchetes.
     final yearRegex = RegExp(r'(\d{4})');
 
     for (var item in validPool) {
       final matches = yearRegex.allMatches(item.name);
       if (matches.isNotEmpty) {
-        // Tomamos el Ãºltimo aÃ±o mencionado en el nombre para evitar falsos positivos
+        // Tomamos el último año mencionado en el nombre para evitar falsos positivos
         // (ej: "48 Horas (1982) [Resampled 2024]") -> Selecciona 2024.
         final yearStr = matches.last.group(1) ?? '';
         final year = int.tryParse(yearStr);
@@ -1286,12 +1285,12 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     }
 
     if (moviesByYear.isEmpty) {
-      // Fallback si no detectamos aÃ±os: usar pool vÃ¡lido tal cual.
+      // Fallback si no detectamos años: usar pool válido tal cual.
       _setHeroRandomly(validPool);
       return;
     }
 
-    // 4. ALGORITMO ADAPTATIVO CON PESOS: Priorizar aÃ±o mÃ¡s reciente (3x de probabilidad).
+    // 4. ALGORITMO ADAPTATIVO CON PESOS: Priorizar año más reciente (3x de probabilidad).
     final sortedYears =
         moviesByYear.keys.toList()..sort((a, b) => b.compareTo(a));
     final List<M3UItem> finalPool = [];
@@ -1314,11 +1313,11 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         finalPool.addAll(itemsForYear);
       }
 
-      // Si ya tenemos al menos 10 tÃ­tulos Ãºnicos, paramos para mantener la relevancia.
+      // Si ya tenemos al menos 10 títulos únicos, paramos para mantener la relevancia.
       if (uniqueCount >= 10) break;
     }
 
-    // 5. SelecciÃ³n final.
+    // 5. Selección final.
     _setHeroRandomly(finalPool.isNotEmpty ? finalPool : validPool);
   }
 
@@ -1334,7 +1333,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     final pool = [..._m3uService.getRecentItems(), ..._m3uService.latestItems];
 
     if (pool.isEmpty) {
-      return ['PelÃ­culas y series...'];
+      return ['Películas y series...'];
     }
 
     // 1. Find max year
@@ -1592,7 +1591,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                               ),
                               const SizedBox(height: 10),
                               Text(
-                                'Tu lista estÃ¡ vacÃ­a',
+                                'Tu lista está vacía',
                                 style: TextStyle(
                                   color: Colors.white.withOpacity(0.5),
                                   fontSize: 16.4,
@@ -1625,18 +1624,17 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                           },
                         ),
               ),
-              const Center(child: BannerAdWidget()),
             ],
           );
         }
 
-        // â”€â”€ Contenido principal (tabs Inicio, PelÃ­culas, Series, etc.) â”€â”€
+        // â”€â”€ Contenido principal (tabs Inicio, Películas, Series, etc.) â”€â”€
         // Ya no hay Column con header/tabs fijos encima.
-        // Cada tab devuelve un ListView donde el Ã­tem 0 es el header+tabs.
+        // Cada tab devuelve un ListView donde el ítem 0 es el header+tabs.
 
         final displayCategories =
             _m3uService.categories.where((cat) {
-              if (cat == 'Inicio' || cat == 'Sin categorÃ­a') return false;
+              if (cat == 'Inicio' || cat == 'Sin categoría') return false;
               final catLower = cat.toLowerCase();
               if (catLower.contains('apostarias')) return false;
               final excludedCountries = [
@@ -1660,7 +1658,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                 'dominicana',
                 'ecuador',
                 'egipto',
-                'espaÃ±a',
+                'españa',
                 'estados unidos',
                 'filipinas',
                 'finlandia',
@@ -1833,10 +1831,10 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
                   homeSections.add(_buildHeroRandomLatest(heroPool));
 
-                  // 2. Ãšltimamente nuevo
+                  // 2. Últimamente nuevo
                   if (hasRecent) {
                     homeSections.add(
-                      _buildCategoryRow('Ãšltimamente nuevo', recentItems),
+                      _buildCategoryRow('Últimamente nuevo', recentItems),
                     );
                   }
 
@@ -1919,9 +1917,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
               );
             },
           );
-        } else if (_selectedTab == 'AnimaciÃ³n') {
+        } else if (_selectedTab == 'Animación') {
           return _buildAnimationContentScrollable();
-        } else if (_selectedTab == 'PelÃ­culas') {
+        } else if (_selectedTab == 'Películas') {
           return _buildMoviesContentScrollable();
         } else if (_selectedTab == 'Series') {
           return _buildSeriesContentScrollable();
@@ -2040,7 +2038,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                     c.contains('serie') ||
                     c.contains('novela') ||
                     cat == 'Inicio' ||
-                    cat == 'Sin categorÃ­a';
+                    cat == 'Sin categoría';
                 final items = _m3uService.getItemsByCategory(cat);
                 final filtered = _m3uService.filterValidItems(items);
                 return !isFixed && filtered.length > 2;
@@ -2124,7 +2122,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
     final movieCategories =
         _m3uService.categories.where((cat) {
-          if (cat == 'Inicio' || cat == 'Sin categorÃ­a') return false;
+          if (cat == 'Inicio' || cat == 'Sin categoría') return false;
           final c = cat.toLowerCase();
           final excludedCountries = ContentFilters.excludedCountries;
           for (var country in excludedCountries) {
@@ -2151,10 +2149,10 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
     final movieSections = <Widget>[];
     movieSections.add(_buildScrollableHeader());
-    movieSections.add(_buildCategoryRow('Todas las PelÃ­culas', movies));
+    movieSections.add(_buildCategoryRow('Todas las Películas', movies));
     if (recentMovies.isNotEmpty) {
       movieSections.add(
-        _buildCategoryRow('Nuevas pelÃ­culas de hoy', recentMovies),
+        _buildCategoryRow('Nuevas películas de hoy', recentMovies),
       );
     }
 
@@ -2448,7 +2446,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           child: Padding(
             padding: EdgeInsets.all(40),
             child: Text(
-              'No se encontrÃ³ contenido de animaciÃ³n.',
+              'No se encontró contenido de animación.',
               style: TextStyle(color: Colors.white60, fontSize: 15),
             ),
           ),
@@ -2573,12 +2571,12 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     } catch (_) {}
   }
 
-  /// Para seÃ±ales EN VIVO, NO debemos rutear el streaming por el Worker de Cloudflare,
+  /// Para señales EN VIVO, NO debemos rutear el streaming por el Worker de Cloudflare,
   /// ya que los cortafuegos de los servidores de IPTV (XUI.one, Cloudflare, etc.) detectan
   /// y bloquean las peticiones provenientes de IPs de centros de datos de Cloudflare (403/503).
-  /// AdemÃ¡s, las playlists en vivo (.m3u8) son dinÃ¡micas y cambian constantemente.
-  /// Mantenemos la funciÃ³n para conservar compatibilidad con el resto del cÃ³digo, pero
-  /// retornamos la URL original directa. La aceleraciÃ³n se logra gracias al DNS Prewarming paralelo.
+  /// Además, las playlists en vivo (.m3u8) son dinámicas y cambian constantemente.
+  /// Mantenemos la función para conservar compatibilidad con el resto del código, pero
+  /// retornamos la URL original directa. La aceleración se logra gracias al DNS Prewarming paralelo.
   String _resolveStreamUrl(String url) {
     return url;
   }
@@ -2611,18 +2609,18 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         _livePlayer!,
         configuration: const VideoControllerConfiguration(
           enableHardwareAcceleration:
-              true, // HW decoding = menos CPU, mÃ¡s fluidez
+              true, // HW decoding = menos CPU, más fluidez
         ),
       );
       _liveVideoControllerNotifier.value = _liveVideoController;
 
-      // Reload automÃ¡tico en fin de stream
+      // Reload automático en fin de stream
       // Watchdog reactivo: cuando buffering se activa, iniciar conteo
       _liveStreamSubscriptions.add(
         _livePlayer!.stream.buffering.listen((isBuffering) {
           if (!mounted) return;
           if (isBuffering) {
-            // Solo mostrar spinner â€” el timer periÃ³dico maneja el reload
+            // Solo mostrar spinner â€” el timer periódico maneja el reload
             setState(() => _isLiveLoading = true);
           } else {
             setState(() => _isLiveLoading = false);
@@ -2630,7 +2628,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         }),
       );
 
-      // Reload automÃ¡tico en error de red
+      // Reload automático en error de red
       _liveStreamSubscriptions.add(
         _livePlayer!.stream.error.listen((error) {
           debugPrint('Player error: $error');
@@ -2695,7 +2693,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         _isLiveLoading = false;
         _isLiveReloading = false;
         _liveRetryCount = 0;
-        // Notificar el nuevo controller para forzar reconstrucciÃ³n
+        // Notificar el nuevo controller para forzar reconstrucción
         // del Video widget y evitar pantalla negra con audio
         _liveVideoControllerNotifier.value = null;
       });
@@ -2786,31 +2784,31 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       } catch (_) {}
     }
 
-    // â”€â”€ CACHÃ‰: buffer grande + NUNCA pausar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â”€â”€ CACHÉ: buffer grande + NUNCA pausar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // 60 s de readahead absorbe cualquier micro-corte de red sin que el usuario
-    // lo note. cache-pause=no es CRÃTICO: con 'yes' el reproductor para el video
+    // lo note. cache-pause=no es CRÍTICO: con 'yes' el reproductor para el video
     // al bajar el buffer y el usuario ve pantalla negra.
     await s('cache', 'yes');
     await s('cache-pause', 'no'); // NUNCA pausar por buffer bajo
     await s('cache-pause-initial', 'no');
     await s('cache-pause-wait', '0');
     // Para HLS en vivo, un buffer de readahead de 60s es irreal y puede confundir al reproductor.
-    // Usamos 15s para en vivo y 60s para VOD/series/pelÃ­culas.
+    // Usamos 15s para en vivo y 60s para VOD/series/películas.
     await s('cache-secs', _isLiveChannel ? '15' : '60');
-    await s('cache-back-buffer-size', '33554432'); // 32 MB atrÃ¡s
+    await s('cache-back-buffer-size', '33554432'); // 32 MB atrás
     await s('demuxer-max-bytes', _isLiveChannel ? '20000000' : '150000000');
     await s('demuxer-max-back-bytes', '33554432');
     await s('demuxer-readahead-secs', _isLiveChannel ? '15' : '60');
 
     // â”€â”€ VIDEO: sin drops, superficie estable â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    await s('framedrop', 'no'); // Sin framedrop = imagen mÃ¡s estable
+    await s('framedrop', 'no'); // Sin framedrop = imagen más estable
     await s('video-sync', 'audio');
     await s('vd-lavc-dr', 'no'); // Evita BLASTBufferQueue overflow
     await s('video-latency-hacks', 'yes');
     await s('vo-queue-size', '4');
     await s('opengl-early-flush', 'no');
 
-    // â”€â”€ RED: reconexiÃ³n instantÃ¡nea, sin timeouts agresivos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â”€â”€ RED: reconexión instantánea, sin timeouts agresivos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     await s('network-timeout', '5'); // 5 s antes de declarar error
     await s('http-reconnect', 'yes');
     await s('http-reconnect-max', '999');
@@ -2830,7 +2828,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     ); // Reduce latencia de ffmpeg
     await s('tls-verify', 'no');
 
-    // â”€â”€ HEADERS: simular un cliente legÃ­timo â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â”€â”€ HEADERS: simular un cliente legítimo â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     await s(
       'http-header-fields',
       'Icy-MetaData:1\r\n'
@@ -2856,7 +2854,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             'reconnect_on_http_error=4xx,5xx,'
             'timeout=3000000,'
             'rw_timeout=3000000,'
-            'live_start_index=-3,' // 3 segmentos atrÃ¡s = ~18-30 s de colchÃ³n
+            'live_start_index=-3,' // 3 segmentos atrás = ~18-30 s de colchón
             'tcp_nodelay=1,'
             'fflags=nobuffer',
       );
@@ -2864,20 +2862,20 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       await s('demuxer-lavf-o', 'allowed_extensions=ALL,strict=-2');
     }
 
-    // â”€â”€ DECODIFICACIÃ“N: hardware, relajada para live â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â”€â”€ DECODIFICACIÓN: hardware, relajada para live â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     await s('hwdec', 'auto-safe');
     await s('vd-lavc-threads', '0');
     await s('deinterlace', 'no');
     await s('vd-lavc-skiploopfilter', 'nonref'); // menos agresivo que 'all'
     await s('vd-lavc-skipframe', 'default'); // menos agresivo para live
 
-    // â”€â”€ AUDIO: prioridad mÃ¡xima â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â”€â”€ AUDIO: prioridad máxima â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     await s('audio-buffer', '2.0'); // 2 s de buffer de audio
     await s('audio-stream-silence', 'yes');
     await s('audio-fallback-to-null', 'yes');
     await s('gapless-audio', 'weak');
 
-    // â”€â”€ SINCRONIZACIÃ“N â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â”€â”€ SINCRONIZACIÓN â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     await s('interpolation', 'no');
     await s('video-timing-offset', '0');
     await s('audio-wait-open', '0');
@@ -2897,8 +2895,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     _liveHealthMonitorTimer?.cancel();
 
     // Usamos tiempo de pared para detectar stall real.
-    // En live, la posiciÃ³n MPV puede ser inestable (vuelve a 0 al reconectar),
-    // asÃ­ que solo nos fiamos de ella para detectar MOVIMIENTO, no para medir
+    // En live, la posición MPV puede ser inestable (vuelve a 0 al reconectar),
+    // así que solo nos fiamos de ella para detectar MOVIMIENTO, no para medir
     // el tiempo exacto de stall.
     int consecutiveStillSeconds = 0;
     Duration prevPosition = Duration.zero;
@@ -2927,16 +2925,16 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       final Duration currentPos = state.position;
 
       if (state.buffering) {
-        // Buffering explÃ­cito: acumular pero esperar mÃ¡s tiempo
+        // Buffering explícito: acumular pero esperar más tiempo
         // antes de hacer algo (la red puede recuperarse sola)
         consecutiveStillSeconds++;
 
-        // Mostrar spinner solo despuÃ©s de 2 s en buffering
+        // Mostrar spinner solo después de 2 s en buffering
         if (consecutiveStillSeconds == 2 && mounted) {
           setState(() => _isLiveLoading = true);
         }
 
-        // Recargar solo si el buffering dura mÃ¡s de 5 s consecutivos
+        // Recargar solo si el buffering dura más de 5 s consecutivos
         if (consecutiveStillSeconds >= 5) {
           debugPrint(
             'ðŸ”´ Buffering ${consecutiveStillSeconds}s â†’ seamless reload',
@@ -2958,8 +2956,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         return;
       }
 
-      // Player dice que estÃ¡ reproduciendo y no hay buffering:
-      // verificar si la posiciÃ³n realmente avanza.
+      // Player dice que está reproduciendo y no hay buffering:
+      // verificar si la posición realmente avanza.
       if (firstTick) {
         prevPosition = currentPos;
         firstTick = false;
@@ -2975,7 +2973,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           setState(() => _isLiveLoading = false);
         }
       } else {
-        // PosiciÃ³n quieta mientras el player dice que reproduce
+        // Posición quieta mientras el player dice que reproduce
         consecutiveStillSeconds++;
 
         // Mostrar spinner a los 2 s quieto (el usuario empieza a notar)
@@ -3014,14 +3012,14 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     _liveRetryCount++;
     _isLiveReloading = true;
 
-    // NO hacer setState aquÃ­ â†’ el Ãºltimo frame queda visible, sin pantalla negra.
+    // NO hacer setState aquí â†’ el último frame queda visible, sin pantalla negra.
     // El spinner aparece solo si el _startLiveStallMonitor detecta que seguimos
-    // atascados despuÃ©s de la recarga (indicando un problema mÃ¡s profundo).
+    // atascados después de la recarga (indicando un problema más profundo).
 
     try {
       // player.open() en el mismo player = seamless switch:
       // MPV cierra el demuxer viejo y abre uno nuevo SIN destruir el VO (surface).
-      // El usuario ve el Ãºltimo frame hasta que llega el primer frame nuevo.
+      // El usuario ve el último frame hasta que llega el primer frame nuevo.
       await _livePlayer!
           .open(
             Media(
@@ -3049,7 +3047,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       });
 
       // Si la calidad estaba limitada y llevamos varios reintentos exitosos,
-      // restaurar la calidad mÃ¡xima silenciosamente
+      // restaurar la calidad máxima silenciosamente
       if (_isQualityCapped && _liveRetryCount == 0) {
         _qualityRestoreTimer?.cancel();
         _qualityRestoreTimer = Timer(const Duration(minutes: 2), () async {
@@ -3060,12 +3058,12 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
               'hls-bitrate',
               'max',
             );
-            debugPrint('âœ… Calidad restaurada a mÃ¡xima');
+            debugPrint('âœ… Calidad restaurada a máxima');
           } catch (_) {}
         });
       }
     } catch (e) {
-      debugPrint('Seamless reload fallÃ³ ($e) â†’ intento $_liveRetryCount');
+      debugPrint('Seamless reload falló ($e) â†’ intento $_liveRetryCount');
       _isLiveReloading = false;
 
       if (_liveRetryCount <= 4) {
@@ -3076,7 +3074,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         await Future.delayed(delay);
         if (mounted) _seamlessReload();
       } else if (_liveRetryCount <= 7) {
-        // Reinicio completo del player (mÃ¡s invasivo, Ãºltimo recurso antes del mirror)
+        // Reinicio completo del player (más invasivo, último recurso antes del mirror)
         final channel = _currentLiveChannel!;
         final count = _liveRetryCount;
         await _disposeLivePlayer();
@@ -3103,7 +3101,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       return;
     }
 
-    // Reiniciar el monitor despuÃ©s de 2 s para que el codec se estabilice
+    // Reiniciar el monitor después de 2 s para que el codec se estabilice
     await Future.delayed(const Duration(seconds: 2));
     if (mounted && _livePlayer != null && _currentLiveChannel != null) {
       _startLiveStallMonitor();
@@ -3184,7 +3182,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       } catch (_) {}
 
       // Seamless: abrir el mirror en el MISMO player sin destruir el surface.
-      // El usuario ve el Ãºltimo frame del canal original mientras conecta el mirror.
+      // El usuario ve el último frame del canal original mientras conecta el mirror.
       try {
         await _livePlayer!
             .open(
@@ -3220,7 +3218,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           _startBackgroundRecovery();
         }
       } catch (e) {
-        debugPrint('Mirror fallÃ³: $e â†’ error final');
+        debugPrint('Mirror falló: $e â†’ error final');
         _isUsingMirror = false;
         _originalLiveChannel = null;
         if (mounted) {
@@ -3231,7 +3229,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           });
           SnackBarUtils.showAppSnackBar(
             context,
-            'No se pudo restablecer la seÃ±al. Intenta con otro canal.',
+            'No se pudo restablecer la señal. Intenta con otro canal.',
           );
         }
       }
@@ -3245,7 +3243,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         });
         SnackBarUtils.showAppSnackBar(
           context,
-          'No se pudo restablecer la seÃ±al. Intenta con otro canal.',
+          'No se pudo restablecer la señal. Intenta con otro canal.',
         );
       }
     }
@@ -3324,7 +3322,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             _startLiveStallMonitor();
             SnackBarUtils.showAppSnackBar(
               context,
-              'âœ“ SeÃ±al principal restaurada',
+              'âœ“ Señal principal restaurada',
             );
           }
         } catch (_) {
@@ -3335,10 +3333,10 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           _startBackgroundRecovery(); // reintentar en 60s
         }
       } else {
-        debugPrint('Canal original aÃºn caÃ­do (${response.statusCode})');
+        debugPrint('Canal original aún caído (${response.statusCode})');
       }
     } catch (e) {
-      debugPrint('Canal original aÃºn caÃ­do: $e');
+      debugPrint('Canal original aún caído: $e');
     }
   }
 
@@ -3487,7 +3485,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       return _buildHeroBanner(random);
     }
 
-    // Fallback logic filtrando pelÃ­culas y series
+    // Fallback logic filtrando películas y series
     final validContent =
         items.where((i) => !i.isLive && i.sourceName != 'Supabase').where((i) {
           final n = i.name.toLowerCase();
@@ -3500,7 +3498,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       return const _HiddenMoviesShimmer();
     }
 
-    // Algoritmo adaptativo tambiÃ©n en el fallback
+    // Algoritmo adaptativo también en el fallback
     final Map<int, List<M3UItem>> itemsByYear = {};
     final yearRegex = RegExp(r'(\d{4})');
 
@@ -3528,7 +3526,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         uniqueCount += itemsForYear.length;
 
         if (i == 0) {
-          // Peso 3x para el aÃ±o mÃ¡s reciente incluso en el fallback
+          // Peso 3x para el año más reciente incluso en el fallback
           for (var item in itemsForYear) {
             adaptivePool.add(item);
             adaptivePool.add(item);
@@ -3581,7 +3579,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             ),
             const SizedBox(height: 8),
             const Text(
-              'Pega tu enlace M3u para empezar a ver pelÃ­culas y series.',
+              'Pega tu enlace M3u para empezar a ver películas y series.',
               style: TextStyle(color: Colors.white60, fontSize: 14),
             ),
             const SizedBox(height: 24),
@@ -3643,14 +3641,14 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                       if (mounted) {
                         SnackBarUtils.showAppSnackBar(
                           context,
-                          'Por favor, ingresa un enlace M3U vÃ¡lido',
+                          'Por favor, ingresa un enlace M3U válido',
                         );
                       }
                     }
                   } else {
                     SnackBarUtils.showAppSnackBar(
                       context,
-                      'Por favor, ingresa un enlace M3U vÃ¡lido',
+                      'Por favor, ingresa un enlace M3U válido',
                     );
                   }
                 },
@@ -3708,7 +3706,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                   const SizedBox(width: 12),
                   const Expanded(
                     child: Text(
-                      'Â¿CÃ³mo configurar tu fuente?',
+                      '¿Cómo configurar tu fuente?',
                       style: TextStyle(
                         color: Colors.white,
                         fontSize: 18,
@@ -3720,7 +3718,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
               ),
               const SizedBox(height: 16),
               const Text(
-                'Este lector permite organizar y visualizar contenido a travÃ©s de listas M3U estÃ¡ndar. Para su funcionamiento, se requiere configurar una URL compatible.',
+                'Este lector permite organizar y visualizar contenido a través de listas M3U estándar. Para su funcionamiento, se requiere configurar una URL compatible.',
                 style: TextStyle(
                   color: Colors.white70,
                   fontSize: 14,
@@ -3732,7 +3730,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                 icon: Icons.telegram,
                 iconColor: Colors.red,
                 title: 'Unirse al Telegram',
-                subtitle: 'ObtÃ©n instrucciones y soporte tÃ©cnico',
+                subtitle: 'Obtén instrucciones y soporte técnico',
                 onTap: () {
                   Navigator.pop(context);
                   _launchURL('https://t.me/+0og3wmaKjkIwMzlh');
@@ -3921,12 +3919,12 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     final expirationDateStr = PremiumService().expirationDate;
     final managementUrl = PremiumService().managementUrl;
 
-    String dateDisplay = "SuscripciÃ³n activa sin fecha de vencimiento";
+    String dateDisplay = "Suscripción activa sin fecha de vencimiento";
     if (expirationDateStr != null) {
       try {
         final date = DateTime.parse(expirationDateStr);
         dateDisplay =
-            "Estatus vÃ¡lido hasta: ${date.day}/${date.month}/${date.year}";
+            "Estatus válido hasta: ${date.day}/${date.month}/${date.year}";
       } catch (e) {
         debugPrint("Error parsing date: $e");
       }
@@ -3976,7 +3974,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  "Â¡Ahora eres Premium!",
+                  "¡Ahora eres Premium!",
                   style: TextStyle(
                     color: Color.fromARGB(234, 255, 255, 255),
                     fontSize: 21,
@@ -4009,13 +4007,13 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                     minimumSize: const Size(double.infinity, 50),
                   ),
                   child: const Text(
-                    "Gestionar SuscripciÃ³n",
+                    "Gestionar Suscripción",
                     style: TextStyle(fontWeight: FontWeight.w400, fontSize: 14),
                   ),
                 ),
 
                 Text(
-                  "Puedes cancelar o administrar tu suscripciÃ³n en cualquier momento desde la tienda oficial u opciones en ajustes.",
+                  "Puedes cancelar o administrar tu suscripción en cualquier momento desde la tienda oficial u opciones en ajustes.",
                   style: TextStyle(
                     color: const Color.fromARGB(255, 110, 110, 110),
                     fontSize: 12,
@@ -4179,7 +4177,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                       width: double.infinity,
                       height: double.infinity,
                       fit: BoxFit.cover,
-                      cacheWidth: 400, // menor resoluciÃ³n para el blur
+                      cacheWidth: 400, // menor resolución para el blur
                     ),
                   ),
                 ),
@@ -4236,7 +4234,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                           width: double.infinity,
                           height: double.infinity,
                           fit: BoxFit.cover,
-                          cacheWidth: null, // resoluciÃ³n completa para el hero
+                          cacheWidth: null, // resolución completa para el hero
                           isHD: true,
                           isSeries: item.isSeries,
                           useTMDBFallback: !item.isLive,
@@ -4278,7 +4276,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                               onPressed: () {
                                 // FIX: Si es una serie, abrir la pantalla de detalle
                                 // (donde se cargan los episodios) en lugar de intentar
-                                // reproducirla directamente como pelÃ­cula.
+                                // reproducirla directamente como película.
                                 if (item.isSeries) {
                                   _onItemTap(item);
                                 } else {
@@ -5059,15 +5057,15 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         _detectedCountryCode ??
         View.of(context).platformDispatcher.locale.countryCode;
     if (countryCode == null || countryCode.isEmpty) {
-      return 'Top 10 pelÃ­culas hoy';
+      return 'Top 10 películas hoy';
     }
 
     final countryName = _getCountryName(countryCode);
     if (countryName.isEmpty) {
-      return 'Top 10 pelÃ­culas hoy';
+      return 'Top 10 películas hoy';
     }
 
-    return 'Top 10 pelÃ­culas en $countryName hoy';
+    return 'Top 10 películas en $countryName hoy';
   }
 
   int? _extractYear(String name) {
@@ -5096,16 +5094,16 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       'CR': 'Costa Rica',
       'CU': 'Cuba',
       'EC': 'Ecuador',
-      'ES': 'EspaÃ±a',
+      'ES': 'España',
       'GT': 'Guatemala',
       'HN': 'Honduras',
-      'MX': 'MÃ©xico',
+      'MX': 'México',
       'NI': 'Nicaragua',
-      'PA': 'PanamÃ¡',
+      'PA': 'Panamá',
       'PY': 'Paraguay',
-      'PE': 'PerÃº',
+      'PE': 'Perú',
       'PR': 'Puerto Rico',
-      'DO': 'RepÃºblica Dominicana',
+      'DO': 'República Dominicana',
       'SV': 'El Salvador',
       'UY': 'Uruguay',
       'VE': 'Venezuela',
@@ -5331,7 +5329,7 @@ class _AnimatedLoadingMessagesState extends State<_AnimatedLoadingMessages>
       'title': 'Cargando contenido...',
       'subtitle': 'Preparando tu lista para la mejor experiencia',
     },
-    {'title': 'Estamos preparando todo...', 'subtitle': 'Solo un momento mÃ¡s'},
+    {'title': 'Estamos preparando todo...', 'subtitle': 'Solo un momento más'},
     {
       'title': 'Ya casi estamos listos...',
       'subtitle': 'Gracias por tu paciencia',
@@ -5459,12 +5457,12 @@ class _FullscreenLivePlayerState extends State<_FullscreenLivePlayer> {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     _startHideTimer();
 
-    // NO tocar ninguna propiedad de MPV aquÃ­.
-    // _applySeamlessConfig ya configurÃ³ todo correctamente antes de entrar
-    // a pantalla completa. Sobrescribir cache-secs=12 aquÃ­ deshacÃ­a el
+    // NO tocar ninguna propiedad de MPV aquí.
+    // _applySeamlessConfig ya configuró todo correctamente antes de entrar
+    // a pantalla completa. Sobrescribir cache-secs=12 aquí deshacía el
     // buffer de 60s y causaba micro-cortes en fullscreen.
     //
-    // El Ãºnico ajuste vÃ¡lido en fullscreen es asegurarse de que
+    // El único ajuste válido en fullscreen es asegurarse de que
     // cache-pause siga en 'no', porque algunos dispositivos lo resetean
     // al cambiar de surface. Lo hacemos en un microtask para no bloquear.
     WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -5473,14 +5471,14 @@ class _FullscreenLivePlayerState extends State<_FullscreenLivePlayer> {
       if (mpv == null) return;
 
       // Solo los ajustes que pueden resetearse al cambiar de surface.
-      // NO tocar cache-secs, demuxer-max-bytes, ni ningÃºn otro valor grande.
+      // NO tocar cache-secs, demuxer-max-bytes, ni ningún otro valor grande.
       Future<void> safeSet(String key, String value) async {
         try {
           await mpv.setProperty(key, value);
         } catch (_) {}
       }
 
-      await safeSet('cache-pause', 'no'); // CrÃ­tico: nunca pausar
+      await safeSet('cache-pause', 'no'); // Crítico: nunca pausar
       await safeSet('cache-pause-initial', 'no');
       await safeSet('framedrop', 'no'); // Consistente con inline
       await safeSet('audio-stream-silence', 'yes');
@@ -6319,7 +6317,7 @@ class _SearchPageState extends State<_SearchPage> {
 
   Widget _buildSearchCategoryItem(String category) {
     final String query = _searchController.text.toLowerCase();
-    final bool isCollection = category.startsWith('ColecciÃ³n:');
+    final bool isCollection = category.startsWith('Colección:');
 
     return InkWell(
       onTap: () async {
@@ -6347,7 +6345,7 @@ class _SearchPageState extends State<_SearchPage> {
                 children: [
                   _buildHighlightedText(category, query),
                   Text(
-                    isCollection ? 'ColecciÃ³n de pelÃ­culas' : 'CategorÃ­a',
+                    isCollection ? 'Colección de películas' : 'Categoría',
                     style: const TextStyle(color: Colors.white38, fontSize: 11),
                   ),
                 ],
@@ -6490,7 +6488,7 @@ class _SearchPageState extends State<_SearchPage> {
                 const Icon(Icons.trending_up, color: Colors.red, size: 20),
                 const SizedBox(width: 8),
                 const Text(
-                  'BÃºsqueda popular',
+                  'Búsqueda popular',
                   style: TextStyle(
                     color: Colors.white,
                     fontSize: 16.2,
@@ -6573,7 +6571,7 @@ class _SearchPageState extends State<_SearchPage> {
               const Icon(Icons.trending_up, color: Colors.red, size: 20),
               const SizedBox(width: 8),
               const Text(
-                'BÃºsqueda popular',
+                'Búsqueda popular',
                 style: TextStyle(
                   color: Colors.white,
                   fontSize: 16.2,
@@ -6594,16 +6592,9 @@ class _SearchPageState extends State<_SearchPage> {
         Expanded(
           child: ListView.builder(
             padding: const EdgeInsets.only(left: 16, right: 16, top: 12),
-            itemCount: _popularItems.length > 2 ? _popularItems.length + 1 : _popularItems.length,
+            itemCount: _popularItems.length,
             itemBuilder: (context, index) {
-              if (index == 2 && _popularItems.length > 2) {
-                return const Padding(
-                  padding: EdgeInsets.only(bottom: 12),
-                  child: Center(child: BannerAdWidget()),
-                );
-              }
-              final itemIndex = (index > 2 && _popularItems.length > 2) ? index - 1 : index;
-              return _buildSearchListItem(_popularItems[itemIndex]);
+              return _buildSearchListItem(_popularItems[index]);
             },
           ),
         ),
@@ -6856,7 +6847,7 @@ class NetflixOfflineBannerState extends State<NetflixOfflineBanner>
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: const [
                                   Text(
-                                    'Sin conexiÃ³n a Internet',
+                                    'Sin conexión a Internet',
                                     style: TextStyle(
                                       color: Colors.white,
                                       fontSize: 14.5,
@@ -6865,7 +6856,7 @@ class NetflixOfflineBannerState extends State<NetflixOfflineBanner>
                                   ),
                                   SizedBox(height: 2),
                                   Text(
-                                    'Revisa tu Wi-Fi o datos mÃ³viles.',
+                                    'Revisa tu Wi-Fi o datos móviles.',
                                     style: TextStyle(
                                       color: Colors.white60,
                                       fontSize: 12,
@@ -6876,7 +6867,7 @@ class NetflixOfflineBannerState extends State<NetflixOfflineBanner>
                             ),
                             const SizedBox(width: 6),
 
-                            // BotÃ³n Reintentar
+                            // Botón Reintentar
                             TextButton(
                               onPressed: _handleRetry,
                               style: TextButton.styleFrom(
@@ -6917,7 +6908,7 @@ class NetflixOfflineBannerState extends State<NetflixOfflineBanner>
                             ),
                             const SizedBox(width: 4),
 
-                            // BotÃ³n X para cerrar
+                            // Botón X para cerrar
                             GestureDetector(
                               onTap: widget.onDismiss,
                               child: Container(

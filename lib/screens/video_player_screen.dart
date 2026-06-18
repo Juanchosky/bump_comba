@@ -435,15 +435,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
   }
 
-  Future<void> _playVideo({bool preRollWasShown = false}) async {
+  Future<void> _playVideo() async {
     if (!mounted) return;
     _retryCount = 0;
     _hasError = false;
     _noVideoSeconds = 0;
     _blackScreenReloadDone = false;
     _diagTrackCodecs = '?';
-
-    AdService().recordVideoStart(preRollWasShown: preRollWasShown);
 
     final progress = await _watchProgressService.getProgress(_currentItem.url);
     Duration? startFrom;
@@ -474,7 +472,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     AdService().showRewardedAdWithConfirmation(
       context,
       quarterTurns: _isLandscape ? 1 : 0,
-      onUserEarnedReward: () => _playVideo(preRollWasShown: true),
+      onUserEarnedReward: _playVideo,
       onAdFailed: () {
         if (mounted) {
           if (AdService().adBlockerDetected) {
@@ -724,6 +722,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       if (!isPrewarmed) {
         await _cleanupPlayer();
       }
+
+      AdService().recordVideoStart();
 
       setState(() {
         _isVideoLoading = true;
@@ -1422,7 +1422,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           duration.inSeconds,
         );
         if (midRollPosition >= 0) {
-          final noticePoint = midRollPosition - 30;
+          final noticePoint = midRollPosition - 120;
 
           if (position.inSeconds >= noticePoint &&
               !_midRollNoticeShown &&
@@ -1432,29 +1432,27 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             _showMidRollNotice();
           }
 
-          if (!PremiumService().isPremium && !_midRollAdShown) {
-            if (position.inSeconds >= midRollPosition) {
-              // Si llega al anuncio o adelanta la barra para saltarlo
+          if (!PremiumService().isPremium &&
+              position.inSeconds >= midRollPosition - 40 &&
+              position.inSeconds < midRollPosition &&
+              !_midRollAdShown) {
+            final remaining = midRollPosition - position.inSeconds;
+            if (_adCountdown != remaining) {
+              setState(() => _adCountdown = remaining);
+            }
+          } else if (_adCountdown != null) {
+            setState(() => _adCountdown = null);
+          }
+
+          if (position.inSeconds >= midRollPosition &&
+              !_midRollAdShown &&
+              !PremiumService().isPremium) {
+            if (position.inSeconds <= midRollPosition + 30) {
               _midRollAdShown = true;
               setState(() => _adCountdown = null);
               _triggerMidRollAd();
-            } else if (position.inSeconds >= midRollPosition - 15) {
-              // Zona de cuenta regresiva (15 segundos)
-              final remaining = midRollPosition - position.inSeconds;
-
-              if (_adCountdown == null) {
-                setState(() => _adCountdown = remaining);
-              } else if (remaining < _adCountdown!) {
-                // Avance natural del tiempo
-                setState(() => _adCountdown = remaining);
-              } else if (remaining > _adCountdown! + 2) {
-                // Si el usuario retrocede el video durante la cuenta regresiva,
-                // disparamos el anuncio directamente para evitar que el contador retroceda.
-                _midRollAdShown = true;
-                setState(() => _adCountdown = null);
-                _triggerMidRollAd();
-              }
-            } else if (_adCountdown != null) {
+            } else {
+              _midRollAdShown = true;
               setState(() => _adCountdown = null);
             }
           }
@@ -1555,12 +1553,32 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   void _playNextEpisode() {
+    _countdownTimer?.cancel();
     if (_playlist.isEmpty) return;
 
     final currentIndex = _playlist.indexWhere((i) => i.url == _currentItem.url);
     if (currentIndex != -1 && currentIndex < _playlist.length - 1) {
       final nextItem = _playlist[currentIndex + 1];
-      _changeToEpisode(nextItem);
+
+      // CRÍTICO: Resetear el estado de Cast ANTES de cargar el nuevo episodio.
+      // Sin esto, lastKnownPosition queda con la posición final del episodio
+      // anterior, y el nuevo episodio carga desde el final → bucle infinito.
+      final castService = CastService();
+      castService.lastKnownPosition = Duration.zero;
+      // Limpiar la bandera de "media terminada" para evitar que se dispare
+      // inmediatamente al cargar el nuevo episodio.
+      castService.castMediaFinished.value = false;
+
+      setState(() {
+        _currentItem = nextItem;
+        _midRollAdShown = false;
+        _midRollNoticeShown = false;
+        _nextEpisodeCountdown = null;
+        _autoPlayCancelled = false;
+        _serverUrls = []; // Reset for next item
+        _currentServerIndex = 0;
+      });
+      _initializePlayer(nextItem);
     }
   }
 
@@ -1574,7 +1592,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   void _showMidRollNotice() {
     if (mounted) {
-      _showAppSnackBar('Anuncio en 30 segundos...');
+      _showAppSnackBar('Anuncio en 2 minutos...');
     }
   }
 
@@ -2417,12 +2435,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           (context) => Container(
             width: _isLandscape ? 400 : double.infinity,
             margin: _isLandscape ? const EdgeInsets.all(24) : EdgeInsets.zero,
-            constraints: BoxConstraints(
-              maxHeight:
-                  _isLandscape
-                      ? MediaQuery.of(context).size.width * 0.9
-                      : MediaQuery.of(context).size.height * 0.9,
-            ),
             decoration: BoxDecoration(
               color: const Color.fromARGB(255, 27, 27, 27),
               borderRadius:
@@ -2511,12 +2523,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           (context) => Container(
             width: _isLandscape ? 400 : double.infinity,
             margin: _isLandscape ? const EdgeInsets.all(24) : EdgeInsets.zero,
-            constraints: BoxConstraints(
-              maxHeight:
-                  _isLandscape
-                      ? MediaQuery.of(context).size.width * 0.9
-                      : MediaQuery.of(context).size.height * 0.9,
-            ),
             decoration: BoxDecoration(
               color: const Color.fromARGB(255, 27, 27, 27),
               borderRadius:
@@ -2870,32 +2876,17 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     );
   }
 
-  void _applyNewEpisode(M3UItem newEpisode) {
-    if (!mounted) return;
-    setState(() {
-      _currentItem = newEpisode;
-      _midRollAdShown = false;
-      _midRollNoticeShown = false;
-      _autoPlayCancelled = false;
-      _nextEpisodeCountdown = null;
-      _serverUrls = [];
-      _currentServerIndex = 0;
-    });
-    AdService().recordVideoStart(preRollWasShown: false);
-    _initializePlayer(newEpisode);
-  }
-
   void _changeToEpisode(M3UItem newEpisode) {
-    _countdownTimer?.cancel();
-    _player?.pause();
-
-    final castService = CastService();
-    castService.lastKnownPosition = Duration.zero;
-    castService.castMediaFinished.value = false;
-
     AdService().showRewardedAd(
       onUserEarnedReward: () {
-        _applyNewEpisode(newEpisode);
+        if (!mounted) return;
+        setState(() {
+          _currentItem = newEpisode;
+          _midRollAdShown = false;
+          _midRollNoticeShown = false;
+          _autoPlayCancelled = false;
+        });
+        _initializePlayer(newEpisode);
       },
       onAdFailed: () {
         if (mounted) {
@@ -2913,7 +2904,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 if (!PremiumService().isPremium) {
                   Navigator.pop(context);
                 } else {
-                  _applyNewEpisode(newEpisode);
+                  setState(() {
+                    _currentItem = newEpisode;
+                    _midRollAdShown = false;
+                    _midRollNoticeShown = false;
+                    _autoPlayCancelled = false;
+                  });
+                  _initializePlayer(newEpisode);
                 }
               }
             });
@@ -2931,7 +2928,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 if (!PremiumService().isPremium) {
                   Navigator.pop(context);
                 } else {
-                  _applyNewEpisode(newEpisode);
+                  setState(() {
+                    _currentItem = newEpisode;
+                    _midRollAdShown = false;
+                    _midRollNoticeShown = false;
+                    _autoPlayCancelled = false;
+                  });
+                  _initializePlayer(newEpisode);
                 }
               }
             });
@@ -2940,7 +2943,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             _showAppSnackBar(
               'Error técnico al cargar anuncio. Disfruta del contenido (${AdService().unverifiedViewsThisSession}/3 vistas de cortesía usadas).',
             );
-            _applyNewEpisode(newEpisode);
+            setState(() {
+              _currentItem = newEpisode;
+              _midRollAdShown = false;
+              _midRollNoticeShown = false;
+              _autoPlayCancelled = false;
+            });
+            _initializePlayer(newEpisode);
           }
         }
       },
@@ -2953,12 +2962,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           (context) => Container(
             width: _isLandscape ? 380 : double.infinity,
             margin: _isLandscape ? const EdgeInsets.all(24) : EdgeInsets.zero,
-            constraints: BoxConstraints(
-              maxHeight:
-                  _isLandscape
-                      ? MediaQuery.of(context).size.width * 0.9
-                      : MediaQuery.of(context).size.height * 0.9,
-            ),
             decoration: BoxDecoration(
               color: const Color.fromARGB(255, 27, 27, 27),
               borderRadius:
@@ -2970,35 +2973,35 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                       ? Border.all(color: Colors.white12, width: 1)
                       : null,
             ),
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text(
-                          'Audio y subtítulos',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Configuración',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
                         ),
-                        IconButton(
-                          icon: const Icon(Icons.close, color: Colors.white70),
-                          onPressed: () => Navigator.pop(context),
-                        ),
-                      ],
-                    ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.white70),
+                        onPressed: () => Navigator.pop(context),
+                      ),
+                    ],
                   ),
-                  const Divider(color: Colors.white12, height: 1),
+                ),
+                const Divider(color: Colors.white12, height: 1),
+                if (!_currentItem.isLive)
                   ListTile(
-                    leading: const Icon(Icons.subtitles, color: Colors.white),
+                    leading: const Icon(Icons.speed, color: Colors.white),
                     title: const Text(
-                      'Subtítulos',
+                      'Velocidad',
                       style: TextStyle(color: Colors.white),
                     ),
                     trailing: const Icon(
@@ -3007,27 +3010,42 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                     ),
                     onTap: () {
                       Navigator.pop(context);
-                      _showSubtitleSelection();
+                      _showSpeedSelection();
                     },
                   ),
-                  ListTile(
-                    leading: const Icon(Icons.audiotrack, color: Colors.white),
-                    title: const Text(
-                      'Audio',
-                      style: TextStyle(color: Colors.white),
-                    ),
-                    trailing: const Icon(
-                      Icons.chevron_right,
-                      color: Colors.white54,
-                    ),
-                    onTap: () {
-                      Navigator.pop(context);
-                      _showAudioSelection();
-                    },
+                ListTile(
+                  leading: const Icon(Icons.subtitles, color: Colors.white),
+                  title: const Text(
+                    'Subtítulos',
+                    style: TextStyle(color: Colors.white),
                   ),
-                  const SizedBox(height: 16),
-                ],
-              ),
+                  trailing: const Icon(
+                    Icons.chevron_right,
+                    color: Colors.white54,
+                  ),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _showSubtitleSelection();
+                  },
+                ),
+
+                ListTile(
+                  leading: const Icon(Icons.audiotrack, color: Colors.white),
+                  title: const Text(
+                    'Audio',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                  trailing: const Icon(
+                    Icons.chevron_right,
+                    color: Colors.white54,
+                  ),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _showAudioSelection();
+                  },
+                ),
+                const SizedBox(height: 16),
+              ],
             ),
           ),
     );
@@ -3158,266 +3176,259 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                         ? Border.all(color: Colors.white12, width: 1)
                         : null,
               ),
-              child: SafeArea(
-                top: false,
-                child: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text(
-                              'Transmitiendo',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            'Transmitiendo',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
                             ),
-                            IconButton(
-                              onPressed: () => Navigator.pop(context),
-                              icon: const Icon(
-                                Icons.close,
-                                color: Colors.white70,
-                              ),
+                          ),
+                          IconButton(
+                            onPressed: () => Navigator.pop(context),
+                            icon: const Icon(
+                              Icons.close,
+                              color: Colors.white70,
                             ),
-                          ],
-                        ),
+                          ),
+                        ],
                       ),
-                      const Divider(color: Colors.white10, height: 1),
-                      Padding(
-                        padding: const EdgeInsets.all(20),
-                        child: Column(
-                          children: [
-                            // Toggle de audio local
+                    ),
+                    const Divider(color: Colors.white10, height: 1),
+                    Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        children: [
+                          // Toggle de audio local
+                          StatefulBuilder(
+                            builder: (context, setInnerState) {
+                              return Container(
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: 0.06),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: Column(
+                                  children: [
+                                    SwitchListTile(
+                                      contentPadding:
+                                          const EdgeInsets.symmetric(
+                                            horizontal: 16,
+                                            vertical: 2,
+                                          ),
+                                      title: const Text(
+                                        'Escuchar audio en el teléfono',
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 14,
+                                        ),
+                                      ),
+                                      subtitle: Text(
+                                        _localAudioDuringCast
+                                            ? 'Activo. Ajusta el retraso si hay eco.'
+                                            : 'Solo se reproduce en el TV',
+                                        style: TextStyle(
+                                          color: Colors.white.withValues(
+                                            alpha: 0.5,
+                                          ),
+                                          fontSize: 11,
+                                        ),
+                                      ),
+                                      secondary: Icon(
+                                        _localAudioDuringCast
+                                            ? Icons.volume_up_rounded
+                                            : Icons.volume_off_rounded,
+                                        color:
+                                            _localAudioDuringCast
+                                                ? Colors.redAccent
+                                                : Colors.white38,
+                                      ),
+                                      value: _localAudioDuringCast,
+                                      activeThumbColor: Colors.redAccent,
+                                      onChanged: (value) {
+                                        setInnerState(() {});
+                                        setState(() {
+                                          _localAudioDuringCast = value;
+                                          if (!value) {
+                                            _syncOffsetMs = 0; // Reset
+                                          }
+                                        });
+                                        if (value) {
+                                          final castPos =
+                                              CastService().castPosition.value;
+                                          _player?.seek(castPos);
+                                          _player?.play();
+                                        } else {
+                                          _player?.pause();
+                                        }
+                                      },
+                                    ),
+                                    Padding(
+                                      padding: const EdgeInsets.fromLTRB(
+                                        16,
+                                        0,
+                                        16,
+                                        12,
+                                      ),
+                                      child: Row(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Expanded(
+                                            child: Text(
+                                              'Recomendado para cuando no se escucha el audio en el TV, se puede reproducir con un parlante bluetooth o audífonos.',
+                                              style: TextStyle(
+                                                color: Colors.white.withValues(
+                                                  alpha: 0.6,
+                                                ),
+                                                fontSize: 11,
+                                                height: 1.2,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+                          if (_localAudioDuringCast) ...[
+                            const SizedBox(height: 20),
                             StatefulBuilder(
                               builder: (context, setInnerState) {
-                                return Container(
-                                  decoration: BoxDecoration(
-                                    color: Colors.white.withValues(alpha: 0.06),
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  child: Column(
-                                    children: [
-                                      SwitchListTile(
-                                        contentPadding:
-                                            const EdgeInsets.symmetric(
-                                              horizontal: 16,
-                                              vertical: 2,
-                                            ),
-                                        title: const Text(
-                                          'Escuchar audio en el teléfono',
+                                return Column(
+                                  children: [
+                                    Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        const Text(
+                                          'Sincronización de audio',
                                           style: TextStyle(
                                             color: Colors.white,
-                                            fontSize: 14,
+                                            fontSize: 13,
                                           ),
                                         ),
-                                        subtitle: Text(
-                                          _localAudioDuringCast
-                                              ? 'Activo. Ajusta el retraso si hay eco.'
-                                              : 'Solo se reproduce en el TV',
+                                        Text(
+                                          '${_syncOffsetMs >= 0 ? '+' : ''}${_syncOffsetMs.toInt()} ms',
+                                          style: const TextStyle(
+                                            color: Colors.redAccent,
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    SliderTheme(
+                                      data: SliderThemeData(
+                                        trackHeight: 2.0,
+                                        activeTrackColor: Colors.redAccent,
+                                        inactiveTrackColor: Colors.white24,
+                                        thumbColor: Colors.redAccent,
+                                        overlayColor: Colors.redAccent
+                                            .withValues(alpha: 0.2),
+                                        thumbShape: const RoundSliderThumbShape(
+                                          enabledThumbRadius: 6,
+                                        ),
+                                      ),
+                                      child: Slider(
+                                        min: -3000,
+                                        max: 3000,
+                                        divisions: 60,
+                                        value: _syncOffsetMs,
+                                        onChanged: (val) {
+                                          setInnerState(
+                                            () => _syncOffsetMs = val,
+                                          );
+                                          setState(() => _syncOffsetMs = val);
+                                        },
+                                        onChangeEnd: (val) {
+                                          final targetPos =
+                                              CastService().castPosition.value +
+                                              Duration(
+                                                milliseconds: val.toInt(),
+                                              );
+                                          _player?.seek(targetPos);
+                                        },
+                                      ),
+                                    ),
+                                    Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Text(
+                                          'Atrasar',
                                           style: TextStyle(
                                             color: Colors.white.withValues(
                                               alpha: 0.5,
                                             ),
-                                            fontSize: 11,
+                                            fontSize: 10,
                                           ),
                                         ),
-                                        secondary: Icon(
-                                          _localAudioDuringCast
-                                              ? Icons.volume_up_rounded
-                                              : Icons.volume_off_rounded,
-                                          color:
-                                              _localAudioDuringCast
-                                                  ? Colors.redAccent
-                                                  : Colors.white38,
-                                        ),
-                                        value: _localAudioDuringCast,
-                                        activeThumbColor: Colors.redAccent,
-                                        onChanged: (value) {
-                                          setInnerState(() {});
-                                          setState(() {
-                                            _localAudioDuringCast = value;
-                                            if (!value) {
-                                              _syncOffsetMs = 0; // Reset
-                                            }
-                                          });
-                                          if (value) {
-                                            final castPos =
-                                                CastService()
-                                                    .castPosition
-                                                    .value;
-                                            _player?.seek(castPos);
-                                            _player?.play();
-                                          } else {
-                                            _player?.pause();
-                                          }
-                                        },
-                                      ),
-                                      Padding(
-                                        padding: const EdgeInsets.fromLTRB(
-                                          16,
-                                          0,
-                                          16,
-                                          12,
-                                        ),
-                                        child: Row(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Expanded(
-                                              child: Text(
-                                                'Recomendado para cuando no se escucha el audio en el TV, se puede reproducir con un parlante bluetooth o audífonos.',
-                                                style: TextStyle(
-                                                  color: Colors.white
-                                                      .withValues(alpha: 0.6),
-                                                  fontSize: 11,
-                                                  height: 1.2,
-                                                ),
-                                              ),
+                                        Text(
+                                          'Adelantar',
+                                          style: TextStyle(
+                                            color: Colors.white.withValues(
+                                              alpha: 0.5,
                                             ),
-                                          ],
+                                            fontSize: 10,
+                                          ),
                                         ),
-                                      ),
-                                    ],
-                                  ),
+                                      ],
+                                    ),
+                                  ],
                                 );
                               },
                             ),
-                            if (_localAudioDuringCast) ...[
-                              const SizedBox(height: 20),
-                              StatefulBuilder(
-                                builder: (context, setInnerState) {
-                                  return Column(
-                                    children: [
-                                      Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.spaceBetween,
-                                        children: [
-                                          const Text(
-                                            'Sincronización de audio',
-                                            style: TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 13,
-                                            ),
-                                          ),
-                                          Text(
-                                            '${_syncOffsetMs >= 0 ? '+' : ''}${_syncOffsetMs.toInt()} ms',
-                                            style: const TextStyle(
-                                              color: Colors.redAccent,
-                                              fontSize: 13,
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                      SliderTheme(
-                                        data: SliderThemeData(
-                                          trackHeight: 2.0,
-                                          activeTrackColor: Colors.redAccent,
-                                          inactiveTrackColor: Colors.white24,
-                                          thumbColor: Colors.redAccent,
-                                          overlayColor: Colors.redAccent
-                                              .withValues(alpha: 0.2),
-                                          thumbShape:
-                                              const RoundSliderThumbShape(
-                                                enabledThumbRadius: 6,
-                                              ),
-                                        ),
-                                        child: Slider(
-                                          min: -3000,
-                                          max: 3000,
-                                          divisions: 60,
-                                          value: _syncOffsetMs,
-                                          onChanged: (val) {
-                                            setInnerState(
-                                              () => _syncOffsetMs = val,
-                                            );
-                                            setState(() => _syncOffsetMs = val);
-                                          },
-                                          onChangeEnd: (val) {
-                                            final targetPos =
-                                                CastService()
-                                                    .castPosition
-                                                    .value +
-                                                Duration(
-                                                  milliseconds: val.toInt(),
-                                                );
-                                            _player?.seek(targetPos);
-                                          },
-                                        ),
-                                      ),
-                                      Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.spaceBetween,
-                                        children: [
-                                          Text(
-                                            'Atrasar',
-                                            style: TextStyle(
-                                              color: Colors.white.withValues(
-                                                alpha: 0.5,
-                                              ),
-                                              fontSize: 10,
-                                            ),
-                                          ),
-                                          Text(
-                                            'Adelantar',
-                                            style: TextStyle(
-                                              color: Colors.white.withValues(
-                                                alpha: 0.5,
-                                              ),
-                                              fontSize: 10,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ],
-                                  );
-                                },
-                              ),
-                            ],
-                            const SizedBox(height: 24),
-                            SizedBox(
-                              width: double.infinity,
-                              child: ElevatedButton.icon(
-                                icon: const Icon(Icons.cast_rounded, size: 20),
-                                label: const Text('Dejar de transmitir'),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.red.withValues(
-                                    alpha: 0.2,
-                                  ),
-                                  foregroundColor: Colors.red,
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 14,
-                                  ),
-                                  elevation: 0,
-                                ),
-                                onPressed: () {
-                                  castService.disconnect();
-                                  setState(() => _localAudioDuringCast = false);
-                                  // Re-activar track de video y reanudar
-                                  try {
-                                    final mpv = _player?.platform as dynamic;
-                                    mpv?.setProperty('vid', 'auto');
-                                  } catch (_) {}
-                                  _player?.play();
-                                  Navigator.pop(context);
-                                  _showVisualNotice('Transmisión finalizada');
-                                },
-                              ),
-                            ),
                           ],
-                        ),
+                          const SizedBox(height: 24),
+                          SizedBox(
+                            width: double.infinity,
+                            child: ElevatedButton.icon(
+                              icon: const Icon(Icons.cast_rounded, size: 20),
+                              label: const Text('Dejar de transmitir'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.red.withValues(
+                                  alpha: 0.2,
+                                ),
+                                foregroundColor: Colors.red,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 14,
+                                ),
+                                elevation: 0,
+                              ),
+                              onPressed: () {
+                                castService.disconnect();
+                                setState(() => _localAudioDuringCast = false);
+                                // Re-activar track de video y reanudar
+                                try {
+                                  final mpv = _player?.platform as dynamic;
+                                  mpv?.setProperty('vid', 'auto');
+                                } catch (_) {}
+                                _player?.play();
+                                Navigator.pop(context);
+                                _showVisualNotice('Transmisión finalizada');
+                              },
+                            ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 8),
-                    ],
-                  ),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
                 ),
               ),
             ),
@@ -3575,23 +3586,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             defaultTargetPlatform == TargetPlatform.linux)) {
       _toggleOrientation();
     }
-  }
-
-  Widget _buildSeekButton({
-    required String assetPath,
-    required VoidCallback onTap,
-    required double iconSize,
-  }) {
-    return IconButton(
-      icon: Image.asset(
-        assetPath,
-        width: iconSize,
-        height: iconSize,
-        color: Colors.white,
-      ),
-      iconSize: iconSize,
-      onPressed: onTap,
-    );
   }
 
   @override
@@ -4103,67 +4097,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 // Nombre del Contenido
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 40),
-                  child: Builder(
-                    builder: (context) {
-                      final clean = NormalizationUtils.extractEpisodeTitle(
-                        _currentItem.name,
-                      );
-                      final epNum =
-                          _currentItem.episodeNumber ??
-                          NormalizationUtils.parseEpisodeNumber(
-                            _currentItem.name,
-                          );
-                      final episodeLabel =
-                          clean.isEmpty
-                              ? _currentItem.name
-                              : (epNum != null ? '$epNum. $clean' : clean);
-                      final seriesName = _currentItem.seriesName;
-
-                      if (seriesName != null &&
-                          seriesName.isNotEmpty &&
-                          seriesName != episodeLabel) {
-                        return Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              seriesName,
-                              style: TextStyle(
-                                color: Colors.white.withValues(alpha: 0.5),
-                                fontSize: (_isLandscape ? 15 : 14) * scale,
-                                fontWeight: FontWeight.w400,
-                              ),
-                              textAlign: TextAlign.center,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              episodeLabel,
-                              style: TextStyle(
-                                color: Colors.white.withValues(alpha: 0.8),
-                                fontSize: (_isLandscape ? 17 : 16) * scale,
-                                fontWeight: FontWeight.w500,
-                              ),
-                              textAlign: TextAlign.center,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ],
-                        );
-                      }
-
-                      return Text(
-                        episodeLabel,
-                        style: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.7),
-                          fontSize: (_isLandscape ? 15 : 14) * scale,
-                          fontWeight: FontWeight.w400,
-                        ),
-                        textAlign: TextAlign.center,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      );
-                    },
+                  child: Text(
+                    _currentItem.name,
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.7),
+                      fontSize: (_isLandscape ? 15 : 14) * scale,
+                      fontWeight: FontWeight.w400,
+                    ),
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
                 SizedBox(height: 48 * scale),
@@ -4217,46 +4160,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     );
   }
 
-  /// Botón de la barra inferior — ícono a la izquierda, texto a la derecha
-  Widget _buildNetflixBarButton({
-    required IconData icon,
-    required String label,
-    required VoidCallback onTap,
-    required double scale,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: Padding(
-        padding: EdgeInsets.symmetric(
-          horizontal: 6 * scale,
-          vertical: 8 * scale,
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(icon, color: Colors.white, size: 22 * scale),
-            SizedBox(width: 5 * scale),
-            Flexible(
-              child: Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: const Color.fromARGB(255, 236, 236, 236),
-                  fontSize: 13 * scale,
-                  fontWeight: FontWeight.w500,
-                  letterSpacing: 0.1,
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   Widget _buildControls() {
     final size = MediaQuery.of(context).size;
     final isPiP = size.height < 300 || size.width < 300;
@@ -4265,12 +4168,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // 1. Lógica de escalado responsivo
     final double shortestSide = size.shortestSide;
     final double scale = (shortestSide / 414.0).clamp(0.8, 1.25) * 1.02;
-    final double centralIconSize = 64.0 * scale;
-    final double seekIconSize = centralIconSize * 0.85;
-    final double seekGap = (size.width * (_isLandscape ? 0.10 : 0.05)).clamp(
-      16.0,
-      60.0,
-    );
+    final double centralIconSize = 56.0 * scale;
+    final double sideIconSize = 36.0 * scale;
+    final double horizontalGap = (_isLandscape ? 20.0 : 36.0) * scale;
 
     return Positioned.fill(
       child: AnimatedBuilder(
@@ -4294,12 +4194,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     if (!_currentItem.isLive) ...[
-                      _buildSeekButton(
-                        assetPath: 'assets/images/Retroceder.png',
-                        onTap: _seekBackward,
-                        iconSize: seekIconSize,
+                      IconButton(
+                        iconSize: sideIconSize,
+                        icon: const Icon(Icons.replay_10, color: Colors.white),
+                        onPressed: _seekBackward,
                       ),
-                      SizedBox(width: seekGap),
+                      SizedBox(width: horizontalGap),
                     ],
                     ValueListenableBuilder<bool>(
                       valueListenable: CastService().isCasting,
@@ -4309,11 +4209,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                               valueListenable: CastService().castPlaying,
                               builder: (context, isPlaying, _) {
                                 return IconButton(
-                                  onPressed: _togglePlayback,
-                                  icon: _PremiumPlayPauseIcon(
-                                    isPlaying: isPlaying,
-                                    size: centralIconSize,
+                                  iconSize: centralIconSize,
+                                  icon: Icon(
+                                    isPlaying
+                                        ? Icons.pause_circle_filled
+                                        : Icons.play_circle_fill,
+                                    color: Colors.white,
                                   ),
+                                  onPressed: _togglePlayback,
                                 );
                               },
                             )
@@ -4323,22 +4226,25 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                               builder: (context, snapshot) {
                                 final isPlaying = snapshot.data ?? false;
                                 return IconButton(
-                                  onPressed: _togglePlayback,
-                                  icon: _PremiumPlayPauseIcon(
-                                    isPlaying: isPlaying,
-                                    size: centralIconSize,
+                                  iconSize: centralIconSize,
+                                  icon: Icon(
+                                    isPlaying
+                                        ? Icons.pause_circle_filled
+                                        : Icons.play_circle_fill,
+                                    color: Colors.white,
                                   ),
+                                  onPressed: _togglePlayback,
                                 );
                               },
                             );
                       },
                     ),
                     if (!_currentItem.isLive) ...[
-                      SizedBox(width: seekGap),
-                      _buildSeekButton(
-                        assetPath: 'assets/images/Avanzar.png',
-                        onTap: _seekForward,
-                        iconSize: seekIconSize,
+                      SizedBox(width: horizontalGap),
+                      IconButton(
+                        iconSize: sideIconSize,
+                        icon: const Icon(Icons.forward_10, color: Colors.white),
+                        onPressed: _seekForward,
                       ),
                     ],
                   ],
@@ -4415,9 +4321,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                 ),
                                 Expanded(
                                   child: Row(
-                                    mainAxisAlignment: MainAxisAlignment.start,
+                                    mainAxisAlignment: MainAxisAlignment.center,
                                     children: [
-                                      const SizedBox(width: 8),
                                       Flexible(
                                         child: GestureDetector(
                                           behavior: HitTestBehavior.opaque,
@@ -4434,70 +4339,18 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                     _currentItem.name,
                                                   );
 
-                                              final episodeLabel =
-                                                  clean.isEmpty
-                                                      ? _currentItem.name
-                                                      : (epNum != null
-                                                          ? '$epNum. $clean'
-                                                          : clean);
-                                              final seriesName =
-                                                  _currentItem.seriesName;
-
-                                              if (seriesName != null &&
-                                                  seriesName.isNotEmpty &&
-                                                  seriesName != episodeLabel) {
-                                                return Column(
-                                                  mainAxisSize:
-                                                      MainAxisSize.min,
-                                                  crossAxisAlignment:
-                                                      CrossAxisAlignment.start,
-                                                  children: [
-                                                    Text(
-                                                      seriesName,
-                                                      style: TextStyle(
-                                                        color: Colors.white
-                                                            .withValues(
-                                                              alpha: 0.55,
-                                                            ),
-                                                        fontSize: 14 * scale,
-                                                        fontWeight:
-                                                            FontWeight.w400,
-                                                        letterSpacing: 0.2,
-                                                      ),
-                                                      textAlign:
-                                                          TextAlign.start,
-                                                      maxLines: 1,
-                                                      overflow:
-                                                          TextOverflow.ellipsis,
-                                                    ),
-                                                    const SizedBox(height: 2),
-                                                    Text(
-                                                      episodeLabel,
-                                                      style: TextStyle(
-                                                        color: Colors.white,
-                                                        fontSize: 16 * scale,
-                                                        fontWeight:
-                                                            FontWeight.w600,
-                                                        letterSpacing: -0.2,
-                                                      ),
-                                                      textAlign:
-                                                          TextAlign.start,
-                                                      maxLines: 1,
-                                                      overflow:
-                                                          TextOverflow.ellipsis,
-                                                    ),
-                                                  ],
-                                                );
-                                              }
-
                                               return Text(
-                                                episodeLabel,
+                                                clean.isEmpty
+                                                    ? _currentItem.name
+                                                    : (epNum != null
+                                                        ? '$epNum. $clean'
+                                                        : clean),
                                                 style: TextStyle(
                                                   color: Colors.white,
                                                   fontSize: 16 * scale,
                                                   fontWeight: FontWeight.w600,
                                                 ),
-                                                textAlign: TextAlign.start,
+                                                textAlign: TextAlign.center,
                                                 maxLines: 1,
                                                 overflow: TextOverflow.ellipsis,
                                               );
@@ -4722,12 +4575,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                               trackHeight:
                                                                   1.5 * scale,
                                                               activeTrackColor:
-                                                                  const Color.fromARGB(
-                                                                    255,
-                                                                    190,
-                                                                    19,
-                                                                    19,
-                                                                  ),
+                                                                  Colors.white,
                                                               inactiveTrackColor:
                                                                   Colors.white
                                                                       .withValues(
@@ -4735,13 +4583,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                             0.24,
                                                                       ),
                                                               thumbColor:
-                                                                  const Color(
-                                                                    0xFFC41212,
-                                                                  ),
+                                                                  Colors.white,
                                                               thumbShape:
                                                                   RoundSliderThumbShape(
                                                                     enabledThumbRadius:
-                                                                        7.5 *
+                                                                        6 *
                                                                         scale,
                                                                   ),
                                                               overlayShape:
@@ -4823,7 +4669,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                               },
                                                             ),
                                                           ),
-                                                          // ── Fila de tiempos ──────────────
                                                           Padding(
                                                             padding:
                                                                 EdgeInsets.symmetric(
@@ -4853,6 +4698,56 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                   ),
                                                                 ),
                                                                 const Spacer(),
+                                                                if (_playlist
+                                                                        .length >
+                                                                    1) ...[
+                                                                  IconButton(
+                                                                    icon: Icon(
+                                                                      Icons
+                                                                          .list_alt,
+                                                                      color:
+                                                                          Colors
+                                                                              .white,
+                                                                      size:
+                                                                          20 *
+                                                                          scale,
+                                                                    ),
+                                                                    padding:
+                                                                        EdgeInsets.all(
+                                                                          6 *
+                                                                              scale,
+                                                                        ),
+                                                                    onPressed:
+                                                                        _showEpisodeSelection,
+                                                                  ),
+                                                                  SizedBox(
+                                                                    width:
+                                                                        8 *
+                                                                        scale,
+                                                                  ),
+                                                                ],
+                                                                IconButton(
+                                                                  icon: Icon(
+                                                                    Icons
+                                                                        .settings,
+                                                                    color:
+                                                                        Colors
+                                                                            .white,
+                                                                    size:
+                                                                        20 *
+                                                                        scale,
+                                                                  ),
+                                                                  padding:
+                                                                      EdgeInsets.all(
+                                                                        6 * scale,
+                                                                      ),
+                                                                  onPressed:
+                                                                      _showSettingsMenu,
+                                                                ),
+                                                                SizedBox(
+                                                                  width:
+                                                                      8 * scale,
+                                                                ),
                                                                 Text(
                                                                   WatchProgressService.formatDuration(
                                                                     duration,
@@ -4869,121 +4764,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                             .w500,
                                                                   ),
                                                                 ),
-                                                              ],
-                                                            ),
-                                                          ),
-                                                          // ── Barra Netflix ─────────────────
-                                                          Padding(
-                                                            padding:
-                                                                EdgeInsets.only(
-                                                                  top:
-                                                                      6 * scale,
-                                                                  left:
-                                                                      2 * scale,
-                                                                  right:
-                                                                      2 * scale,
-                                                                ),
-                                                            child: Row(
-                                                              children: [
-                                                                // Velocidad
-                                                                Expanded(
-                                                                  child: Center(
-                                                                    child: StreamBuilder<
-                                                                      double
-                                                                    >(
-                                                                      stream:
-                                                                          _player
-                                                                              ?.stream
-                                                                              .rate,
-                                                                      initialData:
-                                                                          _player
-                                                                              ?.state
-                                                                              .rate ??
-                                                                          1.0,
-                                                                      builder: (
-                                                                        context,
-                                                                        rateSnap,
-                                                                      ) {
-                                                                        final rate =
-                                                                            rateSnap.data ??
-                                                                            1.0;
-                                                                        final label =
-                                                                            rate ==
-                                                                                    rate.roundToDouble()
-                                                                                ? '${rate.toInt()}x'
-                                                                                : '${rate}x';
-                                                                        return _buildNetflixBarButton(
-                                                                          icon:
-                                                                              Icons.speed_rounded,
-                                                                          label:
-                                                                              'Velocidad ($label)',
-                                                                          onTap:
-                                                                              _showSpeedSelection,
-                                                                          scale:
-                                                                              scale,
-                                                                        );
-                                                                      },
-                                                                    ),
-                                                                  ),
-                                                                ),
-                                                                // Episodios
-                                                                if (_playlist
-                                                                        .length >
-                                                                    1)
-                                                                  Expanded(
-                                                                    child: Center(
-                                                                      child: _buildNetflixBarButton(
-                                                                        icon:
-                                                                            Icons.video_library_outlined,
-                                                                        label:
-                                                                            'Episodios',
-                                                                        onTap:
-                                                                            _showEpisodeSelection,
-                                                                        scale:
-                                                                            scale,
-                                                                      ),
-                                                                    ),
-                                                                  ),
-                                                                // Audio y subtítulos
-                                                                Expanded(
-                                                                  child: Center(
-                                                                    child: _buildNetflixBarButton(
-                                                                      icon:
-                                                                          Icons
-                                                                              .subtitles_outlined,
-                                                                      label:
-                                                                          'Audio y subtítulos',
-                                                                      onTap:
-                                                                          _showSettingsMenu,
-                                                                      scale:
-                                                                          scale,
-                                                                    ),
-                                                                  ),
-                                                                ),
-                                                                // Siguiente episodio
-                                                                if (_playlist
-                                                                        .isNotEmpty &&
-                                                                    _playlist.indexWhere(
-                                                                          (i) =>
-                                                                              i.url ==
-                                                                              _currentItem.url,
-                                                                        ) <
-                                                                        _playlist.length -
-                                                                            1)
-                                                                  Expanded(
-                                                                    child: Center(
-                                                                      child: _buildNetflixBarButton(
-                                                                        icon:
-                                                                            Icons.skip_next_rounded,
-                                                                        label:
-                                                                            'Siguiente ep.',
-                                                                        onTap:
-                                                                            _playNextEpisode,
-                                                                        scale:
-                                                                            scale,
-                                                                      ),
-                                                                    ),
-                                                                  ),
                                                               ],
                                                             ),
                                                           ),
@@ -5189,9 +4969,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     if (isPiP) return const SizedBox.shrink();
 
     final double scale = (size.shortestSide / 414.0).clamp(0.8, 1.25) * 1.02;
-    final double sideIconSize = 32.0 * scale;
+    final double sideIconSize = 36.0 * scale;
     final double playCircle = 64.0 * scale;
-    final double playIconSize = 32.0 * scale;
+    final double playIconSize = 28.0 * scale;
 
     // ── helper: botón play/pause circular estilo iOS ──────────────────────
     Widget playPauseButton(bool isPlaying) {
@@ -5209,8 +4989,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             ),
           ),
           child: Center(
-            child: _PremiumPlayPauseIcon(
-              isPlaying: isPlaying,
+            child: Icon(
+              isPlaying ? CupertinoIcons.pause_fill : CupertinoIcons.play_fill,
+              color: Colors.white,
               size: playIconSize,
             ),
           ),
@@ -5272,12 +5053,17 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   if (!_currentItem.isLive) ...[
-                    _buildSeekButton(
-                      assetPath: 'assets/images/Retroceder.png',
-                      onTap: _seekBackward,
-                      iconSize: sideIconSize,
+                    CupertinoButton(
+                      padding: EdgeInsets.zero,
+                      minSize: 0,
+                      onPressed: _seekBackward,
+                      child: Icon(
+                        CupertinoIcons.gobackward_10,
+                        color: Colors.white,
+                        size: sideIconSize,
+                      ),
                     ),
-                    SizedBox(width: 20 * scale),
+                    SizedBox(width: 38 * scale),
                   ],
                   ValueListenableBuilder<bool>(
                     valueListenable: CastService().isCasting,
@@ -5300,11 +5086,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                     },
                   ),
                   if (!_currentItem.isLive) ...[
-                    SizedBox(width: 20 * scale),
-                    _buildSeekButton(
-                      assetPath: 'assets/images/Avanzar.png',
-                      onTap: _seekForward,
-                      iconSize: sideIconSize,
+                    SizedBox(width: 38 * scale),
+                    CupertinoButton(
+                      padding: EdgeInsets.zero,
+                      minSize: 0,
+                      onPressed: _seekForward,
+                      child: Icon(
+                        CupertinoIcons.goforward_10,
+                        color: Colors.white,
+                        size: sideIconSize,
+                      ),
                     ),
                   ],
                 ],
@@ -5367,16 +5158,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                   size: 20,
                                 ),
                               ),
-                              const SizedBox(width: 8),
                               // Título (toque largo = panel de diagnóstico)
                               Expanded(
                                 child: GestureDetector(
                                   behavior: HitTestBehavior.opaque,
                                   onLongPress: _toggleDiagPanel,
-                                  child: Builder(
-                                    builder: (context) {
-                                      final seriesName =
-                                          _currentItem.seriesName;
+                                  child: Text(
+                                    () {
                                       final clean =
                                           NormalizationUtils.extractEpisodeTitle(
                                             _currentItem.name,
@@ -5386,66 +5174,24 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                           NormalizationUtils.parseEpisodeNumber(
                                             _currentItem.name,
                                           );
-                                      final episodeLabel =
-                                          clean.isEmpty
-                                              ? _currentItem.name
-                                              : (epNum != null
-                                                  ? '$epNum. $clean'
-                                                  : clean);
-                                      if (seriesName != null &&
-                                          seriesName.isNotEmpty &&
-                                          seriesName != episodeLabel) {
-                                        return Column(
-                                          mainAxisSize: MainAxisSize.min,
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Text(
-                                              seriesName,
-                                              style: TextStyle(
-                                                color: Colors.white.withValues(
-                                                  alpha: 0.55,
-                                                ),
-                                                fontSize: 14 * scale,
-                                                fontWeight: FontWeight.w400,
-                                                letterSpacing: 0.2,
-                                              ),
-                                              textAlign: TextAlign.start,
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
-                                            const SizedBox(height: 2),
-                                            Text(
-                                              episodeLabel,
-                                              style: TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 16 * scale,
-                                                fontWeight: FontWeight.w600,
-                                                letterSpacing: -0.2,
-                                              ),
-                                              textAlign: TextAlign.start,
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
-                                          ],
-                                        );
-                                      }
-                                      return Text(
-                                        episodeLabel,
-                                        style: TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 16 * scale,
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                        textAlign: TextAlign.start,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                      );
-                                    },
+                                      return clean.isEmpty
+                                          ? _currentItem.name
+                                          : (epNum != null
+                                              ? '$epNum. $clean'
+                                              : clean);
+                                    }(),
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 15 * scale,
+                                      fontWeight: FontWeight.w500,
+                                      letterSpacing: -0.3,
+                                    ),
+                                    textAlign: TextAlign.center,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
                                   ),
                                 ),
                               ),
-                              const SizedBox(width: 8),
                               // Cast
                               ValueListenableBuilder<bool>(
                                 valueListenable: CastService().isCasting,
@@ -5636,11 +5382,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                         SliderTheme(
                                                           data: SliderThemeData(
                                                             trackHeight:
-                                                                1.5 * scale,
+                                                                2.5 * scale,
                                                             activeTrackColor:
-                                                                const Color(
-                                                                  0xFFE50914,
-                                                                ),
+                                                                Colors.white,
                                                             inactiveTrackColor:
                                                                 Colors.white
                                                                     .withValues(
@@ -5648,9 +5392,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                           0.28,
                                                                     ),
                                                             thumbColor:
-                                                                const Color(
-                                                                  0xFFE50914,
-                                                                ),
+                                                                Colors.white,
                                                             thumbShape:
                                                                 RoundSliderThumbShape(
                                                                   enabledThumbRadius:
@@ -6032,8 +5774,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     final double shortestSide = size.shortestSide;
     final double scale = (shortestSide / 414.0).clamp(0.8, 1.25) * 1.02;
 
-    final double centralIconSize = 64.0 * scale; // Simulando play para el hueco
-    final double sideIconSize = centralIconSize * 0.85;
+    final double sideIconSize = 36.0 * scale;
+    final double centralIconSize = 56.0 * scale; // Simulando play para el hueco
     final double horizontalGap = (_isLandscape ? 20.0 : 36.0) * scale;
 
     final double seekBtnWidth = sideIconSize + 16.0;
@@ -6097,13 +5839,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             angle: rotation,
             child: Transform.scale(
               scale: scale,
-              child: Image.asset(
+              child: Icon(
                 _seekFeedbackForward
-                    ? 'assets/images/Avanzar.png'
-                    : 'assets/images/Retroceder.png',
+                    ? Icons.forward_10_outlined
+                    : Icons.replay_10_outlined,
                 color: const Color.fromARGB(255, 247, 247, 247),
-                width: iconSize,
-                height: iconSize,
+                size: iconSize,
+                shadows: const [Shadow(color: Colors.black45, blurRadius: 8)],
               ),
             ),
           ),
@@ -6387,218 +6129,206 @@ class _CastDeviceSelectorState extends State<_CastDeviceSelector> {
                 ? Border.all(color: Colors.white12, width: 1)
                 : null,
       ),
-      child: SafeArea(
-        top: false,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(
-                        Icons.cast_rounded,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.cast_rounded,
+                      color: Colors.white,
+                      size: 22,
+                    ),
+                    const SizedBox(width: 10),
+                    const Text(
+                      'Transmitir a TV',
+                      style: TextStyle(
                         color: Colors.white,
-                        size: 22,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
                       ),
-                      const SizedBox(width: 10),
-                      const Text(
-                        'Transmitir a TV',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
-                  ),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (!_isSearching)
-                        IconButton(
-                          onPressed: _searchDevices,
-                          icon: const Icon(
-                            Icons.refresh_rounded,
-                            color: Colors.white70,
-                          ),
-                          tooltip: 'Buscar de nuevo',
-                        ),
+                    ),
+                  ],
+                ),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (!_isSearching)
                       IconButton(
-                        onPressed: () => Navigator.pop(context),
-                        icon: const Icon(Icons.close, color: Colors.white70),
+                        onPressed: _searchDevices,
+                        icon: const Icon(
+                          Icons.refresh_rounded,
+                          color: Colors.white70,
+                        ),
+                        tooltip: 'Buscar de nuevo',
                       ),
-                    ],
+                    IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close, color: Colors.white70),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const Divider(color: Colors.white10, height: 1),
+          if (_isSearching)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 40),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    width: 32,
+                    height: 32,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2.5,
+                      color: Colors.redAccent.withValues(alpha: 0.8),
+                      strokeCap: StrokeCap.round,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  Text(
+                    'Buscando dispositivos...',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.6),
+                      fontSize: 14,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Asegúrate de estar en la misma red Wi-Fi',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.35),
+                      fontSize: 12,
+                    ),
                   ),
                 ],
               ),
-            ),
-            const Divider(color: Colors.white10, height: 1),
-            if (_isSearching)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 40),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    SizedBox(
-                      width: 32,
-                      height: 32,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2.5,
-                        color: Colors.redAccent.withValues(alpha: 0.8),
-                        strokeCap: StrokeCap.round,
+            )
+          else if (_error != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 24),
+              child: Column(
+                children: [
+                  Icon(
+                    Icons.wifi_off_rounded,
+                    color: Colors.red.withValues(alpha: 0.6),
+                    size: 40,
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    _error!,
+                    style: const TextStyle(color: Colors.white70, fontSize: 14),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 16),
+                  TextButton.icon(
+                    icon: const Icon(Icons.refresh, size: 18),
+                    label: const Text('Reintentar'),
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.redAccent,
+                    ),
+                    onPressed: _searchDevices,
+                  ),
+                ],
+              ),
+            )
+          else if (_devices != null && _devices!.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 24),
+              child: Column(
+                children: [
+                  Icon(
+                    Icons.tv_off_rounded,
+                    color: Colors.white.withValues(alpha: 0.4),
+                    size: 40,
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'No se encontraron dispositivos',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Verifica que tu TV/Chromecast esté encendido\ny conectado a la misma red Wi-Fi.',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.5),
+                      fontSize: 13,
+                      height: 1.5,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 20),
+                  TextButton.icon(
+                    icon: const Icon(Icons.refresh, size: 18),
+                    label: const Text('Buscar de nuevo'),
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.redAccent,
+                    ),
+                    onPressed: _searchDevices,
+                  ),
+                ],
+              ),
+            )
+          else if (_devices != null)
+            Flexible(
+              child: ListView.builder(
+                padding: EdgeInsets.zero,
+                shrinkWrap: true,
+                itemCount: _devices!.length,
+                itemBuilder: (context, index) {
+                  final device = _devices![index];
+                  return ListTile(
+                    leading: Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: Colors.redAccent.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(
+                        Icons.tv_rounded,
+                        color: Colors.redAccent,
+                        size: 22,
                       ),
                     ),
-                    const SizedBox(height: 20),
-                    Text(
-                      'Buscando dispositivos...',
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.6),
-                        fontSize: 14,
+                    title: Text(
+                      device.name,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w500,
                       ),
                     ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Asegúrate de estar en la misma red Wi-Fi',
+                    subtitle: Text(
+                      device.host,
                       style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.35),
+                        color: Colors.white.withValues(alpha: 0.4),
                         fontSize: 12,
                       ),
                     ),
-                  ],
-                ),
-              )
-            else if (_error != null)
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                  vertical: 40,
-                  horizontal: 24,
-                ),
-                child: Column(
-                  children: [
-                    Icon(
-                      Icons.wifi_off_rounded,
-                      color: Colors.red.withValues(alpha: 0.6),
-                      size: 40,
+                    trailing: const Icon(
+                      Icons.chevron_right,
+                      color: Colors.white38,
                     ),
-                    const SizedBox(height: 16),
-                    Text(
-                      _error!,
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 14,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 16),
-                    TextButton.icon(
-                      icon: const Icon(Icons.refresh, size: 18),
-                      label: const Text('Reintentar'),
-                      style: TextButton.styleFrom(
-                        foregroundColor: Colors.redAccent,
-                      ),
-                      onPressed: _searchDevices,
-                    ),
-                  ],
-                ),
-              )
-            else if (_devices != null && _devices!.isEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                  vertical: 40,
-                  horizontal: 24,
-                ),
-                child: Column(
-                  children: [
-                    Icon(
-                      Icons.tv_off_rounded,
-                      color: Colors.white.withValues(alpha: 0.4),
-                      size: 40,
-                    ),
-                    const SizedBox(height: 16),
-                    const Text(
-                      'No se encontraron dispositivos',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w500,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Verifica que tu TV/Chromecast esté encendido\ny conectado a la misma red Wi-Fi.',
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.5),
-                        fontSize: 13,
-                        height: 1.5,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 20),
-                    TextButton.icon(
-                      icon: const Icon(Icons.refresh, size: 18),
-                      label: const Text('Buscar de nuevo'),
-                      style: TextButton.styleFrom(
-                        foregroundColor: Colors.redAccent,
-                      ),
-                      onPressed: _searchDevices,
-                    ),
-                  ],
-                ),
-              )
-            else if (_devices != null)
-              Flexible(
-                child: ListView.builder(
-                  padding: EdgeInsets.zero,
-                  shrinkWrap: true,
-                  itemCount: _devices!.length,
-                  itemBuilder: (context, index) {
-                    final device = _devices![index];
-                    return ListTile(
-                      leading: Container(
-                        width: 40,
-                        height: 40,
-                        decoration: BoxDecoration(
-                          color: Colors.redAccent.withValues(alpha: 0.12),
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: const Icon(
-                          Icons.tv_rounded,
-                          color: Colors.redAccent,
-                          size: 22,
-                        ),
-                      ),
-                      title: Text(
-                        device.name,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                      subtitle: Text(
-                        device.host,
-                        style: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.4),
-                          fontSize: 12,
-                        ),
-                      ),
-                      trailing: const Icon(
-                        Icons.chevron_right,
-                        color: Colors.white38,
-                      ),
-                      onTap: () => widget.onDeviceSelected(device),
-                    );
-                  },
-                ),
+                    onTap: () => widget.onDeviceSelected(device),
+                  );
+                },
               ),
-            const SizedBox(height: 16),
-          ],
-        ),
+            ),
+          const SizedBox(height: 16),
+        ],
       ),
     );
   }
@@ -6663,62 +6393,6 @@ class _AppLoadingAnimationState extends State<_AppLoadingAnimation>
           ),
         ],
       ),
-    );
-  }
-}
-
-class _PremiumPlayPauseIcon extends StatefulWidget {
-  final bool isPlaying;
-  final double size;
-
-  const _PremiumPlayPauseIcon({required this.isPlaying, required this.size});
-
-  @override
-  _PremiumPlayPauseIconState createState() => _PremiumPlayPauseIconState();
-}
-
-class _PremiumPlayPauseIconState extends State<_PremiumPlayPauseIcon>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 350),
-      value: widget.isPlaying ? 1.0 : 0.0,
-    );
-  }
-
-  @override
-  void didUpdateWidget(_PremiumPlayPauseIcon oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.isPlaying != oldWidget.isPlaying) {
-      if (widget.isPlaying) {
-        _controller.forward();
-      } else {
-        _controller.reverse();
-      }
-    }
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedIcon(
-      icon: AnimatedIcons.play_pause,
-      progress: CurvedAnimation(
-        parent: _controller,
-        curve: Curves.easeInOutCubic,
-      ),
-      color: Colors.white,
-      size: widget.size,
     );
   }
 }
