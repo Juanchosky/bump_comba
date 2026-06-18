@@ -170,8 +170,9 @@ class AdService {
 
   // Cada cuántas visitas a detalles se dispara un interstitial
   int get _detailVisitsPerAd {
-    if (_userSegment == _UserSegment.newUser)
+    if (_userSegment == _UserSegment.newUser) {
       return 4; // menos agresivo para nuevos
+    }
     if (_toleranceScore >= 60) return 2; // tolerante
     return 3; // promedio
   }

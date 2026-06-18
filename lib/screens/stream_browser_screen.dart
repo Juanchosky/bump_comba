@@ -2089,7 +2089,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             physics: const AlwaysScrollableScrollPhysics(),
             itemCount: 1 + 1, // header+tabs + contenido
             itemBuilder: (context, index) {
-              if (index == 0) return _buildScrollableHeader(); // â† header+tabs
+              if (index == 0)
+                return _buildScrollableHeader(); // â† header+tabs
               if (tabItems.isNotEmpty) {
                 return _buildCategoryRow(_selectedTab, tabItems);
               } else {
@@ -4314,9 +4315,14 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                           Expanded(
                             child: ElevatedButton.icon(
                               onPressed: () async {
-                                await _safeToggleFavoriteGlobal(context, _m3uService, item, () {
-                                  setState(() {});
-                                });
+                                await _safeToggleFavoriteGlobal(
+                                  context,
+                                  _m3uService,
+                                  item,
+                                  () {
+                                    setState(() {});
+                                  },
+                                );
                               },
                               icon: Icon(
                                 item.isFavorite ? Icons.check : Icons.add,
@@ -4942,9 +4948,14 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                       right: 6,
                       child: GestureDetector(
                         onTap: () async {
-                          await _safeToggleFavoriteGlobal(context, _m3uService, item, () {
-                            setState(() {});
-                          });
+                          await _safeToggleFavoriteGlobal(
+                            context,
+                            _m3uService,
+                            item,
+                            () {
+                              setState(() {});
+                            },
+                          );
                         },
                         child: Container(
                           padding: const EdgeInsets.all(4),
@@ -6376,9 +6387,14 @@ class _SearchPageState extends State<_SearchPage> {
               item: item,
               similarItems: similarItems,
               onToggleFavorite: (favItem) async {
-                await _safeToggleFavoriteGlobal(context, widget.m3uService, favItem, () {
-                  if (mounted) setState(() {});
-                });
+                await _safeToggleFavoriteGlobal(
+                  context,
+                  widget.m3uService,
+                  favItem,
+                  () {
+                    if (mounted) setState(() {});
+                  },
+                );
               },
             ),
           ),
@@ -6615,9 +6631,14 @@ class _SearchPageState extends State<_SearchPage> {
               item: item,
               similarItems: similarItems,
               onToggleFavorite: (favItem) async {
-                await _safeToggleFavoriteGlobal(context, widget.m3uService, favItem, () {
-                  if (mounted) setState(() {});
-                });
+                await _safeToggleFavoriteGlobal(
+                  context,
+                  widget.m3uService,
+                  favItem,
+                  () {
+                    if (mounted) setState(() {});
+                  },
+                );
               },
             ),
           ),
@@ -6938,5 +6959,3 @@ class NetflixOfflineBannerState extends State<NetflixOfflineBanner>
     );
   }
 }
-
-

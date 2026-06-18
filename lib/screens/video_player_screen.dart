@@ -5055,13 +5055,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                   if (!_currentItem.isLive) ...[
                     CupertinoButton(
                       padding: EdgeInsets.zero,
-                      minSize: 0,
                       onPressed: _seekBackward,
                       child: Icon(
                         CupertinoIcons.gobackward_10,
                         color: Colors.white,
                         size: sideIconSize,
                       ),
+                      minimumSize: Size(0, 0),
                     ),
                     SizedBox(width: 38 * scale),
                   ],
@@ -5089,13 +5089,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                     SizedBox(width: 38 * scale),
                     CupertinoButton(
                       padding: EdgeInsets.zero,
-                      minSize: 0,
                       onPressed: _seekForward,
                       child: Icon(
                         CupertinoIcons.goforward_10,
                         color: Colors.white,
                         size: sideIconSize,
                       ),
+                      minimumSize: Size(0, 0),
                     ),
                   ],
                 ],
@@ -5124,7 +5124,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                               // Botón atrás
                               CupertinoButton(
                                 padding: const EdgeInsets.all(8),
-                                minSize: 0,
                                 onPressed: () async {
                                   if (_player != null && !_isVideoLoading) {
                                     final cs = CastService();
@@ -5157,6 +5156,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                   color: Colors.white,
                                   size: 20,
                                 ),
+                                minimumSize: Size(0, 0),
                               ),
                               // Título (toque largo = panel de diagnóstico)
                               Expanded(
@@ -5198,7 +5198,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                 builder:
                                     (context, casting, _) => CupertinoButton(
                                       padding: const EdgeInsets.all(8),
-                                      minSize: 0,
                                       onPressed: _showCastSelection,
                                       child: Icon(
                                         casting
@@ -5210,23 +5209,23 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                 : Colors.white,
                                         size: 22 * scale,
                                       ),
+                                      minimumSize: Size(0, 0),
                                     ),
                               ),
                               // PiP
                               CupertinoButton(
                                 padding: const EdgeInsets.all(8),
-                                minSize: 0,
                                 onPressed: _togglePiP,
                                 child: Icon(
                                   Icons.picture_in_picture_alt_rounded,
                                   color: Colors.white,
                                   size: 21 * scale,
                                 ),
+                                minimumSize: Size(0, 0),
                               ),
                               // Pantalla completa
                               CupertinoButton(
                                 padding: const EdgeInsets.all(8),
-                                minSize: 0,
                                 onPressed: _toggleOrientation,
                                 child: Icon(
                                   _isLandscape
@@ -5235,6 +5234,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                   color: Colors.white,
                                   size: 24 * scale,
                                 ),
+                                minimumSize: Size(0, 0),
                               ),
                             ],
                           ),
@@ -5509,7 +5509,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                       EdgeInsets.all(
                                                                         6 * scale,
                                                                       ),
-                                                                  minSize: 0,
                                                                   onPressed:
                                                                       _showEpisodeSelection,
                                                                   child: Icon(
@@ -5522,6 +5521,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                         20 *
                                                                         scale,
                                                                   ),
+                                                                  minimumSize:
+                                                                      Size(
+                                                                        0,
+                                                                        0,
+                                                                      ),
                                                                 ),
                                                                 SizedBox(
                                                                   width:
@@ -5533,7 +5537,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                     EdgeInsets.all(
                                                                       6 * scale,
                                                                     ),
-                                                                minSize: 0,
                                                                 onPressed:
                                                                     _showSettingsMenu,
                                                                 child: Icon(
@@ -5546,6 +5549,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                       20 *
                                                                       scale,
                                                                 ),
+                                                                minimumSize:
+                                                                    Size(0, 0),
                                                               ),
                                                               SizedBox(
                                                                 width:
