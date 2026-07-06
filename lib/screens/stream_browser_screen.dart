@@ -154,6 +154,10 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   M3UItem? _heroItem;
   // Hero destacado por sección (persistencia por sesión, igual que _heroItem).
   final Map<String, M3UItem> _sectionHeroItems = {};
+  // Índice de la pestaña del último hero mostrado. Sirve para animar el banner
+  // principal en la dirección del cambio (Inicio → Películas → Series →
+  // Telenovelas), como si fuese un carrusel.
+  int _lastHeroTabIndex = 0;
   bool _isNavigating = false;
   DateTime? _lastPressedAt;
 
@@ -4320,216 +4324,243 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       380.0,
       560.0,
     );
-    return GestureDetector(
-      onTap: () => _onItemTap(item, heroTag: heroTag),
-      child: Container(
-        height: heroHeight,
-        margin: const EdgeInsets.symmetric(horizontal: 24, vertical: 22),
-        child: Stack(
-          clipBehavior: Clip.none,
-          children: [
-            // 1. Dynamic Shadow (Blurred background image)
-            if (item.logo != null &&
-                item.logo!.isNotEmpty &&
-                PerformanceService().shouldShowComplexShadows)
-              Positioned(
-                top: 12,
-                left: 10,
-                right: 10,
-                bottom: -10,
-                child: ImageFiltered(
-                  imageFilter: ImageFilter.blur(sigmaX: 30, sigmaY: 30),
-                  child: Opacity(
-                    opacity: 0.6,
-                    child: FastThumbnail(
-                      url: item.logo,
-                      title: item.name,
-                      width: double.infinity,
-                      height: double.infinity,
-                      fit: BoxFit.cover,
-                      cacheWidth: 400, // menor resolución para el blur
+
+    // ── Animación premium del banner principal al cambiar de pestaña ──
+    // Solo animamos cuando el cambio ocurre ENTRE las pestañas superiores
+    // (Inicio → Películas → Series → Telenovelas → Animación). Si volvemos a la
+    // misma pestaña (p. ej. desde la barra inferior) o es la carga inicial, el
+    // banner aparece ya asentado, sin animación. La dirección refleja el sentido
+    // del cambio para que entre deslizándose hacia ese lado, como un carrusel.
+    final int heroTabIndex = _fixedTabs.indexOf(_selectedTab);
+    final bool heroShouldAnimate =
+        heroTabIndex >= 0 && heroTabIndex != _lastHeroTabIndex;
+    final int heroDirection =
+        (heroTabIndex >= 0 && heroTabIndex < _lastHeroTabIndex) ? -1 : 1;
+    if (heroTabIndex >= 0) _lastHeroTabIndex = heroTabIndex;
+
+    const EdgeInsets heroMargin = EdgeInsets.symmetric(
+      horizontal: 24,
+      vertical: 22,
+    );
+
+    return _HeroBannerReveal(
+      // Nueva key ⇒ nueva instancia ⇒ nueva animación de entrada cada vez que
+      // cambia la pestaña activa o el ítem destacado de la sección.
+      key: ValueKey('hero_reveal_${heroTabIndex}_${item.url}'),
+      animate: heroShouldAnimate,
+      direction: heroDirection,
+      child: GestureDetector(
+        onTap: () => _onItemTap(item, heroTag: heroTag),
+        child: Container(
+          height: heroHeight,
+          margin: heroMargin,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              // 1. Dynamic Shadow (Blurred background image)
+              if (item.logo != null &&
+                  item.logo!.isNotEmpty &&
+                  PerformanceService().shouldShowComplexShadows)
+                Positioned(
+                  top: 12,
+                  left: 10,
+                  right: 10,
+                  bottom: -10,
+                  child: ImageFiltered(
+                    imageFilter: ImageFilter.blur(sigmaX: 30, sigmaY: 30),
+                    child: Opacity(
+                      opacity: 0.6,
+                      child: FastThumbnail(
+                        url: item.logo,
+                        title: item.name,
+                        width: double.infinity,
+                        height: double.infinity,
+                        fit: BoxFit.cover,
+                        cacheWidth: 400, // menor resolución para el blur
+                      ),
                     ),
                   ),
                 ),
-              ),
 
-            // 2. Main Container with Border
-            Container(
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: Colors.white.withValues(alpha: 0.2),
-                  width: 1.5,
+              // 2. Main Container with Border
+              Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.2),
+                    width: 1.5,
+                  ),
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      Colors.white.withValues(alpha: 0.15),
+                      Colors.white.withValues(alpha: 0.05),
+                      Colors.white.withValues(alpha: 0.1),
+                    ],
+                  ),
                 ),
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    Colors.white.withValues(alpha: 0.15),
-                    Colors.white.withValues(alpha: 0.05),
-                    Colors.white.withValues(alpha: 0.1),
-                  ],
-                ),
-              ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(11),
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    // Background Image (Poster) â€” parallax + shared-element Hero.
-                    AnimatedBuilder(
-                      animation: _homeScrollController,
-                      builder: (context, child) {
-                        final offset =
-                            _homeScrollController.hasClients
-                                ? _homeScrollController.offset
-                                : 0.0;
-                        final dy = (offset * 0.12).clamp(-26.0, 26.0);
-                        return Transform(
-                          alignment: Alignment.center,
-                          // Slight overscale prevents edge gaps as the image
-                          // shifts during the parallax translation.
-                          transform:
-                              Matrix4.identity()
-                                ..translate(0.0, dy)
-                                ..scale(1.1, 1.1),
-                          child: child,
-                        );
-                      },
-                      child: _heroPoster(
-                        heroTag,
-                        FastThumbnail(
-                          url: item.logo,
-                          title: item.name,
-                          width: double.infinity,
-                          height: double.infinity,
-                          fit: BoxFit.cover,
-                          cacheWidth: null, // resolución completa para el hero
-                          isHD: true,
-                          isSeries: item.isSeries,
-                          useTMDBFallback: !item.isLive,
-                          onError: () {
-                            if (item.logo != null && item.logo!.isNotEmpty) {
-                              _m3uService.reportFailedLogo(item.logo!);
-                            }
-                          },
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(11),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      // Background Image (Poster) â€” parallax + shared-element Hero.
+                      AnimatedBuilder(
+                        animation: _homeScrollController,
+                        builder: (context, child) {
+                          final offset =
+                              _homeScrollController.hasClients
+                                  ? _homeScrollController.offset
+                                  : 0.0;
+                          final dy = (offset * 0.12).clamp(-26.0, 26.0);
+                          return Transform(
+                            alignment: Alignment.center,
+                            // Slight overscale prevents edge gaps as the image
+                            // shifts during the parallax translation.
+                            transform:
+                                Matrix4.identity()
+                                  ..translate(0.0, dy)
+                                  ..scale(1.1, 1.1),
+                            child: child,
+                          );
+                        },
+                        child: _heroPoster(
+                          heroTag,
+                          FastThumbnail(
+                            url: item.logo,
+                            title: item.name,
+                            width: double.infinity,
+                            height: double.infinity,
+                            fit: BoxFit.cover,
+                            cacheWidth:
+                                null, // resolución completa para el hero
+                            isHD: true,
+                            isSeries: item.isSeries,
+                            useTMDBFallback: !item.isLive,
+                            onError: () {
+                              if (item.logo != null && item.logo!.isNotEmpty) {
+                                _m3uService.reportFailedLogo(item.logo!);
+                              }
+                            },
+                          ),
                         ),
                       ),
-                    ),
 
-                    // Gradient Overlay (Bottom only for text legibility)
-                    Container(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          colors: [
-                            Colors.transparent,
-                            Colors.transparent,
-                            AppColors.background.withValues(alpha: 0.8),
-                          ],
-                          stops: const [0.0, 0.6, 1.0],
+                      // Gradient Overlay (Bottom only for text legibility)
+                      Container(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [
+                              Colors.transparent,
+                              Colors.transparent,
+                              AppColors.background.withValues(alpha: 0.8),
+                            ],
+                            stops: const [0.0, 0.6, 1.0],
+                          ),
                         ),
                       ),
-                    ),
 
-                    // Content (Buttons at the bottom)
-                    Positioned(
-                      bottom: 30,
-                      left: 16,
-                      right: 16,
-                      child: Row(
-                        children: [
-                          // Play Button
-                          Expanded(
-                            child: ElevatedButton.icon(
-                              onPressed: () {
-                                // FIX: Si es una serie, abrir la pantalla de detalle
-                                // (donde se cargan los episodios) en lugar de intentar
-                                // reproducirla directamente como película.
-                                if (item.isSeries) {
-                                  _onItemTap(item);
-                                } else {
-                                  _playItem(item);
-                                }
-                              },
-                              icon: Icon(
-                                item.isSeries
-                                    ? Icons.play_arrow
-                                    : Icons.play_arrow,
-                                color: AppColors.background,
-                              ),
-                              label: Text(
-                                item.isSeries ? 'Reproducir' : 'Reproducir',
-                                style: const TextStyle(
+                      // Content (Buttons at the bottom)
+                      Positioned(
+                        bottom: 30,
+                        left: 16,
+                        right: 16,
+                        child: Row(
+                          children: [
+                            // Play Button
+                            Expanded(
+                              child: ElevatedButton.icon(
+                                onPressed: () {
+                                  // FIX: Si es una serie, abrir la pantalla de detalle
+                                  // (donde se cargan los episodios) en lugar de intentar
+                                  // reproducirla directamente como película.
+                                  if (item.isSeries) {
+                                    _onItemTap(item);
+                                  } else {
+                                    _playItem(item);
+                                  }
+                                },
+                                icon: Icon(
+                                  item.isSeries
+                                      ? Icons.play_arrow
+                                      : Icons.play_arrow,
                                   color: AppColors.background,
-                                  fontWeight: FontWeight.bold,
                                 ),
-                              ),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.white,
-                                foregroundColor: AppColors.background,
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 12,
+                                label: Text(
+                                  item.isSeries ? 'Reproducir' : 'Reproducir',
+                                  style: const TextStyle(
+                                    color: AppColors.background,
+                                    fontWeight: FontWeight.bold,
+                                  ),
                                 ),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(4),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.white,
+                                  foregroundColor: AppColors.background,
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 12,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  elevation: 0,
                                 ),
-                                elevation: 0,
                               ),
                             ),
-                          ),
-                          const SizedBox(width: 12),
-                          // "My List" / Favorite Button
-                          Expanded(
-                            child: ElevatedButton.icon(
-                              onPressed: () async {
-                                await _safeToggleFavoriteGlobal(
-                                  context,
-                                  _m3uService,
-                                  item,
-                                  () {
-                                    setState(() {});
-                                  },
-                                );
-                              },
-                              icon: Icon(
-                                item.isFavorite ? Icons.check : Icons.add,
-                                color: Colors.white,
-                              ),
-                              label: Text(
-                                item.isFavorite ? 'En lista' : 'Mi lista',
-                                style: const TextStyle(
+                            const SizedBox(width: 12),
+                            // "My List" / Favorite Button
+                            Expanded(
+                              child: ElevatedButton.icon(
+                                onPressed: () async {
+                                  await _safeToggleFavoriteGlobal(
+                                    context,
+                                    _m3uService,
+                                    item,
+                                    () {
+                                      setState(() {});
+                                    },
+                                  );
+                                },
+                                icon: Icon(
+                                  item.isFavorite ? Icons.check : Icons.add,
                                   color: Colors.white,
-                                  fontWeight: FontWeight.bold,
                                 ),
-                              ),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: const Color.fromARGB(
-                                  255,
-                                  255,
-                                  255,
-                                  255,
-                                ).withValues(alpha: 0.14),
-                                foregroundColor: Colors.white,
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 12,
+                                label: Text(
+                                  item.isFavorite ? 'En lista' : 'Mi lista',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                  ),
                                 ),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(4),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color.fromARGB(
+                                    255,
+                                    255,
+                                    255,
+                                    255,
+                                  ).withValues(alpha: 0.14),
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 12,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  elevation: 0,
                                 ),
-                                elevation: 0,
                               ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -7128,6 +7159,104 @@ class NetflixOfflineBannerState extends State<NetflixOfflineBanner>
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Animación de entrada premium para el banner principal (hero) que se dispara
+/// cada vez que cambia la pestaña activa (Inicio → Películas → Series →
+/// Telenovelas → …). Combina un leve deslizamiento direccional tipo carrusel,
+/// un ligero escalado y un fundido de entrada.
+///
+/// Se apoya en [AutomaticKeepAliveClientMixin] para que la animación solo se
+/// reproduzca al cambiar de pestaña (nueva instancia) y no cada vez que el
+/// banner vuelve a entrar en pantalla al hacer scroll.
+class _HeroBannerReveal extends StatefulWidget {
+  final Widget child;
+
+  /// Solo reproduce la animación de entrada cuando es `true` (cambio real entre
+  /// pestañas). Si es `false`, el banner aparece directamente en su estado final.
+  final bool animate;
+
+  /// 1 = el banner entra deslizándose desde la derecha (avanzamos de pestaña),
+  /// -1 = entra desde la izquierda (retrocedemos).
+  final int direction;
+
+  const _HeroBannerReveal({
+    super.key,
+    required this.child,
+    required this.animate,
+    required this.direction,
+  });
+
+  @override
+  State<_HeroBannerReveal> createState() => _HeroBannerRevealState();
+}
+
+class _HeroBannerRevealState extends State<_HeroBannerReveal>
+    with SingleTickerProviderStateMixin, AutomaticKeepAliveClientMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _entrance;
+  late final Animation<double> _fade;
+
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 760),
+    );
+    _entrance = CurvedAnimation(
+      parent: _controller,
+      curve: Curves.easeOutCubic,
+    );
+    _fade = CurvedAnimation(
+      parent: _controller,
+      curve: const Interval(0.0, 0.55, curve: Curves.easeOut),
+    );
+    if (widget.animate) {
+      _controller.forward();
+    } else {
+      // Sin transición entre pestañas: mostrar el banner ya asentado.
+      _controller.value = 1.0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context); // requerido por AutomaticKeepAliveClientMixin
+    return AnimatedBuilder(
+      animation: _controller,
+      // El banner se construye una sola vez; en cada frame solo recalculamos las
+      // transformaciones de entrada.
+      child: widget.child,
+      builder: (context, child) {
+        final double e = _entrance.value; // 0 → 1
+        // Desplazamiento mínimo para que apenas se note el "carrusel".
+        final double dx =
+            (1 - e) * 0.06 * widget.direction; // fracción del ancho
+        final double scale = 0.96 + 0.04 * e;
+        return Opacity(
+          opacity: _fade.value.clamp(0.0, 1.0),
+          child: FractionalTranslation(
+            translation: Offset(dx, 0),
+            child: Transform.scale(
+              scale: scale,
+              alignment: Alignment.center,
+              child: child,
+            ),
+          ),
+        );
+      },
     );
   }
 }
