@@ -676,7 +676,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                           (_isDesktopOrWeb() && !PremiumService().isPremium)
                               ? _buildDesktopPremiumGate()
                               : AnimatedSwitcher(
-                                duration: const Duration(milliseconds: 420),
+                                duration: const Duration(milliseconds: 340),
                                 switchInCurve: Curves.easeOutCubic,
                                 switchOutCurve: Curves.easeInCubic,
                                 // Transición premium al cambiar de pestaña
@@ -684,6 +684,27 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                                 // suave + un ligero escalado para que el
                                 // contenido "asiente" con fluidez.
                                 transitionBuilder: (child, animation) {
+                                  final key = child.key;
+                                  final keyValue =
+                                      key is ValueKey ? '${key.value}' : '';
+                                  // "Mi Lista" (barra inferior, índice 1):
+                                  // entra deslizándose desde la derecha, como
+                                  // un panel, en vez del fade/escalado que usan
+                                  // las pestañas (Inicio, Películas, etc.).
+                                  if (keyValue.startsWith('content_1_')) {
+                                    return FadeTransition(
+                                      opacity: animation,
+                                      child: SlideTransition(
+                                        position: Tween<Offset>(
+                                          begin: const Offset(1.0, 0.0),
+                                          end: Offset.zero,
+                                        ).animate(animation),
+                                        child: child,
+                                      ),
+                                    );
+                                  }
+                                  // Resto (pestañas y estados): fade suave con
+                                  // un ligero escalado.
                                   return FadeTransition(
                                     opacity: animation,
                                     child: ScaleTransition(
@@ -3495,7 +3516,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
               isSelected
                   ? Border(
                     bottom: BorderSide(
-                      color: Colors.red.withValues(alpha: 0.7),
+                      color: Colors.red.withValues(alpha: 0.8),
                       width: 2,
                     ),
                   )
@@ -3919,7 +3940,10 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                 ],
               ),
             ),
-            Icon(Icons.chevron_right, color: Colors.white.withValues(alpha: 0.3)),
+            Icon(
+              Icons.chevron_right,
+              color: Colors.white.withValues(alpha: 0.3),
+            ),
           ],
         ),
       ),
@@ -4720,7 +4744,10 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
               listenable: Listenable.merge([performance, _m3uService]),
               builder:
                   (context, _) => ListView.builder(
-                    scrollCacheExtent: ScrollCacheExtent.pixels(performance.isLowPerformance ? 0 : 500), scrollDirection: Axis.horizontal,
+                    scrollCacheExtent: ScrollCacheExtent.pixels(
+                      performance.isLowPerformance ? 0 : 500,
+                    ),
+                    scrollDirection: Axis.horizontal,
                     padding: const EdgeInsets.symmetric(horizontal: 12),
                     itemCount: filteredItems.length,
                     addAutomaticKeepAlives: false,
@@ -4813,7 +4840,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           SizedBox(
             height: 200,
             child: ListView.builder(
-              scrollCacheExtent: ScrollCacheExtent.pixels(500), scrollDirection: Axis.horizontal,
+              scrollCacheExtent: ScrollCacheExtent.pixels(500),
+              scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 12),
               itemCount: topItems.length,
               itemBuilder: (context, index) {
