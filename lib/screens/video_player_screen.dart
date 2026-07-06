@@ -109,6 +109,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool _hasError = false;
   bool _isSeeking = false;
   bool _isReloading = false; // Re-entrancy guard for _reloadVideo
+  // True while the app is backgrounded (screen off / switched away). Used to
+  // suppress auto-reloads triggered by a paused stream whose server dropped the
+  // idle connection — reloading in that state would restart playback on its own.
+  bool _isAppInBackground = false;
   Duration _lastPosition = Duration.zero;
   int _noMovementSeconds = 0;
   // Detección de "audio sin video" (pantalla negra con audio) en VOD.
@@ -430,8 +434,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         debugPrint('Error checking PiP: $e');
       }
       if (!isPiP) {
+        _isAppInBackground = true;
         _player?.pause();
       }
+    } else if (state == AppLifecycleState.resumed) {
+      _isAppInBackground = false;
     }
   }
 
@@ -1334,10 +1341,23 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             }
           }
 
-          if (!_isVideoLoading && !_isReloading) {
+          // No recargar por un error si el usuario tiene el contenido pausado o
+          // la app está en segundo plano: el error suele venir de la conexión
+          // inactiva cerrada por el servidor. Recargar aquí reiniciaría la
+          // reproducción por sí sola. Se reintentará al reanudar si hace falta.
+          final isPaused = _player?.state.playing == false;
+          if (!_isVideoLoading &&
+              !_isReloading &&
+              !_isAppInBackground &&
+              !isPaused) {
             debugPrint('Error de stream: $error. Recargando en 1s...');
             Future.delayed(const Duration(seconds: 1), () {
-              if (mounted && !_isReloading) _reloadVideo();
+              if (mounted &&
+                  !_isReloading &&
+                  !_isAppInBackground &&
+                  _player?.state.playing == true) {
+                _reloadVideo();
+              }
             });
           }
         }
@@ -1347,6 +1367,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // Manejo de fin de stream
     _streamSubscriptions.add(
       _player!.stream.completed.listen((completed) {
+        // Si la app está en segundo plano, un "completed" casi siempre es el
+        // servidor cerrando la conexión inactiva del stream pausado, no un fin
+        // real. Ignorarlo evita que el contenido se recargue/reinicie solo.
+        if (_isAppInBackground) return;
+
         if (completed &&
             mounted &&
             _nextEpisodeCountdown == null &&
@@ -1607,6 +1632,20 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       final currentPos = playerState.position;
 
       _bufferedDuration.value = playerState.buffer;
+
+      // Un reproductor pausado (por el usuario o con la app en segundo plano)
+      // nunca está "estancado": no acumulamos stall ni disparamos recargas.
+      // Esto evita que un contenido pausado se recargue solo cuando el servidor
+      // cierra la conexión inactiva.
+      if (!playerState.playing || _isAppInBackground) {
+        _stallSeconds = 0;
+        _noMovementSeconds = 0;
+        _noVideoSeconds = 0;
+        if (mounted && _isBuffering) {
+          setState(() => _isBuffering = false);
+        }
+        return;
+      }
 
       // ── Detección de stall y congelamiento silencioso ─────────────
       bool showingSpinner = _isBuffering;
@@ -1929,7 +1968,24 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 width: double.infinity,
                 height: 50,
                 child: ElevatedButton.icon(
-                  onPressed: () {
+                  onPressed: () async {
+                    // Reanudar desde donde iba, no desde 0. Preferimos la última
+                    // posición en memoria y, si no la hay, el progreso guardado.
+                    // (En vivo no se hace seek.)
+                    Duration? resumeFrom;
+                    if (!_isLiveContent) {
+                      if (_lastPosition.inSeconds > 5) {
+                        resumeFrom = _lastPosition;
+                      } else {
+                        final saved = await _watchProgressService.getProgress(
+                          _currentItem.url,
+                        );
+                        if (saved != null && saved.positionSeconds > 5) {
+                          resumeFrom = Duration(seconds: saved.positionSeconds);
+                        }
+                      }
+                    }
+                    if (!mounted) return;
                     // Resetear todo el estado de reintentos y volver a intentar
                     setState(() {
                       _hasError = false;
@@ -1939,7 +1995,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                       _userAgentIndex++;
                       _serverUrls = [];
                     });
-                    _initializePlayer(_currentItem);
+                    _initializePlayer(_currentItem, startFrom: resumeFrom);
                   },
                   icon: const Icon(Icons.refresh_rounded, size: 20),
                   label: const Text(

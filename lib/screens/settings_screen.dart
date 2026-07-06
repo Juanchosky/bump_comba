@@ -10,7 +10,6 @@ import '../services/localization_service.dart';
 import '../services/m3u_service.dart';
 import '../services/social_rewards_service.dart';
 import '../services/premium_service.dart';
-import '../services/smart_notification_service.dart';
 import 'stream_browser_screen.dart';
 import 'subscription_screen.dart';
 import '../utils/snack_bar_utils.dart';
@@ -35,8 +34,6 @@ class _SettingsScreenState extends State<SettingsScreen>
   final M3UService _m3uService = M3UService();
   final SocialRewardsService _rewardsService = SocialRewardsService();
   final PremiumService _premiumService = PremiumService();
-  final SmartNotificationService _notificationService =
-      SmartNotificationService();
   bool _isLoading = true;
   @override
   void initState() {
@@ -54,7 +51,6 @@ class _SettingsScreenState extends State<SettingsScreen>
         _locService.init(),
         _m3uService.init(),
         _rewardsService.init(),
-        _notificationService.initialize(),
       ]);
     } catch (e) {
       debugPrint('Error loading settings services: $e');
@@ -303,8 +299,6 @@ class _SettingsScreenState extends State<SettingsScreen>
                               _buildSectionTitle(_locService.tr('settings')),
                               _buildLanguageTile(),
                               if (!isPC) ...[
-                                const SizedBox(height: 8),
-                                _buildNotificationsTile(),
                                 const SizedBox(height: 8),
                                 _buildVibrationTile(),
                                 const SizedBox(height: 8),
@@ -597,22 +591,6 @@ class _SettingsScreenState extends State<SettingsScreen>
         value: _configService.vibrationEnabled,
         onChanged: (value) async {
           await _configService.setVibration(value);
-          setState(() {});
-        },
-        activeThumbColor: const Color(0xFFFF6B6B),
-      ),
-    );
-  }
-
-  Widget _buildNotificationsTile() {
-    return _SettingsTile(
-      icon: Icons.notifications_active_outlined,
-      title: _locService.tr('notifications'),
-      subtitle: _locService.tr('notifications_desc'),
-      trailing: Switch(
-        value: _notificationService.isEnabled,
-        onChanged: (value) async {
-          await _notificationService.setEnabled(value);
           setState(() {});
         },
         activeThumbColor: const Color(0xFFFF6B6B),

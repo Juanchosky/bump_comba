@@ -136,6 +136,8 @@ class LocalizationService {
       'notif_continue_series_body': 'Te quedaste en T{s}:E{e} de {series}',
       'notif_comeback_title': 'Te echamos de menos 👋',
       'notif_comeback_body': 'Tienes contenido esperándote',
+      'notif_enabled_title': 'Notificaciones activadas ✓',
+      'notif_enabled_body': 'Te avisaremos para que sigas viendo tu contenido.',
       // Legal
       'legal': 'LEGAL',
       'privacy_policy': 'Política de Privacidad',
@@ -362,6 +364,8 @@ Si usted es una persona física sujeta al RGPD, puede leer más sobre sus derech
       'notif_continue_series_body': 'You stopped at S{s}:E{e} of {series}',
       'notif_comeback_title': 'We miss you 👋',
       'notif_comeback_body': 'You have content waiting for you',
+      'notif_enabled_title': 'Notifications enabled ✓',
+      'notif_enabled_body': 'We\'ll remind you to keep watching your content.',
       // Legal
       'legal': 'LEGAL',
       'privacy_policy': 'Privacy Policy',
@@ -416,6 +420,8 @@ Si usted es una persona física sujeta al RGPD, puede leer más sobre sus derech
       'notif_continue_series_body': 'Você parou em T{s}:E{e} de {series}',
       'notif_comeback_title': 'Sentimos sua falta 👋',
       'notif_comeback_body': 'Há conteúdo esperando por você',
+      'notif_enabled_title': 'Notificações ativadas ✓',
+      'notif_enabled_body': 'Vamos lembrar você de continuar assistindo.',
     },
     'fr': {
       'settings': 'PARAMÈTRES',

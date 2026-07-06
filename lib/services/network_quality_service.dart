@@ -42,6 +42,13 @@ class NetworkQualityService {
   int _consecutivePoorReadings = 0;
   int _consecutiveGoodReadings = 0;
 
+  // Anti-falso-positivo de "offline": una señal aislada de "sin conexión"
+  // suele ser un blip transitorio (reabrir la app, despertar el teléfono,
+  // cambio de red) que se resuelve en menos de un segundo. Solo mostramos
+  // el banner si la desconexión se confirma en una segunda lectura rápida.
+  int _consecutiveOfflineSignals = 0;
+  Timer? _offlineConfirmTimer;
+
   /// Llamar desde VideoPlayerScreen cuando cambia el stream activo
   void setActiveStreamUrl(String? url) {
     if (url == null) {
@@ -116,6 +123,7 @@ class NetworkQualityService {
     }
     _pollTimer?.cancel();
     _connectivitySub?.cancel();
+    _offlineConfirmTimer?.cancel();
     _activeStreamUrl = null;
   }
 
@@ -137,9 +145,11 @@ class NetworkQualityService {
     }
 
     if (results.contains(ConnectivityResult.none)) {
-      _applyQuality(NetworkQuality.offline, 0, 9999);
+      _handlePotentialOffline();
       return;
     }
+    _offlineConfirmTimer?.cancel();
+    _consecutiveOfflineSignals = 0;
 
     // ESTRATEGIA: Medir latencia + throughput contra el servidor del stream
     // Si no hay stream activo, usar conectividad básica solamente
@@ -189,6 +199,20 @@ class NetworkQualityService {
         'Mobile: ${isMobileData.value}',
       );
     }
+  }
+
+  /// Una lectura de "sin conexión" puede ser un blip transitorio (reabrir la
+  /// app, encender la pantalla, cambio de red). Solo confirmamos offline —y
+  /// por lo tanto mostramos el banner— si una segunda lectura, tomada
+  /// rápidamente, sigue reportando sin conexión.
+  void _handlePotentialOffline() {
+    _consecutiveOfflineSignals++;
+    if (_consecutiveOfflineSignals >= 2) {
+      _applyQuality(NetworkQuality.offline, 0, 9999);
+      return;
+    }
+    _offlineConfirmTimer?.cancel();
+    _offlineConfirmTimer = Timer(const Duration(milliseconds: 1200), _measure);
   }
 
   /// Mide la latencia TCP al servidor del stream REAL y estima el ancho de banda.

@@ -26,6 +26,20 @@ class M3UItem {
   bool get isSeries => _isSeries ?? episodes.isNotEmpty;
   bool get hasAlternatives => alternatives.isNotEmpty;
 
+  /// Normalized identity used to deduplicate the same title that may be stored
+  /// under different URLs (e.g. played from distinct sources or with a refreshed
+  /// token). For series we key by the series name so all episodes collapse into
+  /// one; for movies we key by the display name with the year suffix stripped.
+  String get contentKey {
+    final base =
+        (seriesName != null && seriesName!.isNotEmpty) ? seriesName! : name;
+    return base
+        .toLowerCase()
+        .replaceAll(RegExp(r'\s*\(\d{4}\)'), '')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+  }
+
   M3UItem({
     required this.name,
     required this.url,

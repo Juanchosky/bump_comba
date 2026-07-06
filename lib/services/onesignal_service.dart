@@ -24,11 +24,8 @@ class OneSignalService {
 
       OneSignal.initialize(appId);
 
-      // This will request permission on both Android 13+ and iOS.
-      OneSignal.Notifications.requestPermission(true);
-
-      // Note: The icon 'ic_stat_onesignal_default' in 'android/app/src/main/res/drawable'
-      // will be used automatically by OneSignal as the notification icon.
+      // Registrar los listeners ANTES de pedir permiso, para no perder ningún
+      // evento temprano.
 
       // Handle notification opened
       OneSignal.Notifications.addClickListener((event) {
@@ -42,6 +39,38 @@ class OneSignalService {
         );
         // Display Notification, can also call preventDefault() to not display the notification
         event.notification.display();
+      });
+
+      // Diagnóstico: registrar cuándo cambia la suscripción push. Si tras
+      // conceder permiso el `id` sigue null, el dispositivo NO se registró en
+      // OneSignal (típicamente falta configurar las credenciales FCM en el
+      // panel de OneSignal → Settings → Google Android (FCM)).
+      OneSignal.User.pushSubscription.addObserver((state) {
+        debugPrint(
+          'OneSignal push subscription changed: '
+          'id=${OneSignal.User.pushSubscription.id}, '
+          'optedIn=${OneSignal.User.pushSubscription.optedIn}',
+        );
+      });
+
+      // This will request permission on both Android 13+ and iOS.
+      final granted = await OneSignal.Notifications.requestPermission(true);
+      debugPrint('OneSignal notification permission granted=$granted');
+
+      // Note: The icon 'ic_stat_onesignal_default' in 'android/app/src/main/res/drawable'
+      // will be used automatically by OneSignal as the notification icon.
+
+      // Asegurar que el dispositivo quede opted-in para recibir push.
+      OneSignal.User.pushSubscription.optIn();
+
+      // Dar tiempo a que el SDK obtenga el token FCM y registre la suscripción,
+      // luego volcar el estado para diagnóstico.
+      Future.delayed(const Duration(seconds: 5), () {
+        debugPrint(
+          'OneSignal status → permission=${OneSignal.Notifications.permission}, '
+          'subscriptionId=${OneSignal.User.pushSubscription.id}, '
+          'optedIn=${OneSignal.User.pushSubscription.optedIn}',
+        );
       });
 
       debugPrint("OneSignal initialized successfully");

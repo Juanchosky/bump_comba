@@ -151,6 +151,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
   // State
   M3UItem? _heroItem;
+  // Hero destacado por sección (persistencia por sesión, igual que _heroItem).
+  final Map<String, M3UItem> _sectionHeroItems = {};
   bool _isNavigating = false;
   DateTime? _lastPressedAt;
 
@@ -1791,7 +1793,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                 builder: (context, snapshot) {
                   final history = snapshot.data ?? [];
                   final continueWatchingItems = <Map<String, dynamic>>[];
-                  final processedSeries = <String>{};
+                  final seenContentKeys = <String>{};
 
                   for (var progress in history) {
                     final item = _m3uService.resolveItemFromProgress(progress);
@@ -1799,11 +1801,12 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                     if (item == null) continue;
                     if (progress.isCompleted) continue;
 
-                    if (item.seriesName != null &&
-                        item.seriesName!.isNotEmpty) {
-                      if (processedSeries.contains(item.seriesName)) continue;
-                      processedSeries.add(item.seriesName!);
-                    }
+                    // Dedup by normalized content identity so the same title
+                    // saved under different URLs (distinct sources / refreshed
+                    // tokens) doesn't appear twice. History is sorted newest
+                    // first, so we keep the most recent occurrence.
+                    if (!seenContentKeys.add(item.contentKey)) continue;
+
                     continueWatchingItems.add({
                       'item': item,
                       'progress': progress,
@@ -1981,6 +1984,21 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           final novelaSections = <Widget>[];
           novelaSections.add(_buildScrollableHeader());
           novelaSections.add(
+            _buildSectionHeroBanner('novelas', allNovelaItems),
+          );
+          final novelaUrls = allNovelaItems.map((e) => e.url).toSet();
+          final recentNovelas =
+              _m3uService
+                  .getRecentItems()
+                  .where((i) => !i.isLive && novelaUrls.contains(i.url))
+                  .take(50)
+                  .toList();
+          if (recentNovelas.length > 5) {
+            novelaSections.add(
+              _buildCategoryRow('Últimamente nuevo', recentNovelas),
+            );
+          }
+          novelaSections.add(
             _buildCategoryRow('Todas las Telenovelas', allNovelaItems),
           );
 
@@ -2150,12 +2168,11 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
     final movieSections = <Widget>[];
     movieSections.add(_buildScrollableHeader());
-    movieSections.add(_buildCategoryRow('Todas las Películas', movies));
-    if (recentMovies.isNotEmpty) {
-      movieSections.add(
-        _buildCategoryRow('Nuevas películas de hoy', recentMovies),
-      );
+    movieSections.add(_buildSectionHeroBanner('movies', movies));
+    if (recentMovies.length > 5) {
+      movieSections.add(_buildCategoryRow('Últimamente nuevo', recentMovies));
     }
+    movieSections.add(_buildCategoryRow('Todas las Películas', movies));
 
     final categoriesToLoad =
         movieCategories.take(_loadedMovieCategories).toList();
@@ -2255,12 +2272,11 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
     final seriesSections = <Widget>[];
     seriesSections.add(_buildScrollableHeader());
-    seriesSections.add(_buildCategoryRow('Todas las Series', series));
-    if (recentSeries.isNotEmpty) {
-      seriesSections.add(
-        _buildCategoryRow('Nuevas series de hoy', recentSeries),
-      );
+    seriesSections.add(_buildSectionHeroBanner('series', series));
+    if (recentSeries.length > 5) {
+      seriesSections.add(_buildCategoryRow('Últimamente nuevo', recentSeries));
     }
+    seriesSections.add(_buildCategoryRow('Todas las Series', series));
 
     for (final curated in curatedLists) {
       seriesSections.add(_buildCategoryRow(curated['title'], curated['items']));
@@ -2411,6 +2427,21 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     animationSections.add(_buildScrollableHeader());
 
     if (allAnimationItems.isNotEmpty) {
+      animationSections.add(
+        _buildSectionHeroBanner('animation', allAnimationItems),
+      );
+      final animationUrls = allAnimationItems.map((e) => e.url).toSet();
+      final recentAnimation =
+          _m3uService
+              .getRecentItems()
+              .where((i) => !i.isLive && animationUrls.contains(i.url))
+              .take(50)
+              .toList();
+      if (recentAnimation.length > 5) {
+        animationSections.add(
+          _buildCategoryRow('Últimamente nuevo', recentAnimation),
+        );
+      }
       animationSections.add(
         _buildCategoryRow('Todo el Contenido Animado', allAnimationItems),
       );
@@ -3472,6 +3503,77 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       // Just rebuild UI to pick up any non-data settings changes
       setState(() {});
     }
+  }
+
+  /// Selecciona un ítem destacado desde [rawPool] aplicando el mismo algoritmo
+  /// adaptativo por año que usa el hero del Inicio (estrenos con peso 3x).
+  M3UItem? _selectHeroFromPool(List<M3UItem> rawPool) {
+    final validPool =
+        _m3uService.filterValidItems(rawPool).where((item) {
+          if (item.isLive || item.sourceName == 'Supabase') return false;
+          final n = item.name.toLowerCase();
+          if (n.contains('canal ') ||
+              n.contains('tv ') ||
+              n.contains('en vivo')) {
+            return false;
+          }
+          return true;
+        }).toList();
+
+    if (validPool.isEmpty) return null;
+
+    // Agrupar por año detectado en el nombre.
+    final Map<int, List<M3UItem>> byYear = {};
+    final yearRegex = RegExp(r'(\d{4})');
+    for (var item in validPool) {
+      final matches = yearRegex.allMatches(item.name);
+      if (matches.isNotEmpty) {
+        final year = int.tryParse(matches.last.group(1) ?? '');
+        if (year != null && year >= 1950 && year <= 2100) {
+          byYear.putIfAbsent(year, () => []).add(item);
+        }
+      }
+    }
+
+    if (byYear.isEmpty) {
+      return validPool[DateTime.now().microsecond % validPool.length];
+    }
+
+    // Algoritmo adaptativo con pesos: estrenos (año más reciente) 3x.
+    final sortedYears = byYear.keys.toList()..sort((a, b) => b.compareTo(a));
+    final List<M3UItem> finalPool = [];
+    int uniqueCount = 0;
+    for (int i = 0; i < sortedYears.length; i++) {
+      final itemsForYear = byYear[sortedYears[i]]!;
+      uniqueCount += itemsForYear.length;
+      if (i == 0) {
+        for (var item in itemsForYear) {
+          finalPool.add(item);
+          finalPool.add(item);
+          finalPool.add(item);
+        }
+      } else {
+        finalPool.addAll(itemsForYear);
+      }
+      if (uniqueCount >= 10) break;
+    }
+
+    final pool = finalPool.isNotEmpty ? finalPool : validPool;
+    return pool[DateTime.now().microsecond % pool.length];
+  }
+
+  /// Hero banner por sección (Películas, Series, etc.). Reutiliza la misma UI y
+  /// lógica del hero del Inicio, pero con contenido propio de cada sección y
+  /// cacheado por sesión para que no cambie en cada rebuild.
+  Widget _buildSectionHeroBanner(String section, List<M3UItem> pool) {
+    var hero = _sectionHeroItems[section];
+    if (hero == null) {
+      final selected = _selectHeroFromPool(pool);
+      if (selected == null) return const SizedBox.shrink();
+      _sectionHeroItems[section] = selected;
+      hero = selected;
+    }
+    return _buildHeroBanner(hero);
   }
 
   Widget _buildHeroRandomLatest(List<M3UItem> items) {
@@ -4684,7 +4786,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             ),
           ),
           SizedBox(
-            height: 180,
+            height: 200,
             child: ListView.builder(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -4741,12 +4843,13 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             Positioned(
               left: rank < 10 ? 55 : 95,
               top: 0,
-              bottom: 5,
               right: 0,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Expanded(
+                  SizedBox(
+                    height: 170,
+                    width: 120,
                     child: _heroPoster(
                       heroTag,
                       ClipRRect(

@@ -68,17 +68,16 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final history = await _watchProgressService.getHistory();
 
     final List<_HistoryEntry> entries = [];
-    final Set<String> processedSeries = {};
+    final Set<String> seenContentKeys = {};
 
     for (final progress in history) {
       final item = _m3uService.resolveItemFromProgress(progress);
 
       if (item != null) {
-        // Prevent duplicate series shells in the list
-        if (item.isSeries) {
-          if (processedSeries.contains(item.name)) continue;
-          processedSeries.add(item.name);
-        }
+        // Dedup by normalized content identity: prevents duplicate series
+        // shells and the same movie saved under different URLs (distinct
+        // sources / refreshed tokens) from appearing twice.
+        if (!seenContentKeys.add(item.contentKey)) continue;
         entries.add(_HistoryEntry(item, progress));
       }
     }

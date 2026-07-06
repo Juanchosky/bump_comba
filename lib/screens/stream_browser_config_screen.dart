@@ -6,6 +6,7 @@ import '../services/game_config_service.dart';
 import '../services/m3u_service.dart';
 import '../services/performance_service.dart';
 import '../services/premium_service.dart';
+import '../services/smart_notification_service.dart';
 import 'subscription_screen.dart';
 
 import '../utils/colors.dart';
@@ -24,6 +25,8 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
   final GameConfigService _gameConfigService = GameConfigService();
   final PerformanceService _performanceService = PerformanceService();
   final PremiumService _premiumService = PremiumService();
+  final SmartNotificationService _notificationService =
+      SmartNotificationService();
   bool _isLoading = false;
   bool _wasDataChanged = false;
 
@@ -34,6 +37,9 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
   }
 
   Future<void> _loadSettings() async {
+    // Ensure the notification service is ready so the toggle reflects the
+    // stored on/off state.
+    await _notificationService.initialize();
     if (mounted) {
       setState(() {
         _isLoading = false;
@@ -101,23 +107,23 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
                     isLast: false,
                   ),
                   _buildDivider(),
-                  _buildSwitchRow(
-                    icon: CupertinoIcons.speaker_2_fill,
-                    title: 'Normalizar Volumen',
-                    subtitle: 'Volumen uniforme entre canales',
-                    value: _gameConfigService.volumeNormalize,
-                    onChanged: (val) async {
-                      await _gameConfigService.setVolumeNormalize(val);
-                      setState(() {});
-                    },
-                    isLast: false,
-                  ),
-                  _buildDivider(),
                   _buildTapRow(
                     icon: CupertinoIcons.bolt_fill,
                     title: 'Efectos Visuales',
                     subtitle: _getPerformanceModeText(),
                     onTap: _showPerformanceConfigDialog,
+                    isLast: false,
+                  ),
+                  _buildDivider(),
+                  _buildSwitchRow(
+                    icon: CupertinoIcons.bell_fill,
+                    title: 'Recordatorios',
+                    subtitle: 'Recordatorios para seguir viendo',
+                    value: _notificationService.isEnabled,
+                    onChanged: (val) async {
+                      await _notificationService.setEnabled(val);
+                      if (mounted) setState(() {});
+                    },
                     isLast: true,
                   ),
                 ]),
@@ -129,6 +135,22 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
                 const SizedBox(height: 8),
                 _buildCard([
                   _buildPremiumRow(),
+                ]),
+
+                const SizedBox(height: 24),
+
+                // -- COMUNIDAD ---------------------------------------------
+                _buildSectionHeader('Comunidad'),
+                const SizedBox(height: 8),
+                _buildCard([
+                  _buildTapRow(
+                    icon: Icons.telegram,
+                    iconColor: Colors.red,
+                    title: 'Canal de Telegram',
+                    subtitle: '¿No sabes usar la app? Obtén instrucciones aquí',
+                    onTap: () => _launchURL('https://t.me/+0og3wmaKjkIwMzlh'),
+                    isLast: true,
+                  ),
                 ]),
 
                 const SizedBox(height: 24),

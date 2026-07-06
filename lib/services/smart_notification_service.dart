@@ -153,13 +153,71 @@ class SmartNotificationService {
 
   /// Master on/off toggle exposed in settings.
   Future<void> setEnabled(bool value) async {
+    // Asegurar que el plugin/canal estén listos aunque el toggle se accione
+    // antes de que termine la inicialización diferida del arranque.
+    await initialize();
+
     _enabled = value;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_enabledKey, value);
+
     if (value) {
+      // Al activar, (re)pedir el permiso del SO. Si estaba denegado, esta es la
+      // única forma de que el usuario lo conceda y las notificaciones empiecen
+      // a mostrarse.
+      final granted = await _ensurePermission();
+      if (granted) {
+        // Confirmación inmediata y VISIBLE: le demuestra al usuario que las
+        // notificaciones sí se muestran en su dispositivo (aísla problemas de
+        // permiso/canal de los de temporización 7 PM).
+        await _showConfirmation();
+      }
       await refreshReminders();
     } else {
       await cancelAll();
+    }
+  }
+
+  /// Request the Android POST_NOTIFICATIONS permission (Android 13+). Returns
+  /// whether notifications are currently allowed by the system.
+  Future<bool> _ensurePermission() async {
+    if (defaultTargetPlatform != TargetPlatform.android) return true;
+    final android =
+        _plugin
+            .resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin
+            >();
+    if (android == null) return true;
+    final granted = await android.requestNotificationsPermission();
+    if (granted == true) return true;
+    // Fall back to the current system state in case the OS didn't re-prompt.
+    return (await android.areNotificationsEnabled()) ?? false;
+  }
+
+  /// Immediate, visible notification confirming the feature works on this
+  /// device. Used when the user turns notifications on.
+  Future<void> _showConfirmation() async {
+    try {
+      await _plugin.show(
+        id: _reminderId + 1,
+        title: _loc.tr('notif_enabled_title'),
+        body: _loc.tr('notif_enabled_body'),
+        notificationDetails: const NotificationDetails(
+          android: AndroidNotificationDetails(
+            _channelId,
+            'Recordatorios',
+            channelDescription: 'Recordatorios para seguir viendo tu contenido',
+            importance: Importance.high,
+            priority: Priority.high,
+            icon: 'ic_stat_onesignal_default',
+            color: Color(0xFFFF6B6B),
+            autoCancel: true,
+          ),
+          iOS: DarwinNotificationDetails(),
+        ),
+      );
+    } catch (e) {
+      debugPrint('SmartNotifications: confirmation error: $e');
     }
   }
 
