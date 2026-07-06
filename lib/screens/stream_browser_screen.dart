@@ -255,6 +255,15 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   }
 
   Future<bool> _onWillPop() async {
+    // If not on the home tab, go back to Inicio instead of exiting
+    if (_bottomNavIndex != 0) {
+      setState(() {
+        _bottomNavIndex = 0;
+        _selectedTab = 'Inicio';
+      });
+      return false;
+    }
+
     // 1. Handle Exit Confirmation
     final now = DateTime.now();
     if (_lastPressedAt == null ||
@@ -688,17 +697,22 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                                   final keyValue =
                                       key is ValueKey ? '${key.value}' : '';
                                   // "Mi Lista" (barra inferior, índice 1):
-                                  // entra deslizándose desde la derecha, como
-                                  // un panel, en vez del fade/escalado que usan
-                                  // las pestañas (Inicio, Películas, etc.).
+                                  // entra con fade + sutil deslizamiento
+                                  // desde abajo, natural para navegación
+                                  // inferior.
                                   if (keyValue.startsWith('content_1_')) {
                                     return FadeTransition(
                                       opacity: animation,
                                       child: SlideTransition(
                                         position: Tween<Offset>(
-                                          begin: const Offset(1.0, 0.0),
+                                          begin: const Offset(0.0, 0.04),
                                           end: Offset.zero,
-                                        ).animate(animation),
+                                        ).animate(
+                                          CurvedAnimation(
+                                            parent: animation,
+                                            curve: Curves.easeOutCubic,
+                                          ),
+                                        ),
                                         child: child,
                                       ),
                                     );
@@ -3509,8 +3523,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         });
       },
       child: Container(
-        margin: const EdgeInsets.only(right: 16),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        margin: const EdgeInsets.only(right: 9),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
         decoration: BoxDecoration(
           border:
               isSelected
@@ -5290,13 +5304,13 @@ class _RevealOnMount extends StatelessWidget {
   Widget build(BuildContext context) {
     return TweenAnimationBuilder<double>(
       tween: Tween(begin: 0.0, end: 1.0),
-      duration: const Duration(milliseconds: 360),
+      duration: const Duration(milliseconds: 180),
       curve: Curves.easeOut,
       builder: (context, t, child) {
         return Opacity(
           opacity: t,
           child: Transform.translate(
-            offset: Offset(0, (1 - t) * 14),
+            offset: Offset(0, (1 - t) * 8),
             child: child,
           ),
         );
