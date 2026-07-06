@@ -547,6 +547,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     final p = _player;
     _player = null;
 
+    // Si no había player ni textura activos (p.ej. la PRIMERA reproducción), no
+    // hay buffers nativos que drenar: nos saltamos las dos esperas de 600ms que
+    // solo hacen falta al reemplazar un player ya existente. Ahorra ~1.2s en el
+    // arranque en frío, que es justo cuando el usuario está esperando.
+    if (p == null && _videoControllerNotifier.value == null) {
+      return;
+    }
+
     try {
       p?.pause();
     } catch (_) {}
@@ -726,6 +734,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         } catch (_) {}
       }
 
+      // ¿Había una textura de video activa antes de esta carga? Si no (primera
+      // reproducción), no hace falta esperar a que se liberen buffers previos.
+      final bool hadPreviousController =
+          _videoControllerNotifier.value != null;
+
       if (!isPrewarmed) {
         await _cleanupPlayer();
       }
@@ -803,7 +816,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         _videoControllerNotifier.value = null;
         // Esperar a que el BLASTBufferQueue libere los 8 buffers anteriores.
         // El cleanup mejorado de _cleanupPlayer ya drena buffers nativos, por lo que 200ms es suficiente.
-        await Future.delayed(const Duration(milliseconds: 200));
+        // En la primera reproducción (sin textura previa) no hay buffers que
+        // liberar, así que nos saltamos esta espera para arrancar antes.
+        if (hadPreviousController) {
+          await Future.delayed(const Duration(milliseconds: 200));
+        }
         if (mounted && !CastService().isCasting.value) {
           _videoControllerNotifier.value = currentController;
 
@@ -831,7 +848,21 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       _setupStreamMonitor();
       _startStallMonitor();
 
-      Future.microtask(() async {
+      // Arrancar la resolución DNS del servidor YA, para que se resuelva en
+      // paralelo mientras aplicamos la config de MPV y así open() conecte más
+      // rápido (el DNS del ISP suele ser el primer cuello de botella).
+      final currentUrl = _serverUrls[_currentServerIndex % _serverUrls.length];
+      unawaited(_prewarmDns(currentUrl));
+
+      // Configurar MPV ANTES de open(): así la PRIMERA carga ya usa el decoder
+      // por hardware, el caché y el readahead correctos. Antes esto vivía en un
+      // Future.microtask "dispara y olvida" que competía con open(), por lo que
+      // los primeros segundos se cargaban con los valores por defecto de MPV
+      // (software decode, caché mínimo) → arranque más lento y más stalls.
+      // Aplicarlo de forma bloqueante aquí mejora el time-to-first-frame y la
+      // fluidez inicial. Son llamadas nativas rápidas; el retraso extra antes de
+      // open() es mínimo y se compensa con creces.
+      await (() async {
         final activePlayer = _player;
         if (activePlayer == null) return;
 
@@ -1020,7 +1051,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         } catch (e) {
           debugPrint('Error configurando MPV: $e');
         }
-      });
+      })();
 
       // ── ADAPTIVE QUALITY: Aplicar perfil inicial basado en estado de red ──
       // Se hace DESPUÉS del microtask original para no bloquear el arranque.
@@ -1064,11 +1095,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         }
       });
 
-      final currentUrl = _serverUrls[_currentServerIndex % _serverUrls.length];
       final resolvedUrl = _resolveStreamUrl(currentUrl);
-
-      // Calentar DNS en paralelo mientras se configura MPV
-      unawaited(_prewarmDns(currentUrl));
 
       // Informar al monitor de red qué servidor estamos usando
       // para que mida la velocidad contra ESE servidor, no contra Google
@@ -4734,12 +4761,24 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                             child: Row(
                                                               children: [
                                                                 Text(
+                                                                  // Mostrar la
+                                                                  // posición REAL
+                                                                  // (no el value
+                                                                  // recortado al
+                                                                  // slider): si el
+                                                                  // stream no
+                                                                  // reporta
+                                                                  // duración, el
+                                                                  // clamp dejaría
+                                                                  // esto en 0.
                                                                   WatchProgressService.formatDuration(
-                                                                    Duration(
-                                                                      milliseconds:
-                                                                          value
-                                                                              .toInt(),
-                                                                    ),
+                                                                    _isDragging
+                                                                        ? Duration(
+                                                                          milliseconds:
+                                                                              _dragValue
+                                                                                  .toInt(),
+                                                                        )
+                                                                        : position,
                                                                   ),
                                                                   style: TextStyle(
                                                                     color:
@@ -5535,12 +5574,19 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                           child: Row(
                                                             children: [
                                                               Text(
+                                                                // Posición REAL:
+                                                                // si el stream no
+                                                                // reporta duración,
+                                                                // el clamp de curMs
+                                                                // la dejaría en 0.
                                                                 WatchProgressService.formatDuration(
-                                                                  Duration(
-                                                                    milliseconds:
-                                                                        curMs
-                                                                            .toInt(),
-                                                                  ),
+                                                                  _isDragging
+                                                                      ? Duration(
+                                                                        milliseconds:
+                                                                            _dragValue
+                                                                                .toInt(),
+                                                                      )
+                                                                      : position,
                                                                 ),
                                                                 style: TextStyle(
                                                                   color:
