@@ -1392,7 +1392,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                 width: 3,
                 height: 18,
                 decoration: BoxDecoration(
-                  color: AppColors.accent,
+                  color: Colors.red,
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
@@ -1491,7 +1491,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                                     backgroundColor: Colors.black.withValues(
                                       alpha: 0.45,
                                     ),
-                                    color: AppColors.accent,
+                                    color: Colors.red,
                                     minHeight: 4,
                                   ),
                                 ),
@@ -3471,7 +3471,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           border:
               isSelected
                   ? const Border(
-                    bottom: BorderSide(color: AppColors.accent, width: 2),
+                    bottom: BorderSide(color: Colors.red, width: 2),
                   )
                   : null,
         ),
