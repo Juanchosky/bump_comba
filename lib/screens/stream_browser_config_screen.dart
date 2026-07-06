@@ -1071,7 +1071,7 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
                   width: 40,
                   height: 4,
                   decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.2),
+                    color: Colors.white.withValues(alpha: 0.2),
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
@@ -1081,10 +1081,10 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
                 Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
-                    color: const Color(0xFFFFD700).withOpacity(0.1),
+                    color: const Color(0xFFFFD700).withValues(alpha: 0.1),
                     shape: BoxShape.circle,
                     border: Border.all(
-                      color: const Color(0xFFFFD700).withOpacity(0.5),
+                      color: const Color(0xFFFFD700).withValues(alpha: 0.5),
                     ),
                   ),
                   child: const Icon(
@@ -1123,7 +1123,7 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
                 Text(
                   dateDisplay,
                   style: TextStyle(
-                    color: Colors.white.withOpacity(0.7),
+                    color: Colors.white.withValues(alpha: 0.7),
                     fontSize: 14,
                   ),
                 ),

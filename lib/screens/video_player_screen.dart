@@ -5151,12 +5151,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                     CupertinoButton(
                       padding: EdgeInsets.zero,
                       onPressed: _seekBackward,
+                      minimumSize: Size(0, 0),
                       child: Icon(
                         CupertinoIcons.gobackward_10,
                         color: Colors.white,
                         size: sideIconSize,
                       ),
-                      minimumSize: Size(0, 0),
                     ),
                     SizedBox(width: 38 * scale),
                   ],
@@ -5185,12 +5185,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                     CupertinoButton(
                       padding: EdgeInsets.zero,
                       onPressed: _seekForward,
+                      minimumSize: Size(0, 0),
                       child: Icon(
                         CupertinoIcons.goforward_10,
                         color: Colors.white,
                         size: sideIconSize,
                       ),
-                      minimumSize: Size(0, 0),
                     ),
                   ],
                 ],
@@ -5246,12 +5246,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                   }
                                   if (mounted) Navigator.maybePop(context);
                                 },
+                                minimumSize: Size(0, 0),
                                 child: const Icon(
                                   CupertinoIcons.chevron_left,
                                   color: Colors.white,
                                   size: 20,
                                 ),
-                                minimumSize: Size(0, 0),
                               ),
                               // Título (toque largo = panel de diagnóstico)
                               Expanded(
@@ -5294,6 +5294,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                     (context, casting, _) => CupertinoButton(
                                       padding: const EdgeInsets.all(8),
                                       onPressed: _showCastSelection,
+                                      minimumSize: Size(0, 0),
                                       child: Icon(
                                         casting
                                             ? CupertinoIcons.tv_fill
@@ -5304,24 +5305,24 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                 : Colors.white,
                                         size: 22 * scale,
                                       ),
-                                      minimumSize: Size(0, 0),
                                     ),
                               ),
                               // PiP
                               CupertinoButton(
                                 padding: const EdgeInsets.all(8),
                                 onPressed: _togglePiP,
+                                minimumSize: Size(0, 0),
                                 child: Icon(
                                   Icons.picture_in_picture_alt_rounded,
                                   color: Colors.white,
                                   size: 21 * scale,
                                 ),
-                                minimumSize: Size(0, 0),
                               ),
                               // Pantalla completa
                               CupertinoButton(
                                 padding: const EdgeInsets.all(8),
                                 onPressed: _toggleOrientation,
+                                minimumSize: Size(0, 0),
                                 child: Icon(
                                   _isLandscape
                                       ? Icons.fullscreen_exit_rounded
@@ -5329,7 +5330,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                   color: Colors.white,
                                   size: 24 * scale,
                                 ),
-                                minimumSize: Size(0, 0),
                               ),
                             ],
                           ),
@@ -5613,6 +5613,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                       ),
                                                                   onPressed:
                                                                       _showEpisodeSelection,
+                                                                  minimumSize:
+                                                                      Size(
+                                                                        0,
+                                                                        0,
+                                                                      ),
                                                                   child: Icon(
                                                                     CupertinoIcons
                                                                         .list_bullet,
@@ -5623,11 +5628,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                         20 *
                                                                         scale,
                                                                   ),
-                                                                  minimumSize:
-                                                                      Size(
-                                                                        0,
-                                                                        0,
-                                                                      ),
                                                                 ),
                                                                 SizedBox(
                                                                   width:
@@ -5641,6 +5641,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                     ),
                                                                 onPressed:
                                                                     _showSettingsMenu,
+                                                                minimumSize:
+                                                                    Size(0, 0),
                                                                 child: Icon(
                                                                   CupertinoIcons
                                                                       .gear,
@@ -5651,8 +5653,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                       20 *
                                                                       scale,
                                                                 ),
-                                                                minimumSize:
-                                                                    Size(0, 0),
                                                               ),
                                                               SizedBox(
                                                                 width:
@@ -5756,7 +5756,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
-        color: Colors.red.withOpacity(0.8),
+        color: Colors.red.withValues(alpha: 0.8),
         borderRadius: BorderRadius.circular(4),
       ),
       child: const Row(

@@ -106,7 +106,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                     colorFilter: ColorFilter.mode(
                       const Color(
                         0xFF0a0a0a,
-                      ).withOpacity(0.5), // More visible (was 0.8)
+                      ).withValues(alpha: 0.5), // More visible (was 0.8)
                       BlendMode.darken,
                     ),
                   ),
@@ -232,7 +232,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                                                       'Lector de listas de terceros',
                                                       style: TextStyle(
                                                         color: Colors.white
-                                                            .withOpacity(0.7),
+                                                            .withValues(alpha: 0.7),
                                                         fontSize: 12,
                                                         fontWeight:
                                                             FontWeight.bold,
@@ -271,7 +271,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                                                 child: Icon(
                                                   Icons.chevron_right_rounded,
                                                   color: Colors.white
-                                                      .withOpacity(0.5),
+                                                      .withValues(alpha: 0.5),
                                                   size: 22,
                                                 ),
                                               ),
@@ -333,8 +333,8 @@ class _SettingsScreenState extends State<SettingsScreen>
 
   Widget _buildShimmerLoading() {
     return Shimmer.fromColors(
-      baseColor: Colors.white.withOpacity(0.05),
-      highlightColor: Colors.white.withOpacity(0.2),
+      baseColor: Colors.white.withValues(alpha: 0.05),
+      highlightColor: Colors.white.withValues(alpha: 0.2),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -462,7 +462,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                     vertical: 4,
                   ),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF0a0a0a).withOpacity(0.2),
+                    color: const Color(0xFF0a0a0a).withValues(alpha: 0.2),
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: Row(
@@ -515,7 +515,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                 margin: const EdgeInsets.only(top: 8),
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                 decoration: BoxDecoration(
-                  color: const Color(0xFFFFD700).withOpacity(0.2),
+                  color: const Color(0xFFFFD700).withValues(alpha: 0.2),
                   borderRadius: BorderRadius.circular(4),
                 ),
                 child: const Text(
@@ -533,7 +533,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                 child: Text(
                   'Sin anuncios  •  Contenido 4K  •  Soporte VIP',
                   style: TextStyle(
-                    color: Colors.white.withOpacity(0.5),
+                    color: Colors.white.withValues(alpha: 0.5),
                     fontSize: 10,
                     fontWeight: FontWeight.w500,
                   ),
@@ -615,12 +615,12 @@ class _SettingsScreenState extends State<SettingsScreen>
       trailing: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         decoration: BoxDecoration(
-          color: colors[_configService.difficulty - 1].withOpacity(0.2),
+          color: colors[_configService.difficulty - 1].withValues(alpha: 0.2),
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: colors[_configService.difficulty - 1]),
           boxShadow: [
             BoxShadow(
-              color: colors[_configService.difficulty - 1].withOpacity(0.5),
+              color: colors[_configService.difficulty - 1].withValues(alpha: 0.5),
               offset: const Offset(0, 4),
             ),
           ],
@@ -707,7 +707,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                     decoration: BoxDecoration(
                       color:
                           isSelected
-                              ? const Color(0xFF58CC02).withOpacity(0.2)
+                              ? const Color(0xFF58CC02).withValues(alpha: 0.2)
                               : const Color(
                                 0xFF636e72,
                               ), // Lighter grey for unselected
@@ -904,7 +904,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                 child: Text(
                   _locService.tr('cancel').toUpperCase(),
                   style: TextStyle(
-                    color: Colors.white.withOpacity(0.5),
+                    color: Colors.white.withValues(alpha: 0.5),
                     fontWeight: FontWeight.bold,
                     letterSpacing: 1,
                   ),
@@ -1008,7 +1008,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                   width: 40,
                   height: 4,
                   decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.2),
+                    color: Colors.white.withValues(alpha: 0.2),
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
@@ -1018,10 +1018,10 @@ class _SettingsScreenState extends State<SettingsScreen>
                 Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
-                    color: const Color(0xFFFFD700).withOpacity(0.1),
+                    color: const Color(0xFFFFD700).withValues(alpha: 0.1),
                     shape: BoxShape.circle,
                     border: Border.all(
-                      color: const Color(0xFFFFD700).withOpacity(0.5),
+                      color: const Color(0xFFFFD700).withValues(alpha: 0.5),
                     ),
                   ),
                   child: const Icon(
@@ -1061,7 +1061,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                 Text(
                   dateDisplay,
                   style: TextStyle(
-                    color: Colors.white.withOpacity(0.7),
+                    color: Colors.white.withValues(alpha: 0.7),
                     fontSize: 14,
                   ),
                 ),
@@ -1310,7 +1310,7 @@ class _SettingsTile extends StatelessWidget {
                     Text(
                       subtitle!,
                       style: TextStyle(
-                        color: Colors.white.withOpacity(0.7),
+                        color: Colors.white.withValues(alpha: 0.7),
                         fontSize: 11,
                         fontWeight: FontWeight.bold,
                       ),
@@ -1321,7 +1321,7 @@ class _SettingsTile extends StatelessWidget {
             ),
             if (trailing != null) trailing!,
             if (onTap != null && trailing == null)
-              Icon(Icons.chevron_right, color: Colors.white.withOpacity(0.5)),
+              Icon(Icons.chevron_right, color: Colors.white.withValues(alpha: 0.5)),
           ],
         ),
       ),

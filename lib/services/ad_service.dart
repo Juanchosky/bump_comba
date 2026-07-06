@@ -742,7 +742,7 @@ class AdService {
         context: context,
         barrierDismissible: true,
         barrierLabel: '',
-        barrierColor: const Color(0xFF0a0a0a).withOpacity(0.4),
+        barrierColor: const Color(0xFF0a0a0a).withValues(alpha: 0.4),
         transitionDuration: const Duration(milliseconds: 300),
         pageBuilder: (_, _, _) => const SizedBox.shrink(),
         transitionBuilder: (context, anim, _, _) {
@@ -1128,7 +1128,7 @@ class _RewardedAdConfirmationDialogState
       case DialogState.initial:
         icon = Icons.play_circle_filled_rounded;
         iconColor = Colors.red;
-        iconBgColor = Colors.red.withOpacity(0.15);
+        iconBgColor = Colors.red.withValues(alpha: 0.15);
         title = '¡Todo listo!';
         message =
             widget.message ?? 'Para iniciar la reproducción, mira un anuncio.';
@@ -1153,7 +1153,7 @@ class _RewardedAdConfirmationDialogState
             ElevatedButton(
               onPressed: _handleConfirm,
               style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFF44336).withOpacity(0.9),
+                backgroundColor: const Color(0xFFF44336).withValues(alpha: 0.9),
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(
                   horizontal: 24,
@@ -1180,7 +1180,7 @@ class _RewardedAdConfirmationDialogState
       case DialogState.loading:
         icon = Icons.play_circle_filled_rounded;
         iconColor = Colors.red;
-        iconBgColor = Colors.red.withOpacity(0.15);
+        iconBgColor = Colors.red.withValues(alpha: 0.15);
         title = '¡Todo listo!';
         message =
             widget.message ?? 'Para iniciar la reproducción, mira un anuncio.';
@@ -1190,7 +1190,7 @@ class _RewardedAdConfirmationDialogState
             ElevatedButton(
               onPressed: null,
               style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFF44336).withOpacity(0.4),
+                backgroundColor: const Color(0xFFF44336).withValues(alpha: 0.4),
                 foregroundColor: Colors.white60,
                 padding: const EdgeInsets.symmetric(
                   horizontal: 24,
@@ -1230,7 +1230,7 @@ class _RewardedAdConfirmationDialogState
       case DialogState.adblocker:
         icon = Icons.gpp_bad_rounded;
         iconColor = Colors.redAccent;
-        iconBgColor = Colors.redAccent.withOpacity(0.15);
+        iconBgColor = Colors.redAccent.withValues(alpha: 0.15);
         title = 'Bloqueador activo';
         message =
             'Hemos detectado un bloqueador de anuncios (AdBlock) o VPN activo. Desactívalo o suscríbete a Premium para ver el contenido directamente.';
@@ -1256,7 +1256,7 @@ class _RewardedAdConfirmationDialogState
               onPressed: _navigateToPremium,
 
               style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFF44336).withOpacity(0.9),
+                backgroundColor: const Color(0xFFF44336).withValues(alpha: 0.9),
                 foregroundColor: const Color.fromARGB(255, 235, 235, 235),
                 padding: const EdgeInsets.symmetric(
                   horizontal: 20,
@@ -1283,7 +1283,7 @@ class _RewardedAdConfirmationDialogState
       case DialogState.limitReached:
         icon = Icons.block_flipped;
         iconColor = Colors.redAccent;
-        iconBgColor = Colors.redAccent.withOpacity(0.15);
+        iconBgColor = Colors.redAccent.withValues(alpha: 0.15);
         title =
             'Sin conexión (${widget.adService.unverifiedViewsThisSession}/3)';
         message =
@@ -1310,7 +1310,7 @@ class _RewardedAdConfirmationDialogState
               onPressed: _navigateToPremium,
 
               style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFF44336).withOpacity(0.9),
+                backgroundColor: const Color(0xFFF44336).withValues(alpha: 0.9),
                 foregroundColor: const Color.fromARGB(255, 235, 235, 235),
                 padding: const EdgeInsets.symmetric(
                   horizontal: 20,
@@ -1337,7 +1337,7 @@ class _RewardedAdConfirmationDialogState
       case DialogState.fallbackAllowed:
         icon = Icons.wifi_off_rounded;
         iconColor = Colors.amber;
-        iconBgColor = Colors.amber.withOpacity(0.15);
+        iconBgColor = Colors.amber.withValues(alpha: 0.15);
         title = 'Sin conexión';
         message =
             'Puedes seguir viendo. (${widget.adService.unverifiedViewsThisSession}/3 accesos offline usados).';
@@ -1370,7 +1370,7 @@ class _RewardedAdConfirmationDialogState
                 widget.onUserEarnedReward();
               },
               style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFF44336).withOpacity(0.9),
+                backgroundColor: const Color(0xFFF44336).withValues(alpha: 0.9),
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(
                   horizontal: 20,
@@ -1404,18 +1404,18 @@ class _RewardedAdConfirmationDialogState
           constraints: const BoxConstraints(maxWidth: 400),
           padding: const EdgeInsets.all(24),
           decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.08),
+            color: Colors.white.withValues(alpha: 0.08),
             borderRadius: BorderRadius.circular(20),
             border: Border.all(
-              color: Colors.white.withOpacity(0.12),
+              color: Colors.white.withValues(alpha: 0.12),
               width: 1.5,
             ),
             gradient: LinearGradient(
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
               colors: [
-                Colors.white.withOpacity(0.1),
-                Colors.white.withOpacity(0.02),
+                Colors.white.withValues(alpha: 0.1),
+                Colors.white.withValues(alpha: 0.02),
               ],
             ),
           ),
@@ -1449,7 +1449,7 @@ class _RewardedAdConfirmationDialogState
               Text(
                 message,
                 style: TextStyle(
-                  color: Colors.white.withOpacity(0.85),
+                  color: Colors.white.withValues(alpha: 0.85),
                   fontSize: 15,
                   height: 1.4,
                 ),

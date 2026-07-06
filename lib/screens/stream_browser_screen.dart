@@ -4,6 +4,7 @@ import 'dart:math';
 import 'dart:ui';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart';
@@ -675,9 +676,25 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                           (_isDesktopOrWeb() && !PremiumService().isPremium)
                               ? _buildDesktopPremiumGate()
                               : AnimatedSwitcher(
-                                duration: const Duration(milliseconds: 400),
-                                switchInCurve: Curves.easeOut,
-                                switchOutCurve: Curves.easeIn,
+                                duration: const Duration(milliseconds: 420),
+                                switchInCurve: Curves.easeOutCubic,
+                                switchOutCurve: Curves.easeInCubic,
+                                // Transición premium al cambiar de pestaña
+                                // (Inicio → Películas → Series, etc.): fade
+                                // suave + un ligero escalado para que el
+                                // contenido "asiente" con fluidez.
+                                transitionBuilder: (child, animation) {
+                                  return FadeTransition(
+                                    opacity: animation,
+                                    child: ScaleTransition(
+                                      scale: Tween<double>(
+                                        begin: 0.985,
+                                        end: 1.0,
+                                      ).animate(animation),
+                                      child: child,
+                                    ),
+                                  );
+                                },
                                 child:
                                     _isLoading
                                         ? KeyedSubtree(
@@ -690,7 +707,12 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                                           child: _buildError(),
                                         )
                                         : KeyedSubtree(
-                                          key: const ValueKey('content'),
+                                          // La key incluye la pestaña activa
+                                          // para que el switcher anime cada
+                                          // cambio de tab (y de barra inferior).
+                                          key: ValueKey(
+                                            'content_${_bottomNavIndex}_$_selectedTab',
+                                          ),
                                           child: _buildStreamContent(),
                                         ),
                               ),
@@ -760,7 +782,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           image: const AssetImage('assets/images/background.jpg'),
           fit: BoxFit.cover,
           colorFilter: ColorFilter.mode(
-            AppColors.background.withOpacity(0.9),
+            AppColors.background.withValues(alpha: 0.9),
             BlendMode.darken,
           ),
         ),
@@ -776,10 +798,10 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                 padding: const EdgeInsets.all(20),
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: Colors.amber.withOpacity(0.1),
+                  color: Colors.amber.withValues(alpha: 0.1),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.amber.withOpacity(0.1),
+                      color: Colors.amber.withValues(alpha: 0.1),
                       blurRadius: 40,
                       spreadRadius: 10,
                     ),
@@ -806,7 +828,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
               Text(
                 'Esta versión es exclusiva para nuestros suscriptores Premium. Disfruta de una experiencia sin límites, sin anuncios y con la mejor calidad en tu PC.',
                 style: TextStyle(
-                  color: Colors.white.withOpacity(0.7),
+                  color: Colors.white.withValues(alpha: 0.7),
                   fontSize: 16,
                   height: 1.5,
                   fontWeight: FontWeight.w500,
@@ -821,15 +843,15 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                 constraints: const BoxConstraints(maxWidth: 400),
                 padding: const EdgeInsets.all(24),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.05),
+                  color: Colors.white.withValues(alpha: 0.05),
                   borderRadius: BorderRadius.circular(20),
                   border: Border.all(
-                    color: Colors.white.withOpacity(0.1),
+                    color: Colors.white.withValues(alpha: 0.1),
                     width: 1,
                   ),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withOpacity(0.2),
+                      color: Colors.black.withValues(alpha: 0.2),
                       blurRadius: 20,
                       offset: const Offset(0, 10),
                     ),
@@ -850,7 +872,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                     Text(
                       'Si compraste la versión PC por \$3.99, ingresa tu código de licencia aquí:',
                       style: TextStyle(
-                        color: Colors.white.withOpacity(0.6),
+                        color: Colors.white.withValues(alpha: 0.6),
                         fontSize: 13,
                         height: 1.4,
                       ),
@@ -869,18 +891,18 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                       decoration: InputDecoration(
                         hintText: 'XXXX-XXXX',
                         hintStyle: TextStyle(
-                          color: Colors.white.withOpacity(0.3),
+                          color: Colors.white.withValues(alpha: 0.3),
                           letterSpacing: 2,
                         ),
                         filled: true,
-                        fillColor: Colors.black.withOpacity(0.5),
+                        fillColor: Colors.black.withValues(alpha: 0.5),
                         enabledBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(12),
                           borderSide: BorderSide(
                             color:
                                 _licenseErrorMessage != null
-                                    ? Colors.red.withOpacity(0.5)
-                                    : Colors.white.withOpacity(0.2),
+                                    ? Colors.red.withValues(alpha: 0.5)
+                                    : Colors.white.withValues(alpha: 0.2),
                           ),
                         ),
                         focusedBorder: OutlineInputBorder(
@@ -1026,7 +1048,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       children: [
         loadingContent,
         Container(
-          color: AppColors.background.withOpacity(0.7),
+          color: AppColors.background.withValues(alpha: 0.7),
           child: Center(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -1595,7 +1617,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                               Text(
                                 'Tu lista está vacía',
                                 style: TextStyle(
-                                  color: Colors.white.withOpacity(0.5),
+                                  color: Colors.white.withValues(alpha: 0.5),
                                   fontSize: 16.4,
                                 ),
                               ),
@@ -2107,8 +2129,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             physics: const AlwaysScrollableScrollPhysics(),
             itemCount: 1 + 1, // header+tabs + contenido
             itemBuilder: (context, index) {
-              if (index == 0)
+              if (index == 0) {
                 return _buildScrollableHeader(); // â† header+tabs
+              }
               if (tabItems.isNotEmpty) {
                 return _buildCategoryRow(_selectedTab, tabItems);
               } else {
@@ -3841,7 +3864,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                   Navigator.pop(context);
                   _launchURL('https://t.me/+0og3wmaKjkIwMzlh');
                 },
-                backgroundColor: Colors.red.withOpacity(0.1),
+                backgroundColor: Colors.red.withValues(alpha: 0.1),
               ),
               const SizedBox(height: 20),
             ],
@@ -3867,7 +3890,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         decoration: BoxDecoration(
           color: backgroundColor,
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: iconColor.withOpacity(0.3)),
+          border: Border.all(color: iconColor.withValues(alpha: 0.3)),
         ),
         child: Row(
           children: [
@@ -3889,14 +3912,14 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                   Text(
                     subtitle,
                     style: TextStyle(
-                      color: Colors.white.withOpacity(0.6),
+                      color: Colors.white.withValues(alpha: 0.6),
                       fontSize: 12,
                     ),
                   ),
                 ],
               ),
             ),
-            Icon(Icons.chevron_right, color: Colors.white.withOpacity(0.3)),
+            Icon(Icons.chevron_right, color: Colors.white.withValues(alpha: 0.3)),
           ],
         ),
       ),
@@ -4091,7 +4114,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                 Text(
                   dateDisplay,
                   style: TextStyle(
-                    color: Colors.white.withOpacity(0.5),
+                    color: Colors.white.withValues(alpha: 0.5),
                     fontSize: 13,
                   ),
                 ),
@@ -4697,10 +4720,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
               listenable: Listenable.merge([performance, _m3uService]),
               builder:
                   (context, _) => ListView.builder(
-                    scrollDirection: Axis.horizontal,
+                    scrollCacheExtent: ScrollCacheExtent.pixels(performance.isLowPerformance ? 0 : 500), scrollDirection: Axis.horizontal,
                     padding: const EdgeInsets.symmetric(horizontal: 12),
                     itemCount: filteredItems.length,
-                    cacheExtent: performance.isLowPerformance ? 0 : 500,
                     addAutomaticKeepAlives: false,
                     addRepaintBoundaries: true,
                     itemBuilder: (context, index) {
@@ -4791,10 +4813,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           SizedBox(
             height: 200,
             child: ListView.builder(
-              scrollDirection: Axis.horizontal,
+              scrollCacheExtent: ScrollCacheExtent.pixels(500), scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 12),
               itemCount: topItems.length,
-              cacheExtent: 500,
               itemBuilder: (context, index) {
                 final item = topItems[index];
                 final rank = index + 1;

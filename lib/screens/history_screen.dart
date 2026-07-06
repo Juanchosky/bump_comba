@@ -99,7 +99,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
           decoration: BoxDecoration(
             color: const Color(0xFF111111),
             borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-            border: Border.all(color: Colors.white.withOpacity(0.08), width: 1),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.08), width: 1),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -110,7 +110,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   width: 36,
                   height: 4,
                   decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.2),
+                    color: Colors.white.withValues(alpha: 0.2),
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
@@ -128,13 +128,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 ),
               ),
               const SizedBox(height: 16),
-              Divider(height: 1, color: Colors.white.withOpacity(0.07)),
+              Divider(height: 1, color: Colors.white.withValues(alpha: 0.07)),
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
                 child: Text(
                   '¿Estás seguro de que quieres borrar toda tu actividad? Esta acción no se puede deshacer.',
                   style: TextStyle(
-                    color: Colors.white.withOpacity(0.55),
+                    color: Colors.white.withValues(alpha: 0.55),
                     fontSize: 14,
                     height: 1.5,
                   ),
@@ -152,17 +152,17 @@ class _HistoryScreenState extends State<HistoryScreen> {
                           height: 48,
                           alignment: Alignment.center,
                           decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.07),
+                            color: Colors.white.withValues(alpha: 0.07),
                             borderRadius: BorderRadius.circular(12),
                             border: Border.all(
-                              color: Colors.white.withOpacity(0.1),
+                              color: Colors.white.withValues(alpha: 0.1),
                               width: 1,
                             ),
                           ),
                           child: Text(
                             'Cancelar',
                             style: TextStyle(
-                              color: Colors.white.withOpacity(0.6),
+                              color: Colors.white.withValues(alpha: 0.6),
                               fontSize: 15,
                               fontWeight: FontWeight.w600,
                             ),
@@ -178,10 +178,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
                           height: 48,
                           alignment: Alignment.center,
                           decoration: BoxDecoration(
-                            color: Colors.red.withOpacity(0.15),
+                            color: Colors.red.withValues(alpha: 0.15),
                             borderRadius: BorderRadius.circular(12),
                             border: Border.all(
-                              color: Colors.red.withOpacity(0.4),
+                              color: Colors.red.withValues(alpha: 0.4),
                               width: 1,
                             ),
                           ),
@@ -297,13 +297,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
           Icon(
             CupertinoIcons.rectangle_stack_fill_badge_minus,
             size: 58.6,
-            color: Colors.white.withOpacity(0.2),
+            color: Colors.white.withValues(alpha: 0.2),
           ),
           const SizedBox(height: 16),
           Text(
             'Ups, no hay nada aún',
             style: TextStyle(
-              color: Colors.white.withOpacity(0.5),
+              color: Colors.white.withValues(alpha: 0.5),
               fontSize: 16.3,
             ),
           ),

@@ -331,12 +331,12 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
             colors: [
-              const Color(0xFFFF1B8D).withOpacity(0.4),
+              const Color(0xFFFF1B8D).withValues(alpha: 0.4),
               Colors.transparent,
             ],
           ),
           border: Border(
-            bottom: BorderSide(color: Colors.white.withOpacity(0.3), width: 3),
+            bottom: BorderSide(color: Colors.white.withValues(alpha: 0.3), width: 3),
           ),
         ),
         child: Row(
@@ -532,7 +532,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
               border: Border.all(color: Colors.white, width: 3),
               boxShadow: [
                 BoxShadow(
-                  color: const Color(0xFF1899D6).withOpacity(0.5),
+                  color: const Color(0xFF1899D6).withValues(alpha: 0.5),
                   blurRadius: 10,
                 ),
               ],
@@ -613,7 +613,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
 
   Widget _buildGameOverOverlay() {
     return Container(
-      color: const Color(0xFF0a0a0a).withOpacity(0.8),
+      color: const Color(0xFF0a0a0a).withValues(alpha: 0.8),
       child: Center(
         child: SingleChildScrollView(
           child: Container(
@@ -625,7 +625,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
               border: Border.all(color: const Color(0xFF0a0a0a), width: 3),
               boxShadow: [
                 BoxShadow(
-                  color: const Color(0xFF0a0a0a).withOpacity(0.8),
+                  color: const Color(0xFF0a0a0a).withValues(alpha: 0.8),
                   blurRadius: 30,
                   spreadRadius: 2,
                 ),

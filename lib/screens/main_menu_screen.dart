@@ -123,7 +123,7 @@ class _MainMenuScreenState extends State<MainMenuScreen>
               image: AssetImage('assets/images/background.jpg'),
               fit: BoxFit.cover,
             ),
-            color: const Color(0xFF0a0a0a).withOpacity(0.1),
+            color: const Color(0xFF0a0a0a).withValues(alpha: 0.1),
             backgroundBlendMode: BlendMode.darken,
           ),
           child: SafeArea(
@@ -144,10 +144,10 @@ class _MainMenuScreenState extends State<MainMenuScreen>
                     icon: Container(
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.1),
+                        color: Colors.white.withValues(alpha: 0.1),
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(
-                          color: Colors.white.withOpacity(0.2),
+                          color: Colors.white.withValues(alpha: 0.2),
                         ),
                       ),
                       child: const Icon(
@@ -185,7 +185,7 @@ class _MainMenuScreenState extends State<MainMenuScreen>
                           _locService.tr('combine_sushi'),
                           style: TextStyle(
                             fontSize: 14,
-                            color: Colors.white.withOpacity(0.7),
+                            color: Colors.white.withValues(alpha: 0.7),
                             letterSpacing: 2,
                           ),
                         ),
@@ -226,7 +226,7 @@ class _MainMenuScreenState extends State<MainMenuScreen>
                                       BoxShadow(
                                         color: const Color(
                                           0xFFFF9600,
-                                        ).withOpacity(0.5),
+                                        ).withValues(alpha: 0.5),
                                         blurRadius: 20,
                                         spreadRadius: 2,
                                         offset: const Offset(0, 4),
@@ -252,8 +252,8 @@ class _MainMenuScreenState extends State<MainMenuScreen>
                                               begin: Alignment.topCenter,
                                               end: Alignment.bottomCenter,
                                               colors: [
-                                                Colors.white.withOpacity(0.3),
-                                                Colors.white.withOpacity(0.0),
+                                                Colors.white.withValues(alpha: 0.3),
+                                                Colors.white.withValues(alpha: 0.0),
                                               ],
                                             ),
                                           ),
@@ -276,14 +276,14 @@ class _MainMenuScreenState extends State<MainMenuScreen>
                                                 decoration: BoxDecoration(
                                                   gradient: LinearGradient(
                                                     colors: [
-                                                      Colors.white.withOpacity(
-                                                        0.0,
+                                                      Colors.white.withValues(
+                                                        alpha: 0.0,
                                                       ),
-                                                      Colors.white.withOpacity(
-                                                        0.4,
+                                                      Colors.white.withValues(
+                                                        alpha: 0.4,
                                                       ),
-                                                      Colors.white.withOpacity(
-                                                        0.0,
+                                                      Colors.white.withValues(
+                                                        alpha: 0.0,
                                                       ),
                                                     ],
                                                     stops: const [

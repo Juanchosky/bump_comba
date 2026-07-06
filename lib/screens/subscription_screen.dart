@@ -247,8 +247,8 @@ class _SubscriptionScreenState extends State<SubscriptionScreen>
                   shape: BoxShape.circle,
                   gradient: RadialGradient(
                     colors: [
-                      const Color(0xFFFFD700).withOpacity(0.12),
-                      const Color(0xFFFFD700).withOpacity(0.04),
+                      const Color(0xFFFFD700).withValues(alpha: 0.12),
+                      const Color(0xFFFFD700).withValues(alpha: 0.04),
                       Colors.transparent,
                     ],
                     stops: const [0.0, 0.4, 1.0],
@@ -293,7 +293,7 @@ class _SubscriptionScreenState extends State<SubscriptionScreen>
                         'La mejor experiencia sin límites',
                         textAlign: TextAlign.center,
                         style: TextStyle(
-                          color: Colors.white.withOpacity(0.5),
+                          color: Colors.white.withValues(alpha: 0.5),
                           fontSize: 16,
                           fontWeight: FontWeight.w400,
                           letterSpacing: 0.3,
@@ -354,7 +354,7 @@ class _SubscriptionScreenState extends State<SubscriptionScreen>
                             'Se renueva automáticamente por ${_selectedProduct!.priceString}/mes. Cancela cuando quieras desde Google Play.',
                             textAlign: TextAlign.center,
                             style: TextStyle(
-                              color: Colors.white.withOpacity(0.3),
+                              color: Colors.white.withValues(alpha: 0.3),
                               fontSize: 11,
                               height: 1.4,
                             ),
@@ -398,7 +398,7 @@ class _SubscriptionScreenState extends State<SubscriptionScreen>
                 child: IconButton(
                   icon: Icon(
                     Icons.close,
-                    color: Colors.white.withOpacity(0.5),
+                    color: Colors.white.withValues(alpha: 0.5),
                     size: 22,
                   ),
                   onPressed: () => Navigator.maybePop(context),
@@ -434,7 +434,7 @@ class _SubscriptionScreenState extends State<SubscriptionScreen>
                 BoxShadow(
                   color: const Color(
                     0xFFFFD700,
-                  ).withOpacity(0.15 + glow * 0.12),
+                  ).withValues(alpha: 0.15 + glow * 0.12),
                   blurRadius: 35 + glow * 15,
                   spreadRadius: 4,
                 ),
@@ -467,7 +467,7 @@ class _SubscriptionScreenState extends State<SubscriptionScreen>
             width: 44,
             height: 44,
             decoration: BoxDecoration(
-              color: const Color(0xFFFFD700).withOpacity(0.1),
+              color: const Color(0xFFFFD700).withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(12),
             ),
             child: Icon(icon, color: const Color(0xFFFFD700), size: 22),
@@ -489,7 +489,7 @@ class _SubscriptionScreenState extends State<SubscriptionScreen>
                 Text(
                   subtitle,
                   style: TextStyle(
-                    color: Colors.white.withOpacity(0.4),
+                    color: Colors.white.withValues(alpha: 0.4),
                     fontSize: 13,
                   ),
                 ),
@@ -498,7 +498,7 @@ class _SubscriptionScreenState extends State<SubscriptionScreen>
           ),
           Icon(
             Icons.check_circle_rounded,
-            color: const Color(0xFFFFD700).withOpacity(0.7),
+            color: const Color(0xFFFFD700).withValues(alpha: 0.7),
             size: 20,
           ),
         ],
@@ -520,15 +520,15 @@ class _SubscriptionScreenState extends State<SubscriptionScreen>
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: const Color(0xFFFFD700).withOpacity(0.35),
+          color: const Color(0xFFFFD700).withValues(alpha: 0.35),
           width: 1.5,
         ),
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
           colors: [
-            const Color(0xFFFFD700).withOpacity(0.08),
-            const Color(0xFFFFD700).withOpacity(0.03),
+            const Color(0xFFFFD700).withValues(alpha: 0.08),
+            const Color(0xFFFFD700).withValues(alpha: 0.03),
           ],
         ),
       ),
@@ -574,7 +574,7 @@ class _SubscriptionScreenState extends State<SubscriptionScreen>
                 Text(
                   'Acceso completo a todas las funciones',
                   style: TextStyle(
-                    color: Colors.white.withOpacity(0.4),
+                    color: Colors.white.withValues(alpha: 0.4),
                     fontSize: 12,
                   ),
                 ),
@@ -595,7 +595,7 @@ class _SubscriptionScreenState extends State<SubscriptionScreen>
               Text(
                 '/mes',
                 style: TextStyle(
-                  color: Colors.white.withOpacity(0.4),
+                  color: Colors.white.withValues(alpha: 0.4),
                   fontSize: 12,
                 ),
               ),
@@ -633,7 +633,7 @@ class _SubscriptionScreenState extends State<SubscriptionScreen>
             ),
             boxShadow: [
               BoxShadow(
-                color: const Color(0xFFFFD700).withOpacity(0.3),
+                color: const Color(0xFFFFD700).withValues(alpha: 0.3),
                 blurRadius: 16,
                 offset: const Offset(0, 4),
               ),
@@ -709,7 +709,7 @@ class _SubscriptionScreenState extends State<SubscriptionScreen>
             backgroundColor: const Color(0xFF0a0a0a),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(20),
-              side: BorderSide(color: Colors.white.withOpacity(0.1), width: 1),
+              side: BorderSide(color: Colors.white.withValues(alpha: 0.1), width: 1),
             ),
             title: Text(
               title,
@@ -724,7 +724,7 @@ class _SubscriptionScreenState extends State<SubscriptionScreen>
               child: Text(
                 content,
                 style: TextStyle(
-                  color: Colors.white.withOpacity(0.7),
+                  color: Colors.white.withValues(alpha: 0.7),
                   fontSize: 14,
                   height: 1.5,
                 ),

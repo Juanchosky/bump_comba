@@ -77,9 +77,9 @@ class _BannerAdWidgetState extends State<BannerAdWidget> {
         width: widget.size.width.toDouble(),
         margin: widget.margin,
         decoration: BoxDecoration(
-          color: AppColors.surface.withOpacity(0.5),
+          color: AppColors.surface.withValues(alpha: 0.5),
           borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: Colors.white.withOpacity(0.05)),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
         ),
         child: const Center(
           child: SizedBox(
@@ -104,7 +104,7 @@ class _BannerAdWidgetState extends State<BannerAdWidget> {
         borderRadius: BorderRadius.circular(8),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.2),
+            color: Colors.black.withValues(alpha: 0.2),
             blurRadius: 8,
             offset: const Offset(0, 2),
           ),
