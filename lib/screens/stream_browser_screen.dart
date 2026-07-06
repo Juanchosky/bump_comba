@@ -296,8 +296,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       if (mounted) {
         setState(() {
           _isOffline = offline;
-          // Volver a mostrar el banner cuando se pierde la conexión de nuevo
-          if (offline) _bannerDismissed = false;
+          // Si el usuario cerró el banner con la X, no volver a mostrarlo
+          // aunque se pierda la conexión de nuevo (permanece oculto).
         });
       }
     }
@@ -3470,8 +3470,11 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         decoration: BoxDecoration(
           border:
               isSelected
-                  ? const Border(
-                    bottom: BorderSide(color: Colors.red, width: 2),
+                  ? Border(
+                    bottom: BorderSide(
+                      color: Colors.red.withValues(alpha: 0.7),
+                      width: 2,
+                    ),
                   )
                   : null,
         ),
