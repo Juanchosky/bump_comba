@@ -1435,7 +1435,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                 width: 3,
                 height: 18,
                 decoration: BoxDecoration(
-                  color: Colors.red,
+                  color: Colors.red.withValues(alpha: 0.85),
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
@@ -1534,7 +1534,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                                     backgroundColor: Colors.black.withValues(
                                       alpha: 0.45,
                                     ),
-                                    color: Colors.red,
+                                    color: Colors.red.withValues(alpha: 0.85),
                                     minHeight: 4,
                                   ),
                                 ),
