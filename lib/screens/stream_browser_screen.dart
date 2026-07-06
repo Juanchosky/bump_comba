@@ -3530,7 +3530,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
               isSelected
                   ? Border(
                     bottom: BorderSide(
-                      color: Colors.red.withValues(alpha: 0.8),
+                      color: Colors.red.withValues(alpha: 0.85),
                       width: 2,
                     ),
                   )
@@ -3539,9 +3539,12 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         child: Text(
           title,
           style: TextStyle(
-            color: isSelected ? Colors.white : Colors.white60,
+            color:
+                isSelected
+                    ? const Color.fromARGB(255, 219, 219, 219)
+                    : Colors.white60,
             fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
-            fontSize: 15,
+            fontSize: 15.2,
           ),
         ),
       ),
