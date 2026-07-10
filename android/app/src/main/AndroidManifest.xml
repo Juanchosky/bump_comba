@@ -84,6 +84,9 @@
         <meta-data android:name="com.onesignal.NotificationIcon.default" android:resource="@drawable/ic_stat_onesignal_default" />
         <meta-data android:name="com.onesignal.NotificationOpenedActivityName" android:value="com.juanchosky.bumpcomba.MainActivity" />
 
+        <!-- Receiver que recibe la alarma y muestra la notificación programada
+             (zonedSchedule). Sin él, los recordatorios nunca se muestran. -->
+        <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver" />
         <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED"/>

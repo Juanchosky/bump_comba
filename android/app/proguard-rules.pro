@@ -20,3 +20,14 @@
 -keep class com.revenuecat.purchases.** { *; }
 -dontwarn com.revenuecat.purchases.**
 
+# flutter_local_notifications: las notificaciones programadas se serializan con
+# GSON y se deserializan en el ScheduledNotificationReceiver. Sin estas reglas,
+# R8 elimina los genéricos de TypeToken y la deserialización falla en release
+# (la notificación programada nunca se muestra).
+-keep class com.dexterous.** { *; }
+-keepattributes Signature
+-keepattributes *Annotation*
+-keep class com.google.gson.reflect.TypeToken { *; }
+-keep class * extends com.google.gson.reflect.TypeToken
+-keep public class * implements java.lang.reflect.Type
+

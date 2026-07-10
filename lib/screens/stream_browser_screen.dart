@@ -4329,13 +4329,11 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     // Solo animamos cuando el cambio ocurre ENTRE las pestañas superiores
     // (Inicio → Películas → Series → Telenovelas → Animación). Si volvemos a la
     // misma pestaña (p. ej. desde la barra inferior) o es la carga inicial, el
-    // banner aparece ya asentado, sin animación. La dirección refleja el sentido
-    // del cambio para que entre deslizándose hacia ese lado, como un carrusel.
+    // banner aparece ya asentado, sin animación. La entrada es siempre desde
+    // abajo, sin importar el sentido del cambio de pestaña.
     final int heroTabIndex = _fixedTabs.indexOf(_selectedTab);
     final bool heroShouldAnimate =
         heroTabIndex >= 0 && heroTabIndex != _lastHeroTabIndex;
-    final int heroDirection =
-        (heroTabIndex >= 0 && heroTabIndex < _lastHeroTabIndex) ? -1 : 1;
     if (heroTabIndex >= 0) _lastHeroTabIndex = heroTabIndex;
 
     const EdgeInsets heroMargin = EdgeInsets.symmetric(
@@ -4348,7 +4346,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       // cambia la pestaña activa o el ítem destacado de la sección.
       key: ValueKey('hero_reveal_${heroTabIndex}_${item.url}'),
       animate: heroShouldAnimate,
-      direction: heroDirection,
       child: GestureDetector(
         onTap: () => _onItemTap(item, heroTag: heroTag),
         child: Container(
@@ -7165,8 +7162,8 @@ class NetflixOfflineBannerState extends State<NetflixOfflineBanner>
 
 /// Animación de entrada premium para el banner principal (hero) que se dispara
 /// cada vez que cambia la pestaña activa (Inicio → Películas → Series →
-/// Telenovelas → …). Combina un leve deslizamiento direccional tipo carrusel,
-/// un ligero escalado y un fundido de entrada.
+/// Telenovelas → …). Combina un leve deslizamiento vertical desde abajo, un
+/// ligero escalado y un fundido de entrada.
 ///
 /// Se apoya en [AutomaticKeepAliveClientMixin] para que la animación solo se
 /// reproduzca al cambiar de pestaña (nueva instancia) y no cada vez que el
@@ -7178,15 +7175,10 @@ class _HeroBannerReveal extends StatefulWidget {
   /// pestañas). Si es `false`, el banner aparece directamente en su estado final.
   final bool animate;
 
-  /// 1 = el banner entra deslizándose desde la derecha (avanzamos de pestaña),
-  /// -1 = entra desde la izquierda (retrocedemos).
-  final int direction;
-
   const _HeroBannerReveal({
     super.key,
     required this.child,
     required this.animate,
-    required this.direction,
   });
 
   @override
@@ -7207,7 +7199,7 @@ class _HeroBannerRevealState extends State<_HeroBannerReveal>
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 760),
+      duration: const Duration(milliseconds: 520),
     );
     _entrance = CurvedAnimation(
       parent: _controller,
@@ -7241,14 +7233,13 @@ class _HeroBannerRevealState extends State<_HeroBannerReveal>
       child: widget.child,
       builder: (context, child) {
         final double e = _entrance.value; // 0 → 1
-        // Desplazamiento mínimo para que apenas se note el "carrusel".
-        final double dx =
-            (1 - e) * 0.06 * widget.direction; // fracción del ancho
-        final double scale = 0.96 + 0.04 * e;
+        // Desplazamiento mínimo desde abajo (fracción de la altura del banner).
+        final double dy = (1 - e) * 0.03;
+        final double scale = 0.985 + 0.015 * e;
         return Opacity(
           opacity: _fade.value.clamp(0.0, 1.0),
           child: FractionalTranslation(
-            translation: Offset(dx, 0),
+            translation: Offset(0, dy),
             child: Transform.scale(
               scale: scale,
               alignment: Alignment.center,
