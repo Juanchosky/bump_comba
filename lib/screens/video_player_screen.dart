@@ -21,6 +21,7 @@ import '../services/performance_service.dart';
 import '../services/cast_service.dart';
 import '../services/network_quality_service.dart';
 import '../services/adaptive_buffer_service.dart';
+import '../services/video_prewarm_service.dart';
 import 'package:http/http.dart' as http;
 
 import '../utils/snack_bar_utils.dart';
@@ -100,6 +101,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   final ValueNotifier<Duration> _bufferedDuration = ValueNotifier<Duration>(
     Duration.zero,
   );
+  // Muestreo de la velocidad REAL de descarga (cache-speed de MPV) cada 5s.
+  int _throughputSampleTick = 0;
   int _stallSeconds = 0;
   bool _isLiveContent = false;
   int _retryCount = 0;
@@ -145,6 +148,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   int? _nextEpisodeCountdown;
   Timer? _countdownTimer;
   bool _autoPlayCancelled = false;
+  // Pre-calentamiento del siguiente episodio (una sola vez por episodio).
+  bool _nextEpisodePrewarmStarted = false;
+  // El player precalentado del navegador solo puede consumirse UNA vez: si se
+  // reutilizara al pasar de episodio, isPrewarmed saltaría el open() y
+  // seguiría reproduciéndose el media anterior.
+  bool _widgetPrewarmedConsumed = false;
   bool _isFastForwarding = false;
   int? _adCountdown;
 
@@ -711,19 +720,30 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       // video (de lo contrario: audio OK, video negro). En iOS siempre abrimos
       // un player fresco con la textura ya montada.
       final bool isIOSPlatform = defaultTargetPlatform == TargetPlatform.iOS;
-      final isPrewarmed =
-          !isIOSPlatform &&
-          widget.prewarmedPlayer != null &&
-          widget.prewarmedPlayer!.platform != null &&
-          _retryCount == 0 &&
-          !isLocalReload;
+      // Player precalentado disponible para ESTE item: el que llegó del
+      // navegador (consumible solo una vez) o uno precalentado en segundo
+      // plano para el siguiente episodio (_prewarmNextEpisode).
+      Player? prewarmedForItem;
+      if (!isIOSPlatform && _retryCount == 0 && !isLocalReload) {
+        if (!_widgetPrewarmedConsumed &&
+            widget.prewarmedPlayer != null &&
+            widget.prewarmedPlayer!.platform != null) {
+          prewarmedForItem = widget.prewarmedPlayer;
+          _widgetPrewarmedConsumed = true;
+        } else {
+          prewarmedForItem = VideoPrewarmService().getPlayer(item);
+        }
+      }
+      final isPrewarmed = prewarmedForItem != null;
 
       // Si llegó un player precalentado en iOS (no debería, pero por seguridad),
       // lo liberamos para que no quede consumiendo recursos en segundo plano.
       if (isIOSPlatform &&
           widget.prewarmedPlayer != null &&
+          !_widgetPrewarmedConsumed &&
           _retryCount == 0 &&
           !isLocalReload) {
+        _widgetPrewarmedConsumed = true;
         try {
           final pw = widget.prewarmedPlayer!;
           final mpv = pw.platform as dynamic;
@@ -739,7 +759,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       final bool hadPreviousController =
           _videoControllerNotifier.value != null;
 
-      if (!isPrewarmed) {
+      // Liberar el player anterior también cuando adoptamos uno precalentado
+      // para el siguiente episodio: sin esto quedarían dos players vivos.
+      if (!isPrewarmed || (_player != null && _player != prewarmedForItem)) {
         await _cleanupPlayer();
       }
 
@@ -748,6 +770,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       setState(() {
         _isVideoLoading = true;
         _autoPlayCancelled = false;
+        _nextEpisodePrewarmStarted = false;
         _midRollAdShown = false;
         _midRollNoticeShown = false;
         _adCountdown = null;
@@ -781,11 +804,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
       Player currentPlayer;
       if (isPrewarmed) {
-        currentPlayer = widget.prewarmedPlayer!;
+        currentPlayer = prewarmedForItem;
       } else {
         currentPlayer = Player(
-          configuration: const PlayerConfiguration(
-            bufferSize: 256 * 1024 * 1024,
+          configuration: PlayerConfiguration(
+            // En gama baja, 256 MB de buffer nativo arriesgan un kill por
+            // memoria del SO (dispositivos de 2–3 GB de RAM).
+            bufferSize:
+                PerformanceService().isLowPerformance
+                    ? 64 * 1024 * 1024
+                    : 256 * 1024 * 1024,
             title: 'Bump Comba Player',
             logLevel: MPVLogLevel.error,
             libass: true, // ← Renderizador nativo, mucho más eficiente
@@ -911,20 +939,29 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             // protocol_whitelist is enabled by default by FFmpeg
           } else {
             // VOD Content (Movies/Series)
+            // En gama baja limitamos los buffers en RAM: 256 MB de demuxer
+            // pueden provocar kills por memoria en dispositivos de 2–3 GB.
+            final lowPerf = PerformanceService().isLowPerformance;
             await mpv.setProperty(
               'cache-secs',
               '300',
             ); // 5 minutos de buffer máximo
             await mpv.setProperty(
               'demuxer-max-bytes',
-              '268435456',
-            ); // 256MB (Safe limit for VOD)
-            await mpv.setProperty('demuxer-max-back-bytes', '67108864');
+              lowPerf ? '67108864' : '268435456', // 64 MB / 256 MB
+            );
+            await mpv.setProperty(
+              'demuxer-max-back-bytes',
+              lowPerf ? '16777216' : '67108864', // 16 MB / 64 MB
+            );
             await mpv.setProperty('demuxer-readahead-secs', '180');
             await mpv.setProperty('cache-pause-initial', 'yes');
             // Reanuda reproducción tras solo 2s de re-buffering (antes: 5s)
             await mpv.setProperty('cache-pause-wait', '2');
-            await mpv.setProperty('stream-buffer-size', '16777216');
+            await mpv.setProperty(
+              'stream-buffer-size',
+              lowPerf ? '4194304' : '16777216', // 4 MB / 16 MB
+            );
             await mpv.setProperty('network-timeout', '10');
 
             // Calidad adaptativa HLS automática
@@ -1452,16 +1489,28 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             // Aseguramos que estamos en el último 20% del video para evitar triggers accidentales al inicio
             final isNearEnd = position.inSeconds > duration.inSeconds * 0.8;
 
+            final isProbablySeries =
+                _currentItem.isSeries ||
+                _currentItem.episodeNumber != null ||
+                _currentItem.seriesName != null ||
+                (_playlist.length > 1 &&
+                    _currentItem.category.toLowerCase().contains('series'));
+
+            // 1.b Pre-calentar el siguiente episodio ~1 min antes de que
+            // aparezca el countdown de auto-play: la transición arranca casi
+            // al instante en lugar de pasar por la carga completa.
+            if (_playlist.isNotEmpty &&
+                isProbablySeries &&
+                isNearEnd &&
+                remaining.inSeconds > 0 &&
+                remaining.inSeconds <= threshold + 60 &&
+                !_nextEpisodePrewarmStarted) {
+              _prewarmNextEpisode();
+            }
+
             if (remaining.inSeconds <= threshold &&
                 remaining.inSeconds > 0 &&
                 isNearEnd) {
-              final isProbablySeries =
-                  _currentItem.isSeries ||
-                  _currentItem.episodeNumber != null ||
-                  _currentItem.seriesName != null ||
-                  (_playlist.length > 1 &&
-                      _currentItem.category.toLowerCase().contains('series'));
-
               if (_playlist.isNotEmpty && isProbablySeries) {
                 _handleVideoCompletion();
               }
@@ -1634,6 +1683,35 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
   }
 
+  /// Pre-calienta el siguiente episodio en un player pausado en segundo plano
+  /// para que el auto-play (o el botón "siguiente") no pase por la carga
+  /// completa. Solo VOD directo en Android: los enlaces que requieren scraping
+  /// no tienen URL de video conocida hasta extraerla, iOS nunca reutiliza
+  /// players precalentados, y en Cast/gama baja el player extra causa más
+  /// problemas de los que resuelve.
+  void _prewarmNextEpisode() {
+    _nextEpisodePrewarmStarted = true;
+
+    if (_isLiveContent) return;
+    if (defaultTargetPlatform == TargetPlatform.iOS) return;
+    if (CastService().isCasting.value) return;
+    if (!PerformanceService().allowVideoPrewarm) return;
+
+    final currentIndex = _playlist.indexWhere((i) => i.url == _currentItem.url);
+    if (currentIndex == -1 || currentIndex >= _playlist.length - 1) return;
+    final nextItem = _playlist[currentIndex + 1];
+
+    if (DynamicScraperService().isSupported(nextItem.url) ||
+        _isProbablyWebPage(nextItem.url)) {
+      return;
+    }
+
+    debugPrint(
+      'VideoPlayerScreen: pre-warming next episode "${nextItem.name}"',
+    );
+    unawaited(VideoPrewarmService().prewarm(nextItem, _currentUserAgent));
+  }
+
   void _cancelAutoPlay() {
     _countdownTimer?.cancel();
     setState(() {
@@ -1648,6 +1726,22 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
   }
 
+  /// Lee la velocidad real de descarga del stream (cache-speed de MPV, en
+  /// bytes/s) y la reporta al monitor de red. Solo cuando hay descarga activa:
+  /// con el buffer lleno MPV deja de descargar y cache-speed cae a 0, lo que
+  /// NO significa red mala.
+  Future<void> _sampleRealThroughput() async {
+    try {
+      final mpv = _player?.platform as dynamic;
+      if (mpv == null) return;
+      final raw = await mpv.getProperty('cache-speed');
+      final bytesPerSec = double.tryParse(raw?.toString() ?? '') ?? 0;
+      if (bytesPerSec <= 0) return;
+      final mbps = bytesPerSec * 8 / 1000000;
+      _networkQuality.reportStreamThroughput(mbps);
+    } catch (_) {}
+  }
+
   void _startStallMonitor() {
     _stallTimer?.cancel();
     _stallSeconds = 0;
@@ -1659,6 +1753,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       final currentPos = playerState.position;
 
       _bufferedDuration.value = playerState.buffer;
+
+      // Muestrear la velocidad real de descarga del stream cada 5s y
+      // reportarla al monitor de red: es la única medida fiable de ancho de
+      // banda (la heurística de latencia da falsos positivos con servidores
+      // lejanos) y evita degradar perfiles cuando la red está bien.
+      _throughputSampleTick++;
+      if (_throughputSampleTick >= 5) {
+        _throughputSampleTick = 0;
+        unawaited(_sampleRealThroughput());
+      }
 
       // Un reproductor pausado (por el usuario o con la app en segundo plano)
       // nunca está "estancado": no acumulamos stall ni disparamos recargas.
@@ -1686,7 +1790,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         // - Mala red: darle más tiempo para que el buffer se llene (15–25s)
         final networkQ = _networkQuality.quality.value;
         final int threshold;
-        if (networkQ == NetworkQuality.poor) {
+        if (networkQ == NetworkQuality.poor ||
+            networkQ == NetworkQuality.offline) {
           threshold = _isLiveContent ? 20 : 35; // Más paciencia en red mala
         } else if (networkQ == NetworkQuality.fair) {
           threshold = _isLiveContent ? 10 : 20;
@@ -1695,6 +1800,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         }
 
         if (_stallSeconds >= threshold && !_isVideoLoading) {
+          // Sin red no hay nada que recargar: el reload rotaría de servidor y
+          // quemaría reintentos contra una red caída (zona muerta, túnel).
+          // Esperamos a que vuelva; http-reconnect retoma la descarga solo.
+          if (networkQ == NetworkQuality.offline) {
+            debugPrint(
+              'Stall con red offline: esperando reconexión sin recargar.',
+            );
+            _stallSeconds = threshold - 5; // Reevaluar en 5s
+            return;
+          }
           // NUEVO: No recargar si acabamos de hacer un seek (los primeros 8s
           // post-seek son normalmente buffering, no un stall real).
           final secondsSinceSeek =
@@ -5979,6 +6094,32 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   void _onNetworkQualityChanged(NetworkQuality newQuality) async {
     if (!mounted || _player == null || _isVideoLoading) return;
     if (_lastAppliedQuality == newQuality) return;
+
+    // Con la red caída no tiene sentido reconfigurar MPV (ni avisar de
+    // "calidad reducida"): al reconectar llegará otro cambio de calidad.
+    if (newQuality == NetworkQuality.offline) return;
+
+    // GUARD (igual que en la aplicación inicial): no aplicar un perfil
+    // degradado si la evidencia real lo contradice. La heurística de latencia
+    // marca fair/poor con servidores lejanos (150ms+ de RTT) aunque el
+    // throughput sobre; y si el buffer está sano, degradar solo causa daño
+    // (menos readahead + reconfigurar el decoder en pleno playback).
+    final isDegraded =
+        newQuality == NetworkQuality.fair || newQuality == NetworkQuality.poor;
+    if (isDegraded) {
+      final realBandwidth = _networkQuality.estimatedBandwidthMbps.value;
+      final st = _player!.state;
+      final bufferedAhead = st.buffer - st.position;
+      final bufferHealthy = !st.buffering && bufferedAhead.inSeconds > 30;
+      if (realBandwidth >= 2.0 || bufferHealthy) {
+        debugPrint(
+          'AdaptiveQuality: cambio a ${newQuality.name} ignorado — '
+          'bw=${realBandwidth.toStringAsFixed(1)}Mbps, '
+          'buffer=${bufferedAhead.inSeconds}s',
+        );
+        return;
+      }
+    }
 
     final previous = _lastAppliedQuality;
     _lastAppliedQuality = newQuality;

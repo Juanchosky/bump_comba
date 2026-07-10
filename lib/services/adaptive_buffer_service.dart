@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'network_quality_service.dart';
+import 'performance_service.dart';
 
 /// Perfiles de buffer y decoder para cada nivel de calidad.
 /// Estos se aplican dinámicamente a MPV cuando la red cambia.
@@ -76,7 +77,7 @@ class AdaptiveBufferService {
     networkTimeout: 60,
     reconnectSleep: '0.5',
     httpPipelining: true,
-    hlsBitrate: 'max',
+    hlsBitrate: 'auto',
   );
 
   static const AdaptiveBufferConfig _good = AdaptiveBufferConfig(
@@ -107,8 +108,11 @@ class AdaptiveBufferService {
     demuxerReadaheadSecs: 30,
     cachePauseWait: '5', // Esperar 5s antes de pausar para acumular buffer
     hwdec: 'mediacodec-copy', // Más estable en dispositivos mid-range
-    skipLoopFilter:
-        'nonref', // Saltar filtro en frames no-referencia → -20% CPU
+    // 'nonref'/'nonkey' solo funcionan con decoders de software. Con
+    // mediacodec(-copy) son un argumento inválido que genera un error de
+    // stream y fuerza un reload — justo con la red débil. En hardware el
+    // filtrado de loop lo hace el propio codec.
+    skipLoopFilter: 'none',
     framedrop: 'decoder+vo', // Drop agresivo para mantener sync
     fastDecoding: true,
     videoSync: 'audio',
@@ -127,14 +131,18 @@ class AdaptiveBufferService {
     demuxerReadaheadSecs: 10,
     cachePauseWait: '8', // Acumular más buffer antes de reproducir
     hwdec: 'mediacodec-copy',
-    skipLoopFilter: 'nonkey', // Solo decodificar keyframes referencia
+    // Ver nota en el perfil Fair: los valores 'nonref'/'nonkey' rompen el
+    // stream con decoders de hardware (mediacodec/videotoolbox).
+    skipLoopFilter: 'none',
     framedrop: 'decoder+vo',
     fastDecoding: true,
     videoSync: 'audio',
     networkTimeout: 20,
     reconnectSleep: '2',
     httpPipelining: false,
-    dropNonRefFrames: true, // Modo de emergencia: solo keyframes
+    // skip_frame=nonref (vd-lavc-o) tampoco es fiable con decoders de
+    // hardware; el ahorro real ya viene de framedrop + hls-bitrate=min.
+    dropNonRefFrames: false,
     hlsBitrate: 'min',
   );
 
@@ -162,26 +170,60 @@ class AdaptiveBufferService {
     if (mpv == null) return;
     final cfg = getConfig(quality);
 
+    // VOD con red débil: NO encoger el buffer. En un archivo único (sin
+    // variantes de calidad) la defensa real contra cortes es acumular más
+    // segundos mientras haya señal; reducir el readahead cuando la red
+    // empeora deja al player sin margen justo cuando más lo necesita.
+    // En live sí se reduce: ahí manda la latencia.
+    int cacheSecs = cfg.cacheSecs;
+    int demuxerMaxBytes = cfg.demuxerMaxBytes;
+    int demuxerMaxBackBytes = cfg.demuxerMaxBackBytes;
+    int streamBufferSize = cfg.streamBufferSize;
+    int readaheadSecs = cfg.demuxerReadaheadSecs;
+    if (!isLive) {
+      if (cacheSecs < _good.cacheSecs) cacheSecs = _good.cacheSecs;
+      if (demuxerMaxBytes < _good.demuxerMaxBytes) {
+        demuxerMaxBytes = _good.demuxerMaxBytes;
+      }
+      if (demuxerMaxBackBytes < _good.demuxerMaxBackBytes) {
+        demuxerMaxBackBytes = _good.demuxerMaxBackBytes;
+      }
+      if (streamBufferSize < _good.streamBufferSize) {
+        streamBufferSize = _good.streamBufferSize;
+      }
+      if (readaheadSecs < _good.demuxerReadaheadSecs) {
+        readaheadSecs = _good.demuxerReadaheadSecs;
+      }
+    }
+
+    // En gama baja limitamos los buffers en RAM independientemente del perfil:
+    // 128–256 MB de demuxer pueden provocar kills por memoria en dispositivos
+    // de 2–3 GB de RAM.
+    if (PerformanceService().isLowPerformance) {
+      if (demuxerMaxBytes > 67108864) demuxerMaxBytes = 67108864; // 64 MB
+      if (demuxerMaxBackBytes > 16777216) {
+        demuxerMaxBackBytes = 16777216; // 16 MB
+      }
+      if (streamBufferSize > 4194304) streamBufferSize = 4194304; // 4 MB
+    }
+
     debugPrint('AdaptiveBuffer: Applying profile "${cfg.name}"');
 
     try {
       // Buffer
-      await mpv.setProperty('cache-secs', cfg.cacheSecs.toString());
-      await mpv.setProperty(
-        'demuxer-max-bytes',
-        cfg.demuxerMaxBytes.toString(),
-      );
+      await mpv.setProperty('cache-secs', cacheSecs.toString());
+      await mpv.setProperty('demuxer-max-bytes', demuxerMaxBytes.toString());
       await mpv.setProperty(
         'demuxer-max-back-bytes',
-        cfg.demuxerMaxBackBytes.toString(),
+        demuxerMaxBackBytes.toString(),
       );
       await mpv.setProperty(
         'stream-buffer-size',
-        cfg.streamBufferSize.toString(),
+        streamBufferSize.toString(),
       );
       await mpv.setProperty(
         'demuxer-readahead-secs',
-        cfg.demuxerReadaheadSecs.toString(),
+        readaheadSecs.toString(),
       );
       await mpv.setProperty('cache-pause-wait', cfg.cachePauseWait);
 

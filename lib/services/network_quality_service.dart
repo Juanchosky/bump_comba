@@ -42,6 +42,13 @@ class NetworkQualityService {
   int _consecutivePoorReadings = 0;
   int _consecutiveGoodReadings = 0;
 
+  // Throughput REAL del stream reportado por el player (cache-speed de MPV).
+  // Cuando existe y es reciente, sustituye a la heurística latencia→Mbps,
+  // que da falsos positivos con servidores lejanos (150ms+ de RTT no implica
+  // poco ancho de banda).
+  double? _lastRealMbps;
+  DateTime? _lastRealMbpsAt;
+
   // Anti-falso-positivo de "offline": una señal aislada de "sin conexión"
   // suele ser un blip transitorio (reabrir la app, despertar el teléfono,
   // cambio de red) que se resuelve en menos de un segundo. Solo mostramos
@@ -97,6 +104,15 @@ class NetworkQualityService {
   /// Forzar una medición manual de conectividad.
   Future<void> measureManual() async {
     await _measure();
+  }
+
+  /// El player reporta la velocidad real de descarga del stream (Mbps).
+  /// Solo debe llamarse con descarga activa (>0): con el buffer lleno MPV
+  /// deja de descargar y esa lectura no significa red mala.
+  void reportStreamThroughput(double mbps) {
+    if (mbps <= 0) return;
+    _lastRealMbps = mbps;
+    _lastRealMbpsAt = DateTime.now();
   }
 
   void start() {
@@ -167,6 +183,13 @@ class NetworkQualityService {
       // Fallback: solo tipo de conexión (sin medición activa para no gastar datos)
       bandwidth = _inferBandwidthFromConnectionType(results);
       latency = 100;
+    }
+
+    // Si el player reportó throughput real recientemente, esa es LA medida:
+    // la estimación por latencia solo se usa como fallback.
+    final realAt = _lastRealMbpsAt;
+    if (realAt != null && DateTime.now().difference(realAt).inSeconds < 30) {
+      bandwidth = _lastRealMbps!;
     }
 
     // Actualizar historial
