@@ -315,8 +315,18 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     );
     _subs.add(
       _player.stream.playing.listen((pl) {
+        final wasPlaying = _playing;
         _playing = pl;
-        if (_controlsVisible && mounted) setState(() {});
+        if (!mounted) return;
+        if (_hasMedia && wasPlaying && !pl) {
+          // Se pausó (desde el TV o el teléfono): mostrar el botón de play.
+          _showControls();
+        } else if (_hasMedia && !wasPlaying && pl && _controlsVisible) {
+          // Se reanudó: re-armar el auto-ocultado del overlay.
+          _showControls();
+        } else if (_controlsVisible) {
+          setState(() {});
+        }
       }),
     );
     // Spinner de carga: mismo indicador que el reproductor del teléfono.
@@ -458,6 +468,11 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     _hideControlsTimer = Timer(const Duration(seconds: 4), () {
       if (_previewing) {
         _commitPreviewSeek();
+      }
+      // En PAUSA el overlay (y el botón de play) permanecen visibles.
+      if (!_playing && _hasMedia) {
+        _showControls();
+        return;
       }
       if (mounted) setState(() => _controlsVisible = false);
     });
@@ -745,7 +760,14 @@ class _TvControlsOverlay extends StatelessWidget {
         RegExp(
           r'[Ss]\d{1,2}\s*[-.\s]?\s*[Ee]\d{1,3}|\b\d{1,2}x\d{1,3}\b',
         ).allMatches(t).toList();
-    if (matches.isEmpty) return t;
+    // Películas (sin patrón de episodio): quitar el año final,
+    // p. ej. "Moana (2026)" / "Moana [2026]" / "Moana 2026" → "Moana".
+    if (matches.isEmpty) {
+      return t
+          .replaceAll(RegExp(r'\s*[(\[]\s*(19|20)\d{2}\s*[)\]]\s*$'), '')
+          .replaceAll(RegExp(r'\s+(19|20)\d{2}\s*$'), '')
+          .trim();
+    }
 
     final after =
         t
@@ -784,15 +806,16 @@ class _TvControlsOverlay extends StatelessWidget {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          // Botón único de play/pausa en el CENTRO de la pantalla
-          // (◀/▶ saltan ±10s directo).
-          Center(
-            child: _CtrlButton(
-              icon: playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
-              focused: focusArea == 0,
-              big: true,
+          // Botón de play en el CENTRO: solo aparece cuando el video está en
+          // PAUSA; al reanudar desaparece (◀/▶ saltan ±10s directo).
+          if (!playing)
+            Center(
+              child: _CtrlButton(
+                icon: Icons.play_arrow_rounded,
+                focused: focusArea == 0,
+                big: true,
+              ),
             ),
-          ),
           Padding(
             padding: const EdgeInsets.fromLTRB(40, 0, 48, 36),
             child: Column(
@@ -877,26 +900,20 @@ class _TvControlsOverlay extends StatelessWidget {
                                             child: Container(
                                               width: thumbSize,
                                               height: thumbSize,
-                                              decoration: BoxDecoration(
-                                                color: accent,
+                                              // Mismo estilo glossy rojo que
+                                              // el botón de play.
+                                              decoration: const BoxDecoration(
                                                 shape: BoxShape.circle,
-                                                // Igual que el botón de play
-                                                // enfocado: borde verde.
-                                                border:
-                                                    timelineFocused
-                                                        ? Border.all(
-                                                          color:
-                                                              Colors
-                                                                  .greenAccent,
-                                                          width: 3,
-                                                        )
-                                                        : null,
-                                                boxShadow: const [
-                                                  BoxShadow(
-                                                    color: Colors.black45,
-                                                    blurRadius: 4,
-                                                  ),
-                                                ],
+                                                gradient: RadialGradient(
+                                                  center: Alignment(-0.4, -0.5),
+                                                  radius: 1.2,
+                                                  colors: [
+                                                    Color(0xFFFF6B5E),
+                                                    Color(0xFFE53935),
+                                                    Color(0xFFB71C1C),
+                                                  ],
+                                                  stops: [0.0, 0.55, 1.0],
+                                                ),
                                               ),
                                             ),
                                           ),
