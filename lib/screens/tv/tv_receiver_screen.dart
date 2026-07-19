@@ -957,21 +957,58 @@ class _CtrlButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final size = big ? 76.0 : 60.0;
-    return AnimatedContainer(
+    final size = big ? 72.0 : 56.0;
+    // Esfera roja brillante (estilo glossy): degradado radial con luz
+    // arriba-izquierda y brillo especular, sin sombras.
+    return AnimatedScale(
       duration: const Duration(milliseconds: 150),
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        color: focused ? Colors.white : Colors.white24,
-        shape: BoxShape.circle,
-        border:
-            focused ? Border.all(color: Colors.greenAccent, width: 3) : null,
-      ),
-      child: Icon(
-        icon,
-        color: focused ? Colors.black : Colors.white,
-        size: big ? 44 : 32,
+      scale: 1.0,
+      child: AnimatedOpacity(
+        duration: const Duration(milliseconds: 150),
+        opacity: 1.0,
+        child: Container(
+          width: size,
+          height: size,
+          decoration: const BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: RadialGradient(
+              center: Alignment(-0.4, -0.5),
+              radius: 1.2,
+              colors: [
+                Color(0xFFFF6B5E), // luz cálida arriba-izquierda
+                Color(0xFFE53935), // rojo principal
+                Color(0xFFB71C1C), // rojo profundo en el borde
+              ],
+              stops: [0.0, 0.55, 1.0],
+            ),
+          ),
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              // Brillo especular (la "chispa" blanca de la esfera).
+              Positioned(
+                top: size * 0.13,
+                left: size * 0.22,
+                child: Container(
+                  width: size * 0.26,
+                  height: size * 0.15,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(size),
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Colors.white.withValues(alpha: 0.85),
+                        Colors.white.withValues(alpha: 0.0),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              Icon(icon, color: Colors.white, size: big ? 46 : 34),
+            ],
+          ),
+        ),
       ),
     );
   }
