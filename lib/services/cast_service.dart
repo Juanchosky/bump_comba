@@ -1,7 +1,12 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:bonsoir/bonsoir.dart';
 import 'package:cast/cast.dart';
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../services/tv/tv_protocol.dart';
+import '../services/tv/tv_sender.dart';
+import '../services/tv/tv_platform.dart';
 
 /// Servicio singleton para descubrir y controlar dispositivos Chromecast.
 ///
@@ -26,6 +31,57 @@ class CastService {
   final ValueNotifier<String> castPlayerState = ValueNotifier('IDLE');
   final ValueNotifier<bool> castMediaFinished = ValueNotifier(false);
 
+  /// Pistas de audio/subtítulos reportadas por el receptor (MiApp TV).
+  /// Cada elemento: {id, title, language}. La UI las consume igual que las del
+  /// Chromecast.
+  final ValueNotifier<List<Map<String, dynamic>>> castAudioTracks =
+      ValueNotifier(const []);
+  final ValueNotifier<List<Map<String, dynamic>>> castSubtitleTracks =
+      ValueNotifier(const []);
+
+  // ─── Backend dual: MiApp TV (receptor propio vía WebSocket) ───
+  TvSender? _tvSender;
+
+  /// `true` cuando la sesión activa usa el backend MiApp TV en vez de Cast v2.
+  bool get isTvBackend => _tvSender != null;
+
+  /// serviceNames de los dispositivos descubiertos que son MiApp TV (no
+  /// Chromecast). Permite a [connectToDevice] elegir el backend correcto.
+  final Set<String> _tvServiceNames = <String>{};
+
+  /// `true` si el dispositivo dado es un receptor propio MiApp TV.
+  bool isTvDevice(CastDevice device) =>
+      _tvServiceNames.contains(device.serviceName);
+
+  static const String _kLastTvHostKey = 'last_tv_host';
+  static const String _kLastTvNameKey = 'last_tv_name';
+
+  // ─── Estado de reconexión persistente (error crítico #5 y #6) ───
+  CastDevice? _tvDevice;
+  bool _tvUserDisconnected = false;
+  Timer? _tvReconnectTimer;
+  int _tvReconnectAttempt = 0;
+  DateTime? _tvReconnectStartedAt;
+
+  /// Última media enviada al TV: para decidir en la reconexión si nos
+  /// adjuntamos sin reenviar LOAD (el TV reproduce solo aunque el teléfono se
+  /// caiga).
+  String? _tvLastUrl;
+  String? _tvLastTitle;
+  String? _tvLastThumb;
+  Map<String, String>? _tvLastHeaders;
+  String? _tvLastSeriesName;
+  int? _tvLastSeason;
+  int? _tvLastEpisode;
+
+  /// Durante una reconexión: esperamos el primer STATUS para decidir si
+  /// readjuntarnos o recargar. Guarda la posición esperada.
+  bool _tvReattaching = false;
+  Duration _tvExpectedPosition = Duration.zero;
+
+  /// Máximo tiempo continuo de fallos antes de rendirse (batería).
+  static const Duration _kTvReconnectGiveUp = Duration(minutes: 5);
+
   /// Última posición conocida antes de una posible desconexión o stall.
   Duration lastKnownPosition = Duration.zero;
 
@@ -46,25 +102,65 @@ class CastService {
   Future<List<CastDevice>> discoverDevices({
     Duration timeout = const Duration(seconds: 5),
   }) async {
-    final results = <CastDevice>[];
+    // Buscamos en PARALELO los Chromecast (_googlecast._tcp) y los receptores
+    // propios MiApp TV (_bumpcombatv._tcp).
+    _tvServiceNames.clear();
 
+    final resultsFuture = Future.wait([
+      _discoverType('_googlecast._tcp', timeout, isTv: false),
+      _discoverType(TvProto.serviceType, timeout, isTv: true),
+    ]);
+
+    final lists = await resultsFuture;
+    final chromecasts = lists[0];
+    final tvs = lists[1];
+
+    // mDNS es intermitente (error crítico #7): si no apareció ningún MiApp TV,
+    // intentamos el último TV conocido por sondeo TCP directo.
+    if (tvs.isEmpty) {
+      final probed = await _probeLastKnownTv();
+      if (probed != null) {
+        _tvServiceNames.add(probed.serviceName);
+        tvs.add(probed);
+      }
+    } else {
+      // Persistir el primer TV visto para el sondeo futuro.
+      await _persistLastTv(tvs.first);
+    }
+
+    // Deduplicar por serviceName, MiApp TV PRIMERO.
+    final seen = <String>{};
+    final ordered = <CastDevice>[];
+    for (final d in [...tvs, ...chromecasts]) {
+      if (seen.add(d.serviceName)) ordered.add(d);
+    }
+    return ordered;
+  }
+
+  /// Descubre un tipo mDNS concreto y devuelve los dispositivos resueltos.
+  /// Si [isTv] es `true`, marca cada serviceName como MiApp TV.
+  Future<List<CastDevice>> _discoverType(
+    String type,
+    Duration timeout, {
+    required bool isTv,
+  }) async {
+    final results = <CastDevice>[];
     try {
-      final discovery = BonsoirDiscovery(type: '_googlecast._tcp');
+      final discovery = BonsoirDiscovery(type: type);
       await discovery.ready;
 
       discovery.eventStream!.listen(
         (event) {
           if (event.type == BonsoirDiscoveryEventType.discoveryServiceFound) {
-            // Solicitar resolución del servicio para obtener IP y puerto
             event.service?.resolve(discovery.serviceResolver);
           } else if (event.type ==
               BonsoirDiscoveryEventType.discoveryServiceResolved) {
             final service = event.service;
             if (service == null) return;
 
-            // Extraer IP y puerto del servicio resuelto
             final String? host = _extractHost(service);
-            final int port = service.port > 0 ? service.port : _kCastPort;
+            final int port =
+                service.port > 0 ? service.port : (isTv ? TvProto.port : _kCastPort);
 
             if (host == null || host.isEmpty) {
               debugPrint(
@@ -73,22 +169,24 @@ class CastService {
               return;
             }
 
-            // Extraer nombre amigable de los atributos TXT
-            final attrs = service.attributes;
-            String friendlyName = [
-              attrs['md'], // Modelo del dispositivo
-              attrs['fn'], // Nombre amigable
-            ].whereType<String>().where((s) => s.isNotEmpty).join(' - ');
-
-            if (friendlyName.isEmpty) {
+            String friendlyName;
+            if (isTv) {
               friendlyName = service.name;
+            } else {
+              final attrs = service.attributes;
+              friendlyName = [
+                attrs['md'], // Modelo del dispositivo
+                attrs['fn'], // Nombre amigable
+              ].whereType<String>().where((s) => s.isNotEmpty).join(' - ');
+              if (friendlyName.isEmpty) friendlyName = service.name;
             }
 
             debugPrint(
-              'CastService: Found device "$friendlyName" at $host:$port '
-              '(service: ${service.name})',
+              'CastService: Found ${isTv ? "MiApp TV" : "Chromecast"} '
+              '"$friendlyName" at $host:$port (service: ${service.name})',
             );
 
+            if (isTv) _tvServiceNames.add(service.name);
             results.add(
               CastDevice(
                 serviceName: service.name,
@@ -103,25 +201,53 @@ class CastService {
           }
         },
         onError: (error) {
-          debugPrint('CastService: Discovery error: $error');
+          debugPrint('CastService: Discovery error ($type): $error');
         },
       );
 
       await discovery.start();
       await Future.delayed(timeout);
       await discovery.stop();
-
-      // Deduplicar por serviceName
-      final seen = <String>{};
-      final unique = <CastDevice>[];
-      for (final d in results) {
-        if (seen.add(d.serviceName)) unique.add(d);
-      }
-
-      return unique;
     } catch (e) {
-      debugPrint('CastService: Error discovering devices: $e');
-      return results;
+      debugPrint('CastService: Error discovering $type: $e');
+    }
+    return results;
+  }
+
+  /// Guarda el host/nombre del último MiApp TV visto (para sondeo TCP futuro).
+  Future<void> _persistLastTv(CastDevice device) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_kLastTvHostKey, device.host);
+      await prefs.setString(_kLastTvNameKey, device.name);
+    } catch (_) {}
+  }
+
+  /// Sondea por TCP el último MiApp TV conocido. Si responde en el puerto fijo,
+  /// lo devuelve como dispositivo aunque el mDNS no lo haya encontrado.
+  Future<CastDevice?> _probeLastKnownTv() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final host = prefs.getString(_kLastTvHostKey);
+      final name = prefs.getString(_kLastTvNameKey) ?? 'Bump Comba TV';
+      if (host == null || host.isEmpty) return null;
+
+      final socket = await Socket.connect(
+        host,
+        TvProto.port,
+        timeout: const Duration(milliseconds: 1200),
+      );
+      socket.destroy();
+      debugPrint('CastService: MiApp TV recuperado por sondeo TCP: $host');
+      return CastDevice(
+        serviceName: 'tv-$host',
+        name: name,
+        host: host,
+        port: TvProto.port,
+      );
+    } catch (e) {
+      debugPrint('CastService: sondeo TCP del último TV falló: $e');
+      return null;
     }
   }
 
@@ -160,6 +286,10 @@ class CastService {
   /// media receiver antes de retornar `true`. Esto evita que el LOAD se envíe
   /// a "receiver-0" en vez del transport correcto.
   Future<bool> connectToDevice(CastDevice device) async {
+    // ── Backend MiApp TV (receptor propio) ──
+    if (isTvDevice(device)) {
+      return _connectToTv(device);
+    }
     try {
       await disconnect(); // Limpiar sesión previa
 
@@ -424,7 +554,41 @@ class CastService {
     String? thumbnailUrl,
     String contentType = 'video/mp4',
     double startPosition = 0.0,
+    Map<String, String>? headers,
+    String? seriesName,
+    int? season,
+    int? episode,
   }) async {
+    // ── Backend MiApp TV: enviamos la URL ORIGINAL (media_kit reproduce
+    // MKV/AC3 directamente) con sus headers, sin conversión HLS. ──
+    if (isTvBackend) {
+      castPosition.value = Duration.zero;
+      castDuration.value = Duration.zero;
+      castPlaying.value = false;
+      castMediaFinished.value = false;
+      // Recordar la media para poder recargar tras una reconexión si el TV ya
+      // no la está reproduciendo.
+      _tvLastUrl = url;
+      _tvLastTitle = title;
+      _tvLastThumb = thumbnailUrl;
+      _tvLastHeaders = headers;
+      _tvLastSeriesName = seriesName;
+      _tvLastSeason = season;
+      _tvLastEpisode = episode;
+      _tvReattaching = false; // es una carga explícita del usuario
+      _tvSender?.load(
+        url: url,
+        title: title,
+        position: startPosition,
+        headers: headers,
+        thumbnailUrl: thumbnailUrl,
+        seriesName: seriesName,
+        season: season,
+        episode: episode,
+      );
+      return;
+    }
+
     if (_session == null) {
       debugPrint('CastService: No active session');
       return;
@@ -601,6 +765,13 @@ class CastService {
 
   /// Pausa la reproducción en el Chromecast.
   void pause() {
+    if (isTvBackend) {
+      _tvSender?.pause();
+      // Intención optimista (error crítico #8): reflejamos la pausa al instante.
+      castPlaying.value = false;
+      castPlayerState.value = 'PAUSED';
+      return;
+    }
     if (_session == null || _mediaSessionId == null) return;
     _session!.sendMessage(CastSession.kNamespaceMedia, {
       'type': 'PAUSE',
@@ -611,6 +782,12 @@ class CastService {
 
   /// Reanuda la reproducción en el Chromecast.
   void play() {
+    if (isTvBackend) {
+      _tvSender?.play();
+      castPlaying.value = true;
+      castPlayerState.value = 'PLAYING';
+      return;
+    }
     if (_session == null || _mediaSessionId == null) return;
     _session!.sendMessage(CastSession.kNamespaceMedia, {
       'type': 'PLAY',
@@ -621,6 +798,10 @@ class CastService {
 
   /// Detiene la reproducción y cierra la app del receptor.
   void stop() {
+    if (isTvBackend) {
+      _tvSender?.stop();
+      return;
+    }
     if (_session == null) return;
     _session!.sendMessage(CastSession.kNamespaceMedia, {
       'type': 'STOP',
@@ -632,6 +813,12 @@ class CastService {
 
   /// Busca a una posición específica (en segundos).
   void seek(double positionSeconds) {
+    if (isTvBackend) {
+      _tvSender?.seek(positionSeconds);
+      castPosition.value =
+          Duration(milliseconds: (positionSeconds * 1000).toInt());
+      return;
+    }
     if (_session == null || _mediaSessionId == null) return;
     _session!.sendMessage(CastSession.kNamespaceMedia, {
       'type': 'SEEK',
@@ -662,7 +849,12 @@ class CastService {
   ///
   /// [trackId] es el ID numérico del track dentro del media actual.
   /// Los tracks se obtienen del MEDIA_STATUS del Chromecast.
-  void setActiveAudioTrack(int trackId) {
+  void setActiveAudioTrack(int trackId, {String? trackStringId}) {
+    if (isTvBackend) {
+      // El receptor usa el id de pista de media_kit (String, p. ej. "1").
+      _tvSender?.setAudio(trackStringId ?? trackId.toString());
+      return;
+    }
     if (_session == null || _mediaSessionId == null) return;
     _session!.sendMessage(CastSession.kNamespaceMedia, {
       'type': 'EDIT_TRACKS_INFO',
@@ -673,6 +865,229 @@ class CastService {
     debugPrint('CastService: Set active audio track → $trackId');
   }
 
+  // ══════════════════════════ Backend MiApp TV ══════════════════════════════
+
+  /// Conecta al receptor propio por WebSocket y cablea sus eventos a los MISMOS
+  /// ValueNotifier que usa el resto de la UI.
+  Future<bool> _connectToTv(CastDevice device) async {
+    await disconnect();
+    _tvUserDisconnected = false;
+    _tvDevice = device;
+
+    final ok = await _openTvSocket(device);
+    if (!ok) {
+      isCasting.value = false;
+      _tvDevice = null;
+      return false;
+    }
+
+    _connectedDevice = device;
+    isCasting.value = true;
+    sessionState.value = CastSessionState.connected;
+
+    // Reset de estado de sincronización.
+    castPosition.value = Duration.zero;
+    castDuration.value = Duration.zero;
+    castPlaying.value = false;
+    castPlayerState.value = 'IDLE';
+    castMediaFinished.value = false;
+    castAudioTracks.value = const [];
+    castSubtitleTracks.value = const [];
+
+    // Mantener CPU + Wi-Fi vivos mientras dure la transmisión.
+    unawaited(TvPlatform.acquireCastLocks());
+
+    return true;
+  }
+
+  /// Abre (o reabre) el socket al TV y arranca el keepalive. No toca el estado
+  /// de la UI para poder reutilizarse en la reconexión.
+  Future<bool> _openTvSocket(CastDevice device) async {
+    final sender = TvSender(
+      onEvent: _handleTvEvent,
+      onClosed: _onTvSocketClosed,
+    );
+    final ok = await sender.connect(device.host, device.port);
+    if (!ok) return false;
+
+    _tvSender = sender;
+
+    // Keepalive: PING cada 3s para mantener el socket con tráfico.
+    _stopStatusPolling();
+    _statusPollTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      _tvSender?.ping();
+    });
+    return true;
+  }
+
+  /// El socket al TV se cayó (no por acción del usuario): inicia reconexión.
+  void _onTvSocketClosed() {
+    debugPrint('CastService: MiApp TV socket cerrado');
+    _stopStatusPolling();
+    _tvSender = null;
+    if (_tvUserDisconnected || _tvDevice == null) return;
+    _scheduleTvReconnect();
+  }
+
+  /// Reconexión PERSISTENTE con backoff (error crítico #5). No se rinde a los
+  /// pocos intentos: reintenta indefinidamente hasta que el usuario corte o
+  /// tras [_kTvReconnectGiveUp] de fallos continuos.
+  void _scheduleTvReconnect() {
+    if (_tvUserDisconnected || _tvDevice == null) return;
+    if (_tvReconnectTimer != null) return; // ya hay uno en curso
+
+    _tvReconnectStartedAt ??= DateTime.now();
+    _tvReconnectAttempt++;
+
+    // Backoff: 2s normal, hasta 15s si el TV se reinicia en bucle.
+    final int seconds = (2 * _tvReconnectAttempt).clamp(2, 15);
+    debugPrint(
+      'CastService: reintentando MiApp TV en ${seconds}s '
+      '(intento $_tvReconnectAttempt)',
+    );
+
+    _tvReconnectTimer = Timer(Duration(seconds: seconds), () async {
+      _tvReconnectTimer = null;
+      if (_tvUserDisconnected || _tvDevice == null) return;
+
+      // Rendirse solo tras varios minutos continuos de fallo (batería).
+      final started = _tvReconnectStartedAt;
+      if (started != null &&
+          DateTime.now().difference(started) > _kTvReconnectGiveUp) {
+        debugPrint('CastService: MiApp TV no responde tras 5 min, rendición');
+        await disconnect();
+        return;
+      }
+
+      // Al reconectar: esperamos el primer STATUS para decidir si nos
+      // adjuntamos sin reenviar LOAD (error crítico #6).
+      _tvReattaching = _tvLastUrl != null;
+      _tvExpectedPosition = castPosition.value;
+
+      final ok = await _openTvSocket(_tvDevice!);
+      if (!ok) {
+        _tvReattaching = false;
+        _scheduleTvReconnect(); // sigue intentando
+        return;
+      }
+
+      // Conexión recuperada.
+      _tvReconnectAttempt = 0;
+      _tvReconnectStartedAt = null;
+      isCasting.value = true;
+      sessionState.value = CastSessionState.connected;
+      unawaited(TvPlatform.acquireCastLocks());
+
+      // Red de seguridad: si en 3s no llegó ningún STATUS que confirme que el
+      // TV sigue reproduciendo, recargamos la media.
+      Timer(const Duration(seconds: 3), () {
+        if (_tvReattaching && _tvSender != null) {
+          debugPrint('CastService: sin STATUS tras reconexión → recargando');
+          _tvReattaching = false;
+          _resendLastTvMedia();
+        }
+      });
+    });
+  }
+
+  /// Reenvía la última media al TV (usado si el TV ya no la está reproduciendo).
+  void _resendLastTvMedia() {
+    final url = _tvLastUrl;
+    if (url == null) return;
+    _tvSender?.load(
+      url: url,
+      title: _tvLastTitle ?? '',
+      position: _tvExpectedPosition.inSeconds.toDouble(),
+      headers: _tvLastHeaders,
+      thumbnailUrl: _tvLastThumb,
+      seriesName: _tvLastSeriesName,
+      season: _tvLastSeason,
+      episode: _tvLastEpisode,
+    );
+  }
+
+  /// Traduce un evento del TV a los ValueNotifier compartidos.
+  void _handleTvEvent(Map<String, dynamic> event) {
+    final type = event[TvProto.kType] as String?;
+    switch (type) {
+      case TvProto.evtStatus:
+        final pos = _asDuration(event['position']);
+        final state = event['state']?.toString() ?? 'IDLE';
+
+        // ── Reconexión: decidir si nos adjuntamos sin reenviar LOAD ──
+        if (_tvReattaching) {
+          _tvReattaching = false;
+          final stillPlaying = state == TvProto.statePlaying ||
+              state == TvProto.statePaused ||
+              state == TvProto.stateBuffering;
+          final near = pos != null &&
+              (pos - _tvExpectedPosition).abs() < const Duration(seconds: 30);
+          if (stillPlaying && near) {
+            // El TV sigue reproduciendo cerca de lo esperado: NO recargamos,
+            // recargar interrumpiría el video.
+            debugPrint('CastService: readjuntado al TV sin recargar');
+          } else {
+            debugPrint('CastService: TV no reproduce lo esperado → recargando');
+            _resendLastTvMedia();
+          }
+        }
+
+        if (pos != null) {
+          castPosition.value = pos;
+          if (pos > Duration.zero) lastKnownPosition = pos;
+        }
+        final dur = _asDuration(event['duration']);
+        if (dur != null && dur > Duration.zero) castDuration.value = dur;
+
+        castPlayerState.value = state;
+        castPlaying.value = event['playing'] == true;
+        break;
+      case TvProto.evtLoaded:
+        final dur = _asDuration(event['duration']);
+        if (dur != null && dur > Duration.zero) castDuration.value = dur;
+        break;
+      case TvProto.evtAudioTracks:
+        castAudioTracks.value = _asMapList(event['tracks']);
+        break;
+      case TvProto.evtSubtitleTracks:
+        castSubtitleTracks.value = _asMapList(event['tracks']);
+        break;
+      case TvProto.evtEnded:
+        castPlaying.value = false;
+        castMediaFinished.value = true;
+        break;
+      case TvProto.evtLoadFailed:
+        debugPrint('CastService: MiApp TV LOAD_FAILED: ${event['error']}');
+        break;
+      case TvProto.evtHello:
+        debugPrint('CastService: MiApp TV HELLO de ${event['name']}');
+        break;
+    }
+  }
+
+  Duration? _asDuration(dynamic seconds) {
+    if (seconds is num) {
+      return Duration(milliseconds: (seconds * 1000).round());
+    }
+    return null;
+  }
+
+  List<Map<String, dynamic>> _asMapList(dynamic v) {
+    if (v is List) {
+      return v
+          .whereType<Map>()
+          .map((m) => m.map((k, val) => MapEntry(k.toString(), val)))
+          .toList();
+    }
+    return const [];
+  }
+
+  /// Selecciona/desactiva subtítulos en el receptor (solo backend MiApp TV).
+  void setActiveSubtitleTrack(String? trackId) {
+    if (!isTvBackend) return;
+    _tvSender?.setSubtitle(trackId ?? TvProto.subtitleOff);
+  }
+
   /// Desconecta del dispositivo Chromecast actual.
   Future<void> disconnect() async {
     try {
@@ -680,6 +1095,33 @@ class CastService {
       _loadingMediaTimer?.cancel();
       _loadingMediaTimer = null;
       _isLoadingMedia = false;
+      // ── Backend MiApp TV ──
+      // Marcar corte del usuario ANTES de cerrar para que onClosed no dispare
+      // reconexión.
+      _tvUserDisconnected = true;
+      _tvReconnectTimer?.cancel();
+      _tvReconnectTimer = null;
+      _tvReconnectAttempt = 0;
+      _tvReconnectStartedAt = null;
+      _tvReattaching = false;
+      if (_tvSender != null) {
+        try {
+          _tvSender!.stop();
+          await _tvSender!.close();
+        } catch (_) {}
+        _tvSender = null;
+        castAudioTracks.value = const [];
+        castSubtitleTracks.value = const [];
+        unawaited(TvPlatform.releaseCastLocks());
+      }
+      _tvDevice = null;
+      _tvLastUrl = null;
+      _tvLastTitle = null;
+      _tvLastThumb = null;
+      _tvLastHeaders = null;
+      _tvLastSeriesName = null;
+      _tvLastSeason = null;
+      _tvLastEpisode = null;
       if (_session != null) {
         try {
           stop();
@@ -707,5 +1149,6 @@ class CastService {
   }
 
   bool get isConnected =>
-      _session != null && sessionState.value == CastSessionState.connected;
+      isTvBackend ||
+      (_session != null && sessionState.value == CastSessionState.connected);
 }

@@ -262,17 +262,60 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         _videoControllerNotifier.value = null;
       }
     } else {
-      // Si dejamos de transmitir, recuperamos el controlador de video si hay un player activo.
-      if (_videoControllerNotifier.value == null && _player != null) {
-        debugPrint('CastService: Restoring VideoController after Cast');
-        final currentController = VideoController(
-          _player!,
-          configuration: const VideoControllerConfiguration(
-            enableHardwareAcceleration: true,
-          ),
-        );
-        _videoControllerNotifier.value = currentController;
-      }
+      // Si dejamos de transmitir, recuperamos la reproducción local completa.
+      // Diferido con microtask: los ValueNotifier notifican sincrónicamente y
+      // no debemos hacer setState/loadMedia en plena fase de build.
+      Future.microtask(() => _restoreLocalPlayback());
+    }
+  }
+
+  /// Restaura la reproducción local tras terminar (o caerse) una transmisión.
+  ///
+  /// Durante el cast se desactiva la pista de video (`vid=no`) y en muchos
+  /// casos el player local se detiene por completo (stop() para liberar la red
+  /// al TV). Sin esta restauración el teléfono queda con audio pero PANTALLA
+  /// NEGRA. Aquí: recreamos el VideoController, reactivamos `vid=auto` y, si
+  /// el player quedó sin media, recargamos en la última posición conocida.
+  Future<void> _restoreLocalPlayback() async {
+    if (!mounted || _player == null || CastService().isCasting.value) return;
+
+    // 1. Recuperar el controlador de video si fue destruido.
+    if (_videoControllerNotifier.value == null) {
+      debugPrint('CastService: Restoring VideoController after Cast');
+      final currentController = VideoController(
+        _player!,
+        configuration: const VideoControllerConfiguration(
+          enableHardwareAcceleration: true,
+        ),
+      );
+      _videoControllerNotifier.value = currentController;
+    }
+
+    // 2. Reactivar la pista de video (se puso vid=no al iniciar el cast).
+    try {
+      final mpv = _player?.platform as dynamic;
+      await mpv?.setProperty('vid', 'auto');
+    } catch (_) {}
+
+    if (!mounted || _player == null || CastService().isCasting.value) return;
+
+    // 3. Si el player local quedó SIN media (fue detenido durante el cast),
+    //    recargar el contenido en la última posición que reportó el TV.
+    final hasMedia = _player!.state.duration > Duration.zero ||
+        _player!.state.playlist.medias.isNotEmpty;
+    if (!hasMedia) {
+      final resume = CastService().lastKnownPosition;
+      debugPrint(
+        'CastService: Local player was stopped — reloading at '
+        '${resume.inSeconds}s after cast drop',
+      );
+      await _initializePlayer(
+        _currentItem,
+        startFrom: resume > Duration.zero ? resume : null,
+        isLocalReload: true,
+      );
+    } else if (!_player!.state.playing) {
+      _player!.play();
     }
   }
 
@@ -1214,6 +1257,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           title: _currentItem.name,
           thumbnailUrl: _currentItem.logo,
           startPosition: finalStartPosition,
+          headers: _buildHeaders(currentUrl),
         );
       }
 
@@ -1597,6 +1641,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           title: _currentItem.name,
           thumbnailUrl: _currentItem.logo,
           startPosition: pos.inSeconds.toDouble(),
+          headers: _buildHeaders(currentUrl),
         );
       } else {
         _handleVideoCompletion();
@@ -2697,7 +2742,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                           if (castService.isCasting.value) {
                             final trackId =
                                 int.tryParse(track.id) ?? (index + 1);
-                            castService.setActiveAudioTrack(trackId);
+                            castService.setActiveAudioTrack(
+                              trackId,
+                              trackStringId: track.id,
+                            );
                           }
                           Navigator.pop(context);
                         },
@@ -3673,6 +3721,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                   thumbnailUrl: _currentItem.logo,
                   startPosition:
                       (_player?.state.position.inSeconds ?? 0).toDouble(),
+                  headers: _buildHeaders(currentUrl),
                 );
 
                 _showVisualNotice('Transmitiendo a ${device.name}');
@@ -6538,29 +6587,60 @@ class _CastDeviceSelectorState extends State<_CastDeviceSelector> {
                 itemCount: _devices!.length,
                 itemBuilder: (context, index) {
                   final device = _devices![index];
+                  final isTv = CastService().isTvDevice(device);
                   return ListTile(
                     leading: Container(
                       width: 40,
                       height: 40,
                       decoration: BoxDecoration(
-                        color: Colors.redAccent.withValues(alpha: 0.12),
+                        color:
+                            (isTv ? Colors.greenAccent : Colors.redAccent)
+                                .withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(10),
                       ),
-                      child: const Icon(
-                        Icons.tv_rounded,
-                        color: Colors.redAccent,
+                      child: Icon(
+                        isTv ? Icons.tv_rounded : Icons.cast_rounded,
+                        color: isTv ? Colors.greenAccent : Colors.redAccent,
                         size: 22,
                       ),
                     ),
-                    title: Text(
-                      device.name,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w500,
-                      ),
+                    title: Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            device.name,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
+                        if (isTv) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.greenAccent.withValues(alpha: 0.18),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: const Text(
+                              'HD',
+                              style: TextStyle(
+                                color: Colors.greenAccent,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                     subtitle: Text(
-                      device.host,
+                      isTv ? 'Mejor calidad · ${device.host}' : device.host,
                       style: TextStyle(
                         color: Colors.white.withValues(alpha: 0.4),
                         fontSize: 12,

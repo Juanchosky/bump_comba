@@ -16,6 +16,8 @@ import 'services/smart_notification_service.dart';
 
 import 'utils/colors.dart';
 import 'services/cast_audio_handler.dart';
+import 'services/tv/tv_platform.dart';
+import 'screens/tv/tv_receiver_app.dart';
 
 class MyHttpOverrides extends HttpOverrides {
   @override
@@ -34,6 +36,20 @@ void main() {
   runZonedGuarded(
     () async {
       WidgetsFlutterBinding.ensureInitialized();
+
+      MediaKit.ensureInitialized();
+
+      // ── RUTEO TV vs TELÉFONO ────────────────────────────────────────────
+      // Si corre en un Android TV / Google TV / Fire TV, montamos SOLO la
+      // pantalla receptora (sin anuncios, notificaciones ni el resto de
+      // servicios del teléfono). Timeout ~800ms dentro de isAndroidTv para no
+      // retrasar el primer frame.
+      if (await TvPlatform.isAndroidTv()) {
+        GoogleFonts.config.allowRuntimeFetching = false;
+        runApp(const TvReceiverApp());
+        return;
+      }
+
       await initAudioService();
       await dotenv.load(fileName: ".env");
 
@@ -65,8 +81,6 @@ void main() {
 
         originalOnError?.call(details);
       };
-
-      MediaKit.ensureInitialized();
 
       if (!kIsWeb &&
           (defaultTargetPlatform == TargetPlatform.android ||

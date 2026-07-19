@@ -13,6 +13,11 @@ class CastAudioHandler extends BaseAudioHandler {
     // Escuchar la posicin para mantenerla sincronizada
     _castService.castPosition.addListener(_updatePlaybackState);
 
+    // La duración llega DESPUÉS del LOAD (evento LOADED/STATUS del TV).
+    // Sin duración en el MediaItem, Android no dibuja la barra de tiempo de
+    // la notificación, así que re-emitimos el item al conocerla.
+    _castService.castDuration.addListener(_updateDuration);
+
     // Escuchar cuando el estado de la sesin cambie (ej: conectado -> desconectado)
     _castService.sessionState.addListener(() {
       if (!_castService.isConnected) {
@@ -29,6 +34,16 @@ class CastAudioHandler extends BaseAudioHandler {
     });
   }
 
+  /// Actualiza el MediaItem con la duración real cuando el TV la reporta,
+  /// para que la notificación muestre la barra de tiempo.
+  void _updateDuration() {
+    final item = mediaItem.value;
+    final duration = _castService.castDuration.value;
+    if (item == null || duration <= Duration.zero) return;
+    if (item.duration == duration) return;
+    mediaItem.add(item.copyWith(duration: duration));
+  }
+
   void _updatePlaybackState() {
     if (!_castService.isConnected) return;
 
@@ -37,8 +52,12 @@ class CastAudioHandler extends BaseAudioHandler {
 
     playbackState.add(
       playbackState.value.copyWith(
+        // Retroceder 10s · play/pausa · adelantar 10s · desconectar (como la
+        // referencia visual del usuario).
         controls: [
+          MediaControl.rewind,
           isPlaying ? MediaControl.pause : MediaControl.play,
+          MediaControl.fastForward,
           MediaControl.stop,
         ],
         systemActions: const {
@@ -46,7 +65,7 @@ class CastAudioHandler extends BaseAudioHandler {
           MediaAction.seekForward,
           MediaAction.seekBackward,
         },
-        androidCompactActionIndices: const [0, 1],
+        androidCompactActionIndices: const [0, 1, 2],
         processingState: AudioProcessingState.ready,
         playing: isPlaying,
         updatePosition: position,
@@ -103,6 +122,16 @@ class CastAudioHandler extends BaseAudioHandler {
   }
 
   @override
+  Future<void> fastForward() async {
+    _castService.seekForward(seconds: 10);
+  }
+
+  @override
+  Future<void> rewind() async {
+    _castService.seekBackward(seconds: 10);
+  }
+
+  @override
   Future<void> onTaskRemoved() async {
     if (_castService.isConnected) {
       await stop();
@@ -123,9 +152,16 @@ Future<void> initAudioService() async {
       androidNotificationChannelId:
           'com.juanchosky.bumpcomba.cast.channel.audio',
       androidNotificationChannelName: 'Reproduccin Cast',
-      androidNotificationOngoing: true,
-      androidStopForegroundOnPause:
-          true, // Cambiado a true para evitar error de asercin
+      // stopForegroundOnPause en false: mantener el FOREGROUND SERVICE vivo
+      // aunque el usuario pause. Con true, Android degrada el servicio al
+      // pausar y a los pocos minutos Doze mata el proceso → el socket con el
+      // TV se cae y la notificación desaparece. La transmisión debe durar
+      // hasta que el usuario la corte.
+      // NOTA: audio_service exige ongoing=false cuando stopForegroundOnPause
+      // es false (assert interno). La notificación sigue siendo no
+      // descartable mientras el foreground service esté activo.
+      androidNotificationOngoing: false,
+      androidStopForegroundOnPause: false,
       androidShowNotificationBadge: true,
     ),
   );

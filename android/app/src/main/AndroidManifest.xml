@@ -20,6 +20,12 @@
     <!-- <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" /> -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
 
+    <!-- El MISMO paquete sirve para teléfono y para Android TV / Google TV /
+         Fire TV. Marcamos leanback y touchscreen como NO requeridos para que
+         Google Play acepte instalar en TVs (que no tienen pantalla táctil). -->
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+
     <application
         android:label="Bump Comba"
         android:name="${applicationName}"
@@ -27,7 +33,15 @@
         android:usesCleartextTraffic="true"
         android:extractNativeLibs="true"
         android:largeHeap="true"
+        android:banner="@mipmap/ic_launcher"
         android:enableOnBackInvokedCallback="true">
+
+        <!-- Impeller/Vulkan salta cientos de frames en GPUs Mali de TVs de
+             gama baja ("Skipped 989 frames", errores mali_gralloc). Skia/GL
+             va fluido. -->
+        <meta-data
+            android:name="io.flutter.embedding.android.EnableImpeller"
+            android:value="false" />
 
     <activity
             android:name=".MainActivity"
@@ -50,6 +64,12 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+
+            <!-- Permite que la app aparezca en el launcher de Android TV. -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER"/>
             </intent-filter>
 
             <intent-filter android:autoVerify="true">
