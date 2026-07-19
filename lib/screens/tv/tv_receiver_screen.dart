@@ -40,7 +40,18 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
       libass: true,
     ),
   );
-  late final VideoController _videoController = VideoController(_player);
+  // hwdec va AQUÍ y no en setProperty: AndroidVideoController.create() aplica
+  // su propia configuración DESPUÉS de la nuestra y con 'auto-safe' este SoC
+  // (Amlogic) elige mediacodec-copy → modo ByteBuffer → una copia por CPU de
+  // cada frame 1080p (los errores mali_gralloc del log) → tirones.
+  // 'mediacodec' fuerza decodificación DIRECTA a la Surface (zero-copy).
+  late final VideoController _videoController = VideoController(
+    _player,
+    configuration: const VideoControllerConfiguration(
+      enableHardwareAcceleration: true,
+      hwdec: 'mediacodec',
+    ),
+  );
 
   final List<StreamSubscription> _subs = [];
   StreamSubscription? _commandSub;
@@ -89,17 +100,51 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
 
   Future<void> _configureMpv() async {
     // Solo propiedades SEGURAS en Android (nunca vo=gpu / profile=fast).
+    // Optimizado para FLUIDEZ máxima en TVs de gama baja (Chromecast HD,
+    // TV boxes con ~1GB RAM y SoC débil).
     try {
       final mpv = _player.platform as dynamic;
-      await mpv?.setProperty('hwdec', 'auto-safe');
-      await mpv?.setProperty('framedrop', 'vo');
+
+      // ── Decodificación ──
+      // NOTA: hwdec se configura en el VideoController (ver arriba) porque
+      // media_kit lo re-aplica al crear el video output y pisaría lo que
+      // pongamos aquí.
+      // Decodificación por software (fallback) lo más barata posible:
+      // multihilo total + fast + saltar el loop filter (imperceptible en TV).
+      await mpv?.setProperty('vd-lavc-threads', '0');
+      await mpv?.setProperty('vd-lavc-fast', 'yes');
+      await mpv?.setProperty('vd-lavc-skiploopfilter', 'all');
+
+      // ── Sincronización / frames ──
+      // Priorizar audio continuo y soltar frames de video tardíos en vez de
+      // congelar la imagen (en SoCs débiles esto es lo que evita el "tirón").
       await mpv?.setProperty('video-sync', 'audio');
+      await mpv?.setProperty('framedrop', 'decoder+vo');
+      // Sin postprocesado costoso.
+      await mpv?.setProperty('deband', 'no');
+      await mpv?.setProperty('dither-depth', 'no');
+
+      // ── Cache / red ──
+      // El Chromecast HD tiene 2 GB de RAM: podemos permitirnos un colchón
+      // grande. Cuanto más readahead, menos veces se detiene la reproducción
+      // cuando el servidor IPTV da tirones de velocidad.
       await mpv?.setProperty('cache', 'yes');
-      await mpv?.setProperty('cache-secs', '30');
-      await mpv?.setProperty('demuxer-max-bytes', '33554432'); // ~32 MB
+      await mpv?.setProperty('cache-secs', '180'); // hasta 3 min por delante
+      await mpv?.setProperty('demuxer-max-bytes', '67108864'); // 64 MB
       await mpv?.setProperty('demuxer-max-back-bytes', '16777216');
-      await mpv?.setProperty('network-timeout', '10');
+      await mpv?.setProperty('demuxer-readahead-secs', '180');
+      // Al arrancar o tras un rebuffering, esperar a acumular ~8s de buffer
+      // antes de reanudar: MENOS pausas pero más largas es mucho más visible
+      // que fluido; con 8s el player casi nunca vuelve a vaciarse.
+      await mpv?.setProperty('cache-pause-initial', 'yes');
+      await mpv?.setProperty('cache-pause-wait', '8');
+      await mpv?.setProperty('cache-pause', 'yes');
+      await mpv?.setProperty('stream-buffer-size', '8388608'); // 8 MB
+      await mpv?.setProperty('network-timeout', '15');
       await mpv?.setProperty('http-reconnect', 'yes');
+      await mpv?.setProperty('http-reconnect-sleep', '0.5');
+      // Descargar el siguiente segmento sin esperar respuesta del anterior.
+      await mpv?.setProperty('http-pipelining', 'yes');
       await mpv?.setProperty('tls-verify', 'no');
       await mpv?.setProperty('force-seekable', 'yes');
     } catch (e) {
@@ -592,12 +637,19 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
           fit: StackFit.expand,
           children: [
             _hasMedia
-                ? Video(controller: _videoController, fit: BoxFit.contain)
+                ? Video(
+                  controller: _videoController,
+                  fit: BoxFit.contain,
+                  // Sin los controles integrados de media_kit: renderizan una
+                  // capa de gestos/overlay extra que no usamos (tenemos overlay
+                  // propio) y cuesta frames en TVs de gama baja.
+                  controls: NoVideoControls,
+                )
                 : _WaitingScreen(deviceName: _deviceName),
             // Spinner de carga idéntico al del reproductor del teléfono.
             if (_hasMedia && _buffering)
               const Center(
-                child: _AppLoadingAnimation(size: 72, strokeWidth: 5),
+                child: _AppLoadingAnimation(size: 54, strokeWidth: 4),
               ),
             if (_hasMedia && _controlsVisible)
               _TvControlsOverlay(
@@ -682,6 +734,30 @@ class _TvControlsOverlay extends StatelessWidget {
     return h > 0 ? '$h:$m:$s' : '$m:$s';
   }
 
+  /// Extrae solo el nombre del episodio del título completo.
+  ///
+  /// Los títulos de series llegan como "Serie S01E05 Nombre" o "Serie 1x05 -
+  /// Nombre"; aquí nos quedamos con lo que va DESPUÉS del patrón de
+  /// temporada/episodio. Si no hay patrón (películas), se muestra tal cual.
+  String _displayTitle(String raw) {
+    final t = raw.trim();
+    final matches =
+        RegExp(
+          r'[Ss]\d{1,2}\s*[-.\s]?\s*[Ee]\d{1,3}|\b\d{1,2}x\d{1,3}\b',
+        ).allMatches(t).toList();
+    if (matches.isEmpty) return t;
+
+    final after =
+        t
+            .substring(matches.last.end)
+            .replaceFirst(RegExp(r'^[\s\-–—:._|]+'), '')
+            .trim();
+    if (after.isNotEmpty) return after;
+
+    // Sin nombre tras el patrón: mostrar al menos "S01E05".
+    return t.substring(matches.last.start).trim();
+  }
+
   @override
   Widget build(BuildContext context) {
     final double progress =
@@ -692,9 +768,9 @@ class _TvControlsOverlay extends StatelessWidget {
             )
             : 0.0;
     final timelineFocused = focusArea == 1;
-    // Color de acento estilo la referencia: ámbar/naranja para la barra.
-    final Color accent =
-        timelineFocused || previewing ? Colors.amber : Colors.amber.shade600;
+    // Mismo lenguaje visual que el botón de play: blanco, con acento verde
+    // al enfocar.
+    final Color accent = Colors.white;
 
     return Container(
       decoration: BoxDecoration(
@@ -729,16 +805,13 @@ class _TvControlsOverlay extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
                     if (thumbnailUrl != null) ...[
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(6),
-                        child: Image.network(
-                          thumbnailUrl!,
-                          width: 110,
-                          height: 160,
-                          fit: BoxFit.cover,
-                          // Si la carátula falla, no mostramos nada (sin hueco feo).
-                          errorBuilder: (_, _, _) => const SizedBox.shrink(),
-                        ),
+                      Image.network(
+                        thumbnailUrl!,
+                        width: 90,
+                        height: 130,
+                        fit: BoxFit.cover,
+                        // Si la carátula falla, no mostramos nada (sin hueco feo).
+                        errorBuilder: (_, _, _) => const SizedBox.shrink(),
                       ),
                       const SizedBox(width: 24),
                     ],
@@ -752,10 +825,10 @@ class _TvControlsOverlay extends StatelessWidget {
                             children: [
                               Text(
                                 _fmt(position),
-                                style: TextStyle(
-                                  color: previewing ? accent : Colors.white,
-                                  fontSize: 20,
-                                  fontWeight: FontWeight.w600,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 19,
+                                  fontWeight: FontWeight.w400,
                                 ),
                               ),
                               const SizedBox(width: 18),
@@ -773,12 +846,12 @@ class _TvControlsOverlay extends StatelessWidget {
                                       child: Stack(
                                         alignment: Alignment.centerLeft,
                                         children: [
+                                          // Pista: mismo blanco translúcido
+                                          // que el botón sin foco (white24).
                                           Container(
                                             height: barHeight,
                                             decoration: BoxDecoration(
-                                              color: Colors.white.withValues(
-                                                alpha: 0.35,
-                                              ),
+                                              color: Colors.white24,
                                               borderRadius:
                                                   BorderRadius.circular(4),
                                             ),
@@ -807,11 +880,15 @@ class _TvControlsOverlay extends StatelessWidget {
                                               decoration: BoxDecoration(
                                                 color: accent,
                                                 shape: BoxShape.circle,
+                                                // Igual que el botón de play
+                                                // enfocado: borde verde.
                                                 border:
                                                     timelineFocused
                                                         ? Border.all(
-                                                          color: Colors.white,
-                                                          width: 2,
+                                                          color:
+                                                              Colors
+                                                                  .greenAccent,
+                                                          width: 3,
                                                         )
                                                         : null,
                                                 boxShadow: const [
@@ -834,8 +911,8 @@ class _TvControlsOverlay extends StatelessWidget {
                                 _fmt(duration),
                                 style: const TextStyle(
                                   color: Colors.white,
-                                  fontSize: 20,
-                                  fontWeight: FontWeight.w500,
+                                  fontSize: 19,
+                                  fontWeight: FontWeight.w400,
                                 ),
                               ),
                             ],
@@ -844,13 +921,13 @@ class _TvControlsOverlay extends StatelessWidget {
                           // Título del contenido, debajo de la barra (como la foto).
                           if (title.isNotEmpty)
                             Text(
-                              title,
+                              _displayTitle(title),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
                                 color: Colors.white,
-                                fontSize: 26,
-                                fontWeight: FontWeight.w600,
+                                fontSize: 21,
+                                fontWeight: FontWeight.w400,
                               ),
                             ),
                         ],
