@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -684,36 +685,291 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
 }
 
 /// Pantalla de espera mostrada cuando no hay media reproduciéndose.
-class _WaitingScreen extends StatelessWidget {
+///
+/// Estilo minimalista (Apple): fondo casi negro, tipografía fina, mucho
+/// espacio en negativo y un único acento rojo. Deja claro que en el teléfono
+/// este receptor se llama [deviceName], y guía en 3 pasos.
+class _WaitingScreen extends StatefulWidget {
   final String deviceName;
   const _WaitingScreen({required this.deviceName});
+  @override
+  State<_WaitingScreen> createState() => _WaitingScreenState();
+}
+
+class _WaitingScreenState extends State<_WaitingScreen>
+    with SingleTickerProviderStateMixin {
+  // Un único controller para la respiración sutil del punto de estado.
+  late final AnimationController _t = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 2),
+  )..repeat(reverse: true);
+
+  // IP local en la red — ayuda a confirmar "misma Wi-Fi".
+  String? _ip;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolveIp();
+  }
+
+  Future<void> _resolveIp() async {
+    try {
+      final ifaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+        includeLoopback: false,
+      );
+      for (final i in ifaces) {
+        for (final a in i.addresses) {
+          if (!a.isLoopback) {
+            if (mounted) setState(() => _ip = a.address);
+            return;
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  @override
+  void dispose() {
+    _t.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      color: Colors.black,
-      alignment: Alignment.center,
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+    return DecoratedBox(
+      // Fondo plano casi negro con un degradado vertical apenas perceptible.
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xFF0B0B0D), Color(0xFF060607)],
+        ),
+      ),
+      child: Stack(
+        fit: StackFit.expand,
         children: [
-          const Icon(
-            Icons.cast_connected_rounded,
-            color: Colors.white24,
-            size: 96,
-          ),
-          const SizedBox(height: 32),
-          Text(
-            deviceName,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 34,
-              fontWeight: FontWeight.bold,
+          // Marca discreta arriba a la izquierda.
+          Positioned(
+            top: 40,
+            left: 48,
+            child: Row(
+              children: [
+                _brandDot(),
+                const SizedBox(width: 12),
+                Text(
+                  'Bump Comba',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.55),
+                    fontSize: 17,
+                    fontWeight: FontWeight.w500,
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ],
             ),
           ),
-          const SizedBox(height: 12),
-          const Text(
-            'Listo para transmitir desde tu teléfono',
-            style: TextStyle(color: Colors.white54, fontSize: 18),
+
+          // Composición central.
+          Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Etiqueta contextual.
+                Text(
+                  'TRANSMITE A',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.4),
+                    fontSize: 15,
+                    fontWeight: FontWeight.w500,
+                    letterSpacing: 3.0,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                // El nombre que hay que buscar en el teléfono — protagonista.
+                Text(
+                  widget.deviceName,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 43,
+                    fontWeight: FontWeight.w400, // fino, tipo SF
+                    letterSpacing: -0.9,
+                    height: 1.0,
+                  ),
+                ),
+                const SizedBox(height: 56),
+                // Hairline separador.
+                Container(
+                  width: 420,
+                  height: 1,
+                  color: Colors.white.withValues(alpha: 0.08),
+                ),
+                const SizedBox(height: 48),
+                // Guía de 3 pasos, en fila.
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _step(1, 'Abre Bump Comba\nen tu teléfono'),
+                    _stepGap(),
+                    _step(
+                      2,
+                      'Toca el ícono\nde transmitir',
+                      icon: Icons.cast_rounded,
+                    ),
+                    _stepGap(),
+                    _step(3, 'Elige "${widget.deviceName}"\nen la lista'),
+                  ],
+                ),
+              ],
+            ),
+          ),
+
+          // Estado inferior: punto que respira + "en espera" + IP.
+          Positioned(
+            bottom: 40,
+            left: 0,
+            right: 0,
+            child: Column(
+              children: [
+                ValueListenableBuilder<bool>(
+                  valueListenable: TvReceiverService().hasClient,
+                  builder: (context, connected, _) {
+                    // Naranja parpadeando en espera; verde fijo al conectar.
+                    final Color color =
+                        connected
+                            ? const Color(0xFF34C759) // verde
+                            : const Color(0xFFFF9500); // naranja
+                    final String label =
+                        connected
+                            ? 'Teléfono conectado · listo para reproducir'
+                            : 'En espera de conexión';
+                    return Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        AnimatedBuilder(
+                          animation: _t,
+                          builder: (context, _) {
+                            // Conectado: punto fijo. En espera: parpadeo.
+                            final alpha =
+                                connected ? 1.0 : (0.2 + 0.8 * _t.value);
+                            return Container(
+                              width: 8,
+                              height: 8,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: color.withValues(alpha: alpha),
+                                boxShadow:
+                                    connected
+                                        ? [
+                                          BoxShadow(
+                                            color: color.withValues(alpha: 0.5),
+                                            blurRadius: 8,
+                                            spreadRadius: 1,
+                                          ),
+                                        ]
+                                        : null,
+                              ),
+                            );
+                          },
+                        ),
+                        const SizedBox(width: 10),
+                        Text(
+                          label,
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.55),
+                            fontSize: 15,
+                            letterSpacing: 0.3,
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+                if (_ip != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    'Misma red Wi-Fi · $_ip',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.25),
+                      fontSize: 13,
+                      letterSpacing: 0.3,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Punto de marca: pequeña esfera glossy roja (identidad de la app).
+  Widget _brandDot() {
+    return Container(
+      width: 16,
+      height: 16,
+      decoration: const BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: RadialGradient(
+          center: Alignment(-0.4, -0.5),
+          radius: 1.2,
+          colors: [Color(0xFFFF6B5E), Color(0xFFE53935), Color(0xFFB71C1C)],
+          stops: [0.0, 0.55, 1.0],
+        ),
+      ),
+    );
+  }
+
+  Widget _stepGap() => Container(
+    width: 1,
+    height: 76,
+    margin: const EdgeInsets.symmetric(horizontal: 40),
+    color: Colors.white.withValues(alpha: 0.06),
+  );
+
+  Widget _step(int n, String text, {IconData? icon}) {
+    return SizedBox(
+      width: 220,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Círculo de número, contorno fino con acento rojo.
+          Container(
+            width: 40,
+            height: 40,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: const Color(0xFFE53935).withValues(alpha: 0.55),
+                width: 1.4,
+              ),
+            ),
+            child:
+                icon != null
+                    ? Icon(icon, color: Colors.white, size: 20)
+                    : Text(
+                      '$n',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+          ),
+          const SizedBox(height: 18),
+          Text(
+            text,
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.75),
+              fontSize: 18,
+              height: 1.35,
+              fontWeight: FontWeight.w400,
+            ),
           ),
         ],
       ),
