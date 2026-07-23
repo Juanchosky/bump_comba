@@ -58,6 +58,11 @@ class TvProto {
   /// Keepalive del socket. Payload: t (timestamp ms).
   static const String cmdPing = 'PING';
 
+  /// Solicita al TV que reenvíe AHORA las pistas de audio/subtítulos
+  /// disponibles (se usa al abrir el menú de selección en el teléfono, por si
+  /// el push inicial llegó antes de que el demuxer parseara las pistas).
+  static const String cmdGetTracks = 'GET_TRACKS';
+
   // ─────────────────────────── Eventos TV → EMISOR ───────────────────────────
 
   /// Handshake inicial que el TV envía al conectar. Payload: name (nombre del

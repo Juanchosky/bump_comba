@@ -7,6 +7,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+import '../../services/turbo_proxy.dart';
 import '../../services/tv/tv_protocol.dart';
 import '../../services/tv/tv_receiver_service.dart';
 
@@ -38,7 +39,13 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
       title: 'Bump Comba TV',
       bufferSize: 32 * 1024 * 1024, // 32 MB — moderado para TVs de gama baja
       logLevel: MPVLogLevel.error,
-      libass: true,
+      // libass en FALSE a propósito: el widget Video de media_kit solo
+      // renderiza subtítulos con su SubtitleView Flutter cuando libass está
+      // apagado. Con libass, MPV intenta dibujarlos nativamente sobre la
+      // Surface de Android y NO SE VEN (mismo motivo por el que el teléfono
+      // usa un overlay Flutter propio). Además, sin libass es más liviano
+      // para la GPU del TV.
+      libass: false,
     ),
   );
   // hwdec va AQUÍ y no en setProperty: AndroidVideoController.create() aplica
@@ -130,16 +137,24 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
       // grande. Cuanto más readahead, menos veces se detiene la reproducción
       // cuando el servidor IPTV da tirones de velocidad.
       await mpv?.setProperty('cache', 'yes');
-      await mpv?.setProperty('cache-secs', '180'); // hasta 3 min por delante
-      await mpv?.setProperty('demuxer-max-bytes', '67108864'); // 64 MB
+      // Colchón GRANDE: si el servidor da ráfagas de velocidad, acumulamos
+      // hasta 5 min / 128 MB por delante para sobrevivir los bajones sin
+      // parar la reproducción.
+      await mpv?.setProperty('cache-secs', '300');
+      await mpv?.setProperty('demuxer-max-bytes', '134217728'); // 128 MB
       await mpv?.setProperty('demuxer-max-back-bytes', '16777216');
-      await mpv?.setProperty('demuxer-readahead-secs', '180');
-      // Al arrancar o tras un rebuffering, esperar a acumular ~8s de buffer
-      // antes de reanudar: MENOS pausas pero más largas es mucho más visible
-      // que fluido; con 8s el player casi nunca vuelve a vaciarse.
+      await mpv?.setProperty('demuxer-readahead-secs', '300');
+      // Tras un rebuffering, reanudar con ~4s de colchón: suficiente para no
+      // volver a vaciarse al instante, sin dejar al usuario esperando "un
+      // buen rato" (con 8s las pausas se sentían eternas en servidores
+      // lentos, porque llenar 8s tarda el doble que llenar 4).
       await mpv?.setProperty('cache-pause-initial', 'yes');
-      await mpv?.setProperty('cache-pause-wait', '8');
+      await mpv?.setProperty('cache-pause-wait', '4');
       await mpv?.setProperty('cache-pause', 'yes');
+      // Si el stream es HLS con VARIAS calidades, elegir siempre la más baja:
+      // prioridad absoluta a que no se pare. (En VOD directo de una sola
+      // calidad esta opción no tiene efecto.)
+      await mpv?.setProperty('hls-bitrate', 'min');
       await mpv?.setProperty('stream-buffer-size', '8388608'); // 8 MB
       await mpv?.setProperty('network-timeout', '15');
       await mpv?.setProperty('http-reconnect', 'yes');
@@ -217,6 +232,9 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
         case TvProto.cmdPing:
           _service.sendEvent(TvProto.evtPong, {'t': msg['t']});
           break;
+        case TvProto.cmdGetTracks:
+          _pushTracks();
+          break;
       }
     } catch (e) {
       debugPrint('TvReceiver: error ejecutando $type: $e');
@@ -236,9 +254,30 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     _mediaThumb = (thumb == null || thumb.isEmpty) ? null : thumb;
 
     _lastLoadAt = DateTime.now();
+    // Mostrar el spinner DESDE YA: entre el LOAD y el primer frame hay varios
+    // segundos (sondeo del proxy + open + demuxer) en los que antes quedaba
+    // la pantalla negra sin ningún indicador. El stream de buffering de MPV
+    // tomará el control del flag en cuanto empiece a reportar.
+    if (mounted) {
+      setState(() {
+        _hasMedia = true;
+        _buffering = true;
+      });
+    }
     try {
-      await _player.open(Media(url, httpHeaders: headers), play: true);
-      if (mounted) setState(() => _hasMedia = true);
+      // TURBO: si el servidor soporta rangos, servimos el VOD a través del
+      // proxy local con 4 conexiones paralelas (multiplica la velocidad en
+      // servidores que limitan por conexión → muchas menos paradas).
+      String playUrl = url;
+      try {
+        final proxied = await TurboProxy.instance
+            .wrap(url, headers)
+            .timeout(const Duration(seconds: 5));
+        if (proxied != null) playUrl = proxied;
+      } catch (e) {
+        debugPrint('TvReceiver: TurboProxy no disponible: $e');
+      }
+      await _player.open(Media(playUrl, httpHeaders: headers), play: true);
       if (position > 0) {
         // El seek NO debe hacerse justo tras open(): media_kit devuelve antes
         // de que el demuxer reporte duración, y en streams de red un seek
@@ -248,9 +287,73 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
           _seekWhenReady(Duration(milliseconds: (position * 1000).round())),
         );
       }
+      // Re-empujar las pistas unos segundos después: el demuxer puede tardar
+      // en exponer todas las pistas de audio/subtítulos tras el open().
+      final int loadStamp = _lastLoadAt.millisecondsSinceEpoch;
+      for (final d in const [
+        Duration(seconds: 2),
+        Duration(seconds: 5),
+        Duration(seconds: 10),
+      ]) {
+        Future.delayed(d, () {
+          if (mounted && _lastLoadAt.millisecondsSinceEpoch == loadStamp) {
+            _pushTracks();
+          }
+        });
+      }
+      // WATCHDOG de arranque: si a los 20s no ha avanzado NADA (posición 0 y
+      // sin duración), la carga se atascó (proxy, servidor raro, etc.).
+      // Reintentamos UNA vez con la URL DIRECTA, sin proxy — auto-recuperación
+      // del "se queda cargando".
+      if (playUrl != url) {
+        unawaited(_watchdogRetryDirect(url, headers, position));
+      }
       _pushStatus();
     } catch (e) {
       debugPrint('TvReceiver: LOAD falló: $e');
+      // Volver a la pantalla de espera (sin spinner colgado).
+      if (mounted) {
+        setState(() {
+          _hasMedia = false;
+          _buffering = false;
+        });
+      }
+      _service.sendEvent(TvProto.evtLoadFailed, {'error': e.toString()});
+    }
+  }
+
+  /// Si a los 20s del LOAD la reproducción no arrancó (posición 0, sin
+  /// duración), reintenta UNA vez con la URL directa sin TurboProxy.
+  Future<void> _watchdogRetryDirect(
+    String url,
+    Map<String, String>? headers,
+    double position,
+  ) async {
+    final int loadStamp = _lastLoadAt.millisecondsSinceEpoch;
+    await Future.delayed(const Duration(seconds: 8));
+    if (!mounted) return;
+    // Si llegó otro LOAD entretanto, este watchdog ya no aplica.
+    if (_lastLoadAt.millisecondsSinceEpoch != loadStamp) return;
+
+    final started = _player.state.position > Duration.zero ||
+        _player.state.duration > Duration.zero;
+    if (started) return; // arrancó bien, nada que hacer
+
+    debugPrint(
+      'TvReceiver: WATCHDOG — 8s sin arrancar con proxy, '
+      'reintentando con URL directa',
+    );
+    try {
+      _lastLoadAt = DateTime.now();
+      await _player.open(Media(url, httpHeaders: headers), play: true);
+      if (position > 0) {
+        unawaited(
+          _seekWhenReady(Duration(milliseconds: (position * 1000).round())),
+        );
+      }
+      _pushStatus();
+    } catch (e) {
+      debugPrint('TvReceiver: watchdog retry falló: $e');
       _service.sendEvent(TvProto.evtLoadFailed, {'error': e.toString()});
     }
   }
@@ -305,6 +408,14 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     // visible para ahorrar rebuilds en TVs de gama baja).
     _subs.add(
       _player.stream.position.listen((p) {
+        // Log de diagnóstico: confirmar que la reproducción AVANZA de verdad
+        // (una vez por segundo entero). Distingue "reproduce" de "atascado".
+        if (p.inSeconds != _position.inSeconds) {
+          debugPrint(
+            'TvReceiver: reproduciendo @${p.inSeconds}s '
+            '(buffering=$_buffering)',
+          );
+        }
         _position = p;
         if (_controlsVisible && !_previewing && mounted) setState(() {});
       }),
@@ -319,20 +430,24 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
         final wasPlaying = _playing;
         _playing = pl;
         if (!mounted) return;
+        // SIEMPRE rebuild al cambiar play/pausa: el botón central de play
+        // depende de _playing. Antes solo se hacía setState en algunos
+        // caminos (p. ej. pausar con el overlay ya visible no redibujaba)
+        // y el botón aparecía de forma intermitente.
+        setState(() {});
         if (_hasMedia && wasPlaying && !pl) {
-          // Se pausó (desde el TV o el teléfono): mostrar el botón de play.
+          // Se pausó (desde el TV o el teléfono): mostrar overlay + botón.
           _showControls();
         } else if (_hasMedia && !wasPlaying && pl && _controlsVisible) {
           // Se reanudó: re-armar el auto-ocultado del overlay.
           _showControls();
-        } else if (_controlsVisible) {
-          setState(() {});
         }
       }),
     );
     // Spinner de carga: mismo indicador que el reproductor del teléfono.
     _subs.add(
       _player.stream.buffering.listen((b) {
+        debugPrint('TvReceiver: buffering=$b @${_position.inSeconds}s');
         if (_buffering != b && mounted) setState(() => _buffering = b);
       }),
     );
@@ -660,6 +775,21 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
                   // capa de gestos/overlay extra que no usamos (tenemos overlay
                   // propio) y cuesta frames en TVs de gama baja.
                   controls: NoVideoControls,
+                  // Subtítulos renderizados por Flutter (requiere libass:false
+                  // en el Player — ver arriba). Estilo legible a distancia de
+                  // sofá: grande, blanco, con sombra y fondo translúcido.
+                  subtitleViewConfiguration: const SubtitleViewConfiguration(
+                    style: TextStyle(
+                      height: 1.35,
+                      fontSize: 42.0,
+                      color: Colors.white,
+                      fontWeight: FontWeight.w500,
+                      backgroundColor: Color(0x99000000),
+                      shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                    ),
+                    textAlign: TextAlign.center,
+                    padding: EdgeInsets.fromLTRB(48, 0, 48, 56),
+                  ),
                 )
                 : _WaitingScreen(deviceName: _deviceName),
             // Spinner de carga idéntico al del reproductor del teléfono.
@@ -676,6 +806,17 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
                 previewing: _previewing,
                 title: _mediaTitle,
                 thumbnailUrl: _mediaThumb,
+              ),
+            // Botón de play SIEMPRE visible mientras esté en PAUSA (no depende
+            // del overlay ni de su temporizador, para que no aparezca a veces
+            // sí y a veces no). Al reanudar desaparece.
+            if (_hasMedia && !_playing && !_buffering)
+              Center(
+                child: _CtrlButton(
+                  icon: Icons.play_arrow_rounded,
+                  focused: _focusArea == 0,
+                  big: true,
+                ),
               ),
           ],
         ),
@@ -1062,16 +1203,8 @@ class _TvControlsOverlay extends StatelessWidget {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          // Botón de play en el CENTRO: solo aparece cuando el video está en
-          // PAUSA; al reanudar desaparece (◀/▶ saltan ±10s directo).
-          if (!playing)
-            Center(
-              child: _CtrlButton(
-                icon: Icons.play_arrow_rounded,
-                focused: focusArea == 0,
-                big: true,
-              ),
-            ),
+          // (El botón de play se dibuja en el Stack principal, no aquí, para
+          // que su visibilidad dependa solo del estado de pausa.)
           Padding(
             padding: const EdgeInsets.fromLTRB(40, 0, 48, 36),
             child: Column(

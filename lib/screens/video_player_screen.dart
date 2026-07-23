@@ -22,6 +22,7 @@ import '../services/cast_service.dart';
 import '../services/network_quality_service.dart';
 import '../services/adaptive_buffer_service.dart';
 import '../services/video_prewarm_service.dart';
+import '../services/turbo_proxy.dart';
 import 'package:http/http.dart' as http;
 
 import '../utils/snack_bar_utils.dart';
@@ -1197,9 +1198,26 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         await frameReady.future;
       }
 
+      // TURBO: para VOD local (no live, no cast), servir el stream a través
+      // del proxy con 4 conexiones paralelas. En servidores IPTV que limitan
+      // la velocidad por conexión esto multiplica el throughput y elimina la
+      // mayoría de las paradas por re-buffering. Si el servidor no soporta
+      // rangos, wrap() devuelve null y seguimos con la URL directa.
+      String turboUrl = resolvedUrl;
+      if (!_isLiveContent && !castService.isCasting.value) {
+        try {
+          final proxied = await TurboProxy.instance
+              .wrap(resolvedUrl, _buildHeaders(currentUrl))
+              .timeout(const Duration(seconds: 5));
+          if (proxied != null) turboUrl = proxied;
+        } catch (e) {
+          debugPrint('TurboProxy no disponible: $e');
+        }
+      }
+
       if (!isPrewarmed) {
         await _player!.open(
-          Media(resolvedUrl, httpHeaders: _buildHeaders(currentUrl)),
+          Media(turboUrl, httpHeaders: _buildHeaders(currentUrl)),
           play: shouldPlayLocally,
         );
         // REFUERZO del fix vid=auto: tras open(), volvemos a forzar la
@@ -1692,40 +1710,64 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         } else {
           timer.cancel();
           _nextEpisodeCountdown = null;
-          _playNextEpisode();
+          // auto: true → cuenta para el anuncio de cada 2 episodios.
+          _playNextEpisode(auto: true);
         }
       });
     });
   }
 
-  void _playNextEpisode() {
+  /// Contador de auto-avances de episodio: cada 2 mostramos un anuncio.
+  int _autoAdvanceCount = 0;
+
+  void _playNextEpisode({bool auto = false}) {
     _countdownTimer?.cancel();
     if (_playlist.isEmpty) return;
 
     final currentIndex = _playlist.indexWhere((i) => i.url == _currentItem.url);
-    if (currentIndex != -1 && currentIndex < _playlist.length - 1) {
-      final nextItem = _playlist[currentIndex + 1];
+    if (currentIndex == -1 || currentIndex >= _playlist.length - 1) return;
+    final nextItem = _playlist[currentIndex + 1];
 
-      // CRÍTICO: Resetear el estado de Cast ANTES de cargar el nuevo episodio.
-      // Sin esto, lastKnownPosition queda con la posición final del episodio
-      // anterior, y el nuevo episodio carga desde el final → bucle infinito.
-      final castService = CastService();
-      castService.lastKnownPosition = Duration.zero;
-      // Limpiar la bandera de "media terminada" para evitar que se dispare
-      // inmediatamente al cargar el nuevo episodio.
-      castService.castMediaFinished.value = false;
-
-      setState(() {
-        _currentItem = nextItem;
-        _midRollAdShown = false;
-        _midRollNoticeShown = false;
-        _nextEpisodeCountdown = null;
-        _autoPlayCancelled = false;
-        _serverUrls = []; // Reset for next item
-        _currentServerIndex = 0;
-      });
-      _initializePlayer(nextItem);
+    // En auto-avance de series: anuncio cada 2 episodios. El anuncio se
+    // muestra ANTES de cargar el siguiente; al cerrarse continúa la carga.
+    if (auto) {
+      _autoAdvanceCount++;
+      if (_autoAdvanceCount % 2 == 0) {
+        // onAdDismissed se invoca en TODOS los caminos (premium, sin anuncio
+        // cargado, o al cerrar el anuncio), así que el episodio siempre carga.
+        AdService().showBestAvailableAd(
+          force: true,
+          onAdDismissed: () => _advanceToEpisode(nextItem),
+        );
+        return;
+      }
     }
+
+    _advanceToEpisode(nextItem);
+  }
+
+  /// Carga efectivamente el episodio dado como el actual.
+  void _advanceToEpisode(M3UItem nextItem) {
+    if (!mounted) return;
+    // CRÍTICO: Resetear el estado de Cast ANTES de cargar el nuevo episodio.
+    // Sin esto, lastKnownPosition queda con la posición final del episodio
+    // anterior, y el nuevo episodio carga desde el final → bucle infinito.
+    final castService = CastService();
+    castService.lastKnownPosition = Duration.zero;
+    // Limpiar la bandera de "media terminada" para evitar que se dispare
+    // inmediatamente al cargar el nuevo episodio.
+    castService.castMediaFinished.value = false;
+
+    setState(() {
+      _currentItem = nextItem;
+      _midRollAdShown = false;
+      _midRollNoticeShown = false;
+      _nextEpisodeCountdown = null;
+      _autoPlayCancelled = false;
+      _serverUrls = []; // Reset for next item
+      _currentServerIndex = 0;
+    });
+    _initializePlayer(nextItem);
   }
 
   /// Pre-calienta el siguiente episodio en un player pausado en segundo plano
@@ -2670,7 +2712,195 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
   }
 
+  /// Selector de pistas (audio o subtítulos) cuando se transmite a un
+  /// MiApp TV. Lista las pistas que el RECEPTOR reporta por WebSocket
+  /// (AUDIO_TRACKS / SUBTITLE_TRACKS) y envía SET_AUDIO / SET_SUBTITLE.
+  void _showTvTrackSelection({required bool isAudio}) {
+    final castService = CastService();
+    // Pedir al TV las pistas actuales por si el push inicial se adelantó al
+    // parseo del demuxer (el ValueListenableBuilder las mostrará al llegar).
+    castService.requestTvTracks();
+    final tracksNotifier =
+        isAudio ? castService.castAudioTracks : castService.castSubtitleTracks;
+    final activeNotifier =
+        isAudio
+            ? castService.castActiveAudioId
+            : castService.castActiveSubtitleId;
+
+    _showVisualBottomSheet(
+      builder:
+          (context) => Container(
+            width: _isLandscape ? 400 : double.infinity,
+            margin: _isLandscape ? const EdgeInsets.all(24) : EdgeInsets.zero,
+            constraints: BoxConstraints(
+              maxHeight:
+                  _isLandscape
+                      ? MediaQuery.of(context).size.width * 0.85
+                      : MediaQuery.of(context).size.height * 0.55,
+            ),
+            decoration: BoxDecoration(
+              color: const Color.fromARGB(255, 27, 27, 27),
+              borderRadius:
+                  _isLandscape
+                      ? BorderRadius.circular(24)
+                      : const BorderRadius.vertical(top: Radius.circular(20)),
+              border:
+                  _isLandscape
+                      ? Border.all(color: Colors.white12, width: 1)
+                      : null,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        isAudio ? 'Audio (TV)' : 'Subtítulos (TV)',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.pop(context),
+                        icon: const Icon(Icons.close, color: Colors.white70),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(color: Colors.white10, height: 1),
+                Flexible(
+                  child: ValueListenableBuilder<List<Map<String, dynamic>>>(
+                    valueListenable: tracksNotifier,
+                    builder: (context, tracks, _) {
+                      return ValueListenableBuilder<String?>(
+                        valueListenable: activeNotifier,
+                        builder: (context, activeId, _) {
+                          return ListView(
+                            padding: EdgeInsets.zero,
+                            shrinkWrap: true,
+                            children: [
+                              // Subtítulos: opción de desactivar arriba.
+                              if (!isAudio)
+                                ListTile(
+                                  leading: Icon(
+                                    Icons.subtitles_off,
+                                    color:
+                                        activeId == null
+                                            ? Colors.red
+                                            : Colors.white70,
+                                  ),
+                                  title: Text(
+                                    'Desactivado',
+                                    style: TextStyle(
+                                      color:
+                                          activeId == null
+                                              ? Colors.red
+                                              : Colors.white,
+                                    ),
+                                  ),
+                                  trailing:
+                                      activeId == null
+                                          ? const Icon(
+                                            Icons.check,
+                                            color: Colors.red,
+                                          )
+                                          : null,
+                                  onTap: () {
+                                    castService.setActiveSubtitleTrack(null);
+                                    Navigator.pop(context);
+                                  },
+                                ),
+                              if (tracks.isEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 20,
+                                    vertical: 16,
+                                  ),
+                                  child: Text(
+                                    isAudio
+                                        ? 'El TV aún no reporta pistas de audio. Espera unos segundos e inténtalo de nuevo.'
+                                        : 'No hay pistas de subtítulos disponibles en este contenido.',
+                                    style: const TextStyle(
+                                      color: Colors.white54,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                )
+                              else
+                                ...tracks.map((t) {
+                                  final id = t['id']?.toString() ?? '';
+                                  final label =
+                                      t['title']?.toString() ??
+                                      t['language']?.toString() ??
+                                      'Pista $id';
+                                  final isSelected = activeId == id;
+                                  return ListTile(
+                                    leading: Icon(
+                                      isAudio
+                                          ? Icons.audiotrack
+                                          : Icons.subtitles,
+                                      color:
+                                          isSelected
+                                              ? Colors.red
+                                              : Colors.white70,
+                                    ),
+                                    title: Text(
+                                      label,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        color:
+                                            isSelected
+                                                ? Colors.red
+                                                : Colors.white,
+                                      ),
+                                    ),
+                                    trailing:
+                                        isSelected
+                                            ? const Icon(
+                                              Icons.check,
+                                              color: Colors.red,
+                                            )
+                                            : null,
+                                    onTap: () {
+                                      if (isAudio) {
+                                        castService.setActiveAudioTrack(
+                                          int.tryParse(id) ?? 0,
+                                          trackStringId: id,
+                                        );
+                                      } else {
+                                        castService.setActiveSubtitleTrack(id);
+                                      }
+                                      Navigator.pop(context);
+                                    },
+                                  );
+                                }),
+                            ],
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
+            ),
+          ),
+    );
+  }
+
   void _showAudioSelection() {
+    // Transmitiendo a un MiApp TV: el player local está detenido (sin pistas).
+    // Usamos las pistas que reporta el RECEPTOR y enviamos SET_AUDIO por WS.
+    if (CastService().isTvBackend) {
+      _showTvTrackSelection(isAudio: true);
+      return;
+    }
     if (_player == null) return;
     final tracks = _player!.state.tracks.audio;
     _showVisualBottomSheet(
@@ -2761,6 +2991,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   void _showSubtitleSelection() {
+    // Transmitiendo a un MiApp TV: los subtítulos se activan EN EL RECEPTOR
+    // (el player local está detenido). Enviamos SET_SUBTITLE por WebSocket.
+    if (CastService().isTvBackend) {
+      _showTvTrackSelection(isAudio: false);
+      return;
+    }
     if (_player == null) return;
     final tracks = _player!.state.tracks.subtitle;
 

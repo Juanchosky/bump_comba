@@ -121,6 +121,7 @@ class TvSender {
       _send(TvProto.cmdSetSubtitle, {'trackId': trackId});
   void ping() =>
       _send(TvProto.cmdPing, {'t': DateTime.now().millisecondsSinceEpoch});
+  void getTracks() => _send(TvProto.cmdGetTracks);
 
   /// Cierra la conexión intencionalmente (no dispara [onClosed]).
   Future<void> close() async {

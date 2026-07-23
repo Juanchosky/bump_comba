@@ -39,6 +39,12 @@ class CastService {
   final ValueNotifier<List<Map<String, dynamic>>> castSubtitleTracks =
       ValueNotifier(const []);
 
+  /// Id de la pista activa en el receptor MiApp TV (null = por defecto/off).
+  /// Los alimenta la propia app al enviar SET_AUDIO/SET_SUBTITLE, para que la
+  /// UI pinte la selección sin esperar un round-trip.
+  final ValueNotifier<String?> castActiveAudioId = ValueNotifier(null);
+  final ValueNotifier<String?> castActiveSubtitleId = ValueNotifier(null);
+
   // ─── Backend dual: MiApp TV (receptor propio vía WebSocket) ───
   TvSender? _tvSender;
 
@@ -566,6 +572,8 @@ class CastService {
       castDuration.value = Duration.zero;
       castPlaying.value = false;
       castMediaFinished.value = false;
+      castActiveAudioId.value = null;
+      castActiveSubtitleId.value = null;
       // Recordar la media para poder recargar tras una reconexión si el TV ya
       // no la está reproduciendo.
       _tvLastUrl = url;
@@ -852,7 +860,9 @@ class CastService {
   void setActiveAudioTrack(int trackId, {String? trackStringId}) {
     if (isTvBackend) {
       // El receptor usa el id de pista de media_kit (String, p. ej. "1").
-      _tvSender?.setAudio(trackStringId ?? trackId.toString());
+      final id = trackStringId ?? trackId.toString();
+      _tvSender?.setAudio(id);
+      castActiveAudioId.value = id;
       return;
     }
     if (_session == null || _mediaSessionId == null) return;
@@ -1082,10 +1092,18 @@ class CastService {
     return const [];
   }
 
+  /// Pide al TV que reenvíe las pistas de audio/subtítulos actuales. Se llama
+  /// al abrir el menú de selección para no depender del push inicial.
+  void requestTvTracks() {
+    if (isTvBackend) _tvSender?.getTracks();
+  }
+
   /// Selecciona/desactiva subtítulos en el receptor (solo backend MiApp TV).
+  /// [trackId] null = desactivar.
   void setActiveSubtitleTrack(String? trackId) {
     if (!isTvBackend) return;
     _tvSender?.setSubtitle(trackId ?? TvProto.subtitleOff);
+    castActiveSubtitleId.value = trackId;
   }
 
   /// Desconecta del dispositivo Chromecast actual.
@@ -1112,6 +1130,8 @@ class CastService {
         _tvSender = null;
         castAudioTracks.value = const [];
         castSubtitleTracks.value = const [];
+        castActiveAudioId.value = null;
+        castActiveSubtitleId.value = null;
         unawaited(TvPlatform.releaseCastLocks());
       }
       _tvDevice = null;
