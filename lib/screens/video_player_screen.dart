@@ -302,7 +302,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
     // 3. Si el player local quedó SIN media (fue detenido durante el cast),
     //    recargar el contenido en la última posición que reportó el TV.
-    final hasMedia = _player!.state.duration > Duration.zero ||
+    final hasMedia =
+        _player!.state.duration > Duration.zero ||
         _player!.state.playlist.medias.isNotEmpty;
     if (!hasMedia) {
       final resume = CastService().lastKnownPosition;
@@ -800,8 +801,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
       // ¿Había una textura de video activa antes de esta carga? Si no (primera
       // reproducción), no hace falta esperar a que se liberen buffers previos.
-      final bool hadPreviousController =
-          _videoControllerNotifier.value != null;
+      final bool hadPreviousController = _videoControllerNotifier.value != null;
 
       // Liberar el player anterior también cuando adoptamos uno precalentado
       // para el siguiente episodio: sin esto quedarían dos players vivos.
@@ -5074,7 +5074,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                           SliderTheme(
                                                             data: SliderThemeData(
                                                               trackHeight:
-                                                                  1.5 * scale,
+                                                                  1.7 * scale,
                                                               activeTrackColor:
                                                                   Colors.white,
                                                               inactiveTrackColor:
@@ -5118,7 +5118,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                   _bufferedSliderValue(
                                                                     isCasting:
                                                                         isCasting,
-                                                                    value: value,
+                                                                    value:
+                                                                        value,
                                                                     max: max,
                                                                   ),
                                                               onChangeStart: (
@@ -5209,8 +5210,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                     _isDragging
                                                                         ? Duration(
                                                                           milliseconds:
-                                                                              _dragValue
-                                                                                  .toInt(),
+                                                                              _dragValue.toInt(),
                                                                         )
                                                                         : position,
                                                                   ),
@@ -6030,8 +6030,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                   _isDragging
                                                                       ? Duration(
                                                                         milliseconds:
-                                                                            _dragValue
-                                                                                .toInt(),
+                                                                            _dragValue.toInt(),
                                                                       )
                                                                       : position,
                                                                 ),
@@ -6876,9 +6875,8 @@ class _CastDeviceSelectorState extends State<_CastDeviceSelector> {
                       width: 40,
                       height: 40,
                       decoration: BoxDecoration(
-                        color:
-                            (isTv ? Colors.greenAccent : Colors.redAccent)
-                                .withValues(alpha: 0.12),
+                        color: (isTv ? Colors.greenAccent : Colors.redAccent)
+                            .withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(10),
                       ),
                       child: Icon(
