@@ -268,7 +268,7 @@ class _CategoryScreenState extends State<CategoryScreen> {
           style: TextStyle(
             color: Colors.white.withValues(alpha: 0.7),
             fontSize: 12,
-            fontWeight: FontWeight.w500,
+            fontWeight: FontWeight.w400,
           ),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
