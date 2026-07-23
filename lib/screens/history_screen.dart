@@ -385,7 +385,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
           Text(
             item.name.replaceAll(RegExp(r'\s*\(\d{4}\)'), ''),
             style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.7),
+              color: AppColors.textMuted.withValues(alpha: 0.82),
               fontSize: 12,
               fontWeight: FontWeight.w400,
             ),

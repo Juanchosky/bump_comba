@@ -1564,7 +1564,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                         Text(
                           item.name.replaceAll(RegExp(r'\s*\(\d{4}\)'), ''),
                           style: TextStyle(
-                            color: Colors.white.withValues(alpha: 0.7),
+                            color: AppColors.textMuted.withValues(alpha: 0.82),
                             fontSize: 12,
                             fontWeight: FontWeight.w400,
                           ),
@@ -4978,7 +4978,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                   Text(
                     item.name.replaceAll(RegExp(r'\s*\(\d{4}\)'), ''),
                     style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.7),
+                      color: AppColors.textMuted.withValues(alpha: 0.82),
                       fontSize: 12,
                       fontWeight: FontWeight.w400,
                     ),
@@ -5068,8 +5068,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             const SizedBox(height: 6),
             Text(
               item.name.replaceAll(RegExp(r'\s*\(\d{4}\)'), ''),
-              style: const TextStyle(
-                color: AppColors.textSecondary,
+              style: TextStyle(
+                color: AppColors.textMuted.withValues(alpha: 0.82),
                 fontSize: 12,
                 fontWeight: FontWeight.w400,
               ),
@@ -5178,8 +5178,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
               const SizedBox(height: 6),
               Text(
                 item.name.replaceAll(RegExp(r'\s*\(\d{4}\)'), ''),
-                style: const TextStyle(
-                  color: AppColors.textSecondary,
+                style: TextStyle(
+                  color: AppColors.textMuted.withValues(alpha: 0.82),
                   fontSize: 12,
                   fontWeight: FontWeight.w400,
                 ),
