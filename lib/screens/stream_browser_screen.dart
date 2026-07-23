@@ -4920,14 +4920,14 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             // â”€â”€ Large rank number (behind the poster) â”€â”€
             Positioned(
               left: -5,
-              bottom: 12,
+              bottom: 18,
               child: Text(
                 '$rank',
                 style: TextStyle(
-                  fontSize: 115,
+                  fontSize: 122,
                   fontWeight: FontWeight.w900,
                   height: 0.85,
-                  letterSpacing: rank >= 10 ? -22 : 0,
+                  letterSpacing: rank >= 10 ? -23 : 0,
                   foreground:
                       Paint()
                         ..style = PaintingStyle.stroke
