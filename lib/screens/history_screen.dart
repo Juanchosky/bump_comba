@@ -317,12 +317,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final crossAxisCount = (screenWidth / 160).floor().clamp(3, 12);
 
     return GridView.builder(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(10),
       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: crossAxisCount,
         childAspectRatio: 0.6,
-        crossAxisSpacing: 12,
-        mainAxisSpacing: 12,
+        crossAxisSpacing: 8,
+        mainAxisSpacing: 8,
       ),
       itemCount: _historyEntries.length,
       itemBuilder: (context, index) {

@@ -2307,7 +2307,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
         ),
         const SizedBox(height: 16),
         SizedBox(
-          height: 215, // High density poster height + title
+          height: 216, // High density poster height + title
           child: ListView.builder(
             scrollDirection: Axis.horizontal,
             padding: EdgeInsets.zero,
@@ -2344,7 +2344,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                         });
                   },
                   child: SizedBox(
-                    width: 115, // Standard horizontal row width
+                    width: 124, // Standard horizontal row width
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -2380,7 +2380,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                           style: TextStyle(
                             color: Colors.white.withValues(alpha: 0.7),
                             fontSize: 12,
-                            fontWeight: FontWeight.w500,
+                            fontWeight: FontWeight.w400,
                           ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,

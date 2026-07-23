@@ -1471,7 +1471,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           ),
         ),
         SizedBox(
-          height: 205, // Standard category row height
+          height: 216, // Standard category row height
           child: ListView.builder(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -1483,7 +1483,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
               return Padding(
                 padding: const EdgeInsets.only(right: 8),
                 child: SizedBox(
-                  width: 120,
+                  width: 124,
                   child: GestureDetector(
                     onTap: () {
                       HapticFeedback.selectionClick();
@@ -1508,7 +1508,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         SizedBox(
-                          height: 170, // Standard thumbnail height
+                          height: 180, // Standard thumbnail height
                           child: Stack(
                             fit: StackFit.expand,
                             children: [
@@ -1671,13 +1671,13 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                                 .floor()
                                 .clamp(3, 12);
                             return GridView.builder(
-                              padding: const EdgeInsets.all(16),
+                              padding: const EdgeInsets.all(10),
                               gridDelegate:
                                   SliverGridDelegateWithFixedCrossAxisCount(
                                     crossAxisCount: crossAxisCount,
                                     childAspectRatio: 0.6,
-                                    crossAxisSpacing: 12,
-                                    mainAxisSpacing: 12,
+                                    crossAxisSpacing: 8,
+                                    mainAxisSpacing: 8,
                                   ),
                               itemCount: favorites.length,
                               itemBuilder:
@@ -4784,7 +4784,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             ),
           ),
           SizedBox(
-            height: 205,
+            height: 216,
             child: ListenableBuilder(
               listenable: Listenable.merge([performance, _m3uService]),
               builder:
@@ -4883,7 +4883,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             ),
           ),
           SizedBox(
-            height: 200,
+            height: 216,
             child: ListView.builder(
               scrollCacheExtent: ScrollCacheExtent.pixels(500),
               scrollDirection: Axis.horizontal,
@@ -4912,7 +4912,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         });
       },
       child: Container(
-        width: rank >= 10 ? 215 : 175,
+        width: rank >= 10 ? 219 : 179,
         margin: const EdgeInsets.symmetric(horizontal: 10),
         child: Stack(
           clipBehavior: Clip.none,
@@ -4945,8 +4945,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   SizedBox(
-                    height: 170,
-                    width: 120,
+                    height: 180,
+                    width: 124,
                     child: _heroPoster(
                       heroTag,
                       ClipRRect(
@@ -5011,14 +5011,14 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         });
       },
       child: Container(
-        width: 120,
+        width: 124,
         margin: const EdgeInsets.symmetric(horizontal: 4),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // Thumbnail
             SizedBox(
-              height: 170,
+              height: 180,
               child: Stack(
                 children: [
                   Container(
@@ -5393,7 +5393,7 @@ class _HiddenMoviesShimmer extends StatelessWidget {
           ),
           // Shimmer Category Row
           SizedBox(
-            height: 180,
+            height: 216,
             child: ListView.builder(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -5415,7 +5415,7 @@ class _ShimmerItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: 120,
+      width: 124,
       margin: const EdgeInsets.symmetric(horizontal: 6),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

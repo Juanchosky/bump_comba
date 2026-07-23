@@ -143,15 +143,15 @@ class _CategoryScreenState extends State<CategoryScreen> {
                   controller: _scrollController,
                   slivers: [
                     SliverPadding(
-                      padding: const EdgeInsets.all(10),
+                      padding: const EdgeInsets.all(8),
                       sliver: SliverGrid(
                         gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                           crossAxisCount: (MediaQuery.of(context).size.width / 160)
                               .floor()
                               .clamp(3, 12),
                           childAspectRatio: 0.6,
-                          crossAxisSpacing: 10,
-                          mainAxisSpacing: 10,
+                          crossAxisSpacing: 8,
+                          mainAxisSpacing: 8,
                         ),
                         delegate: SliverChildBuilderDelegate(
                           (context, index) {
