@@ -5065,6 +5065,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                         alpha:
                                                                             0.24,
                                                                       ),
+                                                              // Pista de buffer
+                                                              // estilo YouTube:
+                                                              // blanco medio.
+                                                              secondaryActiveTrackColor:
+                                                                  Colors.white
+                                                                      .withValues(
+                                                                        alpha:
+                                                                            0.45,
+                                                                      ),
                                                               thumbColor:
                                                                   Colors.white,
                                                               thumbShape:
@@ -5087,6 +5096,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                       ? max
                                                                       : 1,
                                                               value: value,
+                                                              secondaryTrackValue:
+                                                                  _bufferedSliderValue(
+                                                                    isCasting:
+                                                                        isCasting,
+                                                                    value: value,
+                                                                    max: max,
+                                                                  ),
                                                               onChangeStart: (
                                                                 newValue,
                                                               ) {
