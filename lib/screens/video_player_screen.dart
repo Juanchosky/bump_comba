@@ -1717,6 +1717,24 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     });
   }
 
+  /// Punto de la pista de buffer (estilo YouTube) para el slider, en ms.
+  ///
+  /// Devuelve hasta dónde ha PRE-CARGADO el player por delante de la posición
+  /// actual (`_player.state.buffer`). El `Slider` la dibuja con
+  /// `secondaryActiveTrackColor` (más opaca) entre la parte reproducida y la
+  /// no cargada. Solo aplica en reproducción LOCAL: durante el cast el buffer
+  /// vive en el TV/Chromecast, así que devolvemos null (sin pista secundaria).
+  double? _bufferedSliderValue({
+    required bool isCasting,
+    required double value,
+    required double max,
+  }) {
+    if (isCasting || _player == null || max <= 0) return null;
+    final bufferedMs = _player!.state.buffer.inMilliseconds.toDouble();
+    // secondaryTrackValue debe quedar entre el valor actual y el máximo.
+    return bufferedMs.clamp(value, max);
+  }
+
   /// Contador de auto-avances de episodio: cada 2 mostramos un anuncio.
   int _autoAdvanceCount = 0;
 
@@ -5902,6 +5920,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                       alpha:
                                                                           0.28,
                                                                     ),
+                                                            secondaryActiveTrackColor:
+                                                                Colors.white
+                                                                    .withValues(
+                                                                      alpha:
+                                                                          0.45,
+                                                                    ),
                                                             thumbColor:
                                                                 Colors.white,
                                                             thumbShape:
@@ -5923,6 +5947,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                     ? maxMs
                                                                     : 1,
                                                             value: curMs,
+                                                            secondaryTrackValue:
+                                                                _bufferedSliderValue(
+                                                                  isCasting:
+                                                                      isCasting,
+                                                                  value: curMs,
+                                                                  max: maxMs,
+                                                                ),
                                                             onChangeStart:
                                                                 (v) => setState(
                                                                   () {
