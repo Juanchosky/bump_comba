@@ -95,6 +95,12 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
   // (error crítico #10 del brief)
   DateTime _lastLoadAt = DateTime.fromMillisecondsSinceEpoch(0);
 
+  /// Headers del último LOAD, para poder reabrir sin proxy si el turbo falla.
+  Map<String, String>? _lastHeaders;
+
+  /// Anti-bucle: una sola vuelta a la URL directa por carga.
+  bool _turboFallbackDone = false;
+
   @override
   void initState() {
     super.initState();
@@ -249,6 +255,8 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     }
     final position = _asDouble(msg['position']) ?? 0.0;
     final headers = _asStringMap(msg['headers']);
+    _lastHeaders = headers;
+    _turboFallbackDone = false;
     _mediaTitle = msg['title']?.toString() ?? '';
     final thumb = msg['thumbnailUrl']?.toString();
     _mediaThumb = (thumb == null || thumb.isEmpty) ? null : thumb;
@@ -270,9 +278,10 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
       // servidores que limitan por conexión → muchas menos paradas).
       String playUrl = url;
       try {
+        // 7s: el bypass de DNS por DoH puede tardar unos segundos en frío.
         final proxied = await TurboProxy.instance
             .wrap(url, headers)
-            .timeout(const Duration(seconds: 5));
+            .timeout(const Duration(seconds: 7));
         if (proxied != null) playUrl = proxied;
       } catch (e) {
         debugPrint('TvReceiver: TurboProxy no disponible: $e');
@@ -322,6 +331,41 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     }
   }
 
+  /// Reabre con la URL DIRECTA si el media actual lo sirve el TurboProxy y ha
+  /// fallado a mitad de reproducción. Un solo intento por carga (anti-bucle).
+  Future<void> _recoverFromTurboFailure() async {
+    if (_turboFallbackDone) return;
+    String? uri;
+    try {
+      final playlist = _player.state.playlist;
+      final i = playlist.index;
+      if (playlist.medias.isEmpty || i < 0 || i >= playlist.medias.length) {
+        return;
+      }
+      uri = playlist.medias[i].uri;
+    } catch (_) {
+      return;
+    }
+    final direct = TurboProxy.instance.originalFor(uri);
+    if (direct == null) return;
+
+    _turboFallbackDone = true;
+    final position = _player.state.position;
+    debugPrint(
+      'TvReceiver: el proxy falló a mitad — reabriendo URL DIRECTA en '
+      '${position.inSeconds}s',
+    );
+    try {
+      _lastLoadAt = DateTime.now();
+      await _player.open(Media(direct, httpHeaders: _lastHeaders), play: true);
+      if (position > Duration.zero) unawaited(_seekWhenReady(position));
+      _pushStatus();
+    } catch (e) {
+      debugPrint('TvReceiver: recuperación directa falló: $e');
+      _service.sendEvent(TvProto.evtLoadFailed, {'error': e.toString()});
+    }
+  }
+
   /// Si a los 20s del LOAD la reproducción no arrancó (posición 0, sin
   /// duración), reintenta UNA vez con la URL directa sin TurboProxy.
   Future<void> _watchdogRetryDirect(
@@ -335,7 +379,8 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     // Si llegó otro LOAD entretanto, este watchdog ya no aplica.
     if (_lastLoadAt.millisecondsSinceEpoch != loadStamp) return;
 
-    final started = _player.state.position > Duration.zero ||
+    final started =
+        _player.state.position > Duration.zero ||
         _player.state.duration > Duration.zero;
     if (started) return; // arrancó bien, nada que hacer
 
@@ -475,6 +520,10 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     _subs.add(
       _player.stream.error.listen((e) {
         debugPrint('TvReceiver: error del player: $e');
+        // RECUPERACIÓN MID-STREAM: si el fallo viene del proxy turbo ya
+        // empezada la reproducción, reabrimos con la URL DIRECTA en la
+        // posición actual en vez de dejar el contenido caído.
+        unawaited(_recoverFromTurboFailure());
       }),
     );
   }

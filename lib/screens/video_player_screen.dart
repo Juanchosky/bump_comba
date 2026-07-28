@@ -88,6 +88,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   bool _isVideoLoading = true;
   bool _isBuffering = false;
+  // Guard anti-bucle: solo se intenta UNA vez volver a la URL directa por
+  // contenido cargado, para no encadenar reaperturas si el origen está caído.
+  bool _turboFallbackDone = false;
   bool _midRollAdShown = false;
   bool _midRollNoticeShown = false;
   late M3UItem _currentItem;
@@ -813,6 +816,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
       setState(() {
         _isVideoLoading = true;
+        _turboFallbackDone = false;
         _autoPlayCancelled = false;
         _nextEpisodePrewarmStarted = false;
         _midRollAdShown = false;
@@ -1203,12 +1207,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       // la velocidad por conexión esto multiplica el throughput y elimina la
       // mayoría de las paradas por re-buffering. Si el servidor no soporta
       // rangos, wrap() devuelve null y seguimos con la URL directa.
+      // El timeout es de 7s (no 5s): el bypass de DNS por DoH puede tardar
+      // unos segundos la PRIMERA vez. Con 5s el turbo se caía justo en el
+      // primer contenido de la sesión. La IP queda cacheada, así que los
+      // siguientes sondeos son instantáneos.
       String turboUrl = resolvedUrl;
-      if (!_isLiveContent && !castService.isCasting.value) {
+      if (!_isLiveContent && !castService.isCasting.value && !isPrewarmed) {
         try {
           final proxied = await TurboProxy.instance
               .wrap(resolvedUrl, _buildHeaders(currentUrl))
-              .timeout(const Duration(seconds: 5));
+              .timeout(const Duration(seconds: 7));
           if (proxied != null) turboUrl = proxied;
         } catch (e) {
           debugPrint('TurboProxy no disponible: $e');
@@ -1245,6 +1253,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         } else {
           _player!.pause();
         }
+      }
+
+      // Red de seguridad de arranque. Cubre también el caso del player
+      // PRECALENTADO, que trae su propio media ya abierto (posiblemente
+      // proxeado desde la pantalla de detalle) sin pasar por el open() de aquí.
+      if (shouldPlayLocally) {
+        unawaited(_turboStartupWatchdog(_videoKey));
       }
 
       // Sincronizar con Chromecast si estamos transmitiendo
@@ -1465,6 +1480,19 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               });
               return; // Evitamos recargar el video completo si solo falló el subtítulo
             }
+          }
+
+          // RECUPERACIÓN MID-STREAM DEL TURBO.
+          // El watchdog de arranque solo cubre el fallo inicial. Si el proxy
+          // falla DESPUÉS de haber empezado a reproducir, reabrimos con la URL
+          // DIRECTA en la posición actual antes de dar el error por bueno: el
+          // turbo nunca debe romper una reproducción que ya iba bien.
+          // El guard anti-bucle evita encadenar reintentos.
+          if (!_turboFallbackDone &&
+              !_isVideoLoading &&
+              !_isReloading &&
+              _tryTurboDirectFallback()) {
+            return;
           }
 
           // No recargar por un error si el usuario tiene el contenido pausado o
@@ -2052,6 +2080,68 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         }
       });
     }
+  }
+
+  /// URI del media que el player tiene abierto ahora mismo (o null).
+  String? _currentMediaUri() {
+    try {
+      final playlist = _player?.state.playlist;
+      if (playlist == null || playlist.medias.isEmpty) return null;
+      final i = playlist.index;
+      if (i < 0 || i >= playlist.medias.length) return null;
+      return playlist.medias[i].uri;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Si el media abierto viene del TurboProxy, lo reabre con la URL DIRECTA en
+  /// la posición actual. Devuelve true si se lanzó la recuperación.
+  ///
+  /// Cubre tanto el fallo mid-stream como el atasco de arranque, y funciona
+  /// también con players precalentados (la URL original se recupera del
+  /// registro del proxy, no de un campo de esta pantalla).
+  bool _tryTurboDirectFallback() {
+    final uri = _currentMediaUri();
+    if (uri == null || !TurboProxy.instance.isTurboUrl(uri)) return false;
+    final direct = TurboProxy.instance.originalFor(uri);
+    if (direct == null) return false;
+
+    _turboFallbackDone = true; // anti-bucle: una sola vez por contenido
+    final position = _player?.state.position ?? Duration.zero;
+    debugPrint(
+      'TurboProxy: fallo con el proxy — reabriendo URL DIRECTA en '
+      '${position.inSeconds}s',
+    );
+    unawaited(() async {
+      try {
+        await _player?.open(
+          Media(direct, httpHeaders: _buildHeaders(direct)),
+          play: true,
+        );
+        if (position > Duration.zero) {
+          await _player?.seek(position);
+        }
+      } catch (e) {
+        debugPrint('TurboProxy: fallback directo falló: $e');
+        if (mounted && !_isReloading && !_isVideoLoading) _reloadVideo();
+      }
+    }());
+    return true;
+  }
+
+  /// WATCHDOG DE ARRANQUE: si a los 8s de abrir con el proxy la reproducción no
+  /// avanzó (posición 0 y sin duración), reabre con la URL directa. Se cancela
+  /// solo si entretanto llegó otra carga (comparando [stamp] con [_videoKey]).
+  Future<void> _turboStartupWatchdog(String stamp) async {
+    await Future.delayed(const Duration(seconds: 8));
+    if (!mounted || _videoKey != stamp || _turboFallbackDone) return;
+    final started =
+        (_player?.state.position ?? Duration.zero) > Duration.zero ||
+        (_player?.state.duration ?? Duration.zero) > Duration.zero;
+    if (started) return;
+    debugPrint('TurboProxy: WATCHDOG — 8s sin arrancar, probando URL directa');
+    _tryTurboDirectFallback();
   }
 
   Future<void> _reloadVideo() async {
@@ -5428,6 +5518,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       ),
       line('Controller', controller == null ? 'null' : 'activo'),
       line('Recarga negra', _blackScreenReloadDone ? 'hecha' : 'no'),
+      // Motivo EXACTO del estado del turbo. Sin esto solo queda adivinar por
+      // qué no acelera (¿live? ¿el origen no soporta rangos? ¿no conecta?).
+      line('Turbo', TurboProxy.instance.lastReason),
+      if (TurboProxy.instance.lastReason == 'activo')
+        line(
+          'Turbo red',
+          '${TurboProxy.instance.mbps.toStringAsFixed(1)} Mbps '
+              '(${TurboProxy.instance.activeConnections} conex.)',
+        ),
+      line('Media actual', _turboFallbackDone ? 'directa (fallback)' : 'normal'),
     ];
 
     return Positioned(

@@ -5,6 +5,8 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 
+import '../utils/dns_bypass_utils.dart';
+
 /// Proxy TURBO local para VOD sobre HTTP.
 ///
 /// Problema que resuelve: los servidores IPTV/M3U saturados suelen limitar la
@@ -34,9 +36,80 @@ class TurboProxy {
   final Map<String, _Entry> _entries = {};
   int _nextId = 1;
 
+  /// Hosts que ya demostraron NO soportar rangos en esta sesión. Se saltan el
+  /// sondeo directamente (evita gastar segundos en cada contenido del mismo
+  /// servidor sabiendo que la respuesta va a ser "no").
+  final Set<String> _hostileHosts = {};
+
+  // ── Diagnóstico ──
+  // Sin esto se pierde muchísimo tiempo adivinando POR QUÉ el turbo no se
+  // activa. [lastReason] guarda SIEMPRE el motivo exacto del último wrap().
+  String _lastReason = 'sin usar todavía';
+  String get lastReason => _lastReason;
+
+  /// Línea de estado observable, apta para un panel de diagnóstico en pantalla.
+  final ValueNotifier<String> status = ValueNotifier<String>('turbo: inactivo');
+
+  int _bytesInWindow = 0;
+  DateTime _windowStart = DateTime.now();
+  double _mbps = 0;
+  int _activeConnections = 0;
+
+  /// Velocidad de descarga agregada (Mbps) medida sobre el último segundo.
+  double get mbps => _mbps;
+
+  /// Conexiones abiertas ahora mismo contra el servidor de origen.
+  int get activeConnections => _activeConnections;
+
+  /// ¿Es [url] una URL servida por este proxy?
+  bool isTurboUrl(String url) => url.startsWith('http://127.0.0.1:');
+
+  /// Dada una URL local del proxy, devuelve la URL ORIGINAL del servidor.
+  ///
+  /// Imprescindible para dos cosas que se rompen si se compara contra la URL
+  /// local: (1) el guard de "ya está reproduciendo esto" (la URI del media pasa
+  /// a ser 127.0.0.1 y la comparación con la URL del item siempre fallaría,
+  /// reabriendo en bucle), y (2) la recuperación mid-stream, que necesita
+  /// reabrir con la URL DIRECTA si el proxy falla después de haber arrancado.
+  String? originalFor(String url) {
+    if (!isTurboUrl(url)) return null;
+    final segments = Uri.tryParse(url)?.pathSegments;
+    if (segments == null || segments.length != 2 || segments[0] != 't') {
+      return null;
+    }
+    return _entries[segments[1]]?.originalUrl;
+  }
+
+  /// La URL original si [url] es del proxy, o la propia [url] si no lo es.
+  /// Úsalo al comparar el media actual contra la URL de un contenido.
+  String resolveOriginal(String url) => originalFor(url) ?? url;
+
+  void _setReason(String reason) {
+    _lastReason = reason;
+    status.value = 'turbo: $reason';
+    debugPrint('TurboProxy: $reason');
+  }
+
+  void _noteBytes(int n) {
+    _bytesInWindow += n;
+    final elapsed = DateTime.now().difference(_windowStart);
+    if (elapsed.inMilliseconds >= 1000) {
+      _mbps = (_bytesInWindow * 8) / elapsed.inMilliseconds / 1000;
+      _bytesInWindow = 0;
+      _windowStart = DateTime.now();
+      status.value =
+          'turbo: activo — ${_mbps.toStringAsFixed(1)} Mbps '
+          '($_activeConnections conexiones)';
+    }
+  }
+
   Future<void> _ensureServer() async {
     if (_server != null) return;
-    _server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    _server = await HttpServer.bind(
+      InternetAddress.loopbackIPv4,
+      0,
+      shared: true,
+    );
     _server!.listen(
       (req) {
         // Cada petición se maneja aislada; un error no tumba el proxy.
@@ -50,35 +123,76 @@ class TurboProxy {
   /// Intenta envolver [url] tras el proxy turbo. Devuelve la URL local
   /// (`http://127.0.0.1:PORT/t/ID`) o `null` si el origen no es apto
   /// (live/HLS, sin soporte de rangos, error de red...).
+  ///
+  /// NUNCA lanza: ante cualquier problema devuelve null y el caller sigue con
+  /// la URL original, exactamente igual que si el turbo no existiera.
   Future<String?> wrap(String url, Map<String, String>? headers) async {
     try {
       if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        _setReason('no aplica (no es HTTP)');
         return null;
       }
       final low = url.toLowerCase();
       if (low.contains('.m3u8') ||
           low.contains('output=m3u8') ||
-          low.contains('/live/')) {
+          low.contains('/live/') ||
+          low.contains('/hls/') ||
+          low.contains('type=live')) {
+        _setReason('no aplica (live/HLS)');
+        return null;
+      }
+
+      final host = Uri.tryParse(url)?.host ?? '';
+      if (host.isNotEmpty && _hostileHosts.contains(host)) {
+        _setReason('servidor sin soporte de rangos (recordado de antes)');
         return null;
       }
 
       await _ensureServer();
 
+      // Candidatos de conexión, en orden de preferencia:
+      //  - Bypass de DNS (DoH): imprescindible en las redes cuyo ISP no
+      //    resuelve los dominios IPTV. Sin esto el sondeo NO CONECTA y el
+      //    turbo quedaba desactivado en silencio.
+      //  - Directo por hostname.
+      // En HTTPS probamos DIRECTO primero: al conectar por IP el SNI de TLS
+      // deja de llevar el hostname y muchos servidores rechazan el handshake o
+      // sirven el vhost equivocado. En HTTP el bypass es siempre fiable
+      // (el header `Host` basta para identificar el vhost).
+      final targets = await _resolveTargets(url, headers);
+
       // Sondeo: pedimos 2 bytes con Range. Solo si el servidor responde 206
       // con longitud total conocida vale la pena trocear.
-      final probe = await _probe(url, headers);
-      if (probe == null) return null;
+      ({Uri uri, Map<String, String> headers})? target;
+      (int, String?)? probe;
+      for (var i = 0; i < targets.length; i++) {
+        // Solo el ÚLTIMO candidato puede marcar el host como "sin rangos": un
+        // fallo del bypass no debe condenar a un servidor que sí los soporta.
+        probe = await _probe(targets[i], markHostile: i == targets.length - 1);
+        if (probe != null) {
+          target = targets[i];
+          break;
+        }
+      }
+      if (probe == null || target == null) {
+        return null; // _probe ya registró el motivo exacto
+      }
 
       final id = '${_nextId++}';
       final client = HttpClient()
+        // CRÍTICO: sin esto Dart descomprime por su cuenta y la aritmética de
+        // bytes/Range deja de cuadrar (los trozos no encajan y el vídeo se
+        // corrompe).
         ..autoUncompress = false
         ..maxConnectionsPerHost = _parallel + 1
         ..connectionTimeout = const Duration(seconds: 10)
         ..badCertificateCallback = (_, _, _) => true;
 
       _entries[id] = _Entry(
-        url: url,
-        headers: headers ?? const {},
+        proxy: this,
+        originalUrl: url,
+        uri: target.uri,
+        headers: target.headers,
         length: probe.$1,
         contentType: probe.$2,
         client: client,
@@ -91,41 +205,101 @@ class TurboProxy {
       }
 
       final local = 'http://127.0.0.1:${_server!.port}/t/$id';
+      _setReason('activo');
       debugPrint(
         'TurboProxy: activo para $url '
         '(${(probe.$1 / 1048576).toStringAsFixed(1)} MB) → $local',
       );
       return local;
     } catch (e) {
-      debugPrint('TurboProxy: wrap falló ($e) — usando URL directa');
+      _setReason('wrap falló ($e) — usando URL directa');
       return null;
     }
   }
 
+  /// Formas de alcanzar el origen, ordenadas por probabilidad de éxito.
+  /// Siempre incluye el acceso directo por hostname, y añade el bypass de DNS
+  /// (DoH) cuando este resuelve a una IP distinta.
+  Future<List<({Uri uri, Map<String, String> headers})>> _resolveTargets(
+    String url,
+    Map<String, String>? headers,
+  ) async {
+    final base = Map<String, String>.from(headers ?? const {});
+    // La aritmética de Range exige bytes SIN comprimir. Los headers del player
+    // suelen pedir gzip/deflate; aquí lo forzamos a identity.
+    base['Accept-Encoding'] = 'identity';
+    final direct = (uri: Uri.parse(url), headers: base);
+
+    try {
+      // Devuelve la URI reescrita a IP y los headers con el `Host` original
+      // añadido — ese `Host` hay que CONSERVARLO al reenviar o el servidor
+      // responde 404/403 al no saber qué vhost se le pide.
+      final bypassed = await DnsBypassUtils.bypassUrl(url, base);
+      if (bypassed.uri.host == direct.uri.host) return [direct];
+      // HTTPS: directo primero (el SNI por IP rompe muchos handshakes).
+      // HTTP: bypass primero (es el caso que arregla el ISP que no resuelve).
+      return direct.uri.scheme == 'https'
+          ? [direct, bypassed]
+          : [bypassed, direct];
+    } catch (e) {
+      debugPrint('TurboProxy: bypass DNS no aplicado ($e)');
+      return [direct];
+    }
+  }
+
   /// Devuelve (longitud total, content-type) o null si no hay soporte Range.
-  Future<(int, String?)?> _probe(String url, Map<String, String>? headers) async {
+  Future<(int, String?)?> _probe(
+    ({Uri uri, Map<String, String> headers}) target, {
+    bool markHostile = true,
+  }) async {
+    // 3s por sondeo (no 6s): probamos hasta DOS candidatos (bypass y directo)
+    // y el caller nos corta a los 7s. Con 6s cada uno, el segundo candidato no
+    // llegaría a probarse nunca. La resolución DNS/DoH ocurre ANTES de esto y
+    // tiene su propio presupuesto de tiempo.
     final client = HttpClient()
       ..autoUncompress = false
-      ..connectionTimeout = const Duration(seconds: 6)
+      ..connectionTimeout = const Duration(seconds: 3)
       ..badCertificateCallback = (_, _, _) => true;
     try {
-      final rq = await client.getUrl(Uri.parse(url));
-      headers?.forEach((k, v) => rq.headers.set(k, v));
+      final rq = await client.getUrl(target.uri);
+      target.headers.forEach((k, v) => rq.headers.set(k, v));
       rq.headers.set(HttpHeaders.rangeHeader, 'bytes=0-1');
-      final rs = await rq.close().timeout(const Duration(seconds: 6));
+      final rs = await rq.close().timeout(const Duration(seconds: 3));
       // Drenar los 2 bytes para liberar la conexión.
       await rs.drain<void>().catchError((_) {});
-      if (rs.statusCode != HttpStatus.partialContent) return null;
+      if (rs.statusCode != HttpStatus.partialContent) {
+        _setReason('servidor sin soporte de rangos (${rs.statusCode})');
+        if (rs.statusCode == HttpStatus.ok && markHostile) {
+          // 200 a un Range = este origen NUNCA va a poder acelerarse. Es un
+          // límite del SERVIDOR, no del cliente. Lo recordamos para no
+          // re-sondear todo su catálogo.
+          final host = target.headers['Host'] ?? target.uri.host;
+          if (host.isNotEmpty) _hostileHosts.add(host);
+        }
+        return null;
+      }
       final cr = rs.headers.value(HttpHeaders.contentRangeHeader);
-      if (cr == null) return null;
+      if (cr == null) {
+        _setReason('206 sin Content-Range (tamaño desconocido)');
+        return null;
+      }
       // Formato: "bytes 0-1/123456"
       final slash = cr.lastIndexOf('/');
-      if (slash == -1) return null;
+      if (slash == -1) {
+        _setReason('Content-Range ilegible: $cr');
+        return null;
+      }
       final total = int.tryParse(cr.substring(slash + 1).trim());
-      if (total == null || total <= 0) return null;
+      if (total == null || total <= 0) {
+        _setReason('tamaño total desconocido (Content-Range: $cr)');
+        return null;
+      }
       return (total, rs.headers.contentType?.mimeType);
+    } on TimeoutException {
+      _setReason('sondeo: timeout');
+      return null;
     } catch (e) {
-      debugPrint('TurboProxy: probe falló: $e');
+      _setReason('sondeo: no conecta ($e)');
       return null;
     } finally {
       client.close(force: true);
@@ -135,10 +309,9 @@ class TurboProxy {
   Future<void> _handle(HttpRequest req) async {
     try {
       final segments = req.uri.pathSegments;
-      final entry =
-          (segments.length == 2 && segments[0] == 't')
-              ? _entries[segments[1]]
-              : null;
+      final entry = (segments.length == 2 && segments[0] == 't')
+          ? _entries[segments[1]]
+          : null;
       if (entry == null) {
         req.response.statusCode = HttpStatus.notFound;
         await req.response.close();
@@ -223,13 +396,22 @@ class TurboProxy {
 }
 
 class _Entry {
-  final String url;
-  final Map<String, String> headers;
+  final TurboProxy proxy;
+
+  /// URL tal cual la conoce la app (con hostname). Se conserva para poder
+  /// re-resolver el DNS si la IP cacheada deja de responder.
+  final String originalUrl;
+
+  /// URI efectiva de descarga (puede apuntar a la IP tras el bypass de DNS).
+  Uri uri;
+  Map<String, String> headers;
   final int length;
   final String? contentType;
   final HttpClient client;
   _Entry({
-    required this.url,
+    required this.proxy,
+    required this.originalUrl,
+    required this.uri,
     required this.headers,
     required this.length,
     required this.contentType,
@@ -346,13 +528,11 @@ class _Pipeline {
     Object? lastErr;
 
     for (int attempt = 0; attempt < 6 && !_cancelled; attempt++) {
+      e.proxy._activeConnections++;
       try {
-        final rq = await e.client.getUrl(Uri.parse(e.url));
+        final rq = await e.client.getUrl(e.uri);
         e.headers.forEach((k, v) => rq.headers.set(k, v));
-        rq.headers.set(
-          HttpHeaders.rangeHeader,
-          'bytes=${startB + got}-$endB',
-        );
+        rq.headers.set(HttpHeaders.rangeHeader, 'bytes=${startB + got}-$endB');
         final rs = await rq.close().timeout(const Duration(seconds: 20));
         if (rs.statusCode != HttpStatus.partialContent) {
           await rs.drain<void>().catchError((_) {});
@@ -361,6 +541,7 @@ class _Pipeline {
         await for (final part in rs.timeout(const Duration(seconds: 25))) {
           builder.add(part);
           got += part.length;
+          e.proxy._noteBytes(part.length);
           if (_cancelled) throw const HttpException('cancelado');
         }
         if (got >= expected) break; // trozo completo
@@ -371,7 +552,12 @@ class _Pipeline {
         lastErr = err;
         e.noteFailure();
         if (_cancelled) break;
+        // Si la IP resuelta por DoH dejó de responder, la marcamos y
+        // re-resolvemos el host antes del siguiente intento.
+        if (err is SocketException) await _refreshTargetOnSocketError();
         await Future.delayed(Duration(milliseconds: 250 * (attempt + 1)));
+      } finally {
+        e.proxy._activeConnections--;
       }
       if (got >= expected) break;
     }
@@ -384,6 +570,21 @@ class _Pipeline {
           : Uint8List.sublistView(bytes, 0, expected);
     }
     throw HttpException('chunk $index falló: $lastErr');
+  }
+
+  /// La IP obtenida por DoH puede quedarse muerta (balanceadores). Se descarta
+  /// y se pide otra; si no hay, se vuelve al hostname original.
+  Future<void> _refreshTargetOnSocketError() async {
+    try {
+      final original = Uri.parse(e.originalUrl);
+      if (e.uri.host == original.host) return; // no había bypass activo
+      DnsBypassUtils.reportFailedIp(original.host, e.uri.host);
+      final refreshed = await DnsBypassUtils.bypassUrl(e.originalUrl, e.headers);
+      e.uri = refreshed.uri;
+      e.headers = refreshed.headers;
+    } catch (_) {
+      // Sin bypass utilizable: seguir con lo que haya.
+    }
   }
 
   void cancel() {

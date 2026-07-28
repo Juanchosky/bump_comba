@@ -20,6 +20,7 @@ import 'video_player_screen.dart';
 import 'subscription_screen.dart';
 import '../utils/colors.dart';
 import '../services/dynamic_scraper_service.dart';
+import '../services/turbo_proxy.dart';
 import '../services/cast_service.dart';
 import '../services/network_quality_service.dart';
 import '../services/ad_service.dart';
@@ -224,11 +225,26 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
           await mpv.setProperty('user-agent', 'VLC/3.0.20 LibVLC/3.0.20');
         }
 
+        final prewarmHeaders = _buildPrewarmHeaders(widget.item.url);
+
+        // TURBO: este player precalentado es el que ACABA reproduciendo la
+        // mayoría de las veces (el reproductor a pantalla completa lo adopta y
+        // se salta su propio open()). Si el turbo no se aplica AQUÍ, no se
+        // aplica nunca. El timeout es de 7s porque el bypass de DNS por DoH
+        // puede tardar unos segundos la primera vez (después la IP va cacheada).
+        String prewarmUrl = widget.item.url;
+        if (!CastService().isCasting.value) {
+          try {
+            final proxied = await TurboProxy.instance
+                .wrap(widget.item.url, prewarmHeaders)
+                .timeout(const Duration(seconds: 7));
+            if (proxied != null) prewarmUrl = proxied;
+          } catch (e) {
+            debugPrint('Prewarm: TurboProxy no disponible: $e');
+          }
+        }
         await _prewarmPlayer!.open(
-          Media(
-            widget.item.url,
-            httpHeaders: _buildPrewarmHeaders(widget.item.url),
-          ),
+          Media(prewarmUrl, httpHeaders: prewarmHeaders),
           play: false,
         );
       } catch (e) {
