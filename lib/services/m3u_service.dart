@@ -1200,7 +1200,7 @@ class M3UService extends ChangeNotifier {
     final cachedItems = await _loadBinaryCache(ignoreExpiration: true);
     if (cachedItems != null && cachedItems.isNotEmpty) {
       final custom = await fetchCustomContent(forceRefresh: false);
-      await _indexItems([...custom, ...cachedItems]);
+      await _indexItems(_interleaveCustomContent(cachedItems, custom));
       return true;
     }
 
@@ -1331,7 +1331,7 @@ class M3UService extends ChangeNotifier {
       final cachedItems = await _loadBinaryCache();
       if (cachedItems != null && cachedItems.isNotEmpty) {
         final custom = await fetchCustomContent(forceRefresh: forceRefresh);
-        await _indexItems([...custom, ...cachedItems]);
+        await _indexItems(_interleaveCustomContent(cachedItems, custom));
         return true;
       }
     }
@@ -1395,7 +1395,7 @@ class M3UService extends ChangeNotifier {
 
     // 1. Fetch custom content and merge
     final customItems = await fetchCustomContent(forceRefresh: forceRefresh);
-    final allItems = [...customItems, ...allRawItems];
+    final allItems = _interleaveCustomContent(allRawItems, customItems);
 
     // 2. Full background indexing
     await _indexItems(allItems);
@@ -1421,7 +1421,7 @@ class M3UService extends ChangeNotifier {
         final cachedItems = await _loadBinaryCache();
         if (cachedItems != null && cachedItems.isNotEmpty) {
           final custom = await fetchCustomContent(forceRefresh: forceRefresh);
-          await _indexItems([...custom, ...cachedItems]);
+          await _indexItems(_interleaveCustomContent(cachedItems, custom));
           return true;
         }
       }
@@ -1440,7 +1440,7 @@ class M3UService extends ChangeNotifier {
         final fallback = await _loadBinaryCache(ignoreExpiration: true);
         if (fallback != null && fallback.isNotEmpty) {
           final custom = await fetchCustomContent(forceRefresh: false);
-          await _indexItems([...custom, ...fallback]);
+          await _indexItems(_interleaveCustomContent(fallback, custom));
           return true;
         }
         // Si tampoco hay caché, mantener los items actuales si existen
@@ -1483,7 +1483,7 @@ class M3UService extends ChangeNotifier {
           ];
 
           final custom = await fetchCustomContent(forceRefresh: false);
-          await _indexItems([...custom, ...merged]);
+          await _indexItems(_interleaveCustomContent(merged, custom));
           // NO guardar en caché el merge parcial — mantener el caché completo
           return true;
         }
@@ -1491,7 +1491,7 @@ class M3UService extends ChangeNotifier {
       }
 
       final custom = await fetchCustomContent(forceRefresh: forceRefresh);
-      await _indexItems([...custom, ...items]);
+      await _indexItems(_interleaveCustomContent(items, custom));
 
       // Guardar en cache para la próxima vez
       _saveBinaryCache(items);
@@ -1508,7 +1508,7 @@ class M3UService extends ChangeNotifier {
         final cachedItems = await _loadBinaryCache();
         if (cachedItems != null && cachedItems.isNotEmpty) {
           final custom = await fetchCustomContent(forceRefresh: forceRefresh);
-          await _indexItems([...custom, ...cachedItems]);
+          await _indexItems(_interleaveCustomContent(cachedItems, custom));
           return true;
         }
 
@@ -1871,12 +1871,122 @@ class M3UService extends ChangeNotifier {
   }
 
   // ===========================================================================
+  // INTELLIGENT CUSTOM CONTENT INTERLEAVING
+  // ===========================================================================
+
+  /// Mezcla los items personalizados (Supabase custom_content) de forma
+  /// inteligente entre los items regulares, en vez de ponerlos siempre al
+  /// principio.
+  ///
+  /// Estrategia:
+  /// 1. Agrupa custom items por categoría.
+  /// 2. Para cada categoría, los inserta a intervalos regulares entre los items
+  ///    de esa misma categoría, empezando DESPUÉS de los primeros items
+  ///    regulares (nunca en posición 0).
+  /// 3. Los items cuya categoría no coincide con ninguna categoría existente se
+  ///    distribuyen uniformemente a lo largo de toda la lista final.
+  /// 4. Si no hay items regulares, los custom se devuelven tal cual.
+  List<M3UItem> _interleaveCustomContent(
+    List<M3UItem> regularItems,
+    List<M3UItem> customItems,
+  ) {
+    if (customItems.isEmpty) return regularItems;
+    if (regularItems.isEmpty) return customItems;
+
+    // ── Paso 1: Agrupar custom items por categoría ──
+    final Map<String, List<M3UItem>> customByCategory = {};
+    for (final item in customItems) {
+      customByCategory.putIfAbsent(item.category, () => []).add(item);
+    }
+
+    // ── Paso 2: Construir mapa de posiciones de items regulares por categoría ──
+    // Para cada categoría, guardamos los índices donde aparecen items regulares.
+    final Map<String, List<int>> regularIndicesByCategory = {};
+    for (int i = 0; i < regularItems.length; i++) {
+      final cat = regularItems[i].category;
+      regularIndicesByCategory.putIfAbsent(cat, () => []).add(i);
+    }
+
+    // ── Paso 3: Calcular inserciones por categoría ──
+    // Para cada categoría que tiene custom items Y items regulares, calculamos
+    // las posiciones donde insertarlos (distribuidos uniformemente, nunca al
+    // principio de la categoría).
+    final List<M3UItem> result = List<M3UItem>.from(regularItems);
+    final List<M3UItem> orphanCustom = []; // custom sin categoría correspondiente
+    int insertionOffset = 0; // compensación acumulada por inserciones previas
+
+    // Procesar categorías en orden determinista
+    final sortedCategories = customByCategory.keys.toList()..sort();
+
+    for (final cat in sortedCategories) {
+      final catCustom = customByCategory[cat]!;
+      final catRegularIndices = regularIndicesByCategory[cat];
+
+      if (catRegularIndices == null || catRegularIndices.isEmpty) {
+        // No hay items regulares de esta categoría → huérfanos
+        orphanCustom.addAll(catCustom);
+        continue;
+      }
+
+      final int regularCount = catRegularIndices.length;
+      final int customCount = catCustom.length;
+
+      // Espaciado: insertar un custom item cada N items regulares de la
+      // categoría, empezando mínimo después del 3.º item regular (o después
+      // de la mitad si hay pocos).
+      final int minStartOffset = (regularCount < 6) ? (regularCount ~/ 2).clamp(1, regularCount) : 3;
+      final int availableSlots = regularCount - minStartOffset;
+
+      if (availableSlots <= 0) {
+        // Muy pocos items regulares → insertar al final de la categoría
+        for (int c = 0; c < customCount; c++) {
+          final insertAt = catRegularIndices.last + 1 + insertionOffset + c;
+          result.insert(insertAt.clamp(0, result.length), catCustom[c]);
+          insertionOffset++;
+        }
+        continue;
+      }
+
+      // Distribuir uniformemente en el rango disponible
+      final double step = availableSlots / (customCount + 1);
+
+      for (int c = 0; c < customCount; c++) {
+        // Posición dentro de los índices regulares de esta categoría
+        final int slotInCategory = minStartOffset + (step * (c + 1)).round().clamp(0, availableSlots);
+        final int regularIdx = slotInCategory < catRegularIndices.length
+            ? catRegularIndices[slotInCategory]
+            : catRegularIndices.last;
+        // Insertar DESPUÉS del item regular en esa posición
+        final int insertAt = (regularIdx + 1 + insertionOffset).clamp(0, result.length);
+        result.insert(insertAt, catCustom[c]);
+        insertionOffset++;
+      }
+    }
+
+    // ── Paso 4: Distribuir huérfanos uniformemente en toda la lista ──
+    if (orphanCustom.isNotEmpty) {
+      final int totalLen = result.length;
+      final double orphanStep = totalLen / (orphanCustom.length + 1);
+      // Insertar empezando como mínimo después del 20% de la lista
+      final int orphanMinStart = (totalLen * 0.2).round().clamp(1, totalLen);
+
+      for (int i = 0; i < orphanCustom.length; i++) {
+        int pos = orphanMinStart + (orphanStep * (i + 1)).round();
+        pos = pos.clamp(1, result.length); // nunca en posición 0
+        result.insert(pos, orphanCustom[i]);
+      }
+    }
+
+    return result;
+  }
+
+  // ===========================================================================
   // OUTPUT PROCESSING — ROBUST-2
   // ===========================================================================
 
   bool _processOutput(List<M3UItem> parsedItems, List<M3UItem> customItems) {
-    // Merge custom items with M3U items
-    final combinedItems = [...customItems, ...parsedItems];
+    // Merge custom items with M3U items — interleaved intelligently
+    final combinedItems = _interleaveCustomContent(parsedItems, customItems);
 
     // Update global state via a unified indexing call.
     // scheduleRecentCompute: false porque _processOutput ya tiene su propio
