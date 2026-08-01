@@ -595,8 +595,9 @@ class TurboProxy {
         session._effectiveUri = pre.effectiveUri;
         if (pre.length != null && pre.length! > 0) session.length = pre.length!;
         if (pre.contentType != null) session.contentType = pre.contentType;
-        if (pre.supportsRange != null)
+        if (pre.supportsRange != null) {
           session.supportsRange = pre.supportsRange!;
+        }
         session._primedBytes = pre.primedBytes;
       }
 
@@ -657,19 +658,11 @@ class TurboProxy {
     }
   }
 
-  /// FASE 1 & FASE 2: STREAMING DIRECTO PASSTHROUGH CON CONMUTACIÓN MID-STREAM EXACTA.
+  /// FASE 1 & FASE 2: STREAMING DIRECTO PASSTHROUGH OPTIMIZADO AL 100%.
   ///
-  /// Cuando el rango pedido por el reproductor es abierto (reproducción
-  /// normal desde `start`, sin fin explícito), esta función NO hace una
-  /// única petición abierta ("bytes=start-") al origen. En su lugar pide
-  /// "piernas" acotadas de 2 MB ("bytes=start-start+2MB") de forma
-  /// transparente para el reproductor (que sigue viendo un único stream
-  /// continuo). Muchos CDNs entregan el primer byte más rápido ante un
-  /// Range acotado que ante uno abierto, lo que reduce el TTFB inicial.
-  ///
-  /// Si el reproductor pidió un rango con fin explícito (p. ej. una
-  /// descarga parcial puntual), se respeta tal cual en una sola petición,
-  /// igual que antes.
+  /// Transmite en un solo flujo continuo TCP directamente desde el origen sin
+  /// troceado artificial (legging), logrando latencia cero y velocidad máxima.
+  /// Solo conmuta a Turbo en emergencias reales (stall > 2.5s o velocidad < 1 Mbps por > 3s).
   Future<void> _servePassthrough(
     HttpRequest req,
     _Session session,
@@ -691,59 +684,18 @@ class TurboProxy {
       if (m != null) explicitEnd = int.parse(m.group(2)!);
     }
 
-    // Tamaño de las piernas acotadas que pedimos al origen mientras estamos
-    // en modo Passthrough con rango abierto. La primera es deliberadamente
-    // más chica (512 KB) para que ese primer bloque llegue lo antes
-    // posible; las siguientes ya van a 2 MB para amortizar el overhead de
-    // hacer una petición HTTP nueva por pierna.
-    const firstLegBytes = 512 * 1024; // 512 KB
-    const laterLegBytes = 2 * 1024 * 1024; // 2 MB
-
-    // Flush por lote en vez de por cada chunk: en Android cada
-    // resp.flush() es una llamada al socket, y hacerla en cada trocito de
-    // ~16-64 KB que llega genera muchísimo overhead sin acelerar el
-    // arranque en nada. Acumulamos hasta 128 KB o 50 ms, lo que ocurra
-    // primero, y forzamos el flush cuando de verdad importa (cabeceras,
-    // primer byte, fin de pierna).
-    const flushBatchBytes = 128 * 1024;
-    const flushBatchMs = 50;
-    int pendingFlushBytes = 0;
-    var lastFlushAt = DateTime.now();
-    Future<void> maybeFlush({bool force = false}) async {
-      final elapsed = DateTime.now().difference(lastFlushAt).inMilliseconds;
-      if (!force &&
-          pendingFlushBytes < flushBatchBytes &&
-          elapsed < flushBatchMs) {
-        return;
-      }
-      try {
-        await resp.flush();
-      } catch (_) {}
-      pendingFlushBytes = 0;
-      lastFlushAt = DateTime.now();
-    }
-
     int currentOffset = start;
-    final tracker = _SlidingSpeedTracker(windowMs: 250);
+    final tracker = _SlidingSpeedTracker(windowMs: 500);
     final startTime = DateTime.now();
     final requestStartTime = DateTime.now();
     int lowSpeedConsecutiveCount = 0;
     var switchedToTurbo = false;
     var headersSent = false;
-    // Se activa cuando la primera pierna confirma soporte de Range (206).
-    // A partir de ahí seguimos troceando en piernas acotadas; si el origen
-    // no soporta Range (200), servimos todo en una sola pierna como antes.
-    var legging = false;
 
-    var switchThresholdMs = 250;
-
-    // Si ya tenemos bytes primados de preconnect() para esta URL y estamos
-    // arrancando limpio desde el byte 0, los entregamos de inmediato: cero
-    // espera de red, porque ya están en memoria desde que el usuario vio
-    // el póster.
+    // Entregar bytes primados de preconnect() si están disponibles
     if (start == 0 && explicitEnd == null && session._primedBytes != null) {
       final primed = session._primedBytes!;
-      session._primedBytes = null; // consumir una sola vez
+      session._primedBytes = null;
       headersSent = true;
       resp.statusCode =
           rangeHeader != null ? HttpStatus.partialContent : HttpStatus.ok;
@@ -766,213 +718,127 @@ class TurboProxy {
       resp.add(primed);
       await resp.flush();
       currentOffset = primed.length;
-      pendingFlushBytes = 0;
-      lastFlushAt = DateTime.now();
       if (session.ttfbMs == 0) {
         session.ttfbMs =
             DateTime.now().difference(requestStartTime).inMilliseconds;
         session.updateMetrics();
       }
-      if (session.supportsRange) legging = true;
       _setReason('activo (primeros bytes servidos desde preconnect, TTFB≈0)');
     }
 
-    // El umbral de conmutación se acorta si el histórico indica que este
-    // host siempre necesita Turbo (90%+ de sesiones): no hace falta
-    // esperar tanto para decidir. Se calcula una sola vez, con lo que ya
-    // se sepa del host/sesión en este punto (puede refinarse tras la
-    // primera pierna real si todavía no había datos de soporte de Range).
-    bool computeEarlySwitch() =>
-        session.supportsTurbo && session.profile.shouldPreemptivelyTurbo;
-    if (computeEarlySwitch()) {
-      switchThresholdMs = 100;
-      _setReason(
-        'umbral reducido a ${switchThresholdMs}ms (histórico >90% Turbo)',
-      );
-    }
-
     try {
-      while (!closed && !switchedToTurbo) {
-        final isFirstLeg = !headersSent;
-        final legSize = isFirstLeg ? firstLegBytes : laterLegBytes;
+      final targetUri = await session.getEffectiveTarget();
+      final rq = await session.client.getUrl(targetUri);
+      session.headers.forEach((k, v) => rq.headers.set(k, v));
+      rq.headers.set('Accept-Encoding', 'identity');
 
-        final legRangeHeader =
-            explicitEnd != null
-                ? rangeHeader!
-                : 'bytes=$currentOffset-'
-                    '${session.length > 0 ? math.min(currentOffset + legSize - 1, session.length - 1) : currentOffset + legSize - 1}';
+      final reqRange = explicitEnd != null
+          ? rangeHeader!
+          : (currentOffset > 0 ? 'bytes=$currentOffset-' : (rangeHeader ?? 'bytes=0-'));
+      rq.headers.set(HttpHeaders.rangeHeader, reqRange);
 
-        final targetUri = await session.getEffectiveTarget();
-        final rq = await session.client.getUrl(targetUri);
-        session.headers.forEach((k, v) => rq.headers.set(k, v));
-        rq.headers.set('Accept-Encoding', 'identity');
-        rq.headers.set(HttpHeaders.rangeHeader, legRangeHeader);
+      final rs = await rq.close().timeout(const Duration(seconds: 12));
 
-        final rs = await rq.close().timeout(const Duration(seconds: 10));
-
-        if (rs.statusCode == HttpStatus.partialContent) {
-          session.supportsRange = true;
-          final cr = rs.headers.value(HttpHeaders.contentRangeHeader);
-          if (cr != null) {
-            final slash = cr.lastIndexOf('/');
-            if (slash != -1) {
-              final total = int.tryParse(cr.substring(slash + 1).trim());
-              if (total != null && total > 0) session.length = total;
-            }
-          }
-          if (rs.headers.contentType?.mimeType != null) {
-            session.contentType = rs.headers.contentType!.mimeType;
-          }
-          if (isFirstLeg && explicitEnd == null) legging = true;
-        } else if (rs.statusCode == HttpStatus.ok) {
-          if (rangeHeader != null) {
-            session.profile.noteFailure();
-            _markProfilesDirty();
-          }
-          session.supportsRange = false;
-          legging = false;
-          if (rs.contentLength > 0) session.length = rs.contentLength;
-        }
-
-        if (isFirstLeg && switchThresholdMs != 100 && computeEarlySwitch()) {
-          // Recién ahora (tras la primera pierna real) se confirmó soporte
-          // de Range; si no veníamos de bytes primados, es la primera vez
-          // que podemos saberlo con certeza.
-          switchThresholdMs = 100;
-          _setReason(
-            'umbral reducido a ${switchThresholdMs}ms (histórico >90% Turbo)',
-          );
-        }
-
-        if (!headersSent) {
-          headersSent = true;
-          resp.statusCode =
-              rangeHeader != null ? HttpStatus.partialContent : rs.statusCode;
-
-          if (legging) {
-            // OJO: el Content-Length de ESTA pierna acotada no es el largo
-            // total que enviaremos al reproductor (seguirán llegando más
-            // piernas después). Construimos nosotros las cabeceras en vez
-            // de reenviar las del origen tal cual.
-            if (session.contentType != null) {
-              resp.headers.set(
-                HttpHeaders.contentTypeHeader,
-                session.contentType!,
-              );
-            }
-            resp.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
-            if (session.length > 0) {
-              resp.headers.set(
-                HttpHeaders.contentLengthHeader,
-                (session.length - start).toString(),
-              );
-              if (rangeHeader != null) {
-                resp.headers.set(
-                  HttpHeaders.contentRangeHeader,
-                  'bytes $start-${session.length - 1}/${session.length}',
-                );
-              }
-            }
-            // Si el largo total aún no se conoce, se omite Content-Length
-            // y Dart sirve la respuesta en chunked transfer-encoding.
-          } else {
-            // Sin soporte confirmado de Range, o pierna única con fin
-            // explícito: reenviamos las cabeceras del origen tal cual.
-            rs.headers.forEach((name, values) {
-              if (name.toLowerCase() != 'transfer-encoding') {
-                for (final val in values) {
-                  resp.headers.add(name, val);
-                }
-              }
-            });
-          }
-
-          // ENVIAR CABECERAS INMEDIATAMENTE AL REPRODUCTOR (< 10 ms)
-          await resp.flush();
-
-          // MEDICIÓN DE TTFB (Time To First Byte entregado al reproductor)
-          if (session.ttfbMs == 0) {
-            session.ttfbMs =
-                DateTime.now().difference(requestStartTime).inMilliseconds;
-            session.updateMetrics();
+      if (rs.statusCode == HttpStatus.partialContent) {
+        session.supportsRange = true;
+        final cr = rs.headers.value(HttpHeaders.contentRangeHeader);
+        if (cr != null) {
+          final slash = cr.lastIndexOf('/');
+          if (slash != -1) {
+            final total = int.tryParse(cr.substring(slash + 1).trim());
+            if (total != null && total > 0) session.length = total;
           }
         }
-
-        final legStartOffset = currentOffset;
-        final completer = Completer<void>();
-        StreamSubscription<List<int>>? subscription;
-        subscription = rs.listen(
-          (chunk) {
-            if (closed || completer.isCompleted) return;
-
-            resp.add(chunk);
-            try {
-              currentOffset += chunk.length;
-              pendingFlushBytes += chunk.length;
-              unawaited(maybeFlush());
-            } catch (_) {
-              closed = true;
-              return;
-            }
-
-            _noteBytes(chunk.length);
-            tracker.add(chunk.length);
-
-            final elapsedTotal =
-                DateTime.now().difference(startTime).inMilliseconds;
-            if (elapsedTotal >= switchThresholdMs && session.supportsTurbo) {
-              final speed = tracker.mbps;
-              final stalled = tracker.msSinceLastChunk > 600;
-              final requiredBitrate = session.targetBitrateMbps;
-
-              if (speed < requiredBitrate) {
-                lowSpeedConsecutiveCount++;
-              } else {
-                lowSpeedConsecutiveCount = 0;
-              }
-
-              if (stalled || lowSpeedConsecutiveCount >= 2) {
-                switchedToTurbo = true;
-                session.turboActivated = true;
-                session.turboActivationTimeSec = (elapsedTotal / 1000).round();
-                session.turboInterventions++;
-                session._turboStartTime = DateTime.now();
-                session.updateMetrics();
-
-                _setReason(
-                  stalled
-                      ? 'acelerando mid-stream (socket origen pausado >600ms)'
-                      : 'acelerando mid-stream (${speed.toStringAsFixed(1)} Mbps < ${requiredBitrate.toStringAsFixed(1)} Mbps requeridos)',
-                );
-                subscription?.pause();
-                if (!completer.isCompleted) completer.complete();
-              }
-            }
-          },
-          onError: (err) {
-            if (!completer.isCompleted) completer.completeError(err);
-          },
-          onDone: () {
-            if (!completer.isCompleted) completer.complete();
-          },
-          cancelOnError: true,
-        );
-
-        await completer.future.catchError((_) {});
-        await subscription.cancel();
-        await maybeFlush(force: true);
-
-        if (switchedToTurbo || closed) break;
-        if (explicitEnd != null)
-          break; // pierna única ya cubría exactamente lo pedido
-        if (!legging)
-          break; // sin Range: ya se envió el cuerpo completo en esta pierna
-        if (session.length > 0 && currentOffset >= session.length)
-          break; // fin de archivo
-        if (currentOffset == legStartOffset)
-          break; // sin progreso, evita bucle infinito
-        // seguimos con la siguiente pierna acotada, transparente para el reproductor
+        if (rs.headers.contentType?.mimeType != null) {
+          session.contentType = rs.headers.contentType!.mimeType;
+        }
+      } else if (rs.statusCode == HttpStatus.ok) {
+        if (rangeHeader != null) {
+          session.profile.noteFailure();
+          _markProfilesDirty();
+        }
+        session.supportsRange = false;
+        if (rs.contentLength > 0) session.length = rs.contentLength;
       }
+
+      if (!headersSent) {
+        headersSent = true;
+        resp.statusCode = rs.statusCode;
+        rs.headers.forEach((name, values) {
+          if (name.toLowerCase() != 'transfer-encoding') {
+            for (final val in values) {
+              resp.headers.add(name, val);
+            }
+          }
+        });
+        await resp.flush();
+
+        if (session.ttfbMs == 0) {
+          session.ttfbMs =
+              DateTime.now().difference(requestStartTime).inMilliseconds;
+          session.updateMetrics();
+        }
+      }
+
+      final completer = Completer<void>();
+      StreamSubscription<List<int>>? subscription;
+      subscription = rs.listen(
+        (chunk) {
+          if (closed || completer.isCompleted) return;
+
+          resp.add(chunk);
+          currentOffset += chunk.length;
+          _noteBytes(chunk.length);
+          tracker.add(chunk.length);
+
+          final elapsedTotal =
+              DateTime.now().difference(startTime).inMilliseconds;
+
+          // Solo evaluar conmutación a Turbo si han pasado al menos 3s,
+          // el archivo mide > 30MB y el host soporta rangos.
+          if (elapsedTotal >= 3000 &&
+              session.supportsTurbo &&
+              session.length > 30 * 1024 * 1024) {
+            final speed = tracker.mbps;
+            final msStalled = tracker.msSinceLastChunk;
+            final isStalled = msStalled > 2500; // > 2.5s congelado
+
+            if (speed < 1.0) {
+              lowSpeedConsecutiveCount++;
+            } else {
+              lowSpeedConsecutiveCount = 0;
+            }
+
+            // Solo conmutar en emergencia real (stall > 2.5s o velocidad < 1 Mbps por > 3s)
+            if (isStalled || lowSpeedConsecutiveCount >= 12) {
+              switchedToTurbo = true;
+              session.turboActivated = true;
+              session.turboActivationTimeSec = (elapsedTotal / 1000).round();
+              session.turboInterventions++;
+              session._turboStartTime = DateTime.now();
+              session.updateMetrics();
+
+              _setReason(
+                isStalled
+                    ? 'acelerando mid-stream (socket origen congelado ${msStalled}ms)'
+                    : 'acelerando mid-stream (${speed.toStringAsFixed(1)} Mbps < 1.0 Mbps)',
+              );
+              subscription?.pause();
+              if (!completer.isCompleted) completer.complete();
+            }
+          }
+        },
+        onError: (err) {
+          if (!completer.isCompleted) completer.completeError(err);
+        },
+        onDone: () {
+          if (!completer.isCompleted) completer.complete();
+        },
+        cancelOnError: true,
+      );
+
+      await completer.future.catchError((_) {});
+      await subscription.cancel();
 
       if (switchedToTurbo && !closed && session.supportsTurbo) {
         session.mode = _ProxyMode.turbo;
@@ -984,10 +850,9 @@ class TurboProxy {
             if (data == null) break;
             if (closed) break;
             resp.add(data);
-            pendingFlushBytes += data.length;
-            await maybeFlush();
+            await resp.flush();
           }
-          await maybeFlush(force: true);
+          await resp.flush();
         } catch (e) {
           debugPrint('TurboProxy: error en pipeline turbo mid-stream: $e');
         } finally {
