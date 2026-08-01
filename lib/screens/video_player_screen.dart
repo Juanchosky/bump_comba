@@ -610,26 +610,21 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     final p = _player;
     _player = null;
 
-    // Si no había player ni textura activos (p.ej. la PRIMERA reproducción), no
-    // hay buffers nativos que drenar: nos saltamos las dos esperas de 600ms que
-    // solo hacen falta al reemplazar un player ya existente. Ahorra ~1.2s en el
-    // arranque en frío, que es justo cuando el usuario está esperando.
-    if (p == null && _videoControllerNotifier.value == null) {
-      return;
-    }
-
-    try {
-      p?.pause();
-    } catch (_) {}
-
-    // CRÍTICO: Liberar el VideoController PRIMERO y esperar a que el
-    // BLASTBufferQueue drene sus 8 buffers antes de tocar MPV.
-    // Sin esto, el nuevo VideoController encuentra buffers retenidos.
+    // Liberar síncronamente el VideoController para desenganchar la textura
     _videoControllerNotifier.value = null;
-    await Future.delayed(const Duration(milliseconds: 600));
 
+    if (p != null) {
+      unawaited(_asyncDisposeOldPlayer(p));
+    }
+  }
+
+  Future<void> _asyncDisposeOldPlayer(Player p) async {
     try {
-      final mpv = p?.platform as dynamic;
+      p.pause();
+    } catch (_) {}
+    await Future.delayed(const Duration(milliseconds: 300));
+    try {
+      final mpv = p.platform as dynamic;
       mpv?.setProperty('msg-level', 'all=no');
       mpv?.setProperty('log-level', 'no');
       mpv?.setProperty('aid', 'no');
@@ -637,19 +632,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       mpv?.setProperty('sid', 'no');
       mpv?.setProperty('ao', 'null');
       mpv?.setProperty('vo', 'null');
+      p.stop();
     } catch (_) {}
-
+    await Future.delayed(const Duration(milliseconds: 300));
     try {
-      p?.stop();
-    } catch (_) {}
-    await Future.delayed(const Duration(milliseconds: 600));
-
-    if (p != null) {
-      try {
-        await p.dispose();
-      } catch (e) {
-        debugPrint('Error disposing player in _cleanupPlayer: $e');
-      }
+      await p.dispose();
+    } catch (e) {
+      debugPrint('Error disposing player in background: $e');
     }
   }
 
@@ -808,10 +797,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         } catch (_) {}
       }
 
-      // ¿Había una textura de video activa antes de esta carga? Si no (primera
-      // reproducción), no hace falta esperar a que se liberen buffers previos.
-      final bool hadPreviousController = _videoControllerNotifier.value != null;
-
       // Liberar el player anterior también cuando adoptamos uno precalentado
       // para el siguiente episodio: sin esto quedarían dos players vivos.
       if (!isPrewarmed || (_player != null && _player != prewarmedForItem)) {
@@ -895,29 +880,21 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             enableHardwareAcceleration: true,
           ),
         );
-        _videoControllerNotifier.value = null;
-        // Esperar a que el BLASTBufferQueue libere los 8 buffers anteriores.
-        // El cleanup mejorado de _cleanupPlayer ya drena buffers nativos, por lo que 200ms es suficiente.
-        // En la primera reproducción (sin textura previa) no hay buffers que
-        // liberar, así que nos saltamos esta espera para arrancar antes.
-        if (hadPreviousController) {
-          await Future.delayed(const Duration(milliseconds: 200));
-        }
         if (mounted && !CastService().isCasting.value) {
           _videoControllerNotifier.value = currentController;
+        }
 
-          // iOS FIX: AVFoundation registra la textura de video en el SIGUIENTE
-          // frame tras montar el widget Video. Si player.open() se llama antes
-          // de ese frame, el stream arranca sin superficie → audio OK, video negro.
-          // Esperamos exactamente un frame para que Flutter renderice el Video
-          // widget con el controller antes de abrir el media.
-          if (defaultTargetPlatform == TargetPlatform.iOS && mounted) {
-            final frameReady = Completer<void>();
-            WidgetsBinding.instance.addPostFrameCallback(
-              (_) => frameReady.complete(),
-            );
-            await frameReady.future;
-          }
+        // iOS FIX: AVFoundation registra la textura de video en el SIGUIENTE
+        // frame tras montar el widget Video. Si player.open() se llama antes
+        // de ese frame, el stream arranca sin superficie → audio OK, video negro.
+        // Esperamos exactamente un frame para que Flutter renderice el Video
+        // widget con el controller antes de abrir el media.
+        if (defaultTargetPlatform == TargetPlatform.iOS && mounted) {
+          final frameReady = Completer<void>();
+          WidgetsBinding.instance.addPostFrameCallback(
+            (_) => frameReady.complete(),
+          );
+          await frameReady.future;
         }
       } else {
         // Durante Cast, nos aseguramos que no haya controlador de video activo en el móvil.
@@ -944,6 +921,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       // Aplicarlo de forma bloqueante aquí mejora el time-to-first-frame y la
       // fluidez inicial. Son llamadas nativas rápidas; el retraso extra antes de
       // open() es mínimo y se compensa con creces.
+      // Configurar MPV ANTES de open() en paralelo (Future.wait) para 0 latencia.
       await (() async {
         final activePlayer = _player;
         if (activePlayer == null) return;
@@ -952,193 +930,96 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           final mpv = activePlayer.platform as dynamic;
           if (mpv == null) return;
 
-          // -- BUFFER & CACHE STRATEGY (Optimization for Stuttering) --
-          await mpv.setProperty('cache', 'yes');
-          await mpv.setProperty('cache-pause', 'yes');
-          await mpv.setProperty('cache-on-disk', 'no');
-          await mpv.setProperty('cache-pause-wait', _isLiveContent ? '1' : '2');
-          await mpv.setProperty('cache-pause-initial', 'yes');
-          await mpv.setProperty(
-            'stream-buffer-size',
-            '4194304',
-          ); // 4MB buffer for network
-          // Timeout más agresivo — si el servidor no responde en 10s, es que está caído
-          // El reload automático probará el siguiente servidor rápidamente
-          await mpv.setProperty('network-timeout', '10');
-          await mpv.setProperty('http-header-fields', 'Connection: keep-alive');
-
-          // Permitir buscar dentro de datos ya descargados (evita re-fetch al hacer seek)
-          await mpv.setProperty('demuxer-seekable-cache', 'yes');
-
-          if (_isLiveContent) {
-            await mpv.setProperty('cache-secs', '60');
-            await mpv.setProperty(
-              'demuxer-max-bytes',
-              '67108864',
-            ); // 64MB for Live
-            await mpv.setProperty('demuxer-max-back-bytes', '33554432');
-            await mpv.setProperty('demuxer-readahead-secs', '20');
-
-            // Calidad adaptativa HLS automática
-            await mpv.setProperty('hls-bitrate', 'auto');
-
-            await mpv.setProperty('hls-forward-cache-secs', '30');
-            await mpv.setProperty('hls-back-cache-secs', '10');
-            await mpv.setProperty('demuxer-lavf-hacks', 'yes');
-            await mpv.setProperty('demuxer-cache-wait', 'no');
-            await mpv.setProperty(
-              'deinterlace',
-              'auto',
-            ); // Critical for Live TV
-            // protocol_whitelist is enabled by default by FFmpeg
-          } else {
-            // VOD Content (Movies/Series)
-            // En gama baja limitamos los buffers en RAM: 256 MB de demuxer
-            // pueden provocar kills por memoria en dispositivos de 2–3 GB.
-            final lowPerf = PerformanceService().isLowPerformance;
-            await mpv.setProperty(
-              'cache-secs',
-              '300',
-            ); // 5 minutos de buffer máximo
-            await mpv.setProperty(
-              'demuxer-max-bytes',
-              lowPerf ? '67108864' : '268435456', // 64 MB / 256 MB
-            );
-            await mpv.setProperty(
-              'demuxer-max-back-bytes',
-              lowPerf ? '16777216' : '67108864', // 16 MB / 64 MB
-            );
-            await mpv.setProperty('demuxer-readahead-secs', '180');
-            await mpv.setProperty('cache-pause-initial', 'yes');
-            // Reanuda reproducción tras solo 2s de re-buffering (antes: 5s)
-            await mpv.setProperty('cache-pause-wait', '2');
-            await mpv.setProperty(
-              'stream-buffer-size',
-              lowPerf ? '4194304' : '16777216', // 4 MB / 16 MB
-            );
-            await mpv.setProperty('network-timeout', '10');
-
-            // Calidad adaptativa HLS automática
-            await mpv.setProperty('hls-bitrate', 'auto');
-
-            // Forzar seekable para streams IPTV que no reportan duración correctamente.
-            // Sin esto, MPV desactiva el seek-cache y cada búsqueda re-descarga.
-            await mpv.setProperty('force-seekable', 'yes');
-          }
-
-          // -- NETWORK & COMPATIBILITY --
-          await mpv.setProperty('http-reconnect', 'yes');
-          // Reconexión más rápida tras caída de red (antes: 1s → ahora: 0.5s)
-          await mpv.setProperty('http-reconnect-sleep', '0.5');
-          await mpv.setProperty('http-reconnect-timeout', '5');
-          await mpv.setProperty('tls-verify', 'no');
-          await mpv.setProperty('load-unsafe-playlists', 'yes');
-          // Usar HTTP pipelining para descargar segmentos HLS más rápido
-          // (envía la siguiente petición sin esperar respuesta de la anterior)
-          await mpv.setProperty('http-pipelining', 'yes');
-
-          // User-Agent Rotation: Use a modern browser UA for VOD to avoid throttling
+          final lowPerf = PerformanceService().isLowPerformance;
           final selectedUA =
               _isLiveContent
                   ? 'VLC/3.0.20 LibVLC/3.0.20'
                   : _userAgents[_userAgentIndex % _userAgents.length];
-          await mpv.setProperty('user-agent', selectedUA);
 
-          // -- SUBTÍTULOS --
-          // Desactivados por defecto. Se renderizan como Flutter widgets,
-          // no dependemos del rendering nativo de MPV (no funciona con
-          // SurfaceView en Android).
-          await mpv.setProperty('sub-forced-only', 'no');
-
-          // -- HARDWARE ACCELERATION OPTIMIZATION --
-          // 'mediacodec' is zero-copy (fastest). 'mediacodec-copy' is a safe fallback.
           bool useDirectHwdec = true;
           if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
-            // Avoid tunnel/direct on Motorola or known low-end
-            if (PerformanceService().isLowPerformance ||
-                PerformanceService().allowVideoPrewarm == false) {
+            if (lowPerf || PerformanceService().allowVideoPrewarm == false) {
               useDirectHwdec = false;
             }
           }
 
+          String decoder;
           if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
-            // Si es un reintento (_retryCount > 0), forzamos 'mediacodec-copy' para mayor estabilidad
-            // ya que el error 'Can't acquire next buffer' suele ocurrir en modo directo (mediacodec).
-            final decoder =
-                (_retryCount > 0 || !useDirectHwdec)
-                    ? 'mediacodec-copy'
-                    : 'mediacodec';
-            await mpv.setProperty('hwdec', decoder);
-            _activeDecoder = decoder;
-            debugPrint('Decoder seleccionado: $decoder (Retry: $_retryCount)');
+            decoder = (_retryCount > 0 || !useDirectHwdec) ? 'mediacodec-copy' : 'mediacodec';
           } else if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
-            // iOS: SIEMPRE hardware (VideoToolbox). El diagnóstico mostró que
-            // con software ('no') MPV reporta 0×0 — el ffmpeg de libmpv en iOS
-            // NO puede decodificar HEVC/H.265 por software. Solo VideoToolbox
-            // (hardware) decodifica HEVC en iOS. La variante '-copy' copia los
-            // frames a memoria estándar y los sube como textura normal,
-            // evitando el fallo de wrapping directo de CVPixelBuffer 10-bit.
-            // NO caemos a software: daría 0×0 (sin video).
-            const decoder = 'videotoolbox-copy';
-            await mpv.setProperty('hwdec', decoder);
-            _activeDecoder = decoder;
-            debugPrint(
-              'Decoder iOS seleccionado: $decoder (Retry: $_retryCount)',
-            );
+            decoder = 'videotoolbox-copy';
           } else {
-            await mpv.setProperty('hwdec', 'auto-safe');
-            _activeDecoder = 'auto-safe';
+            decoder = 'auto-safe';
+          }
+          _activeDecoder = decoder;
+
+          final futures = <Future<dynamic>>[
+            mpv.setProperty('cache', 'yes'),
+            mpv.setProperty('cache-pause', 'yes'),
+            mpv.setProperty('cache-on-disk', 'no'),
+            mpv.setProperty('cache-pause-wait', _isLiveContent ? '1' : '2'),
+            mpv.setProperty('cache-pause-initial', 'yes'),
+            mpv.setProperty('stream-buffer-size', _isLiveContent ? '4194304' : (lowPerf ? '4194304' : '16777216')),
+            mpv.setProperty('network-timeout', '10'),
+            mpv.setProperty('http-header-fields', 'Connection: keep-alive'),
+            mpv.setProperty('demuxer-seekable-cache', 'yes'),
+            mpv.setProperty('http-reconnect', 'yes'),
+            mpv.setProperty('http-reconnect-sleep', '0.5'),
+            mpv.setProperty('http-reconnect-timeout', '5'),
+            mpv.setProperty('tls-verify', 'no'),
+            mpv.setProperty('load-unsafe-playlists', 'yes'),
+            mpv.setProperty('http-pipelining', 'yes'),
+            mpv.setProperty('user-agent', selectedUA),
+            mpv.setProperty('sub-forced-only', 'no'),
+            mpv.setProperty('hwdec', decoder),
+            mpv.setProperty('vd-lavc-threads', '0'),
+            mpv.setProperty('vd-lavc-skiploopfilter', 'none'),
+            mpv.setProperty('framedrop', 'vo'),
+            mpv.setProperty('vd-lavc-fast-decoding', 'yes'),
+            mpv.setProperty('vd-lavc-o', 'err_detect=ignore_err,flags2=+fast'),
+            mpv.setProperty('video-sync', 'audio'),
+            mpv.setProperty('audio-buffer', '0.2'),
+            mpv.setProperty('audio-stream-silence', 'yes'),
+            mpv.setProperty('audio-fallback-to-null', 'yes'),
+            mpv.setProperty('sid', 'no'),
+            mpv.setProperty('sub-visibility', 'no'),
+            mpv.setProperty('vid', CastService().isCasting.value ? 'no' : 'auto'),
+          ];
+
+          if (_isLiveContent) {
+            futures.addAll([
+              mpv.setProperty('cache-secs', '60'),
+              mpv.setProperty('demuxer-max-bytes', '67108864'),
+              mpv.setProperty('demuxer-max-back-bytes', '33554432'),
+              mpv.setProperty('demuxer-readahead-secs', '20'),
+              mpv.setProperty('hls-bitrate', 'auto'),
+              mpv.setProperty('hls-forward-cache-secs', '30'),
+              mpv.setProperty('hls-back-cache-secs', '10'),
+              mpv.setProperty('demuxer-lavf-hacks', 'yes'),
+              mpv.setProperty('demuxer-cache-wait', 'no'),
+              mpv.setProperty('deinterlace', 'auto'),
+            ]);
+          } else {
+            futures.addAll([
+              mpv.setProperty('cache-secs', '300'),
+              mpv.setProperty('demuxer-max-bytes', lowPerf ? '67108864' : '268435456'),
+              mpv.setProperty('demuxer-max-back-bytes', lowPerf ? '16777216' : '67108864'),
+              mpv.setProperty('demuxer-readahead-secs', '180'),
+              mpv.setProperty('hls-bitrate', 'auto'),
+              mpv.setProperty('force-seekable', 'yes'),
+            ]);
           }
 
-          // Threading and error detection
-          await mpv.setProperty('vd-lavc-threads', '0');
-          // 'nonref' solo funciona con decoders de software (lavf/ffmpeg).
-          // Con mediacodec-copy (hardware Android) es un argumento inválido
-          // que genera un error de stream y causa un reload innecesario.
-          // En hardware Android el filtrado de loop lo hace el propio codec.
-          await mpv.setProperty('vd-lavc-skiploopfilter', 'none');
-          await mpv.setProperty('framedrop', 'vo');
-          await mpv.setProperty('vd-lavc-fast-decoding', 'yes');
-          await mpv.setProperty(
-            'vd-lavc-o',
-            'err_detect=ignore_err,flags2=+fast',
-          );
-
-          // Audio Sync
-          await mpv.setProperty('video-sync', 'audio');
-          // Buffer de audio más bajo → menor latencia al reanudar tras pausa/seek
-          await mpv.setProperty('audio-buffer', '0.2');
-          await mpv.setProperty('audio-stream-silence', 'yes');
-          await mpv.setProperty('audio-fallback-to-null', 'yes');
-
-          if (PerformanceService().isLowPerformance) {
-            await mpv.setProperty('vd-lavc-dr', 'no');
+          if (lowPerf) {
+            futures.add(mpv.setProperty('vd-lavc-dr', 'no'));
           }
-
-          // Subtítulos: desactivados por defecto, el usuario los activa desde el ícono.
-          // Forzamos visibilidad 'no' para usar nuestro overlay Flutter.
-          await mpv.setProperty('sid', 'no');
-          await mpv.setProperty('sub-visibility', 'no');
-          _subtitlesEnabled = false;
 
           if (GameConfigService().volumeNormalize) {
-            await mpv.setProperty('af', 'dynaudnorm');
+            futures.add(mpv.setProperty('af', 'dynaudnorm'));
           }
 
-          // ── CAUSA RAÍZ del "audio sí, video negro/0×0" en iOS ───────────
-          // media_kit crea el Player con 'vid=no' por defecto y delega en el
-          // VideoController poner 'vid=auto' al adjuntarse. En iOS ese paso a
-          // veces NO surte efecto → el video queda desactivado: MPV ve las
-          // pistas (p.ej. 4) pero no activa ninguna, video-codec=null, 0×0, y
-          // solo se oye el audio. Forzamos 'vid=auto' explícitamente para
-          // garantizar que se seleccione y decodifique una pista de video.
-          if (CastService().isCasting.value) {
-            // Si estamos transmitiendo, desactivamos el track de video local
-            // para ahorrar recursos (CPU/GPU) y evitar errores de buffer.
-            await mpv.setProperty('vid', 'no');
-          } else {
-            await mpv.setProperty('vid', 'auto');
-          }
+          await Future.wait(futures);
+          _subtitlesEnabled = false;
         } catch (e) {
           debugPrint('Error configurando MPV: $e');
         }

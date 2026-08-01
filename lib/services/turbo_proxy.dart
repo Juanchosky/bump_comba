@@ -732,9 +732,12 @@ class TurboProxy {
       session.headers.forEach((k, v) => rq.headers.set(k, v));
       rq.headers.set('Accept-Encoding', 'identity');
 
-      final reqRange = explicitEnd != null
-          ? rangeHeader!
-          : (currentOffset > 0 ? 'bytes=$currentOffset-' : (rangeHeader ?? 'bytes=0-'));
+      final reqRange =
+          explicitEnd != null
+              ? rangeHeader!
+              : (currentOffset > 0
+                  ? 'bytes=$currentOffset-'
+                  : (rangeHeader ?? 'bytes=0-'));
       rq.headers.set(HttpHeaders.rangeHeader, reqRange);
 
       final rs = await rq.close().timeout(const Duration(seconds: 12));
