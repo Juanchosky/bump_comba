@@ -459,6 +459,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       platform.setMethodCallHandler(null);
     }
     WidgetsBinding.instance.removeObserver(this);
+
+    // Forzar guardado inmediato del aprendizaje Turbo al salir del reproductor.
+    // No se depende del timer de 30s: si el usuario cierra la app justo tras
+    // una película, los perfiles aprendidos no se perderán.
+    unawaited(TurboProxy.instance.flushProfiles());
+
     super.dispose();
 
     // 5. Deferred total disposal — give MPV's native event queue time to drain
@@ -1213,13 +1219,24 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       // siguientes sondeos son instantáneos.
       String turboUrl = resolvedUrl;
       if (!_isLiveContent && !castService.isCasting.value && !isPrewarmed) {
-        try {
-          final proxied = await TurboProxy.instance
-              .wrap(resolvedUrl, _buildHeaders(currentUrl))
-              .timeout(const Duration(seconds: 7));
-          if (proxied != null) turboUrl = proxied;
-        } catch (e) {
-          debugPrint('TurboProxy no disponible: $e');
+        // Omitir Turbo para archivos pequeños (<300 MB): el overhead de
+        // las conexiones paralelas no compensa para contenido de poco tamaño.
+        final lowerUrl = resolvedUrl.toLowerCase();
+        final isSmallHint =
+            lowerUrl.contains('trailer') ||
+            lowerUrl.contains('preview') ||
+            lowerUrl.contains('sample');
+        if (!isSmallHint) {
+          try {
+            final proxied = await TurboProxy.instance
+                .wrap(resolvedUrl, _buildHeaders(currentUrl))
+                .timeout(const Duration(seconds: 7));
+            if (proxied != null) turboUrl = proxied;
+          } catch (e) {
+            debugPrint('TurboProxy no disponible: $e');
+          }
+        } else {
+          debugPrint('TurboProxy: omitido para contenido corto/pequeño');
         }
       }
 
@@ -5518,15 +5535,24 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       ),
       line('Controller', controller == null ? 'null' : 'activo'),
       line('Recarga negra', _blackScreenReloadDone ? 'hecha' : 'no'),
-      // Motivo EXACTO del estado del turbo. Sin esto solo queda adivinar por
-      // qué no acelera (¿live? ¿el origen no soporta rangos? ¿no conecta?).
-      line('Turbo', TurboProxy.instance.lastReason),
-      if (TurboProxy.instance.lastReason == 'activo')
-        line(
-          'Turbo red',
-          '${TurboProxy.instance.mbps.toStringAsFixed(1)} Mbps '
-              '(${TurboProxy.instance.activeConnections} conex.)',
-        ),
+      // Panel Turbo completo con todas las métricas disponibles
+      line('Turbo estado', TurboProxy.instance.lastReason),
+      ...() {
+        final m = TurboProxy.instance.metrics.value;
+        if (m.host.isEmpty) return const <String>[];
+        return [
+          line('Turbo host', m.host),
+          line('Turbo TTFB', '${m.ttfbMs} ms'),
+          if (m.turboActivated) ...[
+            line('Turbo activ.', '+${m.turboActivationTimeSec}s'),
+            line('Turbo conex', '${m.maxConnectionsUsed} máx'),
+            line('Turbo red', '${TurboProxy.instance.mbps.toStringAsFixed(1)} Mbps'),
+            line('Turbo dur.', '${(m.turboActiveDurationMs / 1000).toStringAsFixed(1)}s activo'),
+            line('Turbo inter.', '${m.turboInterventions} intv.'),
+          ],
+          line('Turbo perfil', m.hostLearningSummary),
+        ];
+      }(),
       line('Media actual', _turboFallbackDone ? 'directa (fallback)' : 'normal'),
     ];
 
