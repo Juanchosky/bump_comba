@@ -118,57 +118,34 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     // TV boxes con ~1GB RAM y SoC débil).
     try {
       final mpv = _player.platform as dynamic;
+      if (mpv == null) return;
 
-      // ── Decodificación ──
-      // NOTA: hwdec se configura en el VideoController (ver arriba) porque
-      // media_kit lo re-aplica al crear el video output y pisaría lo que
-      // pongamos aquí.
-      // Decodificación por software (fallback) lo más barata posible:
-      // multihilo total + fast + saltar el loop filter (imperceptible en TV).
-      await mpv?.setProperty('vd-lavc-threads', '0');
-      await mpv?.setProperty('vd-lavc-fast', 'yes');
-      await mpv?.setProperty('vd-lavc-skiploopfilter', 'all');
-
-      // ── Sincronización / frames ──
-      // Priorizar audio continuo y soltar frames de video tardíos en vez de
-      // congelar la imagen (en SoCs débiles esto es lo que evita el "tirón").
-      await mpv?.setProperty('video-sync', 'audio');
-      await mpv?.setProperty('framedrop', 'decoder+vo');
-      // Sin postprocesado costoso.
-      await mpv?.setProperty('deband', 'no');
-      await mpv?.setProperty('dither-depth', 'no');
-
-      // ── Cache / red ──
-      // El Chromecast HD tiene 2 GB de RAM: podemos permitirnos un colchón
-      // grande. Cuanto más readahead, menos veces se detiene la reproducción
-      // cuando el servidor IPTV da tirones de velocidad.
-      await mpv?.setProperty('cache', 'yes');
-      // Colchón GRANDE: si el servidor da ráfagas de velocidad, acumulamos
-      // hasta 5 min / 128 MB por delante para sobrevivir los bajones sin
-      // parar la reproducción.
-      await mpv?.setProperty('cache-secs', '300');
-      await mpv?.setProperty('demuxer-max-bytes', '134217728'); // 128 MB
-      await mpv?.setProperty('demuxer-max-back-bytes', '16777216');
-      await mpv?.setProperty('demuxer-readahead-secs', '300');
-      // Tras un rebuffering, reanudar con ~4s de colchón: suficiente para no
-      // volver a vaciarse al instante, sin dejar al usuario esperando "un
-      // buen rato" (con 8s las pausas se sentían eternas en servidores
-      // lentos, porque llenar 8s tarda el doble que llenar 4).
-      await mpv?.setProperty('cache-pause-initial', 'yes');
-      await mpv?.setProperty('cache-pause-wait', '4');
-      await mpv?.setProperty('cache-pause', 'yes');
-      // Si el stream es HLS con VARIAS calidades, elegir siempre la más baja:
-      // prioridad absoluta a que no se pare. (En VOD directo de una sola
-      // calidad esta opción no tiene efecto.)
-      await mpv?.setProperty('hls-bitrate', 'min');
-      await mpv?.setProperty('stream-buffer-size', '8388608'); // 8 MB
-      await mpv?.setProperty('network-timeout', '15');
-      await mpv?.setProperty('http-reconnect', 'yes');
-      await mpv?.setProperty('http-reconnect-sleep', '0.5');
-      // Descargar el siguiente segmento sin esperar respuesta del anterior.
-      await mpv?.setProperty('http-pipelining', 'yes');
-      await mpv?.setProperty('tls-verify', 'no');
-      await mpv?.setProperty('force-seekable', 'yes');
+      final futures = <Future<dynamic>>[
+        mpv.setProperty('vd-lavc-threads', '0'),
+        mpv.setProperty('vd-lavc-fast', 'yes'),
+        mpv.setProperty('vd-lavc-skiploopfilter', 'all'),
+        mpv.setProperty('video-sync', 'audio'),
+        mpv.setProperty('framedrop', 'decoder+vo'),
+        mpv.setProperty('deband', 'no'),
+        mpv.setProperty('dither-depth', 'no'),
+        mpv.setProperty('cache', 'yes'),
+        mpv.setProperty('cache-secs', '300'),
+        mpv.setProperty('demuxer-max-bytes', '134217728'),
+        mpv.setProperty('demuxer-max-back-bytes', '16777216'),
+        mpv.setProperty('demuxer-readahead-secs', '300'),
+        mpv.setProperty('cache-pause-initial', 'yes'),
+        mpv.setProperty('cache-pause-wait', '4'),
+        mpv.setProperty('cache-pause', 'yes'),
+        mpv.setProperty('hls-bitrate', 'min'),
+        mpv.setProperty('stream-buffer-size', '8388608'),
+        mpv.setProperty('network-timeout', '15'),
+        mpv.setProperty('http-reconnect', 'yes'),
+        mpv.setProperty('http-reconnect-sleep', '0.5'),
+        mpv.setProperty('http-pipelining', 'yes'),
+        mpv.setProperty('tls-verify', 'no'),
+        mpv.setProperty('force-seekable', 'yes'),
+      ];
+      await Future.wait(futures);
     } catch (e) {
       debugPrint('TvReceiver: error configurando MPV: $e');
     }
@@ -278,10 +255,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
       // servidores que limitan por conexión → muchas menos paradas).
       String playUrl = url;
       try {
-        // 7s: el bypass de DNS por DoH puede tardar unos segundos en frío.
-        final proxied = await TurboProxy.instance
-            .wrap(url, headers)
-            .timeout(const Duration(seconds: 7));
+        final proxied = await TurboProxy.instance.wrap(url, headers);
         if (proxied != null) playUrl = proxied;
       } catch (e) {
         debugPrint('TvReceiver: TurboProxy no disponible: $e');

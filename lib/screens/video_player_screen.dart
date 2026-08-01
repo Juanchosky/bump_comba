@@ -88,6 +88,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   bool _isVideoLoading = true;
   bool _isBuffering = false;
+  // True solo durante la carga inicial del contenido (primer play).
+  // Se pone en false al inicio de la primera reproduccion para que
+  // el mensaje de bienvenida no aparezca en re-buffers ni recargas.
+  bool _isInitialLoad = true;
   // Guard anti-bucle: solo se intenta UNA vez volver a la URL directa por
   // contenido cargado, para no encadenar reaperturas si el origen está caído.
   bool _turboFallbackDone = false;
@@ -945,7 +949,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
           String decoder;
           if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
-            decoder = (_retryCount > 0 || !useDirectHwdec) ? 'mediacodec-copy' : 'mediacodec';
+            decoder =
+                (_retryCount > 0 || !useDirectHwdec)
+                    ? 'mediacodec-copy'
+                    : 'mediacodec';
           } else if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
             decoder = 'videotoolbox-copy';
           } else {
@@ -959,7 +966,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             mpv.setProperty('cache-on-disk', 'no'),
             mpv.setProperty('cache-pause-wait', _isLiveContent ? '1' : '2'),
             mpv.setProperty('cache-pause-initial', 'yes'),
-            mpv.setProperty('stream-buffer-size', _isLiveContent ? '4194304' : (lowPerf ? '4194304' : '16777216')),
+            mpv.setProperty(
+              'stream-buffer-size',
+              _isLiveContent ? '4194304' : (lowPerf ? '4194304' : '16777216'),
+            ),
             mpv.setProperty('network-timeout', '10'),
             mpv.setProperty('http-header-fields', 'Connection: keep-alive'),
             mpv.setProperty('demuxer-seekable-cache', 'yes'),
@@ -983,7 +993,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             mpv.setProperty('audio-fallback-to-null', 'yes'),
             mpv.setProperty('sid', 'no'),
             mpv.setProperty('sub-visibility', 'no'),
-            mpv.setProperty('vid', CastService().isCasting.value ? 'no' : 'auto'),
+            mpv.setProperty(
+              'vid',
+              CastService().isCasting.value ? 'no' : 'auto',
+            ),
           ];
 
           if (_isLiveContent) {
@@ -1002,8 +1015,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           } else {
             futures.addAll([
               mpv.setProperty('cache-secs', '300'),
-              mpv.setProperty('demuxer-max-bytes', lowPerf ? '67108864' : '268435456'),
-              mpv.setProperty('demuxer-max-back-bytes', lowPerf ? '16777216' : '67108864'),
+              mpv.setProperty(
+                'demuxer-max-bytes',
+                lowPerf ? '67108864' : '268435456',
+              ),
+              mpv.setProperty(
+                'demuxer-max-back-bytes',
+                lowPerf ? '16777216' : '67108864',
+              ),
               mpv.setProperty('demuxer-readahead-secs', '180'),
               mpv.setProperty('hls-bitrate', 'auto'),
               mpv.setProperty('force-seekable', 'yes'),
@@ -1278,7 +1297,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       }
 
       if (mounted) {
-        setState(() => _isVideoLoading = false);
+        setState(() {
+          _isVideoLoading = false;
+          _isInitialLoad =
+              false; // Ya arrancó — nunca más mostramos el mensaje de bienvenida
+        });
         _startHideControlsTimer();
       }
     } catch (e) {
@@ -2042,24 +2065,119 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _tryTurboDirectFallback();
   }
 
+  /// Recarga el contenido actual REUTILIZANDO el Player y el decoder
+  /// existentes, vía el comando nativo `loadfile ... replace` de MPV, en vez
+  /// de destruir el Player completo (_cleanupPlayer + Player() nuevo).
+  ///
+  /// Esto evita el ciclo releaseAsync -> CreateByComponentName del decoder de
+  /// hardware MediaTek en cada recarga, que es el costo dominante de la
+  /// recuperación de stalls.
+  ///
+  /// Solo tiene sentido para el MISMO servidor/URL base. Si cambia el
+  /// servidor alternativo o hace falta re-scrapear, seguimos usando el
+  /// camino pesado (_initializePlayer) porque ahí sí cambia todo el contexto.
+  ///
+  /// Devuelve true si el loadfile se disparó y la reproducción se retomó.
+  Future<bool> _reloadWithLoadfile({Duration? startFrom}) async {
+    final activePlayer = _player;
+    if (activePlayer == null) return false;
+
+    final currentUrl =
+        _serverUrls.isNotEmpty
+            ? _serverUrls[_currentServerIndex % _serverUrls.length]
+            : _currentItem.url;
+
+    final resolvedUrl = _resolveStreamUrl(currentUrl);
+
+    String finalUrl = resolvedUrl;
+    if (!_isLiveContent && !CastService().isCasting.value) {
+      final lowerUrl = resolvedUrl.toLowerCase();
+      final isSmallHint =
+          lowerUrl.contains('trailer') ||
+          lowerUrl.contains('preview') ||
+          lowerUrl.contains('sample');
+      if (!isSmallHint) {
+        try {
+          final proxied = await TurboProxy.instance
+              .wrap(resolvedUrl, _buildHeaders(currentUrl))
+              .timeout(const Duration(seconds: 7));
+          if (proxied != null) finalUrl = proxied;
+        } catch (e) {
+          debugPrint('TurboProxy no disponible en reload rápido: $e');
+        }
+      }
+    }
+
+    // Rotar user-agent como property de sesión ANTES del open, porque los
+    // headers van adjuntos al Media, pero user-agent es propiedad de mpv.
+    try {
+      final mpv = activePlayer.platform as dynamic;
+      await mpv?.setProperty('user-agent', _currentUserAgent);
+    } catch (_) {}
+
+    try {
+      await activePlayer.stop();
+      await activePlayer.open(
+        Media(finalUrl, httpHeaders: _buildHeaders(currentUrl)),
+        play: true,
+      );
+    } catch (e) {
+      debugPrint(
+        '_reloadWithLoadfile: open() falló sobre player existente: $e',
+      );
+      return false;
+    }
+
+    // Reset de estado que dependía del ciclo de vida anterior.
+    _stallSeconds = 0;
+    _noMovementSeconds = 0;
+    _noVideoSeconds = 0;
+    _blackScreenReloadDone = false;
+    _turboFallbackDone = false;
+    _subtitlesEnabled = false;
+    _currentSubtitleText = [];
+    _lastSelectedTrack = null;
+
+    // ── ESPERAR DURACIÓN SIEMPRE (no solo cuando hay startFrom) ──────────
+    // Sin esto, si el demuxer tarda en reportarla, el slider queda pegado
+    // en 00:00 con la posición avanzando, porque el StreamBuilder de
+    // duration no vuelve a refrescarse hasta que llega un evento nuevo.
+    if (!_isLiveContent) {
+      int durationAttempts = 0;
+      while (durationAttempts < 60 && mounted && _player == activePlayer) {
+        if (activePlayer.state.duration.inSeconds > 0) break;
+        await Future.delayed(const Duration(milliseconds: 200));
+        durationAttempts++;
+      }
+    }
+
+    if (startFrom != null && startFrom.inSeconds > 0) {
+      int frameWait = 0;
+      while (frameWait < 30 && mounted && _player == activePlayer) {
+        await Future.delayed(const Duration(milliseconds: 100));
+        final w = activePlayer.state.width ?? 0;
+        final h = activePlayer.state.height ?? 0;
+        if (w > 0 && h > 0) break;
+        frameWait++;
+      }
+      await Future.delayed(const Duration(milliseconds: 500));
+      if (mounted && _player == activePlayer) {
+        _lastSeekTime = DateTime.now();
+        await activePlayer.seek(startFrom);
+      }
+    }
+
+    if (mounted && _player == activePlayer) {
+      setState(() => _isVideoLoading = false);
+      _startHideControlsTimer();
+    }
+    return true;
+  }
+
   Future<void> _reloadVideo() async {
     // ── RE-ENTRANCY GUARD ─────────────────────────────────────────────────
-    // Without this, two concurrent reload cycles (from stall monitor +
-    // stream.error listener) would both call _initializePlayer, creating
-    // two VideoControllers fighting for the same GPU buffers, causing
-    // BpSurfaceComposerClient::Failed to transact → native crash.
     if (!mounted || _isVideoLoading || _isReloading || _player == null) return;
     _isReloading = true;
-
-    // ── STOP ALL CALLBACKS IMMEDIATELY ─────────────────────────────────────
-    // Cancel stall timer and stream subscriptions BEFORE any async work.
-    // Otherwise, the old player's error/stall events can re-trigger
-    // _reloadVideo while _cleanupPlayer is still draining buffers.
-    _stallTimer?.cancel();
-    for (final s in _streamSubscriptions) {
-      s.cancel();
-    }
-    _streamSubscriptions.clear();
 
     // Rotar User-Agent en cada intento
     _userAgentIndex++;
@@ -2079,16 +2197,46 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       if (!_isLiveContent) {
         if (_retryCount < 2) {
           _retryCount++;
-          debugPrint(
-            'VOD reload #$_retryCount at ${currentPos.inSeconds}s. UA: $_currentUserAgent',
-          );
-          await _initializePlayer(
-            _currentItem,
-            startFrom: currentPos.inSeconds > 5 ? currentPos : null,
-            isLocalReload: true,
-          );
+          final startFrom = currentPos.inSeconds > 5 ? currentPos : null;
+
+          // Camino rápido: reutilizar el Player existente vía loadfile.
+          // Solo aplica si NO estamos en Cast (ahí el player local se maneja
+          // distinto) ni en medio de un scraping (la URL puede cambiar del
+          // todo, no tiene sentido reusar sesión).
+          final canUseFastPath = !CastService().isCasting.value && !_isScraping;
+
+          bool handled = false;
+          if (canUseFastPath) {
+            if (mounted) setState(() => _isVideoLoading = true);
+            debugPrint(
+              'VOD reload rápido (loadfile) #$_retryCount at ${currentPos.inSeconds}s. UA: $_currentUserAgent',
+            );
+            handled = await _reloadWithLoadfile(startFrom: startFrom);
+          }
+
+          if (!handled) {
+            // Camino pesado: recién acá cancelamos subscripciones y
+            // destruimos el Player, porque recién ahora sabemos que hace
+            // falta (loadfile no estaba disponible o falló).
+            _stallTimer?.cancel();
+            for (final s in _streamSubscriptions) {
+              s.cancel();
+            }
+            _streamSubscriptions.clear();
+
+            debugPrint(
+              'VOD reload pesado #$_retryCount at ${currentPos.inSeconds}s. UA: $_currentUserAgent',
+            );
+            await _initializePlayer(
+              _currentItem,
+              startFrom: startFrom,
+              isLocalReload: true,
+            );
+          }
         } else if (_currentServerIndex < _serverUrls.length - 1) {
-          // Option exhausted for this server, try next alternative
+          // Agotamos los reintentos baratos sobre este servidor: acá sí
+          // cambia todo el contexto (headers, dominio, etc.), así que vale
+          // la pena el camino pesado directamente.
           _retryCount = 0;
           _currentServerIndex++;
           debugPrint(
@@ -2097,6 +2245,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           if (mounted) {
             _showAppSnackBar('Intentando con servidor alternativo...');
           }
+
+          _stallTimer?.cancel();
+          for (final s in _streamSubscriptions) {
+            s.cancel();
+          }
+          _streamSubscriptions.clear();
+
           await _initializePlayer(
             _currentItem,
             startFrom: currentPos.inSeconds > 5 ? currentPos : null,
@@ -2106,11 +2261,21 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           if (mounted) setState(() => _hasError = true);
         }
       } else {
+        // Live: por ahora dejamos el camino pesado tal cual estaba. Es un
+        // buen candidato para el mismo tratamiento más adelante, pero
+        // conviene validar primero el camino rápido en VOD.
         const backoffDelays = [1, 2, 4, 8, 12, 20];
         final delay = backoffDelays[_retryCount < 6 ? _retryCount : 5];
         _retryCount++;
         if (mounted) setState(() => _isVideoLoading = true);
         await Future.delayed(Duration(seconds: delay));
+
+        _stallTimer?.cancel();
+        for (final s in _streamSubscriptions) {
+          s.cancel();
+        }
+        _streamSubscriptions.clear();
+
         if (mounted) await _initializePlayer(_currentItem, isLocalReload: true);
       }
     } finally {
@@ -4473,6 +4638,20 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                             1.02),
                   ),
         ),
+        if (showBackground && _isInitialLoad)
+          const Align(
+            alignment: Alignment(0, 0.20),
+            child: Text(
+              'Contenido maravilloso está por comenzar...',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Color.fromARGB(255, 196, 196, 196),
+                fontSize: 13.5,
+                fontWeight: FontWeight.w500,
+                letterSpacing: 0.2,
+              ),
+            ),
+          ),
         if (showBackground &&
             (context
                     .findAncestorStateOfType<_VideoPlayerScreenState>()
@@ -5427,14 +5606,23 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           if (m.turboActivated) ...[
             line('Turbo activ.', '+${m.turboActivationTimeSec}s'),
             line('Turbo conex', '${m.maxConnectionsUsed} máx'),
-            line('Turbo red', '${TurboProxy.instance.mbps.toStringAsFixed(1)} Mbps'),
-            line('Turbo dur.', '${(m.turboActiveDurationMs / 1000).toStringAsFixed(1)}s activo'),
+            line(
+              'Turbo red',
+              '${TurboProxy.instance.mbps.toStringAsFixed(1)} Mbps',
+            ),
+            line(
+              'Turbo dur.',
+              '${(m.turboActiveDurationMs / 1000).toStringAsFixed(1)}s activo',
+            ),
             line('Turbo inter.', '${m.turboInterventions} intv.'),
           ],
           line('Turbo perfil', m.hostLearningSummary),
         ];
       }(),
-      line('Media actual', _turboFallbackDone ? 'directa (fallback)' : 'normal'),
+      line(
+        'Media actual',
+        _turboFallbackDone ? 'directa (fallback)' : 'normal',
+      ),
     ];
 
     return Positioned(
