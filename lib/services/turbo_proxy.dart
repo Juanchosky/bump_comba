@@ -595,7 +595,8 @@ class TurboProxy {
         session._effectiveUri = pre.effectiveUri;
         if (pre.length != null && pre.length! > 0) session.length = pre.length!;
         if (pre.contentType != null) session.contentType = pre.contentType;
-        if (pre.supportsRange != null) session.supportsRange = pre.supportsRange!;
+        if (pre.supportsRange != null)
+          session.supportsRange = pre.supportsRange!;
         session._primedBytes = pre.primedBytes;
       }
 
@@ -610,7 +611,9 @@ class TurboProxy {
       if (!reusedPreconnect) {
         _setReason('activo (passthrough inicial)');
       }
-      debugPrint('TurboProxy: sesión creada $url -> $local (preconnect=$reusedPreconnect)');
+      debugPrint(
+        'TurboProxy: sesión creada $url -> $local (preconnect=$reusedPreconnect)',
+      );
       return local;
     } catch (e) {
       _setReason('wrap falló ($e) — usando URL directa');
@@ -708,7 +711,9 @@ class TurboProxy {
     var lastFlushAt = DateTime.now();
     Future<void> maybeFlush({bool force = false}) async {
       final elapsed = DateTime.now().difference(lastFlushAt).inMilliseconds;
-      if (!force && pendingFlushBytes < flushBatchBytes && elapsed < flushBatchMs) {
+      if (!force &&
+          pendingFlushBytes < flushBatchBytes &&
+          elapsed < flushBatchMs) {
         return;
       }
       try {
@@ -740,9 +745,8 @@ class TurboProxy {
       final primed = session._primedBytes!;
       session._primedBytes = null; // consumir una sola vez
       headersSent = true;
-      resp.statusCode = rangeHeader != null
-          ? HttpStatus.partialContent
-          : HttpStatus.ok;
+      resp.statusCode =
+          rangeHeader != null ? HttpStatus.partialContent : HttpStatus.ok;
       if (session.contentType != null) {
         resp.headers.set(HttpHeaders.contentTypeHeader, session.contentType!);
       }
@@ -765,7 +769,8 @@ class TurboProxy {
       pendingFlushBytes = 0;
       lastFlushAt = DateTime.now();
       if (session.ttfbMs == 0) {
-        session.ttfbMs = DateTime.now().difference(requestStartTime).inMilliseconds;
+        session.ttfbMs =
+            DateTime.now().difference(requestStartTime).inMilliseconds;
         session.updateMetrics();
       }
       if (session.supportsRange) legging = true;
@@ -781,7 +786,9 @@ class TurboProxy {
         session.supportsTurbo && session.profile.shouldPreemptivelyTurbo;
     if (computeEarlySwitch()) {
       switchThresholdMs = 100;
-      _setReason('umbral reducido a ${switchThresholdMs}ms (histórico >90% Turbo)');
+      _setReason(
+        'umbral reducido a ${switchThresholdMs}ms (histórico >90% Turbo)',
+      );
     }
 
     try {
@@ -789,10 +796,11 @@ class TurboProxy {
         final isFirstLeg = !headersSent;
         final legSize = isFirstLeg ? firstLegBytes : laterLegBytes;
 
-        final legRangeHeader = explicitEnd != null
-            ? rangeHeader!
-            : 'bytes=$currentOffset-'
-                '${session.length > 0 ? math.min(currentOffset + legSize - 1, session.length - 1) : currentOffset + legSize - 1}';
+        final legRangeHeader =
+            explicitEnd != null
+                ? rangeHeader!
+                : 'bytes=$currentOffset-'
+                    '${session.length > 0 ? math.min(currentOffset + legSize - 1, session.length - 1) : currentOffset + legSize - 1}';
 
         final targetUri = await session.getEffectiveTarget();
         final rq = await session.client.getUrl(targetUri);
@@ -831,14 +839,15 @@ class TurboProxy {
           // de Range; si no veníamos de bytes primados, es la primera vez
           // que podemos saberlo con certeza.
           switchThresholdMs = 100;
-          _setReason('umbral reducido a ${switchThresholdMs}ms (histórico >90% Turbo)');
+          _setReason(
+            'umbral reducido a ${switchThresholdMs}ms (histórico >90% Turbo)',
+          );
         }
 
         if (!headersSent) {
           headersSent = true;
-          resp.statusCode = rangeHeader != null
-              ? HttpStatus.partialContent
-              : rs.statusCode;
+          resp.statusCode =
+              rangeHeader != null ? HttpStatus.partialContent : rs.statusCode;
 
           if (legging) {
             // OJO: el Content-Length de ESTA pierna acotada no es el largo
@@ -954,10 +963,14 @@ class TurboProxy {
         await maybeFlush(force: true);
 
         if (switchedToTurbo || closed) break;
-        if (explicitEnd != null) break; // pierna única ya cubría exactamente lo pedido
-        if (!legging) break; // sin Range: ya se envió el cuerpo completo en esta pierna
-        if (session.length > 0 && currentOffset >= session.length) break; // fin de archivo
-        if (currentOffset == legStartOffset) break; // sin progreso, evita bucle infinito
+        if (explicitEnd != null)
+          break; // pierna única ya cubría exactamente lo pedido
+        if (!legging)
+          break; // sin Range: ya se envió el cuerpo completo en esta pierna
+        if (session.length > 0 && currentOffset >= session.length)
+          break; // fin de archivo
+        if (currentOffset == legStartOffset)
+          break; // sin progreso, evita bucle infinito
         // seguimos con la siguiente pierna acotada, transparente para el reproductor
       }
 
@@ -1048,7 +1061,9 @@ class TurboProxy {
     var lastFlushAt = DateTime.now();
     Future<void> maybeFlush({bool force = false}) async {
       final elapsed = DateTime.now().difference(lastFlushAt).inMilliseconds;
-      if (!force && pendingFlushBytes < flushBatchBytes && elapsed < flushBatchMs) {
+      if (!force &&
+          pendingFlushBytes < flushBatchBytes &&
+          elapsed < flushBatchMs) {
         return;
       }
       try {
