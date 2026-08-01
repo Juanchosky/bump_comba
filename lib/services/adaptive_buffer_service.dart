@@ -59,6 +59,24 @@ class AdaptiveBufferService {
   factory AdaptiveBufferService() => _instance;
   AdaptiveBufferService._internal();
 
+  // ── Estado anti-flush ───────────────────────────────────────────────────
+  // El decoder de hardware (mediacodec / mediacodec-copy / videotoolbox) se
+  // REINICIA por completo cada vez que se escribe la propiedad `hwdec`,
+  // aunque el valor destino sea igual al que ya estaba activo — mpv no hace
+  // ese chequeo por nosotros. Si no lo cacheamos acá, cada oscilación de
+  // NetworkQuality (good↔fair con la misma señal real) dispara un
+  // reinicio de decoder completo (flush + release + create) en pleno
+  // playback, causando micro-cortes con la red totalmente estable.
+  String? _lastAppliedHwdec;
+
+  /// Debe llamarse cada vez que se crea/reabre un Player (nuevo decoder ⇒
+  /// no sabemos en qué estado de hwdec arrancó). Sin esto, tras un reload
+  /// el primer applyConfig podría saltarse el setProperty creyendo que ya
+  /// estaba aplicado.
+  void resetState() {
+    _lastAppliedHwdec = null;
+  }
+
   // ── Perfiles ─────────────────────────────────────────────────────────────
 
   static const AdaptiveBufferConfig _excellent = AdaptiveBufferConfig(
@@ -210,27 +228,34 @@ class AdaptiveBufferService {
     debugPrint('AdaptiveBuffer: Applying profile "${cfg.name}"');
 
     try {
-      // Buffer
+      // Buffer — estas propiedades son de cache/demuxer, mpv las aplica
+      // sin reiniciar el pipeline de video, así que no hace falta cachearlas.
       await mpv.setProperty('cache-secs', cacheSecs.toString());
       await mpv.setProperty('demuxer-max-bytes', demuxerMaxBytes.toString());
       await mpv.setProperty(
         'demuxer-max-back-bytes',
         demuxerMaxBackBytes.toString(),
       );
-      await mpv.setProperty(
-        'stream-buffer-size',
-        streamBufferSize.toString(),
-      );
-      await mpv.setProperty(
-        'demuxer-readahead-secs',
-        readaheadSecs.toString(),
-      );
+      await mpv.setProperty('stream-buffer-size', streamBufferSize.toString());
+      await mpv.setProperty('demuxer-readahead-secs', readaheadSecs.toString());
       await mpv.setProperty('cache-pause-wait', cfg.cachePauseWait);
 
-      // Decoder
+      // Decoder — `hwdec` SÍ reinicia el decoder de video al escribirse
+      // (flush + release + create de MediaCodec/VideoToolbox), sin importar
+      // si el valor nuevo es igual al actual. Por eso acá NO seguimos el
+      // patrón de las demás propiedades: solo tocamos la propiedad si el
+      // valor realmente cambió respecto al último aplicado.
       if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
-        await mpv.setProperty('hwdec', cfg.hwdec);
+        if (cfg.hwdec != _lastAppliedHwdec) {
+          debugPrint(
+            'AdaptiveBuffer: hwdec cambia de $_lastAppliedHwdec a '
+            '${cfg.hwdec} — reiniciando decoder',
+          );
+          await mpv.setProperty('hwdec', cfg.hwdec);
+          _lastAppliedHwdec = cfg.hwdec;
+        }
       }
+
       await mpv.setProperty('vd-lavc-skiploopfilter', cfg.skipLoopFilter);
       await mpv.setProperty('framedrop', cfg.framedrop);
       await mpv.setProperty(

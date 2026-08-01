@@ -62,6 +62,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   NetworkQuality? _lastAppliedQuality;
   DateTime? _lastSeekTime;
 
+  NetworkQuality? _pendingQuality;
+  int _pendingQualityStreak = 0;
+  static const int _qualityStreakRequired = 3;
+  DateTime? _lastQualityApplyTime;
+  static const Duration _qualityApplyCooldown = Duration(seconds: 12);
+
   static const List<String> _userAgents = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',
@@ -873,6 +879,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       }
 
       _player = currentPlayer;
+      AdaptiveBufferService().resetState();
+      _pendingQuality = null;
+      _pendingQualityStreak = 0;
+      _lastQualityApplyTime = null;
 
       // OPTIMIZACIÓN CRÍTICA: No crear VideoController si estamos transmitiendo.
       // El VideoController activa la aceleración por hardware y reserva buffers
@@ -4642,10 +4652,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           const Align(
             alignment: Alignment(0, 0.20),
             child: Text(
-              'Contenido maravilloso está por comenzar...',
+              '',
               textAlign: TextAlign.center,
               style: TextStyle(
-                color: Color.fromARGB(255, 196, 196, 196),
+                color: Color.fromARGB(150, 255, 255, 255),
                 fontSize: 13.5,
                 fontWeight: FontWeight.w500,
                 letterSpacing: 0.2,
@@ -6614,7 +6624,57 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   void _onQualityChanged() {
-    _onNetworkQualityChanged(_networkQuality.quality.value);
+    _handleQualityReading(_networkQuality.quality.value);
+  }
+
+  void _handleQualityReading(NetworkQuality reading) {
+    if (!mounted || _player == null || _isVideoLoading) return;
+
+    // Offline no necesita streak: es una señal fuerte y no toca MPV igual
+    // (ver early-return dentro de _onNetworkQualityChanged).
+    if (reading == NetworkQuality.offline) {
+      _pendingQuality = null;
+      _pendingQualityStreak = 0;
+      _onNetworkQualityChanged(reading);
+      return;
+    }
+
+    if (reading == _lastAppliedQuality) {
+      // Ya estamos en esta calidad; no hay nada pendiente que confirmar.
+      _pendingQuality = null;
+      _pendingQualityStreak = 0;
+      return;
+    }
+
+    if (_pendingQuality == reading) {
+      _pendingQualityStreak++;
+    } else {
+      _pendingQuality = reading;
+      _pendingQualityStreak = 1;
+    }
+
+    if (_pendingQualityStreak < _qualityStreakRequired) {
+      debugPrint(
+        'AdaptiveQuality: lectura $reading (${_pendingQualityStreak}/'
+        '$_qualityStreakRequired) — esperando confirmación',
+      );
+      return;
+    }
+
+    final now = DateTime.now();
+    if (_lastQualityApplyTime != null &&
+        now.difference(_lastQualityApplyTime!) < _qualityApplyCooldown) {
+      debugPrint(
+        'AdaptiveQuality: $reading confirmado pero en cooldown '
+        '(faltan ${(_qualityApplyCooldown - now.difference(_lastQualityApplyTime!)).inSeconds}s)',
+      );
+      return;
+    }
+
+    _pendingQuality = null;
+    _pendingQualityStreak = 0;
+    _lastQualityApplyTime = now;
+    _onNetworkQualityChanged(reading);
   }
 
   void _onNetworkQualityChanged(NetworkQuality newQuality) async {
