@@ -222,6 +222,12 @@ class _PreconnectEntry {
   final bool? supportsRange;
   final DateTime createdAt;
 
+  /// Bytes ya descargados durante el precalentamiento (el pequeño
+  /// `GET Range: bytes=0-N` que se usó en vez de un `HEAD`). Si están
+  /// presentes, [wrap] puede entregárselos al reproductor de inmediato sin
+  /// volver a pedirlos: es tiempo real ganado, no solo un socket caliente.
+  final Uint8List? primedBytes;
+
   _PreconnectEntry({
     required this.client,
     required this.effectiveUri,
@@ -230,6 +236,7 @@ class _PreconnectEntry {
     this.length,
     this.contentType,
     this.supportsRange,
+    this.primedBytes,
   });
 }
 
@@ -440,21 +447,55 @@ class TurboProxy {
       final bypassed = await DnsBypassUtils.bypassUrl(url, baseHeaders);
 
       final client = _newClient();
-      final rq = await client.openUrl('HEAD', bypassed.uri);
+
+      // Un HEAD no sirve para esto: muchos servidores IPTV/CDN solo dejan
+      // el socket "caliente" y la caché de ese archivo lista ante un GET
+      // real. Pedimos un rango minúsculo (128 KB) para lograr ese efecto
+      // pagando casi nada de datos — y de paso nos quedamos con esos bytes
+      // para no tener que volver a pedirlos cuando el usuario dé Play.
+      // 128 KB en vez de 64 KB: en MKV, el bloque inicial (EBML, metadata,
+      // cues, attachments, pistas de subtítulos) a veces no entra en 64 KB.
+      // 128 KB sigue siendo poquísimo tráfico pero cubre mejor ese caso.
+      const primeBytes = 128 * 1024;
+      final rq = await client.getUrl(bypassed.uri);
       bypassed.headers.forEach((k, v) => rq.headers.set(k, v));
+      rq.headers.set(HttpHeaders.rangeHeader, 'bytes=0-${primeBytes - 1}');
       final rs = await rq.close().timeout(const Duration(seconds: 6));
-      await rs.drain<void>().catchError((_) {});
 
       int? length;
       bool? supportsRange;
       String? contentType;
-      if (rs.contentLength > 0) length = rs.contentLength;
-      final acceptRanges = rs.headers.value(HttpHeaders.acceptRangesHeader);
-      if (acceptRanges != null) {
-        supportsRange = acceptRanges.toLowerCase().contains('bytes');
+      Uint8List? primed;
+
+      if (rs.statusCode == HttpStatus.partialContent) {
+        supportsRange = true;
+        final cr = rs.headers.value(HttpHeaders.contentRangeHeader);
+        if (cr != null) {
+          final slash = cr.lastIndexOf('/');
+          if (slash != -1) {
+            length = int.tryParse(cr.substring(slash + 1).trim());
+          }
+        }
+      } else if (rs.statusCode == HttpStatus.ok) {
+        supportsRange = false;
+        if (rs.contentLength > 0) length = rs.contentLength;
       }
       if (rs.headers.contentType?.mimeType != null) {
         contentType = rs.headers.contentType!.mimeType;
+      }
+
+      final builder = BytesBuilder(copy: false);
+      await for (final part in rs.timeout(const Duration(seconds: 6))) {
+        builder.add(part);
+        if (builder.length >= primeBytes) break;
+      }
+      if (builder.length > 0 && supportsRange == true) {
+        // Solo tiene sentido reutilizar estos bytes como "primeros bytes de
+        // la reproducción" si el servidor sí respetó el Range pedido
+        // (206). Si respondió 200 (archivo completo, servidor sin soporte
+        // de Range), esos primeros bytes ya no coinciden con lo que se
+        // necesitará pedir después, así que se descartan.
+        primed = builder.takeBytes();
       }
 
       // Si había una precalentada previa sin usar para esta misma URL,
@@ -468,11 +509,13 @@ class TurboProxy {
         length: length,
         contentType: contentType,
         supportsRange: supportsRange,
+        primedBytes: primed,
         createdAt: DateTime.now(),
       );
 
       debugPrint(
-        'TurboProxy: preconnect OK ($url) -> len=$length range=$supportsRange type=$contentType',
+        'TurboProxy: preconnect OK ($url) -> len=$length range=$supportsRange '
+        'type=$contentType primed=${primed?.length ?? 0}B',
       );
     } catch (e) {
       debugPrint('TurboProxy: preconnect falló para $url: $e');
@@ -546,13 +589,14 @@ class TurboProxy {
 
       if (reusedPreconnect) {
         // Nos ahorramos también la resolución DNS y la primera vuelta de
-        // cabeceras: ya sabemos el destino real y, si el HEAD respondió,
-        // ya sabemos largo/tipo/soporte de Range de antemano.
+        // cabeceras: ya sabemos el destino real y, si el GET de
+        // precalentamiento respondió, ya sabemos largo/tipo/soporte de
+        // Range de antemano — y hasta tenemos los primeros bytes en mano.
         session._effectiveUri = pre.effectiveUri;
         if (pre.length != null && pre.length! > 0) session.length = pre.length!;
         if (pre.contentType != null) session.contentType = pre.contentType;
-        if (pre.supportsRange != null)
-          session.supportsRange = pre.supportsRange!;
+        if (pre.supportsRange != null) session.supportsRange = pre.supportsRange!;
+        session._primedBytes = pre.primedBytes;
       }
 
       _sessions[id] = session;
@@ -566,9 +610,7 @@ class TurboProxy {
       if (!reusedPreconnect) {
         _setReason('activo (passthrough inicial)');
       }
-      debugPrint(
-        'TurboProxy: sesión creada $url -> $local (preconnect=$reusedPreconnect)',
-      );
+      debugPrint('TurboProxy: sesión creada $url -> $local (preconnect=$reusedPreconnect)');
       return local;
     } catch (e) {
       _setReason('wrap falló ($e) — usando URL directa');
@@ -647,11 +689,37 @@ class TurboProxy {
     }
 
     // Tamaño de las piernas acotadas que pedimos al origen mientras estamos
-    // en modo Passthrough con rango abierto.
-    const boundedLeg = 2 * 1024 * 1024; // 2 MB
+    // en modo Passthrough con rango abierto. La primera es deliberadamente
+    // más chica (512 KB) para que ese primer bloque llegue lo antes
+    // posible; las siguientes ya van a 2 MB para amortizar el overhead de
+    // hacer una petición HTTP nueva por pierna.
+    const firstLegBytes = 512 * 1024; // 512 KB
+    const laterLegBytes = 2 * 1024 * 1024; // 2 MB
+
+    // Flush por lote en vez de por cada chunk: en Android cada
+    // resp.flush() es una llamada al socket, y hacerla en cada trocito de
+    // ~16-64 KB que llega genera muchísimo overhead sin acelerar el
+    // arranque en nada. Acumulamos hasta 128 KB o 50 ms, lo que ocurra
+    // primero, y forzamos el flush cuando de verdad importa (cabeceras,
+    // primer byte, fin de pierna).
+    const flushBatchBytes = 128 * 1024;
+    const flushBatchMs = 50;
+    int pendingFlushBytes = 0;
+    var lastFlushAt = DateTime.now();
+    Future<void> maybeFlush({bool force = false}) async {
+      final elapsed = DateTime.now().difference(lastFlushAt).inMilliseconds;
+      if (!force && pendingFlushBytes < flushBatchBytes && elapsed < flushBatchMs) {
+        return;
+      }
+      try {
+        await resp.flush();
+      } catch (_) {}
+      pendingFlushBytes = 0;
+      lastFlushAt = DateTime.now();
+    }
 
     int currentOffset = start;
-    final tracker = _SlidingSpeedTracker(windowMs: 500);
+    final tracker = _SlidingSpeedTracker(windowMs: 250);
     final startTime = DateTime.now();
     final requestStartTime = DateTime.now();
     int lowSpeedConsecutiveCount = 0;
@@ -664,15 +732,67 @@ class TurboProxy {
 
     var switchThresholdMs = 250;
 
+    // Si ya tenemos bytes primados de preconnect() para esta URL y estamos
+    // arrancando limpio desde el byte 0, los entregamos de inmediato: cero
+    // espera de red, porque ya están en memoria desde que el usuario vio
+    // el póster.
+    if (start == 0 && explicitEnd == null && session._primedBytes != null) {
+      final primed = session._primedBytes!;
+      session._primedBytes = null; // consumir una sola vez
+      headersSent = true;
+      resp.statusCode = rangeHeader != null
+          ? HttpStatus.partialContent
+          : HttpStatus.ok;
+      if (session.contentType != null) {
+        resp.headers.set(HttpHeaders.contentTypeHeader, session.contentType!);
+      }
+      resp.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
+      if (session.length > 0) {
+        resp.headers.set(
+          HttpHeaders.contentLengthHeader,
+          session.length.toString(),
+        );
+        if (rangeHeader != null) {
+          resp.headers.set(
+            HttpHeaders.contentRangeHeader,
+            'bytes 0-${session.length - 1}/${session.length}',
+          );
+        }
+      }
+      resp.add(primed);
+      await resp.flush();
+      currentOffset = primed.length;
+      pendingFlushBytes = 0;
+      lastFlushAt = DateTime.now();
+      if (session.ttfbMs == 0) {
+        session.ttfbMs = DateTime.now().difference(requestStartTime).inMilliseconds;
+        session.updateMetrics();
+      }
+      if (session.supportsRange) legging = true;
+      _setReason('activo (primeros bytes servidos desde preconnect, TTFB≈0)');
+    }
+
+    // El umbral de conmutación se acorta si el histórico indica que este
+    // host siempre necesita Turbo (90%+ de sesiones): no hace falta
+    // esperar tanto para decidir. Se calcula una sola vez, con lo que ya
+    // se sepa del host/sesión en este punto (puede refinarse tras la
+    // primera pierna real si todavía no había datos de soporte de Range).
+    bool computeEarlySwitch() =>
+        session.supportsTurbo && session.profile.shouldPreemptivelyTurbo;
+    if (computeEarlySwitch()) {
+      switchThresholdMs = 100;
+      _setReason('umbral reducido a ${switchThresholdMs}ms (histórico >90% Turbo)');
+    }
+
     try {
       while (!closed && !switchedToTurbo) {
         final isFirstLeg = !headersSent;
+        final legSize = isFirstLeg ? firstLegBytes : laterLegBytes;
 
-        final legRangeHeader =
-            explicitEnd != null
-                ? rangeHeader!
-                : 'bytes=$currentOffset-'
-                    '${session.length > 0 ? math.min(currentOffset + boundedLeg - 1, session.length - 1) : currentOffset + boundedLeg - 1}';
+        final legRangeHeader = explicitEnd != null
+            ? rangeHeader!
+            : 'bytes=$currentOffset-'
+                '${session.length > 0 ? math.min(currentOffset + legSize - 1, session.length - 1) : currentOffset + legSize - 1}';
 
         final targetUri = await session.getEffectiveTarget();
         final rq = await session.client.getUrl(targetUri);
@@ -706,26 +826,19 @@ class TurboProxy {
           if (rs.contentLength > 0) session.length = rs.contentLength;
         }
 
-        if (isFirstLeg) {
-          // El umbral de conmutación se acorta si el histórico indica que
-          // este host siempre necesita Turbo (90%+ de sesiones): con
-          // conexión precalentada y perfil ya maduro no hace falta esperar
-          // tanto para decidir. El passthrough SIEMPRE arranca primero para
-          // garantizar el primer byte más rápido posible.
-          final earlySwitch =
-              session.supportsTurbo && session.profile.shouldPreemptivelyTurbo;
-          switchThresholdMs = earlySwitch ? 100 : 250;
-          if (earlySwitch) {
-            _setReason(
-              'umbral reducido a ${switchThresholdMs}ms (histórico >90% Turbo)',
-            );
-          }
+        if (isFirstLeg && switchThresholdMs != 100 && computeEarlySwitch()) {
+          // Recién ahora (tras la primera pierna real) se confirmó soporte
+          // de Range; si no veníamos de bytes primados, es la primera vez
+          // que podemos saberlo con certeza.
+          switchThresholdMs = 100;
+          _setReason('umbral reducido a ${switchThresholdMs}ms (histórico >90% Turbo)');
         }
 
         if (!headersSent) {
           headersSent = true;
-          resp.statusCode =
-              rangeHeader != null ? HttpStatus.partialContent : rs.statusCode;
+          resp.statusCode = rangeHeader != null
+              ? HttpStatus.partialContent
+              : rs.statusCode;
 
           if (legging) {
             // OJO: el Content-Length de ESTA pierna acotada no es el largo
@@ -785,8 +898,9 @@ class TurboProxy {
 
             resp.add(chunk);
             try {
-              resp.flush();
               currentOffset += chunk.length;
+              pendingFlushBytes += chunk.length;
+              unawaited(maybeFlush());
             } catch (_) {
               closed = true;
               return;
@@ -837,16 +951,13 @@ class TurboProxy {
 
         await completer.future.catchError((_) {});
         await subscription.cancel();
+        await maybeFlush(force: true);
 
         if (switchedToTurbo || closed) break;
-        if (explicitEnd != null)
-          break; // pierna única ya cubría exactamente lo pedido
-        if (!legging)
-          break; // sin Range: ya se envió el cuerpo completo en esta pierna
-        if (session.length > 0 && currentOffset >= session.length)
-          break; // fin de archivo
-        if (currentOffset == legStartOffset)
-          break; // sin progreso, evita bucle infinito
+        if (explicitEnd != null) break; // pierna única ya cubría exactamente lo pedido
+        if (!legging) break; // sin Range: ya se envió el cuerpo completo en esta pierna
+        if (session.length > 0 && currentOffset >= session.length) break; // fin de archivo
+        if (currentOffset == legStartOffset) break; // sin progreso, evita bucle infinito
         // seguimos con la siguiente pierna acotada, transparente para el reproductor
       }
 
@@ -860,8 +971,10 @@ class TurboProxy {
             if (data == null) break;
             if (closed) break;
             resp.add(data);
-            await resp.flush();
+            pendingFlushBytes += data.length;
+            await maybeFlush();
           }
+          await maybeFlush(force: true);
         } catch (e) {
           debugPrint('TurboProxy: error en pipeline turbo mid-stream: $e');
         } finally {
@@ -923,14 +1036,38 @@ class TurboProxy {
       resp.done.then((_) => closed = true).catchError((_) => closed = true),
     );
 
+    // Misma estrategia de flush por lote que en _servePassthrough: aunque
+    // aquí los chunks del pipeline ya son de ~1 MB (no de 16-64 KB como en
+    // passthrough), seguir haciendo un resp.flush() por cada uno es una
+    // llamada al socket por chunk durante TODA la reproducción. Agrupar
+    // reduce CPU sin afectar el primer frame (que ya se resolvió antes,
+    // en passthrough).
+    const flushBatchBytes = 128 * 1024;
+    const flushBatchMs = 50;
+    int pendingFlushBytes = 0;
+    var lastFlushAt = DateTime.now();
+    Future<void> maybeFlush({bool force = false}) async {
+      final elapsed = DateTime.now().difference(lastFlushAt).inMilliseconds;
+      if (!force && pendingFlushBytes < flushBatchBytes && elapsed < flushBatchMs) {
+        return;
+      }
+      try {
+        await resp.flush();
+      } catch (_) {}
+      pendingFlushBytes = 0;
+      lastFlushAt = DateTime.now();
+    }
+
     try {
       while (!closed) {
         final data = await pipeline.next();
         if (data == null) break;
         if (closed) break;
         resp.add(data);
-        await resp.flush();
+        pendingFlushBytes += data.length;
+        await maybeFlush();
       }
+      await maybeFlush(force: true);
     } catch (e) {
       debugPrint('TurboProxy: turbo stream error: $e');
       session.noteFailure();
@@ -958,6 +1095,11 @@ class _Session {
   int length = -1;
   double? durationSeconds;
   String? contentType;
+
+  /// Primeros bytes ya descargados durante [TurboProxy.preconnect]. Si están
+  /// presentes y la reproducción arranca desde el byte 0, se le entregan al
+  /// reproductor de inmediato, sin pedirlos de nuevo al origen.
+  Uint8List? _primedBytes;
 
   _ProxyMode mode = _ProxyMode.passthrough;
 
