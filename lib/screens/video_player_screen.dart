@@ -6655,7 +6655,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
     if (_pendingQualityStreak < _qualityStreakRequired) {
       debugPrint(
-        'AdaptiveQuality: lectura $reading (${_pendingQualityStreak}/'
+        'AdaptiveQuality: lectura $reading ($_pendingQualityStreak/'
         '$_qualityStreakRequired) — esperando confirmación',
       );
       return;
