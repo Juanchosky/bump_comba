@@ -422,18 +422,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // 2. Unmount video widget BEFORE touching native player.
     _videoControllerNotifier.value = null;
 
-    // 3. Safely stop and dispose native player without low-level property manipulation
+    // 3. Safely stop and dispose native player (guaranteed single execution)
     if (pToStop != null) {
-      unawaited(() async {
-        try {
-          await pToStop.stop();
-        } catch (_) {}
-        try {
-          await pToStop.dispose();
-        } catch (e) {
-          debugPrint('Error disposing player on screen dispose: $e');
-        }
-      }());
+      unawaited(_safeDisposePlayer(pToStop));
     }
 
     // 4. Flutter-side animation controllers
@@ -454,16 +445,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     WidgetsBinding.instance.removeObserver(this);
 
     super.dispose();
-
-    // 5. Deferred total disposal — give MPV's native event queue time to drain
-    //    AFTER the Dart widget is fully gone. 1500ms is safe for Motorola.
-    if (pToStop != null) {
-      Future.delayed(const Duration(milliseconds: 1500), () {
-        try {
-          pToStop.dispose();
-        } catch (_) {}
-      });
-    }
   }
 
   @override
@@ -606,15 +587,25 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
   }
 
-  Future<void> _asyncDisposeOldPlayer(Player p) async {
+  static final Set<Player> _disposedPlayers = {};
+
+  static Future<void> _safeDisposePlayer(Player? p) async {
+    if (p == null) return;
+    if (_disposedPlayers.contains(p)) return;
+    _disposedPlayers.add(p);
+
     try {
       await p.stop();
     } catch (_) {}
     try {
       await p.dispose();
     } catch (e) {
-      debugPrint('Error disposing player in background: $e');
+      debugPrint('SafeDisposePlayer error: $e');
     }
+  }
+
+  Future<void> _asyncDisposeOldPlayer(Player p) async {
+    await _safeDisposePlayer(p);
   }
 
   // PRE-RESOLVER DNS del servidor de video via Cloudflare

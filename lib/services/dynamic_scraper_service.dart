@@ -100,18 +100,30 @@ class DynamicScraperService {
     final lowerUrl = url.toLowerCase();
     final combined = '$lowerText $lowerUrl';
 
-    if (combined.contains('2160') ||
+    // 1. 4K / 2160P (Ultra HD)
+    if (combined.contains('2160p') ||
+        combined.contains('2160') ||
         combined.contains('4k') ||
-        combined.contains('uhd')) {
+        combined.contains('uhd') ||
+        combined.contains('ultrahd')) {
       return 2160;
     }
+
+    // 2. 1080P (Full HD)
     if (combined.contains('1080p') ||
         combined.contains('1080') ||
         combined.contains('fhd') ||
         combined.contains('fullhd') ||
-        combined.contains('microframe-hd')) {
+        combined.contains('full-hd') ||
+        combined.contains('microframe-hd') ||
+        lowerUrl.contains('1080.m3u8') ||
+        lowerUrl.contains('1080/') ||
+        lowerUrl.contains('1080_') ||
+        lowerUrl.contains('1080-')) {
       return 1080;
     }
+
+    // 3. 720P (HD)
     if (combined.contains('720p') ||
         combined.contains('720') ||
         combined.contains('microframe-sd') ||
@@ -119,24 +131,54 @@ class DynamicScraperService {
         lowerUrl.contains('_sd.m3u8') ||
         lowerUrl.contains('hd.m3u8') ||
         lowerUrl.contains('-hd.m3u8') ||
-        lowerText == 'hd') {
+        lowerUrl.contains('_hd.m3u8') ||
+        lowerUrl.contains('720.m3u8') ||
+        lowerUrl.contains('720/') ||
+        lowerUrl.contains('720_') ||
+        lowerUrl.contains('720-') ||
+        lowerUrl.contains('high.m3u8') ||
+        lowerText == 'hd' ||
+        lowerText.contains('720')) {
       return 720;
     }
+
+    // 4. HLS Master Playlists (auto-selects highest resolution inside MPV engine)
+    if (lowerUrl.contains('master.m3u8') ||
+        lowerUrl.contains('playlist.m3u8') ||
+        lowerUrl.contains('index.m3u8') ||
+        lowerUrl.contains('manifest.m3u8')) {
+      return 700;
+    }
+
+    // 5. 540P
     if (combined.contains('540p') ||
         combined.contains('540') ||
         combined.contains('microframe-ld') ||
-        lowerUrl.contains('-ld.m3u8')) {
+        lowerUrl.contains('-ld.m3u8') ||
+        lowerUrl.contains('540.m3u8')) {
       return 540;
     }
-    if (combined.contains('480p') || combined.contains('480')) {
+
+    // 6. 480P (SD)
+    if (combined.contains('480p') ||
+        combined.contains('480') ||
+        lowerUrl.contains('480.m3u8') ||
+        lowerUrl.contains('medium.m3u8')) {
       return 480;
     }
+
+    // 7. 360P / 240P
     if (combined.contains('360p') ||
         combined.contains('360') ||
+        combined.contains('240p') ||
+        combined.contains('240') ||
         combined.contains('microframe-fd') ||
-        lowerUrl.contains('-fd.m3u8')) {
+        lowerUrl.contains('-fd.m3u8') ||
+        lowerUrl.contains('360.m3u8') ||
+        lowerUrl.contains('low.m3u8')) {
       return 360;
     }
+
     return 300;
   }
 
@@ -443,13 +485,19 @@ class DynamicScraperService {
           try {
             // Multi-pass evaluation to catch async player hydration (600ms, 1400ms, 2200ms)
             for (int pass = 1; pass <= 3; pass++) {
-              if (completer.isCompleted || _currentSessionId != sessionId || _headlessWebView == null) {
+              if (completer.isCompleted ||
+                  _currentSessionId != sessionId ||
+                  _headlessWebView == null) {
                 break;
               }
 
-              await Future.delayed(Duration(milliseconds: pass == 1 ? 600 : 800));
+              await Future.delayed(
+                Duration(milliseconds: pass == 1 ? 600 : 800),
+              );
 
-              if (completer.isCompleted || _currentSessionId != sessionId || _headlessWebView == null) {
+              if (completer.isCompleted ||
+                  _currentSessionId != sessionId ||
+                  _headlessWebView == null) {
                 break;
               }
 
@@ -462,12 +510,13 @@ class DynamicScraperService {
                       const lowerUrl = (url || '').toLowerCase();
                       const combined = lowerText + ' ' + lowerUrl;
 
-                      if (combined.includes('2160') || combined.includes('4k') || combined.includes('uhd')) return 2160;
-                      if (combined.includes('1080p') || combined.includes('1080') || combined.includes('fhd') || combined.includes('fullhd') || combined.includes('microframe-hd')) return 1080;
-                      if (combined.includes('720p') || combined.includes('720') || combined.includes('microframe-sd') || lowerUrl.includes('-sd.m3u8') || lowerUrl.includes('_sd.m3u8') || lowerUrl.includes('hd.m3u8') || lowerUrl.includes('-hd.m3u8') || lowerText === 'hd') return 720;
-                      if (combined.includes('540p') || combined.includes('540') || combined.includes('microframe-ld') || lowerUrl.includes('-ld.m3u8')) return 540;
-                      if (combined.includes('480p') || combined.includes('480')) return 480;
-                      if (combined.includes('360p') || combined.includes('360') || combined.includes('microframe-fd') || lowerUrl.includes('-fd.m3u8')) return 360;
+                      if (combined.includes('2160p') || combined.includes('2160') || combined.includes('4k') || combined.includes('uhd') || combined.includes('ultrahd')) return 2160;
+                      if (combined.includes('1080p') || combined.includes('1080') || combined.includes('fhd') || combined.includes('fullhd') || combined.includes('full-hd') || combined.includes('microframe-hd') || lowerUrl.includes('1080.m3u8') || lowerUrl.includes('1080/') || lowerUrl.includes('1080_') || lowerUrl.includes('1080-')) return 1080;
+                      if (combined.includes('720p') || combined.includes('720') || combined.includes('microframe-sd') || lowerUrl.includes('-sd.m3u8') || lowerUrl.includes('_sd.m3u8') || lowerUrl.includes('hd.m3u8') || lowerUrl.includes('-hd.m3u8') || lowerUrl.includes('_hd.m3u8') || lowerUrl.includes('720.m3u8') || lowerUrl.includes('720/') || lowerUrl.includes('720_') || lowerUrl.includes('720-') || lowerUrl.includes('high.m3u8') || lowerText === 'hd' || lowerText.includes('720')) return 720;
+                      if (lowerUrl.includes('master.m3u8') || lowerUrl.includes('playlist.m3u8') || lowerUrl.includes('index.m3u8') || lowerUrl.includes('manifest.m3u8')) return 700;
+                      if (combined.includes('540p') || combined.includes('540') || combined.includes('microframe-ld') || lowerUrl.includes('-ld.m3u8') || lowerUrl.includes('540.m3u8')) return 540;
+                      if (combined.includes('480p') || combined.includes('480') || lowerUrl.includes('480.m3u8') || lowerUrl.includes('medium.m3u8')) return 480;
+                      if (combined.includes('360p') || combined.includes('360') || combined.includes('240p') || combined.includes('240') || combined.includes('microframe-fd') || lowerUrl.includes('-fd.m3u8') || lowerUrl.includes('360.m3u8') || lowerUrl.includes('low.m3u8')) return 360;
                       return 300;
                     }
 
