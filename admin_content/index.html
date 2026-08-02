@@ -241,31 +241,31 @@
 
         <!-- Modal para Auto-Importar -->
         <div id="import-modal" class="modal">
-            <div class="modal-content glass" style="max-width: 540px;">
+            <div class="modal-content glass" style="max-width: 580px;">
                 <div class="modal-header">
                     <h2 style="display:flex;align-items:center;gap:.75rem;">
                         <i data-lucide="zap" style="color:var(--primary)"></i>
-                        Importar Serie Completa
+                        Auto-Importar Películas o Series
                     </h2>
                     <button class="close-import-modal close-modal"><i data-lucide="x"></i></button>
                 </div>
                 <div class="modal-body">
-                    <p style="color:var(--text-muted);margin-bottom:1.5rem;font-size:.9rem;line-height:1.6;">
-                        Pega el enlace de la serie. Se importarán <strong style="color:var(--text-main);">todas las temporadas y capítulos</strong> automáticamente.
+                    <p style="color:var(--text-muted);margin-bottom:1.25rem;font-size:.9rem;line-height:1.6;">
+                        Pega el enlace de una <strong style="color:var(--text-main);">Película</strong>, <strong style="color:var(--text-main);">Serie completa</strong> o <strong style="color:var(--text-main);">múltiples enlaces</strong> (uno por línea).
                     </p>
                     <div class="form-group">
-                        <label for="import-url">URL de la Serie</label>
-                        <input type="url" id="import-url"
-                            placeholder="https://play.cuevana.life/es/detail/drama/..."
-                            style="font-size:.9rem;">
+                        <label for="import-url">URLs del Contenido (una por línea para importar varias a la vez)</label>
+                        <textarea id="import-url" rows="4"
+                            placeholder="Ejemplo Película: https://video.playspelis.com/es/detail/movie/yN0aGFrdc4n4TsPf0wZ5C-Toy-Story-5&#10;Ejemplo Serie: https://flixlat.com/es/detail/drama/r9VzzJNsLC7sv0LQ7OxCO-Breaking-Bad-Season-1"
+                            style="font-size:.88rem;width:100%;padding:.75rem;border-radius:.6rem;background:rgba(255,255,255,.05);color:var(--text-main);border:1px solid var(--border-color);font-family:inherit;resize:vertical;"></textarea>
                         <small style="color:var(--text-muted);margin-top:.4rem;display:block;">
-                            Ejemplo: <code style="background:rgba(255,255,255,.07);padding:.1rem .4rem;border-radius:.3rem;">https://flixlat.com/es/detail/drama/r9VzzJNsLC7sv0LQ7OxCO-Breaking-Bad-Season-1 o Sin -Season-1 o https://play.cuevana.life/es/detail/drama/p8SdgbVHH15i3gnPRioFx-Sin-Senos-No-Hay-Para%C3%ADso En caso de que tenga /1 Una temporada</code>
+                            Soporta enlaces de <code style="background:rgba(255,255,255,.07);padding:.1rem .4rem;border-radius:.3rem;">Playspelis</code>, <code style="background:rgba(255,255,255,.07);padding:.1rem .4rem;border-radius:.3rem;">Cuevana</code> y <code style="background:rgba(255,255,255,.07);padding:.1rem .4rem;border-radius:.3rem;">Flixlat</code>.
                         </small>
                     </div>
                     <div id="full-import-progress" style="display:none;margin-top:1.5rem;">
                         <div style="display:flex;align-items:center;gap:.75rem;color:var(--primary);margin-bottom:.75rem;">
                             <i data-lucide="loader-2" class="spinning"></i>
-                            <span id="full-import-status">Detectando temporadas...</span>
+                            <span id="full-import-status">Procesando...</span>
                         </div>
                         <div style="background:rgba(255,255,255,.05);border-radius:.5rem;overflow:hidden;height:8px;">
                             <div id="full-import-bar" style="height:100%;background:var(--primary);width:0%;transition:width .6s ease;border-radius:.5rem;"></div>

@@ -685,11 +685,18 @@ function setupEventListeners() {
     closeImportModalBtns.forEach(btn => { btn.onclick = () => importModal.style.display = 'none'; });
 
     confirmImportBtn.onclick = async () => {
-        let url = importUrlInput.value.trim();
-        url = cleanVideoUrl(url); // Limpiar URL antes de enviar
-        if (!url || !url.startsWith('http')) {
+        const rawInput = importUrlInput.value.trim();
+        if (!rawInput) {
+            showToast('Por favor ingresa al menos una URL válida', 'error');
+            return;
+        }
 
-            showToast('Por favor ingresa una URL válida', 'error');
+        const urls = rawInput.split('\n')
+            .map(u => cleanVideoUrl(u.trim()))
+            .filter(u => u.startsWith('http'));
+
+        if (urls.length === 0) {
+            showToast('No se encontraron URLs válidas en el texto', 'error');
             return;
         }
 
@@ -701,42 +708,63 @@ function setupEventListeners() {
         confirmImportBtn.innerHTML = '<i data-lucide="loader-2" class="spinning"></i> Importando...';
         lucide.createIcons();
         if (progressDiv) progressDiv.style.display = 'block';
-        if (barEl) barEl.style.width = '15%';
-        if (statusEl) statusEl.textContent = 'Conectando y detectando temporadas...';
+        if (barEl) barEl.style.width = '10%';
+        if (statusEl) statusEl.textContent = `Procesando ${urls.length} enlace(s)...`;
+
+        let successCount = 0;
+        let failCount = 0;
 
         try {
-            // Animar la barra mientras espera
-            let fakeProgress = 15;
-            const ticker = setInterval(() => {
-                if (fakeProgress < 80) {
-                    fakeProgress += 3;
-                    if (barEl) barEl.style.width = fakeProgress + '%';
+            for (let i = 0; i < urls.length; i++) {
+                const url = urls[i];
+                const pct = Math.round(((i + 1) / urls.length) * 100);
+                if (barEl) barEl.style.width = pct + '%';
+                if (statusEl) statusEl.textContent = `Importando (${i + 1}/${urls.length}): ${url.split('/').pop()}...`;
+
+                const isMovie = url.includes('/movie/') || url.includes('/pelicula/') || url.includes('/film/');
+
+                if (isMovie) {
+                    try {
+                        const meta = parseMovieMetadataFromUrl(url);
+                        const { error } = await supabaseClient
+                            .from('custom_content')
+                            .insert([{
+                                title: meta.title,
+                                video_url: url,
+                                thumbnail_url: meta.thumbnail_url,
+                                type: 'movie',
+                                category: 'Recomendados',
+                                is_active: true
+                            }]);
+                        if (error) throw error;
+                        successCount++;
+                    } catch (mErr) {
+                        console.error('Error al importar película:', mErr);
+                        failCount++;
+                    }
+                } else {
+                    try {
+                        const { data, error } = await supabaseClient.functions.invoke('import-full-series', {
+                            body: { url }
+                        });
+                        if (error) throw error;
+                        if (data && data.error) throw new Error(data.error);
+                        successCount++;
+                    } catch (sErr) {
+                        console.error('Error al importar serie:', sErr);
+                        failCount++;
+                    }
                 }
-            }, 1500);
-
-            const { data, error } = await supabaseClient.functions.invoke('import-full-series', {
-                body: { url }
-            });
-
-            clearInterval(ticker);
-
-            if (error) throw new Error(error.message || 'Error en el servidor');
-            if (data && data.error) {
-                if (data.error === 'CLOUDFLARE_BLOCKED') {
-                    throw new Error('Cloudflare bloqueó el acceso. Prueba desde una red diferente o espera unos minutos.');
-                }
-                throw new Error(data.error);
             }
 
             if (barEl) { barEl.style.width = '100%'; barEl.style.background = 'var(--accent-green)'; }
-            const msg = data.message || `¡Listo! ${data.total_episodes || 0} capítulos importados.`;
+            const msg = `¡Listo! ${successCount} contenido(s) importados correctamente${failCount > 0 ? `, ${failCount} fallidos` : ''}.`;
             if (statusEl) statusEl.textContent = msg;
             showToast(msg, 'success');
 
             await sleep(1800);
             importModal.style.display = 'none';
-            await fetchContent();   // Recarga series/películas
-            // Si estamos viendo una serie, recargar sus episodios también
+            await fetchContent();
             if (activeSeriesFilter) {
                 const eps = await fetchEpisodesForSeries(activeSeriesFilter);
                 allContent = allContent.filter(it => !(it.type === 'episode' && it.parent_id === activeSeriesFilter));
@@ -744,10 +772,8 @@ function setupEventListeners() {
                 populateSeasonSelect(activeSeriesFilter);
             }
             applyFilters();
-
-
         } catch (err) {
-            if (barEl) { barEl.style.width = '0%'; }
+            if (barEl) barEl.style.width = '0%';
             if (progressDiv) progressDiv.style.display = 'none';
             showToast('Error: ' + (err.message || 'Error desconocido'), 'error');
         } finally {
@@ -756,6 +782,38 @@ function setupEventListeners() {
             lucide.createIcons();
         }
     };
+
+function parseMovieMetadataFromUrl(url) {
+    let title = 'Película';
+    let thumbnail_url = '';
+
+    try {
+        const urlObj = new URL(url);
+        const parts = urlObj.pathname.split('/').filter(p => p.length > 0);
+        const last = decodeURIComponent(parts[parts.length - 1] || '');
+
+        if (last) {
+            let t = last;
+            if (t.includes('-')) {
+                const subParts = t.split('-');
+                if (subParts.length > 1 && subParts[0].length >= 10) {
+                    t = subParts.slice(1).join(' ');
+                } else {
+                    t = subParts.join(' ');
+                }
+            }
+            title = t.replace(/\b\w/g, c => c.toUpperCase());
+        }
+
+        const domain = urlObj.hostname.replace('video.', 'img.').replace('es.', 'img.');
+        const idMatch = urlObj.pathname.match(/\/([a-zA-Z0-9]{15,30})/);
+        if (idMatch && idMatch[1]) {
+            thumbnail_url = `https://${domain}/cover/${idMatch[1]}.jpg`;
+        }
+    } catch (_) {}
+
+    return { title, thumbnail_url };
+}
 
     // (Botón auto-import de temporada eliminado — usar importación de serie completa)
 }
