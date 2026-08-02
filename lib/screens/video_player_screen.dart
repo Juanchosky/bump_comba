@@ -22,7 +22,6 @@ import '../services/cast_service.dart';
 import '../services/network_quality_service.dart';
 import '../services/adaptive_buffer_service.dart';
 import '../services/video_prewarm_service.dart';
-import '../services/turbo_proxy.dart';
 import 'package:http/http.dart' as http;
 
 import '../utils/snack_bar_utils.dart';
@@ -98,9 +97,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   // Se pone en false al inicio de la primera reproduccion para que
   // el mensaje de bienvenida no aparezca en re-buffers ni recargas.
   bool _isInitialLoad = true;
-  // Guard anti-bucle: solo se intenta UNA vez volver a la URL directa por
-  // contenido cargado, para no encadenar reaperturas si el origen está caído.
-  bool _turboFallbackDone = false;
   bool _midRollAdShown = false;
   bool _midRollNoticeShown = false;
   late M3UItem _currentItem;
@@ -164,10 +160,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool _autoPlayCancelled = false;
   // Pre-calentamiento del siguiente episodio (una sola vez por episodio).
   bool _nextEpisodePrewarmStarted = false;
-  // El player precalentado del navegador solo puede consumirse UNA vez: si se
-  // reutilizara al pasar de episodio, isPrewarmed saltaría el open() y
-  // seguiría reproduciéndose el media anterior.
-  bool _widgetPrewarmedConsumed = false;
   bool _isFastForwarding = false;
   int? _adCountdown;
 
@@ -470,11 +462,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
     WidgetsBinding.instance.removeObserver(this);
 
-    // Forzar guardado inmediato del aprendizaje Turbo al salir del reproductor.
-    // No se depende del timer de 30s: si el usuario cierra la app justo tras
-    // una película, los perfiles aprendidos no se perderán.
-    unawaited(TurboProxy.instance.flushProfiles());
-
     super.dispose();
 
     // 5. Deferred total disposal — give MPV's native event queue time to drain
@@ -670,31 +657,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   /// Si la URL es un M3U8, la ruteamos por el Worker para acelerar
   /// la descarga de la playlist inicial (la más lenta desde Colombia).
-  /// Los segmentos de video NO se proxean — son demasiado grandes.
   String _resolveStreamUrl(String url) {
-    final lower = url.toLowerCase();
-
-    // Solo proxear playlists M3U8, no segmentos .ts ni .mp4
-    final isPlaylist =
-        lower.contains('.m3u8') ||
-        lower.contains('/playlist') ||
-        lower.contains('/index.m3u8');
-
-    if (!isPlaylist) return url; // URLs directas .mp4 etc no necesitan proxy
-
-    // Dominios que sabemos son lentos desde Colombia
-    final needsProxy =
-        url.contains('ultratvsv.site') ||
-        url.contains('red4tv.lat') ||
-        url.contains('iptv') ||
-        url.contains('/live/') ||
-        url.contains('/hls/');
-
-    if (!needsProxy) return url;
-
-    const workerUrl =
-        'https://morning-night-2d8a.juandanielarrieta23.workers.dev';
-    return '$workerUrl/?url=${Uri.encodeComponent(url)}';
+    return url;
   }
 
   String _videoKey = '';
@@ -772,52 +736,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       // VideoController adjunto al abrir el media para inicializar la salida de
       // video (de lo contrario: audio OK, video negro). En iOS siempre abrimos
       // un player fresco con la textura ya montada.
-      final bool isIOSPlatform = defaultTargetPlatform == TargetPlatform.iOS;
-      // Player precalentado disponible para ESTE item: el que llegó del
-      // navegador (consumible solo una vez) o uno precalentado en segundo
-      // plano para el siguiente episodio (_prewarmNextEpisode).
-      Player? prewarmedForItem;
-      if (!isIOSPlatform && _retryCount == 0 && !isLocalReload) {
-        if (!_widgetPrewarmedConsumed &&
-            widget.prewarmedPlayer != null &&
-            widget.prewarmedPlayer!.platform != null) {
-          prewarmedForItem = widget.prewarmedPlayer;
-          _widgetPrewarmedConsumed = true;
-        } else {
-          prewarmedForItem = VideoPrewarmService().getPlayer(item);
-        }
-      }
-      final isPrewarmed = prewarmedForItem != null;
-
-      // Si llegó un player precalentado en iOS (no debería, pero por seguridad),
-      // lo liberamos para que no quede consumiendo recursos en segundo plano.
-      if (isIOSPlatform &&
-          widget.prewarmedPlayer != null &&
-          !_widgetPrewarmedConsumed &&
-          _retryCount == 0 &&
-          !isLocalReload) {
-        _widgetPrewarmedConsumed = true;
-        try {
-          final pw = widget.prewarmedPlayer!;
-          final mpv = pw.platform as dynamic;
-          mpv?.setProperty('vid', 'no');
-          mpv?.setProperty('vo', 'null');
-          await pw.stop();
-          await pw.dispose();
-        } catch (_) {}
-      }
-
-      // Liberar el player anterior también cuando adoptamos uno precalentado
-      // para el siguiente episodio: sin esto quedarían dos players vivos.
-      if (!isPrewarmed || (_player != null && _player != prewarmedForItem)) {
-        await _cleanupPlayer();
-      }
+      await _cleanupPlayer();
 
       AdService().recordVideoStart();
 
       setState(() {
         _isVideoLoading = true;
-        _turboFallbackDone = false;
         _autoPlayCancelled = false;
         _nextEpisodePrewarmStarted = false;
         _midRollAdShown = false;
@@ -851,32 +775,27 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         }
       });
 
-      Player currentPlayer;
-      if (isPrewarmed) {
-        currentPlayer = prewarmedForItem;
-      } else {
-        currentPlayer = Player(
-          configuration: PlayerConfiguration(
-            // En gama baja, 256 MB de buffer nativo arriesgan un kill por
-            // memoria del SO (dispositivos de 2–3 GB de RAM).
-            bufferSize:
-                PerformanceService().isLowPerformance
-                    ? 64 * 1024 * 1024
-                    : 256 * 1024 * 1024,
-            title: 'Bump Comba Player',
-            logLevel: MPVLogLevel.error,
-            libass: true, // ← Renderizador nativo, mucho más eficiente
-          ),
-        );
-        // -- CRITICAL SILENCING --
-        // Mute native engine IMMEDIATELY after creation to prevent callbacks
-        // that could survive a Hot Restart.
-        try {
-          final mpv = currentPlayer.platform as dynamic;
-          mpv?.setProperty('terminal', 'no');
-          mpv?.setProperty('msg-level', 'all=no');
-        } catch (_) {}
-      }
+      final currentPlayer = Player(
+        configuration: PlayerConfiguration(
+          // En gama baja, 256 MB de buffer nativo arriesgan un kill por
+          // memoria del SO (dispositivos de 2–3 GB de RAM).
+          bufferSize:
+              PerformanceService().isLowPerformance
+                  ? 64 * 1024 * 1024
+                  : 256 * 1024 * 1024,
+          title: 'Bump Comba Player',
+          logLevel: MPVLogLevel.error,
+          libass: true, // ← Renderizador nativo, mucho más eficiente
+        ),
+      );
+      // -- CRITICAL SILENCING --
+      // Mute native engine IMMEDIATELY after creation to prevent callbacks
+      // that could survive a Hot Restart.
+      try {
+        final mpv = currentPlayer.platform as dynamic;
+        mpv?.setProperty('terminal', 'no');
+        mpv?.setProperty('msg-level', 'all=no');
+      } catch (_) {}
 
       _player = currentPlayer;
       AdaptiveBufferService().resetState();
@@ -950,19 +869,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                   ? 'VLC/3.0.20 LibVLC/3.0.20'
                   : _userAgents[_userAgentIndex % _userAgents.length];
 
-          bool useDirectHwdec = true;
-          if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
-            if (lowPerf || PerformanceService().allowVideoPrewarm == false) {
-              useDirectHwdec = false;
-            }
-          }
-
           String decoder;
           if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
-            decoder =
-                (_retryCount > 0 || !useDirectHwdec)
-                    ? 'mediacodec-copy'
-                    : 'mediacodec';
+            // mediacodec es el decodificador por hardware nativo (zero-copy a Surface).
+            // mediacodec-copy solo como último recurso en reintentos múltiples (>=2).
+            decoder = (_retryCount >= 2) ? 'mediacodec-copy' : 'mediacodec';
           } else if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
             decoder = 'videotoolbox-copy';
           } else {
@@ -974,11 +885,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             mpv.setProperty('cache', 'yes'),
             mpv.setProperty('cache-pause', 'yes'),
             mpv.setProperty('cache-on-disk', 'no'),
-            mpv.setProperty('cache-pause-wait', _isLiveContent ? '1' : '2'),
+            mpv.setProperty('cache-pause-wait', _isLiveContent ? '2' : '10'),
             mpv.setProperty('cache-pause-initial', 'yes'),
             mpv.setProperty(
               'stream-buffer-size',
-              _isLiveContent ? '4194304' : (lowPerf ? '4194304' : '16777216'),
+              _isLiveContent ? '4194304' : (lowPerf ? '8388608' : '33554432'),
             ),
             mpv.setProperty('network-timeout', '10'),
             mpv.setProperty('http-header-fields', 'Connection: keep-alive'),
@@ -991,6 +902,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             mpv.setProperty('http-pipelining', 'yes'),
             mpv.setProperty('user-agent', selectedUA),
             mpv.setProperty('sub-forced-only', 'no'),
+            mpv.setProperty('audio-display', 'no'),
+            mpv.setProperty('cover-art-auto', 'no'),
             mpv.setProperty('hwdec', decoder),
             mpv.setProperty('vd-lavc-threads', '0'),
             mpv.setProperty('vd-lavc-skiploopfilter', 'none'),
@@ -1056,28 +969,19 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
       // ── ADAPTIVE QUALITY: Aplicar perfil inicial basado en estado de red ──
       // Se hace DESPUÉS del microtask original para no bloquear el arranque.
-      Future.delayed(const Duration(milliseconds: 800), () async {
+      Future.delayed(const Duration(milliseconds: 1200), () async {
         if (!mounted || _player == null) return;
         final mpv2 = _player?.platform as dynamic;
         if (mpv2 == null) return;
 
-        // Forzar una medición actualizada ANTES de aplicar perfil.
-        // La primera medición suele ser incorrecta porque el stream
-        // aún no está activo cuando el servicio arranca.
-        await _networkQuality.measureManual();
-
         final currentQuality = _networkQuality.quality.value;
         _lastAppliedQuality = currentQuality;
 
-        // GUARD: Si el ancho de banda real es >=2.0Mbps, no aplicar perfil degradado
-        // aunque la heurística de latencia diga "poor" o "fair" — puede ser una medición
-        // transitoria incorrecta al inicio.
         final realBandwidth = _networkQuality.estimatedBandwidthMbps.value;
         final shouldDegrade =
             (currentQuality == NetworkQuality.fair ||
                 currentQuality == NetworkQuality.poor) &&
-            realBandwidth <
-                2.0; // Solo degradar si el ancho de banda real es bajo
+            realBandwidth < 1.5;
 
         if (shouldDegrade) {
           await AdaptiveBufferService().applyConfig(
@@ -1087,11 +991,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           );
           debugPrint(
             'AdaptiveQuality: Initial profile applied: ${currentQuality.name}',
-          );
-        } else if (currentQuality == NetworkQuality.poor ||
-            currentQuality == NetworkQuality.fair) {
-          debugPrint(
-            'AdaptiveQuality: Skipping degraded profile — real bandwidth is ${realBandwidth.toStringAsFixed(1)} Mbps (quality: ${currentQuality.name})',
           );
         }
       });
@@ -1118,75 +1017,28 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         await frameReady.future;
       }
 
-      // TURBO: para VOD local (no live, no cast), servir el stream a través
-      // del proxy con 4 conexiones paralelas. En servidores IPTV que limitan
-      // la velocidad por conexión esto multiplica el throughput y elimina la
-      // mayoría de las paradas por re-buffering. Si el servidor no soporta
-      // rangos, wrap() devuelve null y seguimos con la URL directa.
-      // El timeout es de 7s (no 5s): el bypass de DNS por DoH puede tardar
-      // unos segundos la PRIMERA vez. Con 5s el turbo se caía justo en el
-      // primer contenido de la sesión. La IP queda cacheada, así que los
-      // siguientes sondeos son instantáneos.
-      String turboUrl = resolvedUrl;
-      if (!_isLiveContent && !castService.isCasting.value && !isPrewarmed) {
-        // Omitir Turbo para archivos pequeños (<300 MB): el overhead de
-        // las conexiones paralelas no compensa para contenido de poco tamaño.
-        final lowerUrl = resolvedUrl.toLowerCase();
-        final isSmallHint =
-            lowerUrl.contains('trailer') ||
-            lowerUrl.contains('preview') ||
-            lowerUrl.contains('sample');
-        if (!isSmallHint) {
-          try {
-            final proxied = await TurboProxy.instance
-                .wrap(resolvedUrl, _buildHeaders(currentUrl))
-                .timeout(const Duration(seconds: 7));
-            if (proxied != null) turboUrl = proxied;
-          } catch (e) {
-            debugPrint('TurboProxy no disponible: $e');
-          }
-        } else {
-          debugPrint('TurboProxy: omitido para contenido corto/pequeño');
-        }
+      await _player!.open(
+        Media(resolvedUrl, httpHeaders: _buildHeaders(currentUrl)),
+        play: shouldPlayLocally,
+      );
+      // REFUERZO del fix vid=auto: tras open(), volvemos a forzar la
+      // selección de pista de video (salvo en Cast). Cubre el caso en que
+      // el VideoController de media_kit no logró poner vid=auto al adjuntarse
+      // en iOS, dejando el video desactivado (audio sí, video 0×0).
+      if (!castService.isCasting.value) {
+        try {
+          final mpvActive = _player?.platform as dynamic;
+          await mpvActive?.setProperty('vid', 'auto');
+        } catch (_) {}
       }
-
-      if (!isPrewarmed) {
-        await _player!.open(
-          Media(turboUrl, httpHeaders: _buildHeaders(currentUrl)),
-          play: shouldPlayLocally,
-        );
-        // REFUERZO del fix vid=auto: tras open(), volvemos a forzar la
-        // selección de pista de video (salvo en Cast). Cubre el caso en que
-        // el VideoController de media_kit no logró poner vid=auto al adjuntarse
-        // en iOS, dejando el video desactivado (audio sí, video 0×0).
-        if (!castService.isCasting.value) {
-          try {
-            final mpvActive = _player?.platform as dynamic;
-            await mpvActive?.setProperty('vid', 'auto');
-          } catch (_) {}
-        }
-        // Durante Cast sin audio local, cerramos la descarga del player local
-        // completamente para liberar el ancho de banda al Chromecast.
-        // Un player pausado-pero-abierto sigue consumiendo red en background.
-        if (castService.isCasting.value && !_localAudioDuringCast) {
-          await Future.delayed(const Duration(milliseconds: 300));
-          try {
-            _player?.stop();
-          } catch (_) {}
-        }
-      } else {
-        if (shouldPlayLocally) {
-          _player!.play();
-        } else {
-          _player!.pause();
-        }
-      }
-
-      // Red de seguridad de arranque. Cubre también el caso del player
-      // PRECALENTADO, que trae su propio media ya abierto (posiblemente
-      // proxeado desde la pantalla de detalle) sin pasar por el open() de aquí.
-      if (shouldPlayLocally) {
-        unawaited(_turboStartupWatchdog(_videoKey));
+      // Durante Cast sin audio local, cerramos la descarga del player local
+      // completamente para liberar el ancho de banda al Chromecast.
+      // Un player pausado-pero-abierto sigue consumiendo red en background.
+      if (castService.isCasting.value && !_localAudioDuringCast) {
+        await Future.delayed(const Duration(milliseconds: 300));
+        try {
+          _player?.stop();
+        } catch (_) {}
       }
 
       // Sincronizar con Chromecast si estamos transmitiendo
@@ -1285,15 +1137,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             break;
           }
 
-          // Si el audio ya está reproduciéndose con buffer pero el video sigue
-          // en 0x0, es el caso de "pantalla negra con audio". No esperamos los
-          // 20s completos: salimos a los ~5s para que el watchdog recargue
-          // rápido (en iOS, con decodificación por software).
-          if (isPlayingAndAdvanced && hasBuffer && !hasVideo) {
+          // En iOS, si el audio suena pero no hay video por >10s (VideoToolbox trabado),
+          // salimos para intentar recuperar. En Android, permitimos esperar los 20s
+          // completos porque decodificadores hardware como MediaTek necesitan 8-12s
+          // para sincronizar frames iniciales y emitir dimensiones sin romper la carga.
+          if (isIOS && isPlayingAndAdvanced && hasBuffer && !hasVideo) {
             audioOnlyWaits++;
-            if (audioOnlyWaits >= 50) {
+            if (audioOnlyWaits >= 100) {
               debugPrint(
-                'Arranque con audio pero sin video tras 5s — saliendo del wait para recuperación.',
+                'Arranque con audio pero sin video tras 10s (iOS) — saliendo del wait para recuperación.',
               );
               break;
             }
@@ -1411,19 +1263,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               });
               return; // Evitamos recargar el video completo si solo falló el subtítulo
             }
-          }
-
-          // RECUPERACIÓN MID-STREAM DEL TURBO.
-          // El watchdog de arranque solo cubre el fallo inicial. Si el proxy
-          // falla DESPUÉS de haber empezado a reproducir, reabrimos con la URL
-          // DIRECTA en la posición actual antes de dar el error por bueno: el
-          // turbo nunca debe romper una reproducción que ya iba bien.
-          // El guard anti-bucle evita encadenar reintentos.
-          if (!_turboFallbackDone &&
-              !_isVideoLoading &&
-              !_isReloading &&
-              _tryTurboDirectFallback()) {
-            return;
           }
 
           // No recargar por un error si el usuario tiene el contenido pausado o
@@ -1849,18 +1688,30 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         _stallSeconds++;
         showingSpinner = true;
 
-        // Threshold dinámico según calidad de red:
-        // - Buena red: recargar rápido (5–10s)
-        // - Mala red: darle más tiempo para que el buffer se llene (15–25s)
+        // Threshold dinámico según tipo de contenido y calidad de red:
+        // En VOD recargar prematuramente (10-20s) destruye los datos descargados en RAM.
+        // Se otorgan 35–60s para que la descarga VOD avance a su ritmo.
         final networkQ = _networkQuality.quality.value;
         final int threshold;
-        if (networkQ == NetworkQuality.poor ||
-            networkQ == NetworkQuality.offline) {
-          threshold = _isLiveContent ? 20 : 35; // Más paciencia en red mala
-        } else if (networkQ == NetworkQuality.fair) {
-          threshold = _isLiveContent ? 10 : 20;
+        if (_isLiveContent) {
+          if (networkQ == NetworkQuality.poor ||
+              networkQ == NetworkQuality.offline) {
+            threshold = 25;
+          } else if (networkQ == NetworkQuality.fair) {
+            threshold = 15;
+          } else {
+            threshold = 10;
+          }
         } else {
-          threshold = _isLiveContent ? 5 : 10; // Comportamiento original
+          // VOD: Paciencia con el buffer para no destruir la descarga HTTP en curso
+          if (networkQ == NetworkQuality.poor ||
+              networkQ == NetworkQuality.offline) {
+            threshold = 60;
+          } else if (networkQ == NetworkQuality.fair) {
+            threshold = 45;
+          } else {
+            threshold = 35;
+          }
         }
 
         if (_stallSeconds >= threshold && !_isVideoLoading) {
@@ -1968,7 +1819,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           currentPos != _lastPosition && // el audio SÍ avanza
           !firstFrameRendered) {
         _noVideoSeconds++;
-        if (_noVideoSeconds >= 4) {
+        // Umbral generoso (12s): el SoC MediaTek puede tardar 8-10s en
+        // renderizar el primer frame a la textura tras open(). Con 4s se
+        // destruía el decoder justo antes de que diera video, provocando un
+        // ciclo innecesario de releaseAsync → CreateByComponentName.
+        if (_noVideoSeconds >= 12) {
           debugPrint(
             'Pantalla negra detectada (audio sin textura de video ${_noVideoSeconds}s). Recargando...',
           );
@@ -2013,68 +1868,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
   }
 
-  /// URI del media que el player tiene abierto ahora mismo (o null).
-  String? _currentMediaUri() {
-    try {
-      final playlist = _player?.state.playlist;
-      if (playlist == null || playlist.medias.isEmpty) return null;
-      final i = playlist.index;
-      if (i < 0 || i >= playlist.medias.length) return null;
-      return playlist.medias[i].uri;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  /// Si el media abierto viene del TurboProxy, lo reabre con la URL DIRECTA en
-  /// la posición actual. Devuelve true si se lanzó la recuperación.
-  ///
-  /// Cubre tanto el fallo mid-stream como el atasco de arranque, y funciona
-  /// también con players precalentados (la URL original se recupera del
-  /// registro del proxy, no de un campo de esta pantalla).
-  bool _tryTurboDirectFallback() {
-    final uri = _currentMediaUri();
-    if (uri == null || !TurboProxy.instance.isTurboUrl(uri)) return false;
-    final direct = TurboProxy.instance.originalFor(uri);
-    if (direct == null) return false;
-
-    _turboFallbackDone = true; // anti-bucle: una sola vez por contenido
-    final position = _player?.state.position ?? Duration.zero;
-    debugPrint(
-      'TurboProxy: fallo con el proxy — reabriendo URL DIRECTA en '
-      '${position.inSeconds}s',
-    );
-    unawaited(() async {
-      try {
-        await _player?.open(
-          Media(direct, httpHeaders: _buildHeaders(direct)),
-          play: true,
-        );
-        if (position > Duration.zero) {
-          await _player?.seek(position);
-        }
-      } catch (e) {
-        debugPrint('TurboProxy: fallback directo falló: $e');
-        if (mounted && !_isReloading && !_isVideoLoading) _reloadVideo();
-      }
-    }());
-    return true;
-  }
-
-  /// WATCHDOG DE ARRANQUE: si a los 8s de abrir con el proxy la reproducción no
-  /// avanzó (posición 0 y sin duración), reabre con la URL directa. Se cancela
-  /// solo si entretanto llegó otra carga (comparando [stamp] con [_videoKey]).
-  Future<void> _turboStartupWatchdog(String stamp) async {
-    await Future.delayed(const Duration(seconds: 8));
-    if (!mounted || _videoKey != stamp || _turboFallbackDone) return;
-    final started =
-        (_player?.state.position ?? Duration.zero) > Duration.zero ||
-        (_player?.state.duration ?? Duration.zero) > Duration.zero;
-    if (started) return;
-    debugPrint('TurboProxy: WATCHDOG — 8s sin arrancar, probando URL directa');
-    _tryTurboDirectFallback();
-  }
-
   /// Recarga el contenido actual REUTILIZANDO el Player y el decoder
   /// existentes, vía el comando nativo `loadfile ... replace` de MPV, en vez
   /// de destruir el Player completo (_cleanupPlayer + Player() nuevo).
@@ -2099,25 +1892,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
     final resolvedUrl = _resolveStreamUrl(currentUrl);
 
-    String finalUrl = resolvedUrl;
-    if (!_isLiveContent && !CastService().isCasting.value) {
-      final lowerUrl = resolvedUrl.toLowerCase();
-      final isSmallHint =
-          lowerUrl.contains('trailer') ||
-          lowerUrl.contains('preview') ||
-          lowerUrl.contains('sample');
-      if (!isSmallHint) {
-        try {
-          final proxied = await TurboProxy.instance
-              .wrap(resolvedUrl, _buildHeaders(currentUrl))
-              .timeout(const Duration(seconds: 7));
-          if (proxied != null) finalUrl = proxied;
-        } catch (e) {
-          debugPrint('TurboProxy no disponible en reload rápido: $e');
-        }
-      }
-    }
-
     // Rotar user-agent como property de sesión ANTES del open, porque los
     // headers van adjuntos al Media, pero user-agent es propiedad de mpv.
     try {
@@ -2128,7 +1902,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     try {
       await activePlayer.stop();
       await activePlayer.open(
-        Media(finalUrl, httpHeaders: _buildHeaders(currentUrl)),
+        Media(resolvedUrl, httpHeaders: _buildHeaders(currentUrl)),
         play: true,
       );
     } catch (e) {
@@ -2143,7 +1917,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _noMovementSeconds = 0;
     _noVideoSeconds = 0;
     _blackScreenReloadDone = false;
-    _turboFallbackDone = false;
     _subtitlesEnabled = false;
     _currentSubtitleText = [];
     _lastSelectedTrack = null;
@@ -2209,11 +1982,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           _retryCount++;
           final startFrom = currentPos.inSeconds > 5 ? currentPos : null;
 
-          // Camino rápido: reutilizar el Player existente vía loadfile.
-          // Solo aplica si NO estamos en Cast (ahí el player local se maneja
-          // distinto) ni en medio de un scraping (la URL puede cambiar del
-          // todo, no tiene sentido reusar sesión).
-          final canUseFastPath = !CastService().isCasting.value && !_isScraping;
+          // En Android, reutilizar la misma instancia de Player (open/loadfile)
+          // tras un EOS o corte HTTP corrompe el decodificador nativo MediaCodec
+          // (error cannot deallocate). En Android siempre usamos el camino limpio
+          // (_initializePlayer) que crea un Player fresco con la superficie adjunta.
+          final canUseFastPath =
+              !CastService().isCasting.value &&
+              !_isScraping &&
+              defaultTargetPlatform != TargetPlatform.android;
 
           bool handled = false;
           if (canUseFastPath) {
@@ -5605,34 +5381,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       ),
       line('Controller', controller == null ? 'null' : 'activo'),
       line('Recarga negra', _blackScreenReloadDone ? 'hecha' : 'no'),
-      // Panel Turbo completo con todas las métricas disponibles
-      line('Turbo estado', TurboProxy.instance.lastReason),
-      ...() {
-        final m = TurboProxy.instance.metrics.value;
-        if (m.host.isEmpty) return const <String>[];
-        return [
-          line('Turbo host', m.host),
-          line('Turbo TTFB', '${m.ttfbMs} ms'),
-          if (m.turboActivated) ...[
-            line('Turbo activ.', '+${m.turboActivationTimeSec}s'),
-            line('Turbo conex', '${m.maxConnectionsUsed} máx'),
-            line(
-              'Turbo red',
-              '${TurboProxy.instance.mbps.toStringAsFixed(1)} Mbps',
-            ),
-            line(
-              'Turbo dur.',
-              '${(m.turboActiveDurationMs / 1000).toStringAsFixed(1)}s activo',
-            ),
-            line('Turbo inter.', '${m.turboInterventions} intv.'),
-          ],
-          line('Turbo perfil', m.hostLearningSummary),
-        ];
-      }(),
-      line(
-        'Media actual',
-        _turboFallbackDone ? 'directa (fallback)' : 'normal',
-      ),
     ];
 
     return Positioned(

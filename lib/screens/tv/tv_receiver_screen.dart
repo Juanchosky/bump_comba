@@ -7,7 +7,6 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
-import '../../services/turbo_proxy.dart';
 import '../../services/tv/tv_protocol.dart';
 import '../../services/tv/tv_receiver_service.dart';
 
@@ -94,12 +93,6 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
   // Auto-avance: suprimir `completed` espurio de MPV justo tras un LOAD.
   // (error crítico #10 del brief)
   DateTime _lastLoadAt = DateTime.fromMillisecondsSinceEpoch(0);
-
-  /// Headers del último LOAD, para poder reabrir sin proxy si el turbo falla.
-  Map<String, String>? _lastHeaders;
-
-  /// Anti-bucle: una sola vuelta a la URL directa por carga.
-  bool _turboFallbackDone = false;
 
   @override
   void initState() {
@@ -232,17 +225,11 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     }
     final position = _asDouble(msg['position']) ?? 0.0;
     final headers = _asStringMap(msg['headers']);
-    _lastHeaders = headers;
-    _turboFallbackDone = false;
     _mediaTitle = msg['title']?.toString() ?? '';
     final thumb = msg['thumbnailUrl']?.toString();
     _mediaThumb = (thumb == null || thumb.isEmpty) ? null : thumb;
 
     _lastLoadAt = DateTime.now();
-    // Mostrar el spinner DESDE YA: entre el LOAD y el primer frame hay varios
-    // segundos (sondeo del proxy + open + demuxer) en los que antes quedaba
-    // la pantalla negra sin ningún indicador. El stream de buffering de MPV
-    // tomará el control del flag en cuanto empiece a reportar.
     if (mounted) {
       setState(() {
         _hasMedia = true;
@@ -250,28 +237,12 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
       });
     }
     try {
-      // TURBO: si el servidor soporta rangos, servimos el VOD a través del
-      // proxy local con 4 conexiones paralelas (multiplica la velocidad en
-      // servidores que limitan por conexión → muchas menos paradas).
-      String playUrl = url;
-      try {
-        final proxied = await TurboProxy.instance.wrap(url, headers);
-        if (proxied != null) playUrl = proxied;
-      } catch (e) {
-        debugPrint('TvReceiver: TurboProxy no disponible: $e');
-      }
-      await _player.open(Media(playUrl, httpHeaders: headers), play: true);
+      await _player.open(Media(url, httpHeaders: headers), play: true);
       if (position > 0) {
-        // El seek NO debe hacerse justo tras open(): media_kit devuelve antes
-        // de que el demuxer reporte duración, y en streams de red un seek
-        // inmediato se pierde (el TV arrancaría desde 0). Esperamos a que el
-        // medio sea buscable y reintentamos hasta acertar.
         unawaited(
           _seekWhenReady(Duration(milliseconds: (position * 1000).round())),
         );
       }
-      // Re-empujar las pistas unos segundos después: el demuxer puede tardar
-      // en exponer todas las pistas de audio/subtítulos tras el open().
       final int loadStamp = _lastLoadAt.millisecondsSinceEpoch;
       for (final d in const [
         Duration(seconds: 2),
@@ -284,95 +255,15 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
           }
         });
       }
-      // WATCHDOG de arranque: si a los 20s no ha avanzado NADA (posición 0 y
-      // sin duración), la carga se atascó (proxy, servidor raro, etc.).
-      // Reintentamos UNA vez con la URL DIRECTA, sin proxy — auto-recuperación
-      // del "se queda cargando".
-      if (playUrl != url) {
-        unawaited(_watchdogRetryDirect(url, headers, position));
-      }
       _pushStatus();
     } catch (e) {
       debugPrint('TvReceiver: LOAD falló: $e');
-      // Volver a la pantalla de espera (sin spinner colgado).
       if (mounted) {
         setState(() {
           _hasMedia = false;
           _buffering = false;
         });
       }
-      _service.sendEvent(TvProto.evtLoadFailed, {'error': e.toString()});
-    }
-  }
-
-  /// Reabre con la URL DIRECTA si el media actual lo sirve el TurboProxy y ha
-  /// fallado a mitad de reproducción. Un solo intento por carga (anti-bucle).
-  Future<void> _recoverFromTurboFailure() async {
-    if (_turboFallbackDone) return;
-    String? uri;
-    try {
-      final playlist = _player.state.playlist;
-      final i = playlist.index;
-      if (playlist.medias.isEmpty || i < 0 || i >= playlist.medias.length) {
-        return;
-      }
-      uri = playlist.medias[i].uri;
-    } catch (_) {
-      return;
-    }
-    final direct = TurboProxy.instance.originalFor(uri);
-    if (direct == null) return;
-
-    _turboFallbackDone = true;
-    final position = _player.state.position;
-    debugPrint(
-      'TvReceiver: el proxy falló a mitad — reabriendo URL DIRECTA en '
-      '${position.inSeconds}s',
-    );
-    try {
-      _lastLoadAt = DateTime.now();
-      await _player.open(Media(direct, httpHeaders: _lastHeaders), play: true);
-      if (position > Duration.zero) unawaited(_seekWhenReady(position));
-      _pushStatus();
-    } catch (e) {
-      debugPrint('TvReceiver: recuperación directa falló: $e');
-      _service.sendEvent(TvProto.evtLoadFailed, {'error': e.toString()});
-    }
-  }
-
-  /// Si a los 20s del LOAD la reproducción no arrancó (posición 0, sin
-  /// duración), reintenta UNA vez con la URL directa sin TurboProxy.
-  Future<void> _watchdogRetryDirect(
-    String url,
-    Map<String, String>? headers,
-    double position,
-  ) async {
-    final int loadStamp = _lastLoadAt.millisecondsSinceEpoch;
-    await Future.delayed(const Duration(seconds: 8));
-    if (!mounted) return;
-    // Si llegó otro LOAD entretanto, este watchdog ya no aplica.
-    if (_lastLoadAt.millisecondsSinceEpoch != loadStamp) return;
-
-    final started =
-        _player.state.position > Duration.zero ||
-        _player.state.duration > Duration.zero;
-    if (started) return; // arrancó bien, nada que hacer
-
-    debugPrint(
-      'TvReceiver: WATCHDOG — 8s sin arrancar con proxy, '
-      'reintentando con URL directa',
-    );
-    try {
-      _lastLoadAt = DateTime.now();
-      await _player.open(Media(url, httpHeaders: headers), play: true);
-      if (position > 0) {
-        unawaited(
-          _seekWhenReady(Duration(milliseconds: (position * 1000).round())),
-        );
-      }
-      _pushStatus();
-    } catch (e) {
-      debugPrint('TvReceiver: watchdog retry falló: $e');
       _service.sendEvent(TvProto.evtLoadFailed, {'error': e.toString()});
     }
   }
@@ -494,10 +385,6 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     _subs.add(
       _player.stream.error.listen((e) {
         debugPrint('TvReceiver: error del player: $e');
-        // RECUPERACIÓN MID-STREAM: si el fallo viene del proxy turbo ya
-        // empezada la reproducción, reabrimos con la URL DIRECTA en la
-        // posición actual en vez de dejar el contenido caído.
-        unawaited(_recoverFromTurboFailure());
       }),
     );
   }

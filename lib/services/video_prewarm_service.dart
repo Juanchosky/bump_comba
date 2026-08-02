@@ -2,8 +2,6 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart';
 import 'm3u_service.dart';
-import 'cast_service.dart';
-import 'turbo_proxy.dart';
 
 class VideoPrewarmService {
   static final VideoPrewarmService _instance = VideoPrewarmService._internal();
@@ -84,24 +82,8 @@ class VideoPrewarmService {
         if (referer.isNotEmpty) 'Origin': referer.replaceAll(RegExp(r'/$'), ''),
       };
 
-      // TURBO: igual que en el prewarm de la pantalla de detalle, este player
-      // puede ser adoptado tal cual por el reproductor a pantalla completa
-      // (que entonces NO llama a open()). Si no se acelera aquí, ese contenido
-      // se reproduce sin turbo. 7s de timeout por el DoH en frío.
-      String playUrl = url;
-      if (!CastService().isCasting.value) {
-        try {
-          final proxied = await TurboProxy.instance
-              .wrap(url, headers)
-              .timeout(const Duration(seconds: 7));
-          if (proxied != null) playUrl = proxied;
-        } catch (e) {
-          debugPrint('VideoPrewarmService: TurboProxy no disponible: $e');
-        }
-      }
-
       // Open the media. It might start buffering immediately even if play: false
-      await player.open(Media(playUrl, httpHeaders: headers), play: false);
+      await player.open(Media(url, httpHeaders: headers), play: false);
 
       debugPrint('VideoPrewarmService: Pre-warmed ${item.name}');
     } catch (e) {

@@ -68,13 +68,11 @@ class AdaptiveBufferService {
   // reinicio de decoder completo (flush + release + create) en pleno
   // playback, causando micro-cortes con la red totalmente estable.
   String? _lastAppliedHwdec;
+  String? _lastAppliedProfileName;
 
-  /// Debe llamarse cada vez que se crea/reabre un Player (nuevo decoder ⇒
-  /// no sabemos en qué estado de hwdec arrancó). Sin esto, tras un reload
-  /// el primer applyConfig podría saltarse el setProperty creyendo que ya
-  /// estaba aplicado.
   void resetState() {
     _lastAppliedHwdec = null;
+    _lastAppliedProfileName = null;
   }
 
   // ── Perfiles ─────────────────────────────────────────────────────────────
@@ -86,7 +84,7 @@ class AdaptiveBufferService {
     demuxerMaxBackBytes: 67108864, // 64 MB
     streamBufferSize: 16777216, // 16 MB
     demuxerReadaheadSecs: 180,
-    cachePauseWait: '2',
+    cachePauseWait: '5',
     hwdec: 'mediacodec', // Zero-copy, máxima eficiencia
     skipLoopFilter: 'none',
     framedrop: 'vo',
@@ -105,7 +103,7 @@ class AdaptiveBufferService {
     demuxerMaxBackBytes: 33554432, // 32 MB
     streamBufferSize: 8388608, // 8 MB
     demuxerReadaheadSecs: 90,
-    cachePauseWait: '3',
+    cachePauseWait: '8',
     hwdec: 'mediacodec',
     skipLoopFilter: 'none',
     framedrop: 'vo',
@@ -124,14 +122,10 @@ class AdaptiveBufferService {
     demuxerMaxBackBytes: 10485760, // 10 MB
     streamBufferSize: 4194304, // 4 MB
     demuxerReadaheadSecs: 30,
-    cachePauseWait: '5', // Esperar 5s antes de pausar para acumular buffer
-    hwdec: 'mediacodec-copy', // Más estable en dispositivos mid-range
-    // 'nonref'/'nonkey' solo funcionan con decoders de software. Con
-    // mediacodec(-copy) son un argumento inválido que genera un error de
-    // stream y fuerza un reload — justo con la red débil. En hardware el
-    // filtrado de loop lo hace el propio codec.
+    cachePauseWait: '12', // Esperar 12s antes de reanudar para acumular colchón de buffer
+    hwdec: 'mediacodec', // Mantener zero-copy para no reiniciar el decoder
     skipLoopFilter: 'none',
-    framedrop: 'decoder+vo', // Drop agresivo para mantener sync
+    framedrop: 'vo',
     fastDecoding: true,
     videoSync: 'audio',
     networkTimeout: 30,
@@ -147,12 +141,12 @@ class AdaptiveBufferService {
     demuxerMaxBackBytes: 4194304, // 4 MB
     streamBufferSize: 2097152, // 2 MB
     demuxerReadaheadSecs: 10,
-    cachePauseWait: '8', // Acumular más buffer antes de reproducir
-    hwdec: 'mediacodec-copy',
+    cachePauseWait: '15', // Acumular 15s de buffer antes de reanudar
+    hwdec: 'mediacodec',
     // Ver nota en el perfil Fair: los valores 'nonref'/'nonkey' rompen el
     // stream con decoders de hardware (mediacodec/videotoolbox).
     skipLoopFilter: 'none',
-    framedrop: 'decoder+vo',
+    framedrop: 'vo',
     fastDecoding: true,
     videoSync: 'audio',
     networkTimeout: 20,
@@ -256,25 +250,28 @@ class AdaptiveBufferService {
         }
       }
 
-      await mpv.setProperty('vd-lavc-skiploopfilter', cfg.skipLoopFilter);
-      await mpv.setProperty('framedrop', cfg.framedrop);
-      await mpv.setProperty(
-        'vd-lavc-fast-decoding',
-        cfg.fastDecoding ? 'yes' : 'no',
-      );
-      await mpv.setProperty('video-sync', cfg.videoSync);
+      if (cfg.name != _lastAppliedProfileName) {
+        await mpv.setProperty('vd-lavc-skiploopfilter', cfg.skipLoopFilter);
+        await mpv.setProperty('framedrop', cfg.framedrop);
+        await mpv.setProperty(
+          'vd-lavc-fast-decoding',
+          cfg.fastDecoding ? 'yes' : 'no',
+        );
+        await mpv.setProperty('video-sync', cfg.videoSync);
 
-      // Modo emergencia: solo decodificar keyframes
-      if (cfg.dropNonRefFrames) {
-        await mpv.setProperty(
-          'vd-lavc-o',
-          'err_detect=ignore_err,flags2=+fast,skip_frame=nonref',
-        );
-      } else {
-        await mpv.setProperty(
-          'vd-lavc-o',
-          'err_detect=ignore_err,flags2=+fast',
-        );
+        // Modo emergencia: solo decodificar keyframes
+        if (cfg.dropNonRefFrames) {
+          await mpv.setProperty(
+            'vd-lavc-o',
+            'err_detect=ignore_err,flags2=+fast,skip_frame=nonref',
+          );
+        } else {
+          await mpv.setProperty(
+            'vd-lavc-o',
+            'err_detect=ignore_err,flags2=+fast',
+          );
+        }
+        _lastAppliedProfileName = cfg.name;
       }
 
       // Red
