@@ -422,27 +422,18 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // 2. Unmount video widget BEFORE touching native player.
     _videoControllerNotifier.value = null;
 
-    // 3. Aggressive native silencing sequence to prevent FFI callbacks
-    //    from firing after the Dart isolate is destroyed.
+    // 3. Safely stop and dispose native player without low-level property manipulation
     if (pToStop != null) {
-      try {
-        // Pause first — stops the decoder from producing new frames
-        pToStop.pause();
-      } catch (_) {}
-      try {
-        final mpv = pToStop.platform as dynamic;
-        // Disable ALL outputs so MPV stops calling back into Flutter
-        mpv?.setProperty('msg-level', 'all=no');
-        mpv?.setProperty('log-level', 'no');
-        mpv?.setProperty('aid', 'no'); // disable audio track
-        mpv?.setProperty('vid', 'no'); // disable video track
-        mpv?.setProperty('sid', 'no'); // disable subtitle track
-        mpv?.setProperty('ao', 'null'); // null audio output
-        mpv?.setProperty('vo', 'null'); // null video output
-      } catch (_) {}
-      try {
-        pToStop.stop();
-      } catch (_) {}
+      unawaited(() async {
+        try {
+          await pToStop.stop();
+        } catch (_) {}
+        try {
+          await pToStop.dispose();
+        } catch (e) {
+          debugPrint('Error disposing player on screen dispose: $e');
+        }
+      }());
     }
 
     // 4. Flutter-side animation controllers
@@ -617,21 +608,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   Future<void> _asyncDisposeOldPlayer(Player p) async {
     try {
-      p.pause();
+      await p.stop();
     } catch (_) {}
-    await Future.delayed(const Duration(milliseconds: 300));
-    try {
-      final mpv = p.platform as dynamic;
-      mpv?.setProperty('msg-level', 'all=no');
-      mpv?.setProperty('log-level', 'no');
-      mpv?.setProperty('aid', 'no');
-      mpv?.setProperty('vid', 'no');
-      mpv?.setProperty('sid', 'no');
-      mpv?.setProperty('ao', 'null');
-      mpv?.setProperty('vo', 'null');
-      p.stop();
-    } catch (_) {}
-    await Future.delayed(const Duration(milliseconds: 300));
     try {
       await p.dispose();
     } catch (e) {

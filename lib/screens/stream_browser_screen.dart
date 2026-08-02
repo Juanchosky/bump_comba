@@ -4317,7 +4317,10 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   }
 
   Widget _buildHeroBanner(M3UItem item) {
-    final heroTag = 'hero_${item.url}';
+    final itemKey = item.url.trim().isNotEmpty
+        ? item.url
+        : '${item.name.trim()}_${item.hashCode}';
+    final heroTag = 'hero_$itemKey';
     // Responsive height: scales with the screen instead of a fixed 500 so it
     // never dominates small phones nor looks lost on tablets.
     final heroHeight = (MediaQuery.of(context).size.height * 0.6).clamp(
@@ -4801,6 +4804,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                       return _buildHorizontalCard(
                         filteredItems[index],
                         heroPrefix: title,
+                        index: index,
                       );
                     },
                   ),
@@ -4902,7 +4906,10 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   }
 
   Widget _buildTop10Card(M3UItem item, int rank) {
-    final heroTag = 'top10_${item.url}';
+    final itemKey = item.url.trim().isNotEmpty
+        ? item.url
+        : '${item.name.trim()}_${item.hashCode}';
+    final heroTag = 'top10_${rank}_$itemKey';
     return GestureDetector(
       onTap: () => _onItemTap(item, heroTag: heroTag),
       onLongPress: () async {
@@ -5000,8 +5007,16 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     return Hero(tag: tag, child: child);
   }
 
-  Widget _buildHorizontalCard(M3UItem item, {String heroPrefix = 'row'}) {
-    final heroTag = '${heroPrefix}_${item.url}';
+  Widget _buildHorizontalCard(
+    M3UItem item, {
+    String heroPrefix = 'row',
+    int? index,
+  }) {
+    final itemKey = item.url.trim().isNotEmpty
+        ? item.url
+        : '${item.name.trim()}_${item.hashCode}';
+    final suffix = index != null ? '_$index' : '';
+    final heroTag = '${heroPrefix}_$itemKey$suffix';
     return GestureDetector(
       onTap: () => _onItemTap(item, heroTag: heroTag),
       onLongPress: () async {
@@ -5084,8 +5099,12 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
   // _buildSearchGrid removed
 
-  Widget _buildGridCard(M3UItem item, {bool showTitle = true}) {
-    final heroTag = 'grid_${item.url}';
+  Widget _buildGridCard(M3UItem item, {bool showTitle = true, int? index}) {
+    final itemKey = item.url.trim().isNotEmpty
+        ? item.url
+        : '${item.name.trim()}_${item.hashCode}';
+    final suffix = index != null ? '_$index' : '';
+    final heroTag = 'grid_$itemKey$suffix';
     return RepaintBoundary(
       child: GestureDetector(
         onTap: () => _onItemTap(item, heroTag: heroTag),

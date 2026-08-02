@@ -32,6 +32,24 @@ class DynamicScraperService {
     if (url.isEmpty) return false;
     final lowUrl = url.toLowerCase();
 
+    // Playspelis variants
+    if (lowUrl.contains('playspelis.com') ||
+        lowUrl.contains('playspelis.org') ||
+        lowUrl.contains('playspelis.net') ||
+        lowUrl.contains('playspelis.tv') ||
+        lowUrl.contains('playspelis')) {
+      return true;
+    }
+
+    // Cuevana variants
+    if (lowUrl.contains('cuevana4br.com') ||
+        lowUrl.contains('cuevana') ||
+        lowUrl.contains('cuevana3') ||
+        lowUrl.contains('cuevana4') ||
+        lowUrl.contains('cuevana8')) {
+      return true;
+    }
+
     // FlixLat variants
     if (lowUrl.contains('flixlat.com') ||
         lowUrl.contains('flixlat.org') ||
@@ -74,6 +92,52 @@ class DynamicScraperService {
     }
 
     return false;
+  }
+
+  /// Evaluates resolution/quality score for stream candidate URLs and labels.
+  static int _getQualityScore(String url, [String text = '']) {
+    final lowerText = text.toLowerCase();
+    final lowerUrl = url.toLowerCase();
+    final combined = '$lowerText $lowerUrl';
+
+    if (combined.contains('2160') ||
+        combined.contains('4k') ||
+        combined.contains('uhd')) {
+      return 2160;
+    }
+    if (combined.contains('1080p') ||
+        combined.contains('1080') ||
+        combined.contains('fhd') ||
+        combined.contains('fullhd') ||
+        combined.contains('microframe-hd')) {
+      return 1080;
+    }
+    if (combined.contains('720p') ||
+        combined.contains('720') ||
+        combined.contains('microframe-sd') ||
+        lowerUrl.contains('-sd.m3u8') ||
+        lowerUrl.contains('_sd.m3u8') ||
+        lowerUrl.contains('hd.m3u8') ||
+        lowerUrl.contains('-hd.m3u8') ||
+        lowerText == 'hd') {
+      return 720;
+    }
+    if (combined.contains('540p') ||
+        combined.contains('540') ||
+        combined.contains('microframe-ld') ||
+        lowerUrl.contains('-ld.m3u8')) {
+      return 540;
+    }
+    if (combined.contains('480p') || combined.contains('480')) {
+      return 480;
+    }
+    if (combined.contains('360p') ||
+        combined.contains('360') ||
+        combined.contains('microframe-fd') ||
+        lowerUrl.contains('-fd.m3u8')) {
+      return 360;
+    }
+    return 300;
   }
 
   /// Extracts metadata from a supported URL.
@@ -274,6 +338,7 @@ class DynamicScraperService {
   }
 
   /// Attempts to extract a direct video source (m3u8/mp4) from an episode page.
+  /// Automatically selects the highest resolution stream available (720P / 1080P).
   Future<String?> extractVideoSource(String pageUrl) async {
     if (!isSupported(pageUrl)) return null;
     if (_isScrapingGlobal) await _disposeHeadless();
@@ -282,6 +347,29 @@ class DynamicScraperService {
     final completer = Completer<String?>();
     final sessionId = 'extract_${DateTime.now().millisecondsSinceEpoch}';
     _currentSessionId = sessionId;
+
+    final Map<String, int> candidateUrls = {};
+
+    void resolveBestCandidate({bool force = false}) {
+      if (completer.isCompleted || candidateUrls.isEmpty) return;
+
+      String? bestUrl;
+      int maxScore = -1;
+      candidateUrls.forEach((candidateUrl, score) {
+        if (score > maxScore) {
+          maxScore = score;
+          bestUrl = candidateUrl;
+        }
+      });
+
+      if (bestUrl != null && (maxScore >= 720 || force)) {
+        debugPrint(
+          'DynamicScraperService: Best candidate resolved (Score: $maxScore P): $bestUrl',
+        );
+        completer.complete(bestUrl);
+        _disposeHeadless();
+      }
+    }
 
     await _disposeHeadless();
 
@@ -334,16 +422,16 @@ class DynamicScraperService {
             );
           }
 
-          // Network sniffing is MUCH faster than waiting for onLoadStop
+          // Intercept m3u8/mp4 streams and score them
           if (urlStr.contains('.m3u8') ||
               urlStr.contains('.mp4') ||
               urlStr.contains('googlevideo.com')) {
-            if (!completer.isCompleted) {
-              final result = urlStr;
-              completer.complete(result);
-              // FOUND: Dispose as soon as possible
-              _disposeHeadless();
-            }
+            final score = _getQualityScore(urlStr);
+            candidateUrls[urlStr] = score;
+            debugPrint(
+              'DynamicScraperService: Intercepted candidate stream (Score: $score P): $urlStr',
+            );
+            resolveBestCandidate();
           }
           return null;
         },
@@ -353,65 +441,138 @@ class DynamicScraperService {
           }
 
           try {
-            await Future.delayed(const Duration(milliseconds: 1500));
+            // Multi-pass evaluation to catch async player hydration (600ms, 1400ms, 2200ms)
+            for (int pass = 1; pass <= 3; pass++) {
+              if (completer.isCompleted || _currentSessionId != sessionId || _headlessWebView == null) {
+                break;
+              }
 
-            if (_currentSessionId != sessionId || _headlessWebView == null) {
-              return;
+              await Future.delayed(Duration(milliseconds: pass == 1 ? 600 : 800));
+
+              if (completer.isCompleted || _currentSessionId != sessionId || _headlessWebView == null) {
+                break;
+              }
+
+              final dynamic evalResult = await controller.evaluateJavascript(
+                source: """
+                (function() {
+                  try {
+                    function getQualityScore(text, url) {
+                      const lowerText = (text || '').toLowerCase();
+                      const lowerUrl = (url || '').toLowerCase();
+                      const combined = lowerText + ' ' + lowerUrl;
+
+                      if (combined.includes('2160') || combined.includes('4k') || combined.includes('uhd')) return 2160;
+                      if (combined.includes('1080p') || combined.includes('1080') || combined.includes('fhd') || combined.includes('fullhd') || combined.includes('microframe-hd')) return 1080;
+                      if (combined.includes('720p') || combined.includes('720') || combined.includes('microframe-sd') || lowerUrl.includes('-sd.m3u8') || lowerUrl.includes('_sd.m3u8') || lowerUrl.includes('hd.m3u8') || lowerUrl.includes('-hd.m3u8') || lowerText === 'hd') return 720;
+                      if (combined.includes('540p') || combined.includes('540') || combined.includes('microframe-ld') || lowerUrl.includes('-ld.m3u8')) return 540;
+                      if (combined.includes('480p') || combined.includes('480')) return 480;
+                      if (combined.includes('360p') || combined.includes('360') || combined.includes('microframe-fd') || lowerUrl.includes('-fd.m3u8')) return 360;
+                      return 300;
+                    }
+
+                    const results = [];
+
+                    // 0. Attempt to reveal settings/quality menu or click play/server buttons
+                    try {
+                      const gearBtns = document.querySelectorAll('button[class*="setting"], button[aria-label*="calidad"], button[aria-label*="setting"], .settings-btn, .vjs-menu-button, svg[class*="gear"], button:has(svg), .play-btn, .btn-play, .vjs-big-play-button');
+                      gearBtns.forEach(b => { try { b.click(); } catch(e){} });
+                    } catch(e) {}
+
+                    // 1. Inspect quality buttons / links (e.g. data-url, data-src, href)
+                    const elements = document.querySelectorAll('button[data-url], [data-url], [data-src], a[href*=".m3u8"], a[href*=".mp4"], button, li, div');
+                    elements.forEach(el => {
+                      const videoUrl = el.getAttribute('data-url') || el.getAttribute('data-src') || el.getAttribute('href') || el.dataset?.url || '';
+                      const text = el.innerText || el.textContent || '';
+                      if (videoUrl && (videoUrl.includes('.m3u8') || videoUrl.includes('.mp4') || videoUrl.startsWith('http'))) {
+                        const score = getQualityScore(text, videoUrl);
+                        results.push({ url: videoUrl, score: score });
+                      }
+                    });
+
+                    // 2. Direct video tag
+                    const video = document.querySelector('video');
+                    if (video) {
+                      if (video.src && video.src.startsWith('http')) {
+                        results.push({ url: video.src, score: getQualityScore('', video.src) });
+                      }
+                      const source = video.querySelector('source');
+                      if (source && source.src && source.src.startsWith('http')) {
+                        results.push({ url: source.src, score: getQualityScore('', source.src) });
+                      }
+                    }
+
+                    // 3. Common iframes
+                    const selectors = [
+                      'iframe[src*="embed"]', 
+                      'iframe[src*="player"]', 
+                      'iframe[src*="vidsrc"]', 
+                      'iframe[src*="superembed"]',
+                      'iframe[src*="vid"]',
+                      'iframe[src*="peliculaplay"]',
+                      '.video-container iframe',
+                      '#player-iframe'
+                    ];
+                    for (const sel of selectors) {
+                      const iframe = document.querySelector(sel);
+                      if (iframe && iframe.src && iframe.src.startsWith('http')) {
+                        results.push({ url: iframe.src, score: getQualityScore('', iframe.src) });
+                      }
+                    }
+
+                    // 4. Click quality button directly (e.g., 720P) if present in DOM
+                    const qualityButtons = document.querySelectorAll('button, li, .quality-btn, .btn-quality, .resolution-btn');
+                    let highestBtn = null;
+                    let highestBtnScore = 0;
+                    qualityButtons.forEach(btn => {
+                      const text = btn.innerText || btn.textContent || '';
+                      const score = getQualityScore(text, '');
+                      if (score > highestBtnScore && score >= 720) {
+                        highestBtnScore = score;
+                        highestBtn = btn;
+                      }
+                    });
+                    if (highestBtn) {
+                      try { highestBtn.click(); } catch(e) {}
+                    }
+
+                    return results;
+                  } catch (e) { return []; }
+                })()
+              """,
+              );
+
+              if (_currentSessionId == sessionId && evalResult != null) {
+                if (evalResult is List) {
+                  for (var item in evalResult) {
+                    if (item is Map) {
+                      final itemMap = Map<String, dynamic>.from(item);
+                      final u = itemMap['url']?.toString();
+                      final s = itemMap['score'];
+                      if (u != null && u.isNotEmpty && s is num) {
+                        candidateUrls[u] = s.toInt();
+                      }
+                    }
+                  }
+                }
+              }
+
+              resolveBestCandidate();
             }
 
-            final source = await controller.evaluateJavascript(
-              source: """
-              (function() {
-                try {
-                  // 1. Direct video tag
-                  const video = document.querySelector('video');
-                  if (video && video.src && video.src.startsWith('http')) return video.src;
-                  if (video && video.querySelector('source')) {
-                    const src = video.querySelector('source').src;
-                    if (src && src.startsWith('http')) return src;
-                  }
-                  
-                  // 2. Common iframes
-                  const selectors = [
-                    'iframe[src*="embed"]', 
-                    'iframe[src*="player"]', 
-                    'iframe[src*="vidsrc"]', 
-                    'iframe[src*="superembed"]',
-                    'iframe[src*="vid"]',
-                    'iframe[src*="peliculaplay"]',
-                    '.video-container iframe',
-                    '#player-iframe'
-                  ];
-                  
-                  for (const sel of selectors) {
-                    const iframe = document.querySelector(sel);
-                    if (iframe && iframe.src && iframe.src.startsWith('http')) return iframe.src;
-                  }
-                  
-                  // 3. Fallback for mobile specific - click play if found
-                  const playBtn = document.querySelector('.play-btn, .btn-play, .vjs-big-play-button');
-                  if (playBtn) playBtn.click();
+            resolveBestCandidate(force: true);
 
-                  return null;
-                } catch (e) { return null; }
-              })()
-            """,
-            );
-
-            if (_currentSessionId == sessionId &&
-                source != null &&
-                !completer.isCompleted) {
-              completer.complete(source.toString());
-            } else {
-              // Cloudflare catch
+            if (!completer.isCompleted) {
               final pageTitle = await controller.getTitle() ?? "";
               if (pageTitle.contains("Attention Required") ||
                   pageTitle.contains("Cloudflare")) {
                 await Future.delayed(const Duration(seconds: 4));
+                resolveBestCandidate(force: true);
               }
             }
           } catch (e) {
             debugPrint('Source extraction error: $e');
+            resolveBestCandidate(force: true);
           }
         },
       );
@@ -421,8 +582,9 @@ class DynamicScraperService {
       final result = await completer.future.timeout(
         const Duration(seconds: 15),
         onTimeout: () {
+          resolveBestCandidate(force: true);
           if (_currentSessionId == sessionId) _disposeHeadless();
-          return null;
+          return candidateUrls.isNotEmpty ? candidateUrls.keys.first : null;
         },
       );
 
