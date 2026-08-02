@@ -188,6 +188,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       {}; // Pistas detectadas como dañadas
   SubtitleTrack? _lastSelectedTrack;
   DateTime? _lastTrackChangeTime;
+  List<ScrapedSubtitle> _scrapedSubtitles = [];
 
   // Cast local audio
   bool _localAudioDuringCast = false;
@@ -651,14 +652,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       });
 
       try {
-        String? scrapedUrl;
+        ExtractedStreamResult? streamResult;
         int scraperRetriesCount = 2;
 
         while (scraperRetriesCount > 0) {
-          scrapedUrl = await DynamicScraperService().extractVideoSource(
+          streamResult = await DynamicScraperService().extractStreamResult(
             item.url,
           );
-          if (scrapedUrl != null) break;
+          if (streamResult != null && streamResult.videoUrl.isNotEmpty) break;
 
           scraperRetriesCount--;
           if (scraperRetriesCount > 0 && mounted) {
@@ -671,8 +672,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
         if (!mounted) return;
 
-        if (scrapedUrl != null) {
-          item = item.copyWith(url: scrapedUrl);
+        if (streamResult != null && streamResult.videoUrl.isNotEmpty) {
+          item = item.copyWith(url: streamResult.videoUrl);
+          _scrapedSubtitles = streamResult.subtitles;
         } else {
           setState(() {
             _isScraping = false;
@@ -990,6 +992,40 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         Media(resolvedUrl, httpHeaders: _buildHeaders(currentUrl)),
         play: shouldPlayLocally,
       );
+
+      // Cargar y registrar subtítulos extraídos de la web (VTT/SRT)
+      if (_scrapedSubtitles.isNotEmpty && _player != null) {
+        for (final sub in _scrapedSubtitles) {
+          try {
+            debugPrint(
+              'VideoPlayerScreen: Registering Web Subtitle (${sub.label}): ${sub.url}',
+            );
+            await _player?.setSubtitleTrack(
+              SubtitleTrack.uri(
+                sub.url,
+                title: sub.label,
+                language: sub.language,
+              ),
+            );
+          } catch (e) {
+            debugPrint('VideoPlayerScreen: Error adding subtitle track: $e');
+          }
+        }
+
+        // Auto-activar pista en español si existe
+        final tracks = _player?.state.tracks.subtitle ?? [];
+        for (final t in tracks) {
+          final tTitle = (t.title ?? t.language ?? '').toLowerCase();
+          if (tTitle.contains('es') ||
+              tTitle.contains('spa') ||
+              tTitle.contains('lat') ||
+              tTitle.contains('web')) {
+            await _player?.setSubtitleTrack(t);
+            if (mounted) setState(() => _subtitlesEnabled = true);
+            break;
+          }
+        }
+      }
       // REFUERZO del fix vid=auto: tras open(), volvemos a forzar la
       // selección de pista de video (salvo en Cast). Cubre el caso en que
       // el VideoController de media_kit no logró poner vid=auto al adjuntarse

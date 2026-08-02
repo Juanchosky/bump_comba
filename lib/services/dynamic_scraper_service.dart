@@ -3,6 +3,31 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'm3u_service.dart';
 
+class ScrapedSubtitle {
+  final String url;
+  final String label;
+  final String? language;
+
+  ScrapedSubtitle({required this.url, required this.label, this.language});
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ScrapedSubtitle &&
+          runtimeType == other.runtimeType &&
+          url == other.url;
+
+  @override
+  int get hashCode => url.hashCode;
+}
+
+class ExtractedStreamResult {
+  final String videoUrl;
+  final List<ScrapedSubtitle> subtitles;
+
+  ExtractedStreamResult({required this.videoUrl, this.subtitles = const []});
+}
+
 class ScrapedMetadata {
   final String title;
   final String? thumbnailUrl;
@@ -379,18 +404,18 @@ class DynamicScraperService {
     }
   }
 
-  /// Attempts to extract a direct video source (m3u8/mp4) from an episode page.
-  /// Automatically selects the highest resolution stream available (720P / 1080P).
-  Future<String?> extractVideoSource(String pageUrl) async {
+  /// Attempts to extract a direct video source (m3u8/mp4) and subtitle tracks from an episode page.
+  Future<ExtractedStreamResult?> extractStreamResult(String pageUrl) async {
     if (!isSupported(pageUrl)) return null;
     if (_isScrapingGlobal) await _disposeHeadless();
     _isScrapingGlobal = true;
 
-    final completer = Completer<String?>();
+    final completer = Completer<ExtractedStreamResult?>();
     final sessionId = 'extract_${DateTime.now().millisecondsSinceEpoch}';
     _currentSessionId = sessionId;
 
     final Map<String, int> candidateUrls = {};
+    final Set<ScrapedSubtitle> detectedSubtitles = {};
 
     void resolveBestCandidate({bool force = false}) {
       if (completer.isCompleted || candidateUrls.isEmpty) return;
@@ -408,7 +433,12 @@ class DynamicScraperService {
         debugPrint(
           'DynamicScraperService: Best candidate resolved (Score: $maxScore P): $bestUrl',
         );
-        completer.complete(bestUrl);
+        completer.complete(
+          ExtractedStreamResult(
+            videoUrl: bestUrl!,
+            subtitles: detectedSubtitles.toList(),
+          ),
+        );
         _disposeHeadless();
       }
     }
@@ -461,6 +491,28 @@ class DynamicScraperService {
             return WebResourceResponse(
               contentType: 'text/plain',
               data: Uint8List(0),
+            );
+          }
+
+          // Intercept subtitle tracks (.vtt, .srt, .ass)
+          if ((urlStr.contains('.vtt') ||
+                  urlStr.contains('.srt') ||
+                  urlStr.contains('.ass') ||
+                  urlStr.contains('/subtitle') ||
+                  urlStr.contains('/subtitles')) &&
+              !urlStr.contains('.m3u8') &&
+              !urlStr.contains('.mp4')) {
+            final label =
+                (urlStr.contains('spa') ||
+                        urlStr.contains('es') ||
+                        urlStr.contains('lat'))
+                    ? 'Español'
+                    : 'Subtítulo Web';
+            detectedSubtitles.add(
+              ScrapedSubtitle(url: urlStr, label: label, language: 'es'),
+            );
+            debugPrint(
+              'DynamicScraperService: Intercepted subtitle track: $urlStr',
             );
           }
 
@@ -521,6 +573,7 @@ class DynamicScraperService {
                     }
 
                     const results = [];
+                    const subtitles = [];
 
                     // 0. Attempt to reveal settings/quality menu or click play/server buttons
                     try {
@@ -585,21 +638,63 @@ class DynamicScraperService {
                       try { highestBtn.click(); } catch(e) {}
                     }
 
-                    return results;
-                  } catch (e) { return []; }
+                    // 5. Harvest <track> and subtitle elements
+                    try {
+                      const tracks = document.querySelectorAll('track');
+                      tracks.forEach(tr => {
+                        const src = tr.getAttribute('src') || tr.src || '';
+                        const label = tr.getAttribute('label') || tr.label || tr.getAttribute('srclang') || 'Español';
+                        const lang = tr.getAttribute('srclang') || tr.srclang || 'es';
+                        if (src && (src.includes('.vtt') || src.includes('.srt') || src.includes('.ass') || src.startsWith('http'))) {
+                          subtitles.push({ url: src, label: label, lang: lang });
+                        }
+                      });
+
+                      const subElements = document.querySelectorAll('a[href*=".vtt"], a[href*=".srt"], a[href*=".ass"], button[data-sub], [data-subtitle], [data-caption], [data-vtt], [data-srt]');
+                      subElements.forEach(el => {
+                        const subUrl = el.getAttribute('href') || el.getAttribute('data-sub') || el.getAttribute('data-subtitle') || el.getAttribute('data-caption') || el.getAttribute('data-vtt') || el.getAttribute('data-srt') || '';
+                        const text = el.innerText || el.textContent || 'Subtítulo';
+                        if (subUrl && (subUrl.includes('.vtt') || subUrl.includes('.srt') || subUrl.includes('.ass'))) {
+                          subtitles.push({ url: subUrl, label: text.trim(), lang: 'es' });
+                        }
+                      });
+                    } catch(e) {}
+
+                    return { streams: results, subtitles: subtitles };
+                  } catch (e) { return { streams: [], subtitles: [] }; }
                 })()
               """,
               );
 
               if (_currentSessionId == sessionId && evalResult != null) {
-                if (evalResult is List) {
-                  for (var item in evalResult) {
-                    if (item is Map) {
-                      final itemMap = Map<String, dynamic>.from(item);
-                      final u = itemMap['url']?.toString();
-                      final s = itemMap['score'];
-                      if (u != null && u.isNotEmpty && s is num) {
-                        candidateUrls[u] = s.toInt();
+                if (evalResult is Map) {
+                  final streams = evalResult['streams'];
+                  if (streams is List) {
+                    for (var item in streams) {
+                      if (item is Map) {
+                        final itemMap = Map<String, dynamic>.from(item);
+                        final u = itemMap['url']?.toString();
+                        final s = itemMap['score'];
+                        if (u != null && u.isNotEmpty && s is num) {
+                          candidateUrls[u] = s.toInt();
+                        }
+                      }
+                    }
+                  }
+
+                  final subs = evalResult['subtitles'];
+                  if (subs is List) {
+                    for (var item in subs) {
+                      if (item is Map) {
+                        final itemMap = Map<String, dynamic>.from(item);
+                        final u = itemMap['url']?.toString();
+                        final l = itemMap['label']?.toString() ?? 'Español';
+                        final lang = itemMap['lang']?.toString() ?? 'es';
+                        if (u != null && u.isNotEmpty) {
+                          detectedSubtitles.add(
+                            ScrapedSubtitle(url: u, label: l, language: lang),
+                          );
+                        }
                       }
                     }
                   }
@@ -633,7 +728,13 @@ class DynamicScraperService {
         onTimeout: () {
           resolveBestCandidate(force: true);
           if (_currentSessionId == sessionId) _disposeHeadless();
-          return candidateUrls.isNotEmpty ? candidateUrls.keys.first : null;
+          if (candidateUrls.isNotEmpty) {
+            return ExtractedStreamResult(
+              videoUrl: candidateUrls.keys.first,
+              subtitles: detectedSubtitles.toList(),
+            );
+          }
+          return null;
         },
       );
 
@@ -650,6 +751,12 @@ class DynamicScraperService {
       }
       return null;
     }
+  }
+
+  /// Backward-compatible method to extract direct video URL.
+  Future<String?> extractVideoSource(String pageUrl) async {
+    final result = await extractStreamResult(pageUrl);
+    return result?.videoUrl;
   }
 
   /// Ensures all ongoing scraping tasks are stopped and resources released.
