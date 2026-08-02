@@ -3070,16 +3070,17 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                               return true;
                             })
                             .map((track) {
+                              final label = ScrapedSubtitle.cleanLanguageLabel(
+                                track.title ?? '',
+                                track.language,
+                                track.id,
+                              );
                               final isDamaged = _damagedSubtitleTracks.contains(
                                 track.id,
                               );
                               final isSelected =
                                   _subtitlesEnabled &&
                                   _player!.state.track.subtitle == track;
-                              final label =
-                                  track.title ??
-                                  track.language ??
-                                  'Pista ${track.id}';
                               return ListTile(
                                 enabled: !isDamaged,
                                 leading: Icon(

@@ -8,7 +8,81 @@ class ScrapedSubtitle {
   final String label;
   final String? language;
 
-  ScrapedSubtitle({required this.url, required this.label, this.language});
+  ScrapedSubtitle({
+    required this.url,
+    required String label,
+    this.language,
+  }) : label = cleanLanguageLabel(label, language, url);
+
+  static String cleanLanguageLabel(String rawLabel, [String? rawLang, String? url]) {
+    final combined = '${rawLabel.toLowerCase()} ${rawLang?.toLowerCase() ?? ''} ${url?.toLowerCase() ?? ''}';
+
+    if (combined.contains('latino') || combined.contains('lat') || combined.contains('es-la') || combined.contains('es_la')) {
+      return 'Español (Latino)';
+    }
+    if (combined.contains('castellano') || combined.contains('es-es') || combined.contains('es_es')) {
+      return 'Español (España)';
+    }
+    if (combined.contains('es') ||
+        combined.contains('spa') ||
+        combined.contains('spanish') ||
+        combined.contains('espanol') ||
+        combined.contains('español')) {
+      return 'Español';
+    }
+    if (combined.contains('en') ||
+        combined.contains('eng') ||
+        combined.contains('english') ||
+        combined.contains('inglés') ||
+        combined.contains('ingles')) {
+      return 'Inglés';
+    }
+    if (combined.contains('pt') ||
+        combined.contains('por') ||
+        combined.contains('portuguese') ||
+        combined.contains('portugués') ||
+        combined.contains('portugues')) {
+      return 'Portugués';
+    }
+    if (combined.contains('fr') ||
+        combined.contains('fra') ||
+        combined.contains('french') ||
+        combined.contains('francés') ||
+        combined.contains('frances')) {
+      return 'Francés';
+    }
+    if (combined.contains('de') ||
+        combined.contains('ger') ||
+        combined.contains('german') ||
+        combined.contains('alemán') ||
+        combined.contains('aleman')) {
+      return 'Alemán';
+    }
+    if (combined.contains('it') ||
+        combined.contains('ita') ||
+        combined.contains('italian') ||
+        combined.contains('italiano')) {
+      return 'Italiano';
+    }
+    if (combined.contains('ja') ||
+        combined.contains('jpn') ||
+        combined.contains('japanese') ||
+        combined.contains('japonés') ||
+        combined.contains('japones')) {
+      return 'Japonés';
+    }
+
+    final cleanLabel = rawLabel.trim();
+    if (cleanLabel.isNotEmpty &&
+        !cleanLabel.startsWith('http') &&
+        !cleanLabel.contains('.vtt') &&
+        !cleanLabel.contains('.srt') &&
+        !cleanLabel.contains('/')) {
+      return cleanLabel[0].toUpperCase() + cleanLabel.substring(1);
+    }
+
+    return 'Español';
+  }
 
   @override
   bool operator ==(Object other) =>
