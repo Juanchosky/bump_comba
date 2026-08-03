@@ -6434,6 +6434,8 @@ class _SearchPageState extends State<_SearchPage> {
         },
       ),
     );
+  }
+
   Widget _buildEmptySearchState() {
     final query = _searchController.text.trim();
     return SingleChildScrollView(
@@ -6445,9 +6447,9 @@ class _SearchPageState extends State<_SearchPage> {
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
-              color: Colors.redAccent.withOpacity(0.12),
+              color: Colors.redAccent.withValues(alpha: 0.12),
               shape: BoxShape.circle,
-              border: Border.all(color: Colors.redAccent.withOpacity(0.3), width: 1.5),
+              border: Border.all(color: Colors.redAccent.withValues(alpha: 0.3), width: 1.5),
             ),
             child: const Icon(
               Icons.movie_filter_rounded,
@@ -6472,7 +6474,7 @@ class _SearchPageState extends State<_SearchPage> {
                 ? 'Pídenos "$query" y la agregaremos lo antes posible a nuestro catálogo.'
                 : 'Pídenos la película o serie que deseas ver y la agregaremos pronto.',
             style: TextStyle(
-              color: Colors.white.withOpacity(0.65),
+              color: Colors.white.withValues(alpha: 0.65),
               fontSize: 13.5,
               height: 1.4,
             ),
@@ -6550,7 +6552,7 @@ class _SearchPageState extends State<_SearchPage> {
                         Container(
                           padding: const EdgeInsets.all(10),
                           decoration: BoxDecoration(
-                            color: Colors.redAccent.withOpacity(0.15),
+                            color: Colors.redAccent.withValues(alpha: 0.15),
                             borderRadius: BorderRadius.circular(12),
                           ),
                           child: const Icon(
@@ -6659,10 +6661,9 @@ class _SearchPageState extends State<_SearchPage> {
                             : () async {
                                 final title = titleController.text.trim();
                                 if (title.isEmpty) {
-                                  SnackBarUtils.showCustomSnackBar(
+                                  SnackBarUtils.showAppSnackBar(
                                     context,
                                     'Ingresa el título del contenido',
-                                    isError: true,
                                   );
                                   return;
                                 }
@@ -6680,23 +6681,23 @@ class _SearchPageState extends State<_SearchPage> {
                                     'status': 'pending',
                                   });
 
-                                  if (mounted) {
+                                  if (context.mounted) {
                                     Navigator.pop(ctx);
-                                    SnackBarUtils.showCustomSnackBar(
+                                    SnackBarUtils.showAppSnackBar(
                                       context,
                                       '¡Solicitud enviada! Trabajaremos para agregarla pronto.',
-                                      isError: false,
                                     );
                                   }
                                 } catch (e) {
                                   setModalState(() {
                                     isSubmitting = false;
                                   });
-                                  SnackBarUtils.showCustomSnackBar(
-                                    context,
-                                    'Error al enviar solicitud. Inténtalo de nuevo.',
-                                    isError: true,
-                                  );
+                                  if (context.mounted) {
+                                    SnackBarUtils.showAppSnackBar(
+                                      context,
+                                      'Error al enviar solicitud. Inténtalo de nuevo.',
+                                    );
+                                  }
                                 }
                               },
                         child: isSubmitting
