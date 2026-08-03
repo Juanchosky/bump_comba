@@ -912,25 +912,15 @@ async function parseMovieMetadataFromUrl(url) {
         }
 
         if (!title) {
-            const imgAltMatch = html.match(/<img[^>]+alt=["']([^"'\s][^"']{3,100})["'][^>]+class="[^"]*object-cover[^"]*"/i) ||
-                                html.match(/<img[^>]+class="[^"]*object-cover[^"]*"[^>]+alt=["']([^"'\s][^"']{3,100})["']/i);
-            if (imgAltMatch && imgAltMatch[1] && imgAltMatch[1].toLowerCase() !== 'poster' && imgAltMatch[1].toLowerCase() !== 'cover') {
+            const imgAltMatch = html.match(/alt=["']([^"'\s][^"']{2,100})["']/i);
+            if (imgAltMatch && imgAltMatch[1] && !['poster', 'cover', 'thumbnail', 'imagen'].includes(imgAltMatch[1].toLowerCase().trim())) {
                 title = imgAltMatch[1].trim();
             }
         }
 
-        // ── 3. DOM Image Extractions (Accumulated priority list for ALL sites)
+        // ── 3. DOM Image Extractions (Universal for ALL streaming sites)
         if (!thumbnail_url) {
-            // Strategy A: <img ... alt="cover" ... src="..."> or <img ... src="..." alt="cover">
-            const coverAltMatch = html.match(/<img[^>]+alt=["']cover["'][^>]+src=["']([^"'\s]+)["']/i) ||
-                                  html.match(/<img[^>]+src=["']([^"'\s]+)["'][^>]+alt=["']cover["']/i);
-            if (coverAltMatch && coverAltMatch[1]) {
-                thumbnail_url = coverAltMatch[1].trim();
-            }
-        }
-
-        if (!thumbnail_url) {
-            // Strategy B: any src containing /cover/ path
+            // Strategy A: src containing /cover/ path
             const coverPathMatch = html.match(/src=["'](https?:\/\/[^"'\s]*\/cover\/[^"'\s]+)["']/i);
             if (coverPathMatch && coverPathMatch[1]) {
                 thumbnail_url = coverPathMatch[1].trim();
@@ -938,9 +928,9 @@ async function parseMovieMetadataFromUrl(url) {
         }
 
         if (!thumbnail_url) {
-            // Strategy C: <img class="coverImage..." src="...">
-            const coverClassMatch = html.match(/<img[^>]+class="[^"]*coverImage[^"]*"[^>]+src=["']([^"'\s]+)["']/i) ||
-                                     html.match(/<img[^>]+src=["']([^"'\s]+)["'][^>]+class="[^"]*coverImage[^"]*"/i);
+            // Strategy B: any <img ... src="..."> with class object-cover or coverImage
+            const coverClassMatch = html.match(/<img[^>]+src=["'](https?:\/\/[^"'\s]+)["'][^>]*class="[^"]*(?:object-cover|coverImage)[^"]*"/i) ||
+                                     html.match(/<img[^>]+class="[^"]*(?:object-cover|coverImage)[^"]*"[^>]*src=["'](https?:\/\/[^"'\s]+)["']/i);
             if (coverClassMatch && coverClassMatch[1]) {
                 thumbnail_url = coverClassMatch[1].trim();
             }
