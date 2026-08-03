@@ -814,9 +814,16 @@ async function fetchPageHtml(url) {
     // 1. Try Vercel Serverless Function Proxy (/api/proxy) - Server-side Node.js fetch with zero CORS limits
     try {
         const vercelProxyUrl = `/api/proxy?url=${encodeURIComponent(url)}`;
-        const vercelText = await fetchWithTimeout(vercelProxyUrl, 5000);
-        if (vercelText && vercelText.length > 200) return vercelText;
-    } catch (_) {}
+        console.log('[fetchPageHtml] Trying Vercel proxy:', vercelProxyUrl.substring(0, 80) + '...');
+        const vercelText = await fetchWithTimeout(vercelProxyUrl, 10000);
+        if (vercelText && vercelText.length > 200) {
+            console.log('[fetchPageHtml] Vercel proxy SUCCESS, length:', vercelText.length);
+            return vercelText;
+        }
+        console.log('[fetchPageHtml] Vercel proxy returned empty/short response');
+    } catch (e) {
+        console.warn('[fetchPageHtml] Vercel proxy FAILED:', e.message);
+    }
 
     // 2. Try direct fetch
     try {
@@ -860,7 +867,9 @@ async function parseMovieMetadataFromUrl(url) {
     let thumbnail_url = '';
     let category = 'Recomendados';
 
+    console.log('[parseMovieMetadata] Starting extraction for:', url);
     const html = await fetchPageHtml(url);
+    console.log('[parseMovieMetadata] HTML received:', html ? `${html.length} chars` : 'NULL');
 
     let propsData = null;
 
@@ -872,23 +881,28 @@ async function parseMovieMetadataFromUrl(url) {
                 const data = JSON.parse(match[1]);
                 const props = data.props?.pageProps || {};
                 propsData = props;
+                console.log('[parseMovieMetadata] __NEXT_DATA__ parsed OK, keys:', Object.keys(props).join(', '));
 
                 // Title in Spanish
                 if (props.name && typeof props.name === 'string') {
                     title = props.name.trim();
+                    console.log('[parseMovieMetadata] Title from props.name:', title);
                 } else if (props.title && typeof props.title === 'string') {
                     title = props.title.trim();
+                    console.log('[parseMovieMetadata] Title from props.title:', title);
                 }
 
                 // Poster cover image URL
                 const imgDomain = props.imgDomain || props.vestData?.imgDomain || '';
                 const cover = props.coverVerticalUrl || props.coverHorizontalUrl || props.coverUrl || props.cover || '';
+                console.log('[parseMovieMetadata] cover raw:', cover ? cover.substring(0, 80) + '...' : 'EMPTY');
                 if (cover) {
                     if (cover.startsWith('http')) {
                         thumbnail_url = cover;
                     } else if (imgDomain) {
                         thumbnail_url = `${imgDomain.replace(/\/$/, '')}/${cover.replace(/^\//, '')}`;
                     }
+                    console.log('[parseMovieMetadata] thumbnail_url set:', thumbnail_url.substring(0, 80) + '...');
                 }
 
                 // Category
@@ -896,7 +910,7 @@ async function parseMovieMetadataFromUrl(url) {
                     category = props.category.trim();
                 }
             } catch (e) {
-                console.warn('Error parsing __NEXT_DATA__:', e);
+                console.warn('[parseMovieMetadata] Error parsing __NEXT_DATA__:', e);
             }
         }
 
@@ -991,6 +1005,7 @@ async function parseMovieMetadataFromUrl(url) {
 
     thumbnail_url = sanitizeImageUrl(thumbnail_url);
 
+    console.log('[parseMovieMetadata] FINAL RESULT:', { title, thumbnail_url: thumbnail_url.substring(0, 80), category });
     return { title, thumbnail_url, category };
 }
 
