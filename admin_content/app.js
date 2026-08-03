@@ -784,7 +784,7 @@ function setupEventListeners() {
     };
 
 async function fetchPageHtml(url) {
-    const fetchWithTimeout = (targetUrl, ms = 3000) => {
+    const fetchWithTimeout = (targetUrl, ms = 4500) => {
         return new Promise((resolve, reject) => {
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort(), ms);
@@ -811,13 +811,20 @@ async function fetchPageHtml(url) {
         });
     };
 
-    // 1. Try direct fetch first (lightning fast 100ms when browser origin allows it)
+    // 1. Try Vercel Serverless Function Proxy (/api/proxy) - Server-side Node.js fetch with zero CORS limits
+    try {
+        const vercelProxyUrl = `/api/proxy?url=${encodeURIComponent(url)}`;
+        const vercelText = await fetchWithTimeout(vercelProxyUrl, 5000);
+        if (vercelText && vercelText.length > 200) return vercelText;
+    } catch (_) {}
+
+    // 2. Try direct fetch
     try {
         const directText = await fetchWithTimeout(url, 3000);
         if (directText && directText.length > 200) return directText;
     } catch (_) {}
 
-    // 2. Race CORS proxies simultaneously
+    // 3. Race public CORS proxies simultaneously as backup
     const proxies = [
         `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
         `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
