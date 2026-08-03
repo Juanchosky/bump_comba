@@ -500,15 +500,28 @@ async function fetchEpisodesForSeries(seriesId) {
 }
 
 
+let currentVisibleItems = [];
+
 function renderTableHead(viewType) {
+    const estadoHeaderHtml = `
+        <div style="display:flex;align-items:center;gap:0.6rem;">
+            <span>Estado</span>
+            <label class="switch" title="Activar / Desactivar todo lo visible">
+                <input type="checkbox" id="master-status-switch" onchange="toggleAllStatus(this.checked)">
+                <span class="slider"></span>
+            </label>
+        </div>
+    `;
+
     if (viewType === 'episodes') {
-        tableHeadRow.innerHTML = `<th>Capítulo</th><th>Temporada</th><th>Episodio</th><th>Estado</th><th>Acciones</th>`;
+        tableHeadRow.innerHTML = `<th>Capítulo</th><th>Temporada</th><th>Episodio</th><th>${estadoHeaderHtml}</th><th>Acciones</th>`;
     } else {
-        tableHeadRow.innerHTML = `<th>Título</th><th>Categoría</th><th>Estado</th><th>Acciones</th>`;
+        tableHeadRow.innerHTML = `<th>Título</th><th>Categoría</th><th>${estadoHeaderHtml}</th><th>Acciones</th>`;
     }
 }
 
 function renderContent(items) {
+    currentVisibleItems = items;
     viewListBtn.classList.toggle('active', viewMode === 'list');
     viewGridBtn.classList.toggle('active', viewMode === 'grid');
     if (viewMode === 'grid') { renderGridView(items); return; }
@@ -517,6 +530,14 @@ function renderContent(items) {
     contentTableBody.innerHTML = '';
     const isEpisodeView = currentTab === 'series' && activeSeriesFilter;
     renderTableHead(isEpisodeView ? 'episodes' : 'movies');
+
+    // Actualizar estado del master switch de la cabecera
+    const masterSwitch = document.getElementById('master-status-switch');
+    if (masterSwitch) {
+        const allActive = items.length > 0 && items.every(i => i.is_active);
+        masterSwitch.checked = allActive;
+    }
+
     items.forEach(item => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
@@ -713,6 +734,41 @@ async function saveContent(e) {
 async function toggleStatus(id, isActive) {
     const { error } = await supabaseClient.from('custom_content').update({ is_active: isActive }).eq('id', id);
     if (error) { alert('Error al cambiar estado: ' + error.message); fetchContent(); }
+    else {
+        const item = allContent.find(it => it.id === id);
+        if (item) item.is_active = isActive;
+        // Actualizar master switch si corresponde
+        const masterSwitch = document.getElementById('master-status-switch');
+        if (masterSwitch && currentVisibleItems.length > 0) {
+            masterSwitch.checked = currentVisibleItems.every(i => i.is_active);
+        }
+    }
+}
+
+async function toggleAllStatus(isActive) {
+    if (!currentVisibleItems || currentVisibleItems.length === 0) return;
+    const ids = currentVisibleItems.map(i => i.id);
+
+    const { error } = await supabaseClient
+        .from('custom_content')
+        .update({ is_active: isActive })
+        .in('id', ids);
+
+    if (error) {
+        showToast('Error al cambiar estado masivo: ' + error.message, 'error');
+        applyFilters();
+        return;
+    }
+
+    // Actualización local en memoria
+    allContent.forEach(item => {
+        if (ids.includes(item.id)) {
+            item.is_active = isActive;
+        }
+    });
+
+    showToast(`Se ${isActive ? 'activaron' : 'desactivaron'} ${ids.length} elementos`, 'success');
+    applyFilters();
 }
 
 async function deleteItem(id) {
@@ -1011,7 +1067,7 @@ function sanitizeImageUrl(rawUrl) {
             clean = clean.replace(/\?(?:imageView2|imageMogr2).*$/, '');
         }
         if (clean.includes('img.') || clean.includes('/cover/')) {
-            clean += '?imageView2/1/w/220/h/330/format/webp/q/75';
+            clean += '?imageView2/1/w/300/h/450/format/webp/q/82';
         }
         return encodeURI(clean);
     } catch (_) {

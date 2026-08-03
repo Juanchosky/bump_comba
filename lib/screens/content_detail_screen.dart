@@ -1281,7 +1281,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
               width: double.infinity,
               height: double.infinity,
               fit: BoxFit.cover,
-              isHD: _isGoodNetwork && !PerformanceService().lowMemoryLimit,
+              isHD: true,
               onError: () {
                 if (widget.item.logo != null && widget.item.logo!.isNotEmpty) {
                   _m3uService.reportFailedLogo(widget.item.logo!);

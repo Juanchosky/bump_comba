@@ -1023,15 +1023,27 @@ class _FastThumbnailState extends State<FastThumbnail>
             : _fallbackUrl;
     if (raw == null) return null;
     String clean = raw.trim();
-    // Optimize heavy streaming CDN cover images (Cuevana, 123pelicula, 321movies, solo-latino, etc.)
-    // Converts 2.7MB raw images into ultra-lightweight 10KB-20KB WebP thumbnails
-    if ((clean.contains('img.') || clean.contains('/cover/')) &&
-        !clean.contains('imageView2') &&
+
+    // Determine target CDN parameters based on whether HD is requested (Hero Banners & Details Screen)
+    final String targetParams = widget.isHD
+        ? 'imageView2/1/w/700/h/1050/format/webp/q/88'
+        : 'imageView2/1/w/300/h/450/format/webp/q/82';
+
+    // Upgrade or adjust existing params if present
+    if (clean.contains('imageView2')) {
+      if (widget.isHD) {
+        clean = clean.replaceAll(
+          RegExp(r'imageView2\/1\/w\/\d+\/h\/\d+\/format\/webp\/q\/\d+'),
+          targetParams,
+        );
+      }
+    } else if ((clean.contains('img.') || clean.contains('/cover/')) &&
         !clean.contains('imageMogr2')) {
       clean = clean.replaceAll(RegExp(r'!$'), '');
       final separator = clean.contains('?') ? '&' : '?';
-      clean = '$clean${separator}imageView2/1/w/220/h/330/format/webp/q/75';
+      clean = '$clean$separator$targetParams';
     }
+
     return clean;
   }
 
