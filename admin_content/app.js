@@ -820,6 +820,8 @@ async function parseMovieMetadataFromUrl(url) {
 
     const html = await fetchPageHtml(url);
 
+    let propsData = null;
+
     if (html) {
         // 1. Inspect Next.js __NEXT_DATA__ JSON for Spanish title and exact cover image URL
         const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/s);
@@ -827,6 +829,7 @@ async function parseMovieMetadataFromUrl(url) {
             try {
                 const data = JSON.parse(match[1]);
                 const props = data.props?.pageProps || {};
+                propsData = props;
 
                 // Title in Spanish (e.g. "Super Mario Galaxy: La película", "Buena suerte...")
                 if (props.name && typeof props.name === 'string') {
@@ -912,9 +915,44 @@ async function parseMovieMetadataFromUrl(url) {
         }
     }
 
+    // 5. Detect Release Year and append (YYYY) to title if not present
+    const year = extractReleaseYear(propsData, thumbnail_url, html);
+    if (year && title && !title.match(/\(\d{4}\)$/)) {
+        title = `${title} (${year})`;
+    }
+
     thumbnail_url = sanitizeImageUrl(thumbnail_url);
 
     return { title, thumbnail_url, category };
+}
+
+function extractReleaseYear(props, coverUrl, html) {
+    if (props) {
+        if (props.year) return props.year.toString();
+        if (props.releaseYear) return props.releaseYear.toString();
+        if (props.releaseDate) {
+            const m = props.releaseDate.toString().match(/\b(19\d\d|20\d\d)\b/);
+            if (m) return m[1];
+        }
+    }
+
+    if (coverUrl) {
+        const coverMatch = coverUrl.match(/\/cover\/([12]\d{3})\d{4}\//);
+        if (coverMatch && coverMatch[1]) {
+            return coverMatch[1];
+        }
+        const simpleYear = coverUrl.match(/\/cover\/(19\d\d|20\d\d)/);
+        if (simpleYear && simpleYear[1]) {
+            return simpleYear[1];
+        }
+    }
+
+    if (html) {
+        const htmlMatch = html.match(/\b(19[89]\d|20[0-3]\d)\b/);
+        if (htmlMatch) return htmlMatch[1];
+    }
+
+    return null;
 }
 
     // (Botón auto-import de temporada eliminado — usar importación de serie completa)
