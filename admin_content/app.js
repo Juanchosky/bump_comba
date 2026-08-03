@@ -380,6 +380,8 @@ function updateRequestsBadge() {
     }
 }
 
+let selectedRequestIds = new Set();
+
 function renderRequests() {
     const requestsContainer = document.getElementById('requests-container');
     const requestsBody = document.getElementById('requests-list-body');
@@ -396,17 +398,19 @@ function renderRequests() {
     if (contentRequests.length === 0) {
         requestsBody.innerHTML = `
             <tr>
-                <td colspan="5" style="text-align:center;padding:2.5rem;color:var(--text-muted);">
+                <td colspan="6" style="text-align:center;padding:2.5rem;color:var(--text-muted);">
                     <div style="font-size:1.1rem;font-weight:600;margin-bottom:0.4rem;">Sin Solicitudes</div>
                     No hay solicitudes registradas por los usuarios aún.
                 </td>
             </tr>
         `;
+        updateSelectedRequestsCount();
         return;
     }
 
     contentRequests.forEach(req => {
         const tr = document.createElement('tr');
+        const isChecked = selectedRequestIds.has(req.id);
         const dateStr = new Date(req.created_at).toLocaleDateString('es-ES', {
             day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
         });
@@ -417,6 +421,9 @@ function renderRequests() {
         else if (req.status === 'rejected') { statusClass = 'badge-rejected'; statusText = 'Rechazado'; }
 
         tr.innerHTML = `
+            <td style="text-align:center;">
+                <input type="checkbox" class="request-checkbox" value="${req.id}" ${isChecked ? 'checked' : ''} onchange="onRequestCheckboxChange('${req.id}', this.checked)" style="width:16px;height:16px;cursor:pointer;">
+            </td>
             <td>
                 <div style="font-weight:600;font-size:1rem;color:var(--text-primary);">${req.title}</div>
             </td>
@@ -442,6 +449,7 @@ function renderRequests() {
         requestsBody.appendChild(tr);
     });
     lucide.createIcons();
+    updateSelectedRequestsCount();
 }
 
 function openAutoImportWithTitle(title, requestId) {
@@ -501,6 +509,7 @@ async function fetchEpisodesForSeries(seriesId) {
 
 
 let currentVisibleItems = [];
+let selectedItemIds = new Set();
 
 function renderTableHead(viewType) {
     const estadoHeaderHtml = `
@@ -513,10 +522,12 @@ function renderTableHead(viewType) {
         </div>
     `;
 
+    const checkAllHeaderHtml = `<th style="width:40px;text-align:center;"><input type="checkbox" id="select-all-checkbox" onchange="toggleSelectAllRows(this.checked)" style="width:16px;height:16px;cursor:pointer;" title="Seleccionar todo"></th>`;
+
     if (viewType === 'episodes') {
-        tableHeadRow.innerHTML = `<th>Capítulo</th><th>Temporada</th><th>Episodio</th><th>${estadoHeaderHtml}</th><th>Acciones</th>`;
+        tableHeadRow.innerHTML = `${checkAllHeaderHtml}<th>Capítulo</th><th>Temporada</th><th>Episodio</th><th>${estadoHeaderHtml}</th><th>Acciones</th>`;
     } else {
-        tableHeadRow.innerHTML = `<th>Título</th><th>Categoría</th><th>${estadoHeaderHtml}</th><th>Acciones</th>`;
+        tableHeadRow.innerHTML = `${checkAllHeaderHtml}<th>Título</th><th>Categoría</th><th>${estadoHeaderHtml}</th><th>Acciones</th>`;
     }
 }
 
@@ -540,7 +551,11 @@ function renderContent(items) {
 
     items.forEach(item => {
         const tr = document.createElement('tr');
+        const isChecked = selectedItemIds.has(item.id);
         tr.innerHTML = `
+            <td style="text-align:center;">
+                <input type="checkbox" class="row-checkbox" value="${item.id}" ${isChecked ? 'checked' : ''} onchange="onRowCheckboxChange('${item.id}', this.checked)" style="width:16px;height:16px;cursor:pointer;">
+            </td>
             <td>
                 <div style="display:flex;align-items:center;gap:1rem;">
                     <img src="${item.thumbnail_url || 'https://via.placeholder.com/40x60'}" style="width:40px;height:60px;object-fit:cover;border-radius:4px;background:#000;">
@@ -567,6 +582,7 @@ function renderContent(items) {
         contentTableBody.appendChild(tr);
     });
     lucide.createIcons();
+    updateSelectedCount();
 }
 
 function renderGridView(items) {
@@ -771,6 +787,139 @@ async function toggleAllStatus(isActive) {
     applyFilters();
 }
 
+function toggleSelectAllRows(isChecked) {
+    if (!currentVisibleItems) return;
+    currentVisibleItems.forEach(item => {
+        if (isChecked) {
+            selectedItemIds.add(item.id);
+        } else {
+            selectedItemIds.delete(item.id);
+        }
+    });
+
+    const checkboxes = document.querySelectorAll('.row-checkbox');
+    checkboxes.forEach(cb => cb.checked = isChecked);
+    updateSelectedCount();
+}
+
+function onRowCheckboxChange(id, isChecked) {
+    if (isChecked) {
+        selectedItemIds.add(id);
+    } else {
+        selectedItemIds.delete(id);
+    }
+    updateSelectedCount();
+}
+
+function updateSelectedCount() {
+    const deleteBtn = document.getElementById('delete-selected-btn');
+    const deleteText = document.getElementById('delete-selected-text');
+    const selectAllCb = document.getElementById('select-all-checkbox');
+
+    const count = selectedItemIds.size;
+    if (deleteBtn && deleteText) {
+        if (count > 0) {
+            deleteText.textContent = `Borrar (${count})`;
+            deleteBtn.classList.remove('hidden');
+        } else {
+            deleteBtn.classList.add('hidden');
+        }
+    }
+
+    if (selectAllCb && currentVisibleItems.length > 0) {
+        const allVisibleSelected = currentVisibleItems.every(item => selectedItemIds.has(item.id));
+        selectAllCb.checked = allVisibleSelected;
+    }
+}
+
+function toggleSelectAllRequests(isChecked) {
+    contentRequests.forEach(req => {
+        if (isChecked) {
+            selectedRequestIds.add(req.id);
+        } else {
+            selectedRequestIds.delete(req.id);
+        }
+    });
+
+    const checkboxes = document.querySelectorAll('.request-checkbox');
+    checkboxes.forEach(cb => cb.checked = isChecked);
+    updateSelectedRequestsCount();
+}
+
+function onRequestCheckboxChange(id, isChecked) {
+    if (isChecked) {
+        selectedRequestIds.add(id);
+    } else {
+        selectedRequestIds.delete(id);
+    }
+    updateSelectedRequestsCount();
+}
+
+function updateSelectedRequestsCount() {
+    const deleteBtn = document.getElementById('delete-selected-btn');
+    const deleteText = document.getElementById('delete-selected-text');
+    const selectAllCb = document.getElementById('select-all-requests-checkbox');
+
+    const count = selectedRequestIds.size;
+    if (deleteBtn && deleteText) {
+        if (count > 0) {
+            deleteText.textContent = `Borrar (${count})`;
+            deleteBtn.classList.remove('hidden');
+        } else {
+            deleteBtn.classList.add('hidden');
+        }
+    }
+
+    if (selectAllCb && contentRequests.length > 0) {
+        const allSelected = contentRequests.every(req => selectedRequestIds.has(req.id));
+        selectAllCb.checked = allSelected;
+    }
+}
+
+async function deleteSelectedItems() {
+    if (currentTab === 'requests') {
+        if (selectedRequestIds.size === 0) return;
+        const count = selectedRequestIds.size;
+        if (!confirm(`¿Estás seguro de que deseas eliminar ${count} solicitudes seleccionadas?`)) return;
+
+        const idsToDelete = Array.from(selectedRequestIds);
+        const { error } = await supabaseClient
+            .from('content_requests')
+            .delete()
+            .in('id', idsToDelete);
+
+        if (error) {
+            showToast('Error al eliminar solicitudes: ' + error.message, 'error');
+            return;
+        }
+
+        selectedRequestIds.clear();
+        showToast(`Se eliminaron ${count} solicitudes con éxito`, 'success');
+        fetchContentRequests();
+        return;
+    }
+
+    if (selectedItemIds.size === 0) return;
+    const count = selectedItemIds.size;
+    if (!confirm(`¿Estás seguro de que deseas eliminar ${count} elementos seleccionados?`)) return;
+
+    const idsToDelete = Array.from(selectedItemIds);
+    const { error } = await supabaseClient
+        .from('custom_content')
+        .delete()
+        .in('id', idsToDelete);
+
+    if (error) {
+        showToast('Error al eliminar elementos: ' + error.message, 'error');
+        return;
+    }
+
+    allContent = allContent.filter(item => !selectedItemIds.has(item.id));
+    selectedItemIds.clear();
+    showToast(`Se eliminaron ${count} elementos con éxito`, 'success');
+    applyFilters();
+}
+
 async function deleteItem(id) {
     if (confirm('¿Estás seguro de que deseas eliminar este contenido?')) {
         const { error } = await supabaseClient.from('custom_content').delete().eq('id', id);
@@ -833,8 +982,10 @@ function setupEventListeners() {
             tabButtons.forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             currentTab = btn.dataset.tab;
-            activeSeriesFilter = null;
-            backToSeriesBtn.classList.add('hidden');
+            selectedItemIds.clear();
+            selectedRequestIds.clear();
+            const delBtn = document.getElementById('delete-selected-btn');
+            if (delBtn) delBtn.classList.add('hidden');
 
             const requestsContainer = document.getElementById('requests-container');
 
@@ -863,6 +1014,8 @@ function setupEventListeners() {
     filterSeason.onchange = applyFilters;
     
     manageSeasonsBtn.onclick = openBulkDeleteModal;
+    const deleteSelectedBtn = document.getElementById('delete-selected-btn');
+    if (deleteSelectedBtn) deleteSelectedBtn.onclick = deleteSelectedItems;
     closeBulkDeleteBtns.forEach(btn => btn.onclick = () => bulkDeleteModal.style.display = 'none');
     confirmBulkDeleteBtn.onclick = confirmBulkDelete;
 

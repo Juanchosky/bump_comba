@@ -148,6 +148,11 @@
                             <i data-lucide="trash-2"></i>
                             <span>Borrar Temporadas</span>
                         </button>
+                        <button id="delete-selected-btn" class="btn hidden" title="Eliminar elementos seleccionados"
+                            style="background-color:rgba(239,68,68,.2);color:#f87171;border:1px solid rgba(239,68,68,.4);padding:.5rem 1rem;gap:.4rem;">
+                            <i data-lucide="trash-2"></i>
+                            <span id="delete-selected-text">Borrar (0)</span>
+                        </button>
                     </div>
                 </div>
 
@@ -177,6 +182,7 @@
                         <table class="data-table">
                             <thead>
                                 <tr>
+                                    <th style="width:40px;text-align:center;"><input type="checkbox" id="select-all-requests-checkbox" onchange="toggleSelectAllRequests(this.checked)" style="width:16px;height:16px;cursor:pointer;" title="Seleccionar todo"></th>
                                     <th>Título Solicitado</th>
                                     <th>Detalles / Notas</th>
                                     <th>Fecha</th>
