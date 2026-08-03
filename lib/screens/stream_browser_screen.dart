@@ -4318,9 +4318,10 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   }
 
   Widget _buildHeroBanner(M3UItem item) {
-    final itemKey = item.url.trim().isNotEmpty
-        ? item.url
-        : '${item.name.trim()}_${item.hashCode}';
+    final itemKey =
+        item.url.trim().isNotEmpty
+            ? item.url
+            : '${item.name.trim()}_${item.hashCode}';
     final heroTag = 'hero_$itemKey';
     // Responsive height: scales with the screen instead of a fixed 500 so it
     // never dominates small phones nor looks lost on tablets.
@@ -4907,9 +4908,10 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   }
 
   Widget _buildTop10Card(M3UItem item, int rank) {
-    final itemKey = item.url.trim().isNotEmpty
-        ? item.url
-        : '${item.name.trim()}_${item.hashCode}';
+    final itemKey =
+        item.url.trim().isNotEmpty
+            ? item.url
+            : '${item.name.trim()}_${item.hashCode}';
     final heroTag = 'top10_${rank}_$itemKey';
     return GestureDetector(
       onTap: () => _onItemTap(item, heroTag: heroTag),
@@ -5013,9 +5015,10 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     String heroPrefix = 'row',
     int? index,
   }) {
-    final itemKey = item.url.trim().isNotEmpty
-        ? item.url
-        : '${item.name.trim()}_${item.hashCode}';
+    final itemKey =
+        item.url.trim().isNotEmpty
+            ? item.url
+            : '${item.name.trim()}_${item.hashCode}';
     final suffix = index != null ? '_$index' : '';
     final heroTag = '${heroPrefix}_$itemKey$suffix';
     return GestureDetector(
@@ -5101,9 +5104,10 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   // _buildSearchGrid removed
 
   Widget _buildGridCard(M3UItem item, {bool showTitle = true, int? index}) {
-    final itemKey = item.url.trim().isNotEmpty
-        ? item.url
-        : '${item.name.trim()}_${item.hashCode}';
+    final itemKey =
+        item.url.trim().isNotEmpty
+            ? item.url
+            : '${item.name.trim()}_${item.hashCode}';
     final suffix = index != null ? '_$index' : '';
     final heroTag = 'grid_$itemKey$suffix';
     return RepaintBoundary(
@@ -6440,30 +6444,16 @@ class _SearchPageState extends State<_SearchPage> {
     final query = _searchController.text.trim();
     return SingleChildScrollView(
       physics: const BouncingScrollPhysics(),
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 37),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: Colors.redAccent.withValues(alpha: 0.12),
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.redAccent.withValues(alpha: 0.3), width: 1.5),
-            ),
-            child: const Icon(
-              Icons.movie_filter_rounded,
-              color: Colors.redAccent,
-              size: 42,
-            ),
-          ),
-          const SizedBox(height: 18),
           const Text(
             '¿No encuentras lo que buscas?',
             style: TextStyle(
-              color: Colors.white,
-              fontSize: 19,
-              fontWeight: FontWeight.bold,
+              color: Color.fromARGB(255, 231, 231, 231),
+              fontSize: 17.5,
+              fontWeight: FontWeight.w600,
               letterSpacing: 0.2,
             ),
             textAlign: TextAlign.center,
@@ -6471,8 +6461,8 @@ class _SearchPageState extends State<_SearchPage> {
           const SizedBox(height: 8),
           Text(
             query.isNotEmpty
-                ? 'Pídenos "$query" y la agregaremos lo antes posible a nuestro catálogo.'
-                : 'Pídenos la película o serie que deseas ver y la agregaremos pronto.',
+                ? 'Pídenos "$query" y la agregaremos lo antes posible.'
+                : 'Pídenos que deseas ver y la agregaremos pronto.',
             style: TextStyle(
               color: Colors.white.withValues(alpha: 0.65),
               fontSize: 13.5,
@@ -6483,9 +6473,9 @@ class _SearchPageState extends State<_SearchPage> {
           const SizedBox(height: 24),
           ElevatedButton.icon(
             style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.redAccent,
+              backgroundColor: const Color.fromARGB(220, 255, 61, 61),
               foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 14),
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(28),
               ),
@@ -6494,16 +6484,20 @@ class _SearchPageState extends State<_SearchPage> {
             icon: const Icon(Icons.send_rounded, size: 18),
             label: const Text(
               'Solicitar ahora',
-              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500),
             ),
-            onPressed: () => _showContentRequestModal(context, initialTitle: query),
+            onPressed:
+                () => _showContentRequestModal(context, initialTitle: query),
           ),
         ],
       ),
     );
   }
 
-  void _showContentRequestModal(BuildContext context, {required String initialTitle}) {
+  void _showContentRequestModal(
+    BuildContext context, {
+    required String initialTitle,
+  }) {
     final titleController = TextEditingController(text: initialTitle);
     final detailsController = TextEditingController();
     bool isSubmitting = false;
@@ -6520,7 +6514,10 @@ class _SearchPageState extends State<_SearchPage> {
                 bottom: MediaQuery.of(context).viewInsets.bottom,
               ),
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 24,
+                ),
                 decoration: const BoxDecoration(
                   color: AppColors.surface,
                   borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
@@ -6588,7 +6585,7 @@ class _SearchPageState extends State<_SearchPage> {
                     ),
                     const SizedBox(height: 20),
                     const Text(
-                      'Título de la película o serie *',
+                      'Título*',
                       style: TextStyle(
                         color: Colors.white70,
                         fontSize: 13,
@@ -6600,7 +6597,7 @@ class _SearchPageState extends State<_SearchPage> {
                       controller: titleController,
                       style: const TextStyle(color: Colors.white),
                       decoration: InputDecoration(
-                        hintText: 'Ej: Spider-Man 4, Stranger Things 5...',
+                        hintText: 'Escribe el título...',
                         hintStyle: const TextStyle(color: Colors.white38),
                         filled: true,
                         fillColor: AppColors.surfaceVariant,
@@ -6629,7 +6626,7 @@ class _SearchPageState extends State<_SearchPage> {
                       maxLines: 2,
                       style: const TextStyle(color: Colors.white),
                       decoration: InputDecoration(
-                        hintText: 'Ej: Preferiblemente en audio latino, versión extendida...',
+                        hintText: 'Opcionales...',
                         hintStyle: const TextStyle(color: Colors.white38),
                         filled: true,
                         fillColor: AppColors.surfaceVariant,
@@ -6649,80 +6646,93 @@ class _SearchPageState extends State<_SearchPage> {
                       height: 48,
                       child: ElevatedButton(
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.redAccent,
+                          backgroundColor: const Color.fromARGB(
+                            224,
+                            255,
+                            60,
+                            60,
+                          ),
                           foregroundColor: Colors.white,
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(14),
                           ),
                           elevation: 2,
                         ),
-                        onPressed: isSubmitting
-                            ? null
-                            : () async {
-                                final title = titleController.text.trim();
-                                if (title.isEmpty) {
-                                  SnackBarUtils.showAppSnackBar(
-                                    context,
-                                    'Ingresa el título del contenido',
-                                  );
-                                  return;
-                                }
-
-                                setModalState(() {
-                                  isSubmitting = true;
-                                });
-
-                                try {
-                                  await Supabase.instance.client.from('content_requests').insert({
-                                    'title': title,
-                                    'details': detailsController.text.trim().isNotEmpty
-                                        ? detailsController.text.trim()
-                                        : null,
-                                    'status': 'pending',
-                                  });
-
-                                  if (context.mounted) {
-                                    Navigator.pop(ctx);
+                        onPressed:
+                            isSubmitting
+                                ? null
+                                : () async {
+                                  final title = titleController.text.trim();
+                                  if (title.isEmpty) {
                                     SnackBarUtils.showAppSnackBar(
                                       context,
-                                      '¡Solicitud enviada! Trabajaremos para agregarla pronto.',
+                                      'Ingresa el título',
                                     );
+                                    return;
                                   }
-                                } catch (e) {
+
                                   setModalState(() {
-                                    isSubmitting = false;
+                                    isSubmitting = true;
                                   });
-                                  if (context.mounted) {
-                                    SnackBarUtils.showAppSnackBar(
-                                      context,
-                                      'Error al enviar solicitud. Inténtalo de nuevo.',
-                                    );
+
+                                  try {
+                                    await Supabase.instance.client
+                                        .from('content_requests')
+                                        .insert({
+                                          'title': title,
+                                          'details':
+                                              detailsController.text
+                                                      .trim()
+                                                      .isNotEmpty
+                                                  ? detailsController.text
+                                                      .trim()
+                                                  : null,
+                                          'status': 'pending',
+                                        });
+
+                                    if (context.mounted) {
+                                      Navigator.pop(ctx);
+                                      SnackBarUtils.showAppSnackBar(
+                                        context,
+                                        '¡Solicitud enviada! Trabajaremos para agregarla pronto.',
+                                      );
+                                    }
+                                  } catch (e) {
+                                    setModalState(() {
+                                      isSubmitting = false;
+                                    });
+                                    if (context.mounted) {
+                                      SnackBarUtils.showAppSnackBar(
+                                        context,
+                                        'Error al enviar solicitud. Inténtalo de nuevo.',
+                                      );
+                                    }
                                   }
-                                }
-                              },
-                        child: isSubmitting
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  color: Colors.white,
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(Icons.send_rounded, size: 18),
-                                  SizedBox(width: 8),
-                                  Text(
-                                    'Enviar Solicitud',
-                                    style: TextStyle(
-                                      fontSize: 15,
-                                      fontWeight: FontWeight.bold,
-                                    ),
+                                },
+                        child:
+                            isSubmitting
+                                ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2,
                                   ),
-                                ],
-                              ),
+                                )
+                                : const Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(Icons.send_rounded, size: 18),
+                                    SizedBox(width: 8),
+                                    Text(
+                                      'Enviar Solicitud',
+                                      style: TextStyle(
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ],
+                                ),
                       ),
                     ),
                     const SizedBox(height: 12),

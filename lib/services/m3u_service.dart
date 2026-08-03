@@ -2327,7 +2327,7 @@ class M3UService extends ChangeNotifier {
 
           // Fast search in local library
           for (var item in _items) {
-            if (item.isLive || item.sourceName == 'Supabase') continue;
+            if (item.isLive) continue;
             if (matchedNames.contains(item.name)) continue;
 
             final itemName = item.name.toLowerCase();
@@ -2355,7 +2355,7 @@ class M3UService extends ChangeNotifier {
       if (finalResults.isEmpty && _items.isNotEmpty) {
         final vods =
             _items
-                .where((i) => !i.isLive && i.sourceName != 'Supabase')
+                .where((i) => !i.isLive)
                 .toList();
 
         if (vods.isNotEmpty) {
@@ -2454,7 +2454,7 @@ class M3UService extends ChangeNotifier {
           // Fast search in local library — prefer items with logos for the banner
           M3UItem? bestMatch;
           for (var item in _items) {
-            if (item.isLive || item.sourceName == 'Supabase') continue;
+            if (item.isLive) continue;
             if (matchedNames.contains(item.name)) continue;
 
             final itemName = item.name.toLowerCase();
@@ -2485,7 +2485,7 @@ class M3UService extends ChangeNotifier {
       if (finalResults.isEmpty && _items.isNotEmpty) {
         final vods =
             _items
-                .where((i) => !i.isLive && i.sourceName != 'Supabase')
+                .where((i) => !i.isLive)
                 .toList();
 
         if (vods.isNotEmpty) {
