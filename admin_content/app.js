@@ -904,6 +904,14 @@ async function parseMovieMetadataFromUrl(url) {
             }
         }
 
+        if (!title) {
+            const imgAltMatch = html.match(/<img[^>]+alt=["']([^"'\s][^"']{3,100})["'][^>]+class="[^"]*object-cover[^"]*"/i) ||
+                                html.match(/<img[^>]+class="[^"]*object-cover[^"]*"[^>]+alt=["']([^"'\s][^"']{3,100})["']/i);
+            if (imgAltMatch && imgAltMatch[1] && imgAltMatch[1].toLowerCase() !== 'poster' && imgAltMatch[1].toLowerCase() !== 'cover') {
+                title = imgAltMatch[1].trim();
+            }
+        }
+
         // ── 3. DOM Image Extractions (Accumulated priority list for ALL sites)
         if (!thumbnail_url) {
             // Strategy A: <img ... alt="cover" ... src="..."> or <img ... src="..." alt="cover">
