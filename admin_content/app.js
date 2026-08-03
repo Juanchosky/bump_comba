@@ -811,10 +811,15 @@ async function fetchPageHtml(url) {
         });
     };
 
-    // 1. Try Vercel Serverless Function Proxy (/api/proxy) - Server-side Node.js fetch with zero CORS limits
+    // Detect if running locally (file://) or on Vercel (https://)
+    const isLocal = window.location.protocol === 'file:';
+    const VERCEL_BASE = 'https://bump-comba.vercel.app';
+
+    // 1. Try Vercel Serverless Function Proxy - works from ANYWHERE (local file or deployed)
     try {
-        const vercelProxyUrl = `/api/proxy?url=${encodeURIComponent(url)}`;
-        console.log('[fetchPageHtml] Trying Vercel proxy:', vercelProxyUrl.substring(0, 80) + '...');
+        const proxyBase = isLocal ? VERCEL_BASE : '';
+        const vercelProxyUrl = `${proxyBase}/api/proxy?url=${encodeURIComponent(url)}`;
+        console.log('[fetchPageHtml] Trying Vercel proxy:', vercelProxyUrl.substring(0, 100) + '...');
         const vercelText = await fetchWithTimeout(vercelProxyUrl, 10000);
         if (vercelText && vercelText.length > 200) {
             console.log('[fetchPageHtml] Vercel proxy SUCCESS, length:', vercelText.length);
@@ -825,22 +830,22 @@ async function fetchPageHtml(url) {
         console.warn('[fetchPageHtml] Vercel proxy FAILED:', e.message);
     }
 
-    // 2. Try direct fetch
-    try {
-        const directText = await fetchWithTimeout(url, 3000);
-        if (directText && directText.length > 200) return directText;
-    } catch (_) {}
+    // 2. Try direct fetch (only works when deployed on same origin)
+    if (!isLocal) {
+        try {
+            const directText = await fetchWithTimeout(url, 3000);
+            if (directText && directText.length > 200) return directText;
+        } catch (_) {}
+    }
 
-    // 3. Race public CORS proxies simultaneously as backup
+    // 3. Race public CORS proxies simultaneously as last resort backup
     const proxies = [
         `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-        `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
-        `https://corsproxy.io/?${encodeURIComponent(url)}`,
-        `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
+        `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`
     ];
 
     try {
-        return await Promise.any(proxies.map(p => fetchWithTimeout(p, 4500)));
+        return await Promise.any(proxies.map(p => fetchWithTimeout(p, 6000)));
     } catch (_) {
         return null;
     }
