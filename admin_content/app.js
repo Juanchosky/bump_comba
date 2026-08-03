@@ -976,11 +976,19 @@ async function parseMovieMetadataFromUrl(url) {
     if (!thumbnail_url) {
         try {
             const urlObj = new URL(url);
-            const imgDomain = urlObj.hostname
-                .replace(/^es\./, 'img.')
-                .replace(/^ww\d+\./, 'img.')
-                .replace(/^video\./, 'img.')
-                .replace(/^play\./, 'img.');
+            let host = urlObj.hostname;
+            if (host.startsWith('peliculaplay.com')) {
+                host = 'img.peliculaplay.com';
+            } else if (host.startsWith('cuevana4br.com')) {
+                host = 'img.cuevana4br.com';
+            } else {
+                host = host
+                    .replace(/^es\./, 'img.')
+                    .replace(/^ww\d+\./, 'img.')
+                    .replace(/^video\./, 'img.')
+                    .replace(/^play\./, 'img.');
+            }
+            const imgDomain = host;
             const idMatch = urlObj.pathname.match(/\/detail\/(?:movie|drama|tv|film)\/([a-zA-Z0-9]{15,35})/i) ||
                             urlObj.pathname.match(/\/([a-zA-Z0-9]{15,35})/);
             if (idMatch && idMatch[1]) {
