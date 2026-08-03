@@ -786,6 +786,7 @@ function setupEventListeners() {
 async function fetchPageHtml(url) {
     const proxies = [
         `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+        `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
         `https://corsproxy.io/?${encodeURIComponent(url)}`,
         `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
     ];
@@ -800,7 +801,18 @@ async function fetchPageHtml(url) {
                     if (res.ok) return res.text();
                     reject(new Error('HTTP Error ' + res.status));
                 })
-                .then(text => (text && text.length > 200) ? resolve(text) : reject(new Error('Empty response')))
+                .then(text => {
+                    if (!text || text.length < 50) {
+                        return reject(new Error('Empty response'));
+                    }
+                    if (text.includes('"contents":') && text.trim().startsWith('{')) {
+                        try {
+                            const parsed = JSON.parse(text);
+                            if (parsed.contents) return resolve(parsed.contents);
+                        } catch (_) {}
+                    }
+                    resolve(text);
+                })
                 .catch(err => {
                     clearTimeout(timer);
                     reject(err);
@@ -892,10 +904,10 @@ async function parseMovieMetadataFromUrl(url) {
             }
         }
 
-        // 3. Fallback: regex for cover image tag (e.g. coverImage class, img.123flmsfree.com, img.flixlat.com, etc.)
+        // 3. Fallback: regex for cover image tag (e.g. coverImage class, /cover/ path, img.123flmsfree.com, etc.)
         if (!thumbnail_url) {
-            const imgMatch = html.match(/<img[^>]+class="[^"]*coverImage[^"]*"[^>]+src=["']([^"'\s]+)["']/i) ||
-                             html.match(/<img[^>]+src=["'](https?:\/\/[^"'\s]+\/cover\/[^"'\s]+)["']/i) ||
+            const imgMatch = html.match(/src=["'](https?:\/\/[^"'\s]*\/cover\/[^"'\s]+)["']/i) ||
+                             html.match(/<img[^>]+class="[^"]*coverImage[^"]*"[^>]+src=["']([^"'\s]+)["']/i) ||
                              html.match(/<img[^>]+src=["'](https?:\/\/img\.[^"'\s]+)["']/i) ||
                              html.match(/<img[^>]+src=["'](https?:\/\/[^"'\s]+\.(?:webp|jpg|png|jpeg)[^"'\s]*)["']/i);
             if (imgMatch && imgMatch[1]) {
