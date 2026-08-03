@@ -874,11 +874,14 @@ async function parseMovieMetadataFromUrl(url) {
             }
         }
 
-        // 3. Fallback: regex for cover image tag (e.g. img.321moviesfree.com, img.flixlat.com, etc.)
+        // 3. Fallback: regex for cover image tag (e.g. coverImage class, img.123flmsfree.com, img.flixlat.com, etc.)
         if (!thumbnail_url) {
-            const imgMatch = html.match(/<img[^>]+src=["'](https?:\/\/[^"'\s]+\.(?:webp|jpg|png|jpeg)[^"'\s]*)["']/i);
+            const imgMatch = html.match(/<img[^>]+class="[^"]*coverImage[^"]*"[^>]+src=["']([^"'\s]+)["']/i) ||
+                             html.match(/<img[^>]+src=["'](https?:\/\/[^"'\s]+\/cover\/[^"'\s]+)["']/i) ||
+                             html.match(/<img[^>]+src=["'](https?:\/\/img\.[^"'\s]+)["']/i) ||
+                             html.match(/<img[^>]+src=["'](https?:\/\/[^"'\s]+\.(?:webp|jpg|png|jpeg)[^"'\s]*)["']/i);
             if (imgMatch && imgMatch[1]) {
-                thumbnail_url = imgMatch[1];
+                thumbnail_url = imgMatch[1].trim();
             }
         }
 
@@ -937,13 +940,12 @@ function extractReleaseYear(props, coverUrl, html) {
     }
 
     if (coverUrl) {
-        const coverMatch = coverUrl.match(/\/cover\/([12]\d{3})\d{4}\//);
+        // Matches cover/20260710/ or cover/20260512/
+        const coverMatch = coverUrl.match(/\/cover\/([12]\d{3})\d{2}\d{2}\//) ||
+                           coverUrl.match(/\/cover\/([12]\d{3})\d{4}\//) ||
+                           coverUrl.match(/\/cover\/(19\d\d|20\d\d)/);
         if (coverMatch && coverMatch[1]) {
             return coverMatch[1];
-        }
-        const simpleYear = coverUrl.match(/\/cover\/(19\d\d|20\d\d)/);
-        if (simpleYear && simpleYear[1]) {
-            return simpleYear[1];
         }
     }
 
