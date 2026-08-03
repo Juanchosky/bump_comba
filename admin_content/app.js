@@ -853,7 +853,7 @@ async function parseMovieMetadataFromUrl(url) {
     let propsData = null;
 
     if (html) {
-        // 1. Inspect Next.js __NEXT_DATA__ JSON for Spanish title and exact cover image URL
+        // ── 1. Next.js __NEXT_DATA__ JSON (Playspelis, Flixlat, Cuevana, 123flmsfree)
         const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/s);
         if (match && match[1]) {
             try {
@@ -861,7 +861,7 @@ async function parseMovieMetadataFromUrl(url) {
                 const props = data.props?.pageProps || {};
                 propsData = props;
 
-                // Title in Spanish (e.g. "Super Mario Galaxy: La película", "Wild Sing", etc.)
+                // Title in Spanish
                 if (props.name && typeof props.name === 'string') {
                     title = props.name.trim();
                 } else if (props.title && typeof props.title === 'string') {
@@ -888,7 +888,7 @@ async function parseMovieMetadataFromUrl(url) {
             }
         }
 
-        // 2. Fallback: regex for class="name..." or <title> or og:title
+        // ── 2. DOM Title Extractions
         if (!title) {
             const nameMatch = html.match(/class="[^"]*\bname\b[^"]*"[^>]*>\s*([^<]+)\s*<\/div>/i);
             if (nameMatch && nameMatch[1]) {
@@ -904,18 +904,43 @@ async function parseMovieMetadataFromUrl(url) {
             }
         }
 
-        // 3. Fallback: regex for cover image tag (e.g. coverImage class, /cover/ path, img.cuevana4br.com, etc.)
+        // ── 3. DOM Image Extractions (Accumulated priority list for ALL sites)
         if (!thumbnail_url) {
-            const imgMatch = html.match(/src=["'](https?:\/\/[^"'\s]*\/cover\/[^"'\s]+)["']/i) ||
-                             html.match(/<img[^>]+class="[^"]*coverImage[^"]*"[^>]+src=["']([^"'\s]+)["']/i) ||
-                             html.match(/<img[^>]+src=["'](https?:\/\/img\.[^"'\s]+)["']/i) ||
-                             html.match(/<img[^>]+src=["'](https?:\/\/[^"'\s]+\.(?:webp|jpg|png|jpeg)[^"'\s]*)["']/i);
-            if (imgMatch && imgMatch[1]) {
-                thumbnail_url = imgMatch[1].trim();
+            // Strategy A: <img ... alt="cover" ... src="..."> or <img ... src="..." alt="cover">
+            const coverAltMatch = html.match(/<img[^>]+alt=["']cover["'][^>]+src=["']([^"'\s]+)["']/i) ||
+                                  html.match(/<img[^>]+src=["']([^"'\s]+)["'][^>]+alt=["']cover["']/i);
+            if (coverAltMatch && coverAltMatch[1]) {
+                thumbnail_url = coverAltMatch[1].trim();
             }
         }
 
         if (!thumbnail_url) {
+            // Strategy B: any src containing /cover/ path
+            const coverPathMatch = html.match(/src=["'](https?:\/\/[^"'\s]*\/cover\/[^"'\s]+)["']/i);
+            if (coverPathMatch && coverPathMatch[1]) {
+                thumbnail_url = coverPathMatch[1].trim();
+            }
+        }
+
+        if (!thumbnail_url) {
+            // Strategy C: <img class="coverImage..." src="...">
+            const coverClassMatch = html.match(/<img[^>]+class="[^"]*coverImage[^"]*"[^>]+src=["']([^"'\s]+)["']/i) ||
+                                     html.match(/<img[^>]+src=["']([^"'\s]+)["'][^>]+class="[^"]*coverImage[^"]*"/i);
+            if (coverClassMatch && coverClassMatch[1]) {
+                thumbnail_url = coverClassMatch[1].trim();
+            }
+        }
+
+        if (!thumbnail_url) {
+            // Strategy D: any src on img.<domain>
+            const imgDomainMatch = html.match(/src=["'](https?:\/\/img\.[^"'\s]+\.(?:webp|jpg|png|jpeg)[^"'\s]*)["']/i);
+            if (imgDomainMatch && imgDomainMatch[1]) {
+                thumbnail_url = imgDomainMatch[1].trim();
+            }
+        }
+
+        if (!thumbnail_url) {
+            // Strategy E: <meta property="og:image" content="...">
             const ogImg = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i) ||
                           html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
             if (ogImg && ogImg[1]) {
@@ -924,7 +949,7 @@ async function parseMovieMetadataFromUrl(url) {
         }
     }
 
-    // 4. Fallback if HTML fetch fails completely: URL parsing & fallback domain image
+    // ── 4. Fallback if HTML fetch fails completely: URL parsing & fallback domain image
     if (!title) {
         try {
             const urlObj = new URL(url);
@@ -964,7 +989,7 @@ async function parseMovieMetadataFromUrl(url) {
         } catch (_) {}
     }
 
-    // 5. Detect Release Year and append (YYYY) to title if not present
+    // ── 5. Detect Release Year and append (YYYY) to title if not present
     const year = extractReleaseYear(propsData, thumbnail_url, html);
     if (year && title && !title.match(/\(\d{4}\)$/)) {
         title = `${title} (${year})`;
