@@ -114,6 +114,10 @@
                     <button class="tab-btn" data-tab="series">
                         <i data-lucide="tv"></i> Series
                     </button>
+                    <button class="tab-btn" data-tab="requests">
+                        <i data-lucide="message-square-plus"></i> Solicitudes
+                        <span id="requests-badge" class="badge-count hidden">0</span>
+                    </button>
                 </div>
 
                 <div class="section-header">
@@ -164,6 +168,24 @@
                             </thead>
                             <tbody id="content-list-body">
                                 <!-- Los datos se cargarán aquí dinámicamente -->
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Table for Content Requests from Users -->
+                    <div id="requests-container" class="data-grid-container hidden">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Título Solicitado</th>
+                                    <th>Detalles / Notas</th>
+                                    <th>Fecha</th>
+                                    <th>Estado</th>
+                                    <th>Acciones</th>
+                                </tr>
+                            </thead>
+                            <tbody id="requests-list-body">
+                                <!-- Las solicitudes se cargarán aquí dinámicamente -->
                             </tbody>
                         </table>
                     </div>

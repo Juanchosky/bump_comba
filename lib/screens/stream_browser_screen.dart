@@ -28,6 +28,7 @@ import '../services/premium_service.dart';
 import '../services/ad_service.dart';
 import '../utils/content_filters.dart';
 import 'package:http/http.dart' as http;
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'subscription_screen.dart';
 import '../utils/colors.dart';
@@ -6433,6 +6434,305 @@ class _SearchPageState extends State<_SearchPage> {
         },
       ),
     );
+  Widget _buildEmptySearchState() {
+    final query = _searchController.text.trim();
+    return SingleChildScrollView(
+      physics: const BouncingScrollPhysics(),
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: Colors.redAccent.withOpacity(0.12),
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.redAccent.withOpacity(0.3), width: 1.5),
+            ),
+            child: const Icon(
+              Icons.movie_filter_rounded,
+              color: Colors.redAccent,
+              size: 42,
+            ),
+          ),
+          const SizedBox(height: 18),
+          const Text(
+            '¿No encuentras lo que buscas?',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 19,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 0.2,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            query.isNotEmpty
+                ? 'Pídenos "$query" y la agregaremos lo antes posible a nuestro catálogo.'
+                : 'Pídenos la película o serie que deseas ver y la agregaremos pronto.',
+            style: TextStyle(
+              color: Colors.white.withOpacity(0.65),
+              fontSize: 13.5,
+              height: 1.4,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 24),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.redAccent,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 14),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(28),
+              ),
+              elevation: 4,
+            ),
+            icon: const Icon(Icons.send_rounded, size: 18),
+            label: const Text(
+              'Solicitar ahora',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+            ),
+            onPressed: () => _showContentRequestModal(context, initialTitle: query),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showContentRequestModal(BuildContext context, {required String initialTitle}) {
+    final titleController = TextEditingController(text: initialTitle);
+    final detailsController = TextEditingController();
+    bool isSubmitting = false;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(context).viewInsets.bottom,
+              ),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+                decoration: const BoxDecoration(
+                  color: AppColors.surface,
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black54,
+                      blurRadius: 20,
+                      offset: Offset(0, -5),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 40,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: Colors.white24,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: Colors.redAccent.withOpacity(0.15),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: const Icon(
+                            Icons.send_rounded,
+                            color: Colors.redAccent,
+                            size: 22,
+                          ),
+                        ),
+                        const SizedBox(width: 14),
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Solicitar Contenido',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              Text(
+                                'Dinos qué quieres ver y lo agregaremos',
+                                style: TextStyle(
+                                  color: Colors.white54,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 20),
+                    const Text(
+                      'Título de la película o serie *',
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: titleController,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        hintText: 'Ej: Spider-Man 4, Stranger Things 5...',
+                        hintStyle: const TextStyle(color: Colors.white38),
+                        filled: true,
+                        fillColor: AppColors.surfaceVariant,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 14,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Detalles o notas adicionales (opcional)',
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: detailsController,
+                      maxLines: 2,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        hintText: 'Ej: Preferiblemente en audio latino, versión extendida...',
+                        hintStyle: const TextStyle(color: Colors.white38),
+                        filled: true,
+                        fillColor: AppColors.surfaceVariant,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 12,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 48,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.redAccent,
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          elevation: 2,
+                        ),
+                        onPressed: isSubmitting
+                            ? null
+                            : () async {
+                                final title = titleController.text.trim();
+                                if (title.isEmpty) {
+                                  SnackBarUtils.showCustomSnackBar(
+                                    context,
+                                    'Ingresa el título del contenido',
+                                    isError: true,
+                                  );
+                                  return;
+                                }
+
+                                setModalState(() {
+                                  isSubmitting = true;
+                                });
+
+                                try {
+                                  await Supabase.instance.client.from('content_requests').insert({
+                                    'title': title,
+                                    'details': detailsController.text.trim().isNotEmpty
+                                        ? detailsController.text.trim()
+                                        : null,
+                                    'status': 'pending',
+                                  });
+
+                                  if (mounted) {
+                                    Navigator.pop(ctx);
+                                    SnackBarUtils.showCustomSnackBar(
+                                      context,
+                                      '¡Solicitud enviada! Trabajaremos para agregarla pronto.',
+                                      isError: false,
+                                    );
+                                  }
+                                } catch (e) {
+                                  setModalState(() {
+                                    isSubmitting = false;
+                                  });
+                                  SnackBarUtils.showCustomSnackBar(
+                                    context,
+                                    'Error al enviar solicitud. Inténtalo de nuevo.',
+                                    isError: true,
+                                  );
+                                }
+                              },
+                        child: isSubmitting
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  color: Colors.white,
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(Icons.send_rounded, size: 18),
+                                  SizedBox(width: 8),
+                                  Text(
+                                    'Enviar Solicitud',
+                                    style: TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   @override
@@ -6513,12 +6813,7 @@ class _SearchPageState extends State<_SearchPage> {
                       : _isLoading
                       ? _buildSearchShimmer()
                       : (_combinedResults.isEmpty && !_isLoading)
-                      ? const Center(
-                        child: Text(
-                          'No se encontraron resultados',
-                          style: TextStyle(color: Colors.white54),
-                        ),
-                      )
+                      ? _buildEmptySearchState()
                       : ListView.separated(
                         padding: const EdgeInsets.symmetric(vertical: 4),
                         itemCount: _combinedResults.length,

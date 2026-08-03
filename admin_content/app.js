@@ -345,6 +345,144 @@ async function fetchContent() {
 
     populateSeriesSelect();
     applyFilters();
+    fetchContentRequests();
+}
+
+let contentRequests = [];
+
+async function fetchContentRequests() {
+    const { data, error } = await supabaseClient
+        .from('content_requests')
+        .select('*')
+        .order('created_at', { ascending: false });
+    
+    if (error) {
+        console.error('Error fetching content requests:', error);
+        return;
+    }
+
+    contentRequests = data || [];
+    updateRequestsBadge();
+    if (currentTab === 'requests') {
+        renderRequests();
+    }
+}
+
+function updateRequestsBadge() {
+    const badge = document.getElementById('requests-badge');
+    if (!badge) return;
+    const pendingCount = contentRequests.filter(r => r.status === 'pending').length;
+    if (pendingCount > 0) {
+        badge.textContent = pendingCount;
+        badge.classList.remove('hidden');
+    } else {
+        badge.classList.add('hidden');
+    }
+}
+
+function renderRequests() {
+    const requestsContainer = document.getElementById('requests-container');
+    const requestsBody = document.getElementById('requests-list-body');
+    const seriesGrid = document.getElementById('series-grid');
+    const dataTableContainer = document.getElementById('data-table-container');
+
+    if (seriesGrid) seriesGrid.classList.add('hidden');
+    if (dataTableContainer) dataTableContainer.classList.add('hidden');
+    if (requestsContainer) requestsContainer.classList.remove('hidden');
+
+    if (!requestsBody) return;
+    requestsBody.innerHTML = '';
+
+    if (contentRequests.length === 0) {
+        requestsBody.innerHTML = `
+            <tr>
+                <td colspan="5" style="text-align:center;padding:2.5rem;color:var(--text-muted);">
+                    <div style="font-size:1.1rem;font-weight:600;margin-bottom:0.4rem;">Sin Solicitudes</div>
+                    No hay solicitudes registradas por los usuarios aún.
+                </td>
+            </tr>
+        `;
+        return;
+    }
+
+    contentRequests.forEach(req => {
+        const tr = document.createElement('tr');
+        const dateStr = new Date(req.created_at).toLocaleDateString('es-ES', {
+            day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+        });
+
+        let statusClass = 'badge-pending';
+        let statusText = 'Pendiente';
+        if (req.status === 'added') { statusClass = 'badge-added'; statusText = 'Agregado'; }
+        else if (req.status === 'rejected') { statusClass = 'badge-rejected'; statusText = 'Rechazado'; }
+
+        tr.innerHTML = `
+            <td>
+                <div style="font-weight:600;font-size:1rem;color:var(--text-primary);">${req.title}</div>
+            </td>
+            <td>${req.details ? req.details : '<span style="color:var(--text-muted);font-style:italic;">Sin detalles</span>'}</td>
+            <td style="font-size:0.85rem;color:var(--text-muted);">${dateStr}</td>
+            <td><span class="badge ${statusClass}">${statusText}</span></td>
+            <td>
+                <div class="actions" style="gap:0.5rem;">
+                    <button class="btn btn-secondary" style="padding:0.4rem 0.8rem;font-size:0.8rem;gap:0.3rem;" onclick="openAutoImportWithTitle('${req.title.replace(/'/g, "\\'")}', '${req.id}')">
+                        <i data-lucide="zap"></i> Importar
+                    </button>
+                    ${req.status === 'pending' ? `
+                    <button class="btn-icon" style="background:rgba(34,197,94,0.15);color:#4ade80;" title="Marcar como Agregado" onclick="updateRequestStatus('${req.id}', 'added')">
+                        <i data-lucide="check"></i>
+                    </button>
+                    ` : ''}
+                    <button class="btn-icon btn-delete" title="Eliminar solicitud" onclick="deleteRequest('${req.id}')">
+                        <i data-lucide="trash-2"></i>
+                    </button>
+                </div>
+            </td>
+        `;
+        requestsBody.appendChild(tr);
+    });
+    lucide.createIcons();
+}
+
+function openAutoImportWithTitle(title, requestId) {
+    importUrlInput.value = '';
+    const bar = document.getElementById('full-import-bar');
+    const status = document.getElementById('full-import-status');
+    const progress = document.getElementById('full-import-progress');
+    if (bar) { bar.style.width = '0%'; bar.style.background = 'var(--primary)'; }
+    if (status) status.textContent = '';
+    if (progress) progress.style.display = 'none';
+    importModal.style.display = 'block';
+    showToast(`Pega la URL para importar: "${title}"`, 'info');
+}
+
+async function updateRequestStatus(id, newStatus) {
+    const { error } = await supabaseClient
+        .from('content_requests')
+        .update({ status: newStatus })
+        .eq('id', id);
+
+    if (error) {
+        showToast('Error al actualizar estado: ' + error.message, 'error');
+        return;
+    }
+    showToast('Estado de la solicitud actualizado', 'success');
+    await fetchContentRequests();
+}
+
+async function deleteRequest(id) {
+    if (!confirm('¿Deseas eliminar esta solicitud de contenido?')) return;
+    const { error } = await supabaseClient
+        .from('content_requests')
+        .delete()
+        .eq('id', id);
+
+    if (error) {
+        showToast('Error al eliminar: ' + error.message, 'error');
+        return;
+    }
+    showToast('Solicitud eliminada', 'success');
+    await fetchContentRequests();
 }
 
 
@@ -641,9 +779,22 @@ function setupEventListeners() {
             currentTab = btn.dataset.tab;
             activeSeriesFilter = null;
             backToSeriesBtn.classList.add('hidden');
-            pageTitle.textContent = currentTab === 'movies' ? 'Mis Películas' : 'Mis Series';
-            if (!localStorage.getItem('viewMode')) viewMode = currentTab === 'series' ? 'grid' : 'list';
-            applyFilters();
+
+            const requestsContainer = document.getElementById('requests-container');
+
+            if (currentTab === 'requests') {
+                pageTitle.textContent = 'Solicitudes de Usuarios';
+                filterCategory.classList.add('hidden');
+                filterSeason.classList.add('hidden');
+                manageSeasonsBtn.classList.add('hidden');
+                renderRequests();
+            } else {
+                if (requestsContainer) requestsContainer.classList.add('hidden');
+                filterCategory.classList.remove('hidden');
+                pageTitle.textContent = currentTab === 'movies' ? 'Mis Películas' : 'Mis Series';
+                if (!localStorage.getItem('viewMode')) viewMode = currentTab === 'series' ? 'grid' : 'list';
+                applyFilters();
+            }
         };
     });
 
