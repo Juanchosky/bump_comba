@@ -828,14 +828,16 @@ async function parseMovieMetadataFromUrl(url) {
                 const data = JSON.parse(match[1]);
                 const props = data.props?.pageProps || {};
 
-                // Title in Spanish (e.g. "Buena suerte, Diviértete, No mueras")
+                // Title in Spanish (e.g. "Super Mario Galaxy: La película", "Buena suerte...")
                 if (props.name && typeof props.name === 'string') {
                     title = props.name.trim();
+                } else if (props.title && typeof props.title === 'string') {
+                    title = props.title.trim();
                 }
 
-                // Poster cover image URL (exact webp/jpg URL)
+                // Poster cover image URL
                 const imgDomain = props.imgDomain || props.vestData?.imgDomain || '';
-                const cover = props.coverVerticalUrl || props.coverHorizontalUrl || props.coverUrl || '';
+                const cover = props.coverVerticalUrl || props.coverHorizontalUrl || props.coverUrl || props.cover || '';
                 if (cover) {
                     if (cover.startsWith('http')) {
                         thumbnail_url = cover;
@@ -853,19 +855,35 @@ async function parseMovieMetadataFromUrl(url) {
             }
         }
 
-        // 2. Fallback: regex for class="name..."
+        // 2. Fallback: regex for class="name..." or <title> or og:title
         if (!title) {
-            const nameMatch = html.match(/class="[^"]*name[^"]*"[^>]*>\s*([^<]+)\s*<\/div>/i);
+            const nameMatch = html.match(/class="[^"]*\bname\b[^"]*"[^>]*>\s*([^<]+)\s*<\/div>/i);
             if (nameMatch && nameMatch[1]) {
                 title = nameMatch[1].trim();
             }
         }
 
-        // 3. Fallback: regex for cover image tag or og:image
+        if (!title) {
+            const ogTitle = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i) ||
+                            html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["']/i);
+            if (ogTitle && ogTitle[1]) {
+                title = ogTitle[1].trim();
+            }
+        }
+
+        // 3. Fallback: regex for cover image tag (e.g. img.321moviesfree.com, img.flixlat.com, etc.)
         if (!thumbnail_url) {
-            const imgMatch = html.match(/src=["'](https:\/\/img\.[^"'\s]+\.(?:webp|jpg|png)[^"'\s]*)["']/i);
+            const imgMatch = html.match(/<img[^>]+src=["'](https?:\/\/[^"'\s]+\.(?:webp|jpg|png|jpeg)[^"'\s]*)["']/i);
             if (imgMatch && imgMatch[1]) {
                 thumbnail_url = imgMatch[1];
+            }
+        }
+
+        if (!thumbnail_url) {
+            const ogImg = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i) ||
+                          html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
+            if (ogImg && ogImg[1]) {
+                thumbnail_url = ogImg[1].trim();
             }
         }
     }
