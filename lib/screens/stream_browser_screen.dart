@@ -1318,7 +1318,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     // 2. Filtrado inicial de validez.
     final validPool =
         _m3uService.filterValidItems(rawPool).where((item) {
-          if (item.isLive || item.sourceName == 'Supabase') return false;
+          if (item.isLive) return false;
           final n = item.name.toLowerCase();
           if (n.contains('canal ') ||
               n.contains('tv ') ||
@@ -3579,7 +3579,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   M3UItem? _selectHeroFromPool(List<M3UItem> rawPool) {
     final validPool =
         _m3uService.filterValidItems(rawPool).where((item) {
-          if (item.isLive || item.sourceName == 'Supabase') return false;
+          if (item.isLive) return false;
           final n = item.name.toLowerCase();
           if (n.contains('canal ') ||
               n.contains('tv ') ||
