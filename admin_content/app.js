@@ -784,14 +784,7 @@ function setupEventListeners() {
     };
 
 async function fetchPageHtml(url) {
-    const proxies = [
-        `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-        `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
-        `https://corsproxy.io/?${encodeURIComponent(url)}`,
-        `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
-    ];
-
-    const fetchWithTimeout = (targetUrl, ms = 4500) => {
+    const fetchWithTimeout = (targetUrl, ms = 3000) => {
         return new Promise((resolve, reject) => {
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort(), ms);
@@ -802,9 +795,7 @@ async function fetchPageHtml(url) {
                     reject(new Error('HTTP Error ' + res.status));
                 })
                 .then(text => {
-                    if (!text || text.length < 50) {
-                        return reject(new Error('Empty response'));
-                    }
+                    if (!text || text.length < 50) return reject(new Error('Empty response'));
                     if (text.includes('"contents":') && text.trim().startsWith('{')) {
                         try {
                             const parsed = JSON.parse(text);
@@ -820,15 +811,24 @@ async function fetchPageHtml(url) {
         });
     };
 
+    // 1. Try direct fetch first (lightning fast 100ms when browser origin allows it)
     try {
-        // Race all proxies simultaneously for maximum speed & 100% reliability
-        return await Promise.any(proxies.map(p => fetchWithTimeout(p)));
+        const directText = await fetchWithTimeout(url, 3000);
+        if (directText && directText.length > 200) return directText;
+    } catch (_) {}
+
+    // 2. Race CORS proxies simultaneously
+    const proxies = [
+        `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+        `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+        `https://corsproxy.io/?${encodeURIComponent(url)}`,
+        `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
+    ];
+
+    try {
+        return await Promise.any(proxies.map(p => fetchWithTimeout(p, 4500)));
     } catch (_) {
-        try {
-            return await fetchWithTimeout(url, 3000);
-        } catch (_) {
-            return null;
-        }
+        return null;
     }
 }
 
@@ -861,7 +861,7 @@ async function parseMovieMetadataFromUrl(url) {
                 const props = data.props?.pageProps || {};
                 propsData = props;
 
-                // Title in Spanish (e.g. "Super Mario Galaxy: La película", "The Furious", etc.)
+                // Title in Spanish (e.g. "Super Mario Galaxy: La película", "Wild Sing", etc.)
                 if (props.name && typeof props.name === 'string') {
                     title = props.name.trim();
                 } else if (props.title && typeof props.title === 'string') {
@@ -904,7 +904,7 @@ async function parseMovieMetadataFromUrl(url) {
             }
         }
 
-        // 3. Fallback: regex for cover image tag (e.g. coverImage class, /cover/ path, img.123flmsfree.com, etc.)
+        // 3. Fallback: regex for cover image tag (e.g. coverImage class, /cover/ path, img.cuevana4br.com, etc.)
         if (!thumbnail_url) {
             const imgMatch = html.match(/src=["'](https?:\/\/[^"'\s]*\/cover\/[^"'\s]+)["']/i) ||
                              html.match(/<img[^>]+class="[^"]*coverImage[^"]*"[^>]+src=["']([^"'\s]+)["']/i) ||
@@ -943,17 +943,25 @@ async function parseMovieMetadataFromUrl(url) {
                 }
                 title = t.replace(/\b\w/g, c => c.toUpperCase());
             }
-
-            if (!thumbnail_url) {
-                const imgDomain = urlObj.hostname.replace(/^ww\d+\./, 'img.').replace(/^video\./, 'img.').replace(/^es\./, 'img.');
-                const idMatch = urlObj.pathname.match(/\/([a-zA-Z0-9]{15,35})/);
-                if (idMatch && idMatch[1]) {
-                    thumbnail_url = `https://${imgDomain}/cover/${idMatch[1]}.jpg`;
-                }
-            }
         } catch (_) {
             title = 'Película';
         }
+    }
+
+    if (!thumbnail_url) {
+        try {
+            const urlObj = new URL(url);
+            const imgDomain = urlObj.hostname
+                .replace(/^es\./, 'img.')
+                .replace(/^ww\d+\./, 'img.')
+                .replace(/^video\./, 'img.')
+                .replace(/^play\./, 'img.');
+            const idMatch = urlObj.pathname.match(/\/detail\/(?:movie|drama|tv|film)\/([a-zA-Z0-9]{15,35})/i) ||
+                            urlObj.pathname.match(/\/([a-zA-Z0-9]{15,35})/);
+            if (idMatch && idMatch[1]) {
+                thumbnail_url = `https://${imgDomain}/cover/${idMatch[1]}.jpg`;
+            }
+        } catch (_) {}
     }
 
     // 5. Detect Release Year and append (YYYY) to title if not present
