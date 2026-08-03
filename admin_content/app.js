@@ -1000,7 +1000,11 @@ function extractReleaseYear(props, coverUrl, html) {
     }
 
     if (coverUrl) {
-        const decodedUrl = decodeURIComponent(coverUrl);
+        let decodedUrl = coverUrl;
+        try {
+            decodedUrl = decodeURIComponent(coverUrl);
+        } catch (_) {}
+
         // Matches cover/20260710/ or /cover/20260512/ or /cover/2026...
         const coverMatch = decodedUrl.match(/\/cover\/([12]\d{3})\d{4}\//) ||
                            decodedUrl.match(/\/cover\/([12]\d{3})\d{2}\d{2}\//) ||
