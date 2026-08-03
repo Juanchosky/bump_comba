@@ -802,6 +802,17 @@ async function fetchPageHtml(url) {
     return null;
 }
 
+function sanitizeImageUrl(rawUrl) {
+    if (!rawUrl) return '';
+    try {
+        let clean = rawUrl.trim().replace(/^["']|["']$/g, '');
+        // Encode non-ASCII characters (e.g. Chinese characters '西语') so browsers and Flutter can load it
+        return encodeURI(clean);
+    } catch (_) {
+        return rawUrl;
+    }
+}
+
 async function parseMovieMetadataFromUrl(url) {
     let title = '';
     let thumbnail_url = '';
@@ -882,6 +893,8 @@ async function parseMovieMetadataFromUrl(url) {
             title = 'Película';
         }
     }
+
+    thumbnail_url = sanitizeImageUrl(thumbnail_url);
 
     return { title, thumbnail_url, category };
 }

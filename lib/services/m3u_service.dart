@@ -1019,6 +1019,17 @@ class M3UService extends ChangeNotifier {
 
       final List<M3UItem> finalItems = [];
 
+      String? _sanitizeLogoUrl(dynamic rawLogo) {
+        if (rawLogo == null) return null;
+        final str = rawLogo.toString().trim();
+        if (str.isEmpty) return null;
+        try {
+          return Uri.encodeFull(str);
+        } catch (_) {
+          return str;
+        }
+      }
+
       // Add Movies
       for (final row in movieRows) {
         final name = (row['title'] ?? '').toString();
@@ -1037,7 +1048,7 @@ class M3UService extends ChangeNotifier {
           M3UItem(
             name: name,
             url: url,
-            logo: row['thumbnail_url']?.toString(),
+            logo: _sanitizeLogoUrl(row['thumbnail_url']),
             category: category,
             isFavorite: _favorites.contains('${name}_$url'),
             isLive: false,
