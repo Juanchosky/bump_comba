@@ -996,9 +996,12 @@ async function parseMovieMetadataFromUrl(url) {
                 host = 'img.peliculaplay.com';
             } else if (host.startsWith('cuevana4br.com')) {
                 host = 'img.cuevana4br.com';
+            } else if (host.includes('solo-latino.com')) {
+                host = 'img.solo-latino.com';
             } else {
                 host = host
                     .replace(/^es\./, 'img.')
+                    .replace(/^latino\./, 'img.')
                     .replace(/^ww\d+\./, 'img.')
                     .replace(/^video\./, 'img.')
                     .replace(/^play\./, 'img.');
