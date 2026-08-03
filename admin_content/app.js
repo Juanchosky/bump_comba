@@ -784,22 +784,40 @@ function setupEventListeners() {
     };
 
 async function fetchPageHtml(url) {
-    try {
-        const res = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`);
-        if (res.ok) return await res.text();
-    } catch (_) {}
+    const proxies = [
+        `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+        `https://corsproxy.io/?${encodeURIComponent(url)}`,
+        `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
+    ];
+
+    const fetchWithTimeout = (targetUrl, ms = 4500) => {
+        return new Promise((resolve, reject) => {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), ms);
+            fetch(targetUrl, { signal: controller.signal })
+                .then(res => {
+                    clearTimeout(timer);
+                    if (res.ok) return res.text();
+                    reject(new Error('HTTP Error ' + res.status));
+                })
+                .then(text => (text && text.length > 200) ? resolve(text) : reject(new Error('Empty response')))
+                .catch(err => {
+                    clearTimeout(timer);
+                    reject(err);
+                });
+        });
+    };
 
     try {
-        const res = await fetch(`https://corsproxy.io/?${encodeURIComponent(url)}`);
-        if (res.ok) return await res.text();
-    } catch (_) {}
-
-    try {
-        const res = await fetch(url);
-        if (res.ok) return await res.text();
-    } catch (_) {}
-
-    return null;
+        // Race all proxies simultaneously for maximum speed & 100% reliability
+        return await Promise.any(proxies.map(p => fetchWithTimeout(p)));
+    } catch (_) {
+        try {
+            return await fetchWithTimeout(url, 3000);
+        } catch (_) {
+            return null;
+        }
+    }
 }
 
 function sanitizeImageUrl(rawUrl) {
@@ -831,7 +849,7 @@ async function parseMovieMetadataFromUrl(url) {
                 const props = data.props?.pageProps || {};
                 propsData = props;
 
-                // Title in Spanish (e.g. "Super Mario Galaxy: La película", "Buena suerte...")
+                // Title in Spanish (e.g. "Super Mario Galaxy: La película", "The Furious", etc.)
                 if (props.name && typeof props.name === 'string') {
                     title = props.name.trim();
                 } else if (props.title && typeof props.title === 'string') {
@@ -894,7 +912,7 @@ async function parseMovieMetadataFromUrl(url) {
         }
     }
 
-    // 4. Fallback if HTML fetch fails completely: URL parsing
+    // 4. Fallback if HTML fetch fails completely: URL parsing & fallback domain image
     if (!title) {
         try {
             const urlObj = new URL(url);
@@ -912,6 +930,14 @@ async function parseMovieMetadataFromUrl(url) {
                     }
                 }
                 title = t.replace(/\b\w/g, c => c.toUpperCase());
+            }
+
+            if (!thumbnail_url) {
+                const imgDomain = urlObj.hostname.replace(/^ww\d+\./, 'img.').replace(/^video\./, 'img.').replace(/^es\./, 'img.');
+                const idMatch = urlObj.pathname.match(/\/([a-zA-Z0-9]{15,35})/);
+                if (idMatch && idMatch[1]) {
+                    thumbnail_url = `https://${imgDomain}/cover/${idMatch[1]}.jpg`;
+                }
             }
         } catch (_) {
             title = 'Película';
@@ -940,10 +966,12 @@ function extractReleaseYear(props, coverUrl, html) {
     }
 
     if (coverUrl) {
-        // Matches cover/20260710/ or cover/20260512/
-        const coverMatch = coverUrl.match(/\/cover\/([12]\d{3})\d{2}\d{2}\//) ||
-                           coverUrl.match(/\/cover\/([12]\d{3})\d{4}\//) ||
-                           coverUrl.match(/\/cover\/(19\d\d|20\d\d)/);
+        const decodedUrl = decodeURIComponent(coverUrl);
+        // Matches cover/20260710/ or /cover/20260512/ or /cover/2026...
+        const coverMatch = decodedUrl.match(/\/cover\/([12]\d{3})\d{4}\//) ||
+                           decodedUrl.match(/\/cover\/([12]\d{3})\d{2}\d{2}\//) ||
+                           decodedUrl.match(/\/cover\/([12]\d{3})\d{4}/) ||
+                           decodedUrl.match(/\/cover\/(19\d\d|20\d\d)/);
         if (coverMatch && coverMatch[1]) {
             return coverMatch[1];
         }
