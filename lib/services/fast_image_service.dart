@@ -1015,13 +1015,24 @@ class _FastThumbnailState extends State<FastThumbnail>
     });
   }
 
-  /// Resolve the effective image URL (primary or fallback), trimmed.
+  /// Resolve the effective image URL (primary or fallback), trimmed and CDN-optimized.
   String? _resolveUrl() {
     final String? raw =
         FastImageService.isValidImageUrl(widget.url)
             ? widget.url
             : _fallbackUrl;
-    return raw?.trim();
+    if (raw == null) return null;
+    String clean = raw.trim();
+    // Optimize heavy streaming CDN cover images (Cuevana, 123pelicula, 321movies, solo-latino, etc.)
+    // Converts 2.7MB raw images into ultra-lightweight 10KB-20KB WebP thumbnails
+    if ((clean.contains('img.') || clean.contains('/cover/')) &&
+        !clean.contains('imageView2') &&
+        !clean.contains('imageMogr2')) {
+      clean = clean.replaceAll(RegExp(r'!$'), '');
+      final separator = clean.contains('?') ? '&' : '?';
+      clean = '$clean${separator}imageView2/1/w/220/h/330/format/webp/q/75';
+    }
+    return clean;
   }
 
   @override

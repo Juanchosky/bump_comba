@@ -855,12 +855,13 @@ function sanitizeImageUrl(rawUrl) {
     if (!rawUrl) return '';
     try {
         let clean = rawUrl.trim().replace(/^["']|["']$/g, '');
-        // Clean trailing '!' or replace complex imageView2 query with standard imageMogr2/format/webp
         clean = clean.replace(/!$/, '');
-        if (clean.includes('imageView2')) {
-            clean = clean.replace(/\?imageView2\/.*$/, '?imageMogr2/format/webp');
+        if (clean.includes('imageView2') || clean.includes('imageMogr2')) {
+            clean = clean.replace(/\?(?:imageView2|imageMogr2).*$/, '');
         }
-        // Encode non-ASCII characters (e.g. Chinese characters '西语') so browsers and Flutter can load it
+        if (clean.includes('img.') || clean.includes('/cover/')) {
+            clean += '?imageView2/1/w/220/h/330/format/webp/q/75';
+        }
         return encodeURI(clean);
     } catch (_) {
         return rawUrl;
