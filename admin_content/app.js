@@ -725,7 +725,7 @@ function setupEventListeners() {
 
                 if (isMovie) {
                     try {
-                        const meta = parseMovieMetadataFromUrl(url);
+                        const meta = await parseMovieMetadataFromUrl(url);
                         const { error } = await supabaseClient
                             .from('custom_content')
                             .insert([{
@@ -733,7 +733,7 @@ function setupEventListeners() {
                                 video_url: url,
                                 thumbnail_url: meta.thumbnail_url,
                                 type: 'movie',
-                                category: 'Recomendados',
+                                category: meta.category || 'Recomendados',
                                 is_active: true
                             }]);
                         if (error) throw error;
@@ -783,36 +783,107 @@ function setupEventListeners() {
         }
     };
 
-function parseMovieMetadataFromUrl(url) {
-    let title = 'Película';
-    let thumbnail_url = '';
-
+async function fetchPageHtml(url) {
     try {
-        const urlObj = new URL(url);
-        const parts = urlObj.pathname.split('/').filter(p => p.length > 0);
-        const last = decodeURIComponent(parts[parts.length - 1] || '');
-
-        if (last) {
-            let t = last;
-            if (t.includes('-')) {
-                const subParts = t.split('-');
-                if (subParts.length > 1 && subParts[0].length >= 10) {
-                    t = subParts.slice(1).join(' ');
-                } else {
-                    t = subParts.join(' ');
-                }
-            }
-            title = t.replace(/\b\w/g, c => c.toUpperCase());
-        }
-
-        const domain = urlObj.hostname.replace('video.', 'img.').replace('es.', 'img.');
-        const idMatch = urlObj.pathname.match(/\/([a-zA-Z0-9]{15,30})/);
-        if (idMatch && idMatch[1]) {
-            thumbnail_url = `https://${domain}/cover/${idMatch[1]}.jpg`;
-        }
+        const res = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`);
+        if (res.ok) return await res.text();
     } catch (_) {}
 
-    return { title, thumbnail_url };
+    try {
+        const res = await fetch(`https://corsproxy.io/?${encodeURIComponent(url)}`);
+        if (res.ok) return await res.text();
+    } catch (_) {}
+
+    try {
+        const res = await fetch(url);
+        if (res.ok) return await res.text();
+    } catch (_) {}
+
+    return null;
+}
+
+async function parseMovieMetadataFromUrl(url) {
+    let title = '';
+    let thumbnail_url = '';
+    let category = 'Recomendados';
+
+    const html = await fetchPageHtml(url);
+
+    if (html) {
+        // 1. Inspect Next.js __NEXT_DATA__ JSON for Spanish title and exact cover image URL
+        const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/s);
+        if (match && match[1]) {
+            try {
+                const data = JSON.parse(match[1]);
+                const props = data.props?.pageProps || {};
+
+                // Title in Spanish (e.g. "Buena suerte, Diviértete, No mueras")
+                if (props.name && typeof props.name === 'string') {
+                    title = props.name.trim();
+                }
+
+                // Poster cover image URL (exact webp/jpg URL)
+                const imgDomain = props.imgDomain || props.vestData?.imgDomain || '';
+                const cover = props.coverVerticalUrl || props.coverHorizontalUrl || props.coverUrl || '';
+                if (cover) {
+                    if (cover.startsWith('http')) {
+                        thumbnail_url = cover;
+                    } else if (imgDomain) {
+                        thumbnail_url = `${imgDomain.replace(/\/$/, '')}/${cover.replace(/^\//, '')}`;
+                    }
+                }
+
+                // Category
+                if (props.category && typeof props.category === 'string') {
+                    category = props.category.trim();
+                }
+            } catch (e) {
+                console.warn('Error parsing __NEXT_DATA__:', e);
+            }
+        }
+
+        // 2. Fallback: regex for class="name..."
+        if (!title) {
+            const nameMatch = html.match(/class="[^"]*name[^"]*"[^>]*>\s*([^<]+)\s*<\/div>/i);
+            if (nameMatch && nameMatch[1]) {
+                title = nameMatch[1].trim();
+            }
+        }
+
+        // 3. Fallback: regex for cover image tag or og:image
+        if (!thumbnail_url) {
+            const imgMatch = html.match(/src=["'](https:\/\/img\.[^"'\s]+\.(?:webp|jpg|png)[^"'\s]*)["']/i);
+            if (imgMatch && imgMatch[1]) {
+                thumbnail_url = imgMatch[1];
+            }
+        }
+    }
+
+    // 4. Fallback if HTML fetch fails completely: URL parsing
+    if (!title) {
+        try {
+            const urlObj = new URL(url);
+            const parts = urlObj.pathname.split('/').filter(p => p.length > 0);
+            const last = decodeURIComponent(parts[parts.length - 1] || '');
+
+            if (last) {
+                let t = last;
+                if (t.includes('-')) {
+                    const subParts = t.split('-');
+                    if (subParts.length > 1 && subParts[0].length >= 10) {
+                        t = subParts.slice(1).join(' ');
+                    } else {
+                        t = subParts.join(' ');
+                    }
+                }
+                title = t.replace(/\b\w/g, c => c.toUpperCase());
+            }
+        } catch (_) {
+            title = 'Película';
+        }
+    }
+
+    return { title, thumbnail_url, category };
 }
 
     // (Botón auto-import de temporada eliminado — usar importación de serie completa)
