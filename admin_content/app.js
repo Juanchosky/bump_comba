@@ -843,6 +843,11 @@ function sanitizeImageUrl(rawUrl) {
     if (!rawUrl) return '';
     try {
         let clean = rawUrl.trim().replace(/^["']|["']$/g, '');
+        // Clean trailing '!' or replace complex imageView2 query with standard imageMogr2/format/webp
+        clean = clean.replace(/!$/, '');
+        if (clean.includes('imageView2')) {
+            clean = clean.replace(/\?imageView2\/.*$/, '?imageMogr2/format/webp');
+        }
         // Encode non-ASCII characters (e.g. Chinese characters '西语') so browsers and Flutter can load it
         return encodeURI(clean);
     } catch (_) {
