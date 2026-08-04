@@ -1075,6 +1075,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           thumbnailUrl: _currentItem.logo,
           startPosition: finalStartPosition,
           headers: _buildHeaders(currentUrl),
+          isFromDB: _currentItem.sourceName == 'Supabase',
         );
       }
 
@@ -1463,6 +1464,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           thumbnailUrl: _currentItem.logo,
           startPosition: pos.inSeconds.toDouble(),
           headers: _buildHeaders(currentUrl),
+          isFromDB: _currentItem.sourceName == 'Supabase',
         );
       } else {
         _handleVideoCompletion();
@@ -3921,6 +3923,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                   startPosition:
                       (_player?.state.position.inSeconds ?? 0).toDouble(),
                   headers: _buildHeaders(currentUrl),
+                  isFromDB: _currentItem.sourceName == 'Supabase',
                 );
 
                 _showVisualNotice('Transmitiendo a ${device.name}');

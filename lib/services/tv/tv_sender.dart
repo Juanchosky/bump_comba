@@ -98,6 +98,7 @@ class TvSender {
     String? seriesName,
     int? season,
     int? episode,
+    bool isFromDB = false,
   }) {
     _send(TvProto.cmdLoad, {
       'url': url,
@@ -108,6 +109,7 @@ class TvSender {
       if (seriesName != null) 'seriesName': seriesName,
       if (season != null) 'season': season,
       if (episode != null) 'episode': episode,
+      if (isFromDB) 'isFromDB': true,
     });
   }
 

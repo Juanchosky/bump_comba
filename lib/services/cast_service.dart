@@ -79,6 +79,7 @@ class CastService {
   String? _tvLastSeriesName;
   int? _tvLastSeason;
   int? _tvLastEpisode;
+  bool _tvLastIsFromDB = false;
 
   /// Durante una reconexión: esperamos el primer STATUS para decidir si
   /// readjuntarnos o recargar. Guarda la posición esperada.
@@ -564,6 +565,7 @@ class CastService {
     String? seriesName,
     int? season,
     int? episode,
+    bool isFromDB = false,
   }) async {
     // ── Backend MiApp TV: enviamos la URL ORIGINAL (media_kit reproduce
     // MKV/AC3 directamente) con sus headers, sin conversión HLS. ──
@@ -583,6 +585,7 @@ class CastService {
       _tvLastSeriesName = seriesName;
       _tvLastSeason = season;
       _tvLastEpisode = episode;
+      _tvLastIsFromDB = isFromDB;
       _tvReattaching = false; // es una carga explícita del usuario
       _tvSender?.load(
         url: url,
@@ -593,6 +596,7 @@ class CastService {
         seriesName: seriesName,
         season: season,
         episode: episode,
+        isFromDB: isFromDB,
       );
       return;
     }
@@ -1013,6 +1017,7 @@ class CastService {
       seriesName: _tvLastSeriesName,
       season: _tvLastSeason,
       episode: _tvLastEpisode,
+      isFromDB: _tvLastIsFromDB,
     );
   }
 

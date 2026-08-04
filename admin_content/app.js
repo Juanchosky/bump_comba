@@ -317,6 +317,41 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Si no hay sesión, el login-screen ya es visible por defecto
 });
 
+function populateCategoryFilter() {
+    if (!filterCategory) return;
+    const currentValue = filterCategory.value;
+
+    const categoriesSet = new Set(['Recomendados']);
+    allContent.forEach(item => {
+        if (item.category && item.category.trim()) {
+            categoriesSet.add(item.category.trim());
+        }
+    });
+
+    const sortedCategories = Array.from(categoriesSet).sort((a, b) => a.localeCompare(b, 'es'));
+
+    filterCategory.innerHTML = `<option value="all">Todas las Categorías</option>` +
+        sortedCategories.map(cat => `<option value="${cat}">${cat}</option>`).join('');
+
+    if (sortedCategories.includes(currentValue) || currentValue === 'all') {
+        filterCategory.value = currentValue;
+    } else {
+        filterCategory.value = 'all';
+    }
+
+    let datalist = document.getElementById('category-list');
+    if (!datalist) {
+        datalist = document.createElement('datalist');
+        datalist.id = 'category-list';
+        document.body.appendChild(datalist);
+        const categoryInput = document.getElementById('category');
+        if (categoryInput) {
+            categoryInput.setAttribute('list', 'category-list');
+        }
+    }
+    datalist.innerHTML = sortedCategories.map(cat => `<option value="${cat}">`).join('');
+}
+
 // Carga películas y series en paralelo + conteos de episodios por serie
 async function fetchContent() {
     const [movResult, serResult] = await Promise.all([
@@ -328,6 +363,8 @@ async function fetchContent() {
     const series  = serResult.data || [];
     allContent = [...movies, ...series];
     seriesList = series;
+
+    populateCategoryFilter();
 
     // Obtener conteos de episodios en paralelo (solo HEAD — cero datos transferidos)
     const countResults = await Promise.all(

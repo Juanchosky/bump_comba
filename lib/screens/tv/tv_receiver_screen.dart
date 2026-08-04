@@ -237,6 +237,20 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
       });
     }
     try {
+      final bool isFromDB = msg['isFromDB'] == true;
+      try {
+        final mpv = _player.platform as dynamic;
+        if (mpv != null) {
+          if (isFromDB) {
+            // Contenido de la base de datos: reproducir en la máxima calidad HD disponible
+            await mpv.setProperty('hls-bitrate', 'max');
+          } else {
+            // Canales IPTV normales: optimizado para evitar cortes en TV
+            await mpv.setProperty('hls-bitrate', 'min');
+          }
+        }
+      } catch (_) {}
+
       await _player.open(Media(url, httpHeaders: headers), play: true);
       if (position > 0) {
         unawaited(
