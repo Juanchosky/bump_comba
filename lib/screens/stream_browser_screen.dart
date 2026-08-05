@@ -1394,7 +1394,11 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   }
 
   List<String> _getDynamicSearchSuggestions() {
-    final pool = [..._m3uService.getRecentItems(), ..._m3uService.latestItems];
+    List<M3UItem> pool = [..._m3uService.getRecentItems(), ..._m3uService.latestItems];
+
+    if (pool.isEmpty) {
+      pool = _m3uService.items.where((i) => !i.isLive).toList();
+    }
 
     if (pool.isEmpty) {
       return ['Películas y series...'];
@@ -1433,11 +1437,13 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
     candidates.shuffle();
     // 3. Return TITLE ONLY (no "Buscar" prefix)
-    return candidates
-        .where((i) => i.logo != null && i.logo!.isNotEmpty)
+    final results = candidates
+        .where((i) => i.name.trim().isNotEmpty)
         .take(5)
         .map((item) => item.name)
         .toList();
+
+    return results.isNotEmpty ? results : ['Películas y series...'];
   }
 
   Widget _buildContinueWatchingSection(
@@ -6213,7 +6219,7 @@ class _AnimatedSearchPlaceholderState
   @override
   void didUpdateWidget(_AnimatedSearchPlaceholder oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.suggestions != oldWidget.suggestions) {
+    if (!listEquals(widget.suggestions, oldWidget.suggestions)) {
       if (widget.suggestions.isEmpty) {
         _timer?.cancel();
         _currentIndex = 0;

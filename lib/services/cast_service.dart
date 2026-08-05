@@ -106,24 +106,31 @@ class CastService {
   /// El paquete `cast` tiene un bug en su CastDiscoveryService que extrae
   /// incorrectamente el host/port del servicio resuelto con bonsoir 5.x,
   /// causando errores "No route to host" en puertos incorrectos.
+  /// Busca dispositivos Chromecast y Bump Comba TV en la red local.
   Future<List<CastDevice>> discoverDevices({
     Duration timeout = const Duration(seconds: 5),
   }) async {
-    // Buscamos en PARALELO los Chromecast (_googlecast._tcp) y los receptores
-    // propios MiApp TV (_bumpcombatv._tcp).
     _tvServiceNames.clear();
 
     final resultsFuture = Future.wait([
       _discoverType('_googlecast._tcp', timeout, isTv: false),
       _discoverType(TvProto.serviceType, timeout, isTv: true),
+      _probeLanSubnets(),
     ]);
 
     final lists = await resultsFuture;
     final chromecasts = lists[0];
     final tvs = lists[1];
+    final lanProbed = lists[2];
 
-    // mDNS es intermitente (error crítico #7): si no apareció ningún MiApp TV,
-    // intentamos el último TV conocido por sondeo TCP directo.
+    for (final dev in lanProbed) {
+      if (isTvDevice(dev)) {
+        tvs.add(dev);
+      } else {
+        chromecasts.add(dev);
+      }
+    }
+
     if (tvs.isEmpty) {
       final probed = await _probeLastKnownTv();
       if (probed != null) {
@@ -131,21 +138,21 @@ class CastService {
         tvs.add(probed);
       }
     } else {
-      // Persistir el primer TV visto para el sondeo futuro.
       await _persistLastTv(tvs.first);
     }
 
-    // Deduplicar por serviceName, MiApp TV PRIMERO.
     final seen = <String>{};
     final ordered = <CastDevice>[];
     for (final d in [...tvs, ...chromecasts]) {
-      if (seen.add(d.serviceName)) ordered.add(d);
+      final key = '${d.host}:${d.port}';
+      if (seen.add(key) && seen.add(d.serviceName)) {
+        ordered.add(d);
+      }
     }
     return ordered;
   }
 
   /// Descubre un tipo mDNS concreto y devuelve los dispositivos resueltos.
-  /// Si [isTv] es `true`, marca cada serviceName como MiApp TV.
   Future<List<CastDevice>> _discoverType(
     String type,
     Duration timeout, {
@@ -165,43 +172,44 @@ class CastService {
             final service = event.service;
             if (service == null) return;
 
-            final String? host = _extractHost(service);
-            final int port =
-                service.port > 0 ? service.port : (isTv ? TvProto.port : _kCastPort);
+            _extractHost(service).then((host) {
+              if (host == null || host.isEmpty) {
+                debugPrint(
+                  'CastService: Skipping device with no host: ${service.name}',
+                );
+                return;
+              }
 
-            if (host == null || host.isEmpty) {
+              final int port =
+                  service.port > 0 ? service.port : (isTv ? TvProto.port : _kCastPort);
+
+              String friendlyName;
+              if (isTv) {
+                friendlyName = service.name;
+              } else {
+                final attrs = service.attributes;
+                friendlyName = [
+                  attrs['md'], // Modelo del dispositivo
+                  attrs['fn'], // Nombre amigable
+                ].whereType<String>().where((s) => s.isNotEmpty).join(' - ');
+                if (friendlyName.isEmpty) friendlyName = service.name;
+              }
+
               debugPrint(
-                'CastService: Skipping device with no host: ${service.name}',
+                'CastService: Found ${isTv ? "Bump Comba TV" : "Chromecast"} '
+                '"$friendlyName" at $host:$port (service: ${service.name})',
               );
-              return;
-            }
 
-            String friendlyName;
-            if (isTv) {
-              friendlyName = service.name;
-            } else {
-              final attrs = service.attributes;
-              friendlyName = [
-                attrs['md'], // Modelo del dispositivo
-                attrs['fn'], // Nombre amigable
-              ].whereType<String>().where((s) => s.isNotEmpty).join(' - ');
-              if (friendlyName.isEmpty) friendlyName = service.name;
-            }
-
-            debugPrint(
-              'CastService: Found ${isTv ? "MiApp TV" : "Chromecast"} '
-              '"$friendlyName" at $host:$port (service: ${service.name})',
-            );
-
-            if (isTv) _tvServiceNames.add(service.name);
-            results.add(
-              CastDevice(
-                serviceName: service.name,
-                name: friendlyName,
-                host: host,
-                port: port,
-              ),
-            );
+              if (isTv) _tvServiceNames.add(service.name);
+              results.add(
+                CastDevice(
+                  serviceName: service.name,
+                  name: friendlyName,
+                  host: host,
+                  port: port,
+                ),
+              );
+            });
           } else if (event.type ==
               BonsoirDiscoveryEventType.discoveryServiceLost) {
             debugPrint('CastService: Device lost: ${event.service?.name}');
@@ -221,7 +229,90 @@ class CastService {
     return results;
   }
 
-  /// Guarda el host/nombre del último MiApp TV visto (para sondeo TCP futuro).
+  /// Escanea la red LAN en los puertos de Bump Comba TV (7345) y Chromecast (8009)
+  /// como respaldo ultra-rápido en redes donde mDNS esté bloqueado por el router.
+  Future<List<CastDevice>> _probeLanSubnets() async {
+    final discovered = <CastDevice>[];
+    try {
+      final prefixes = <String>{};
+      final interfaces = await NetworkInterface.list(
+        includeLoopback: false,
+        type: InternetAddressType.IPv4,
+      );
+      for (var interface in interfaces) {
+        for (var addr in interface.addresses) {
+          final ip = addr.address;
+          if (!ip.startsWith('127.') && !ip.startsWith('169.254.')) {
+            final parts = ip.split('.');
+            if (parts.length == 4) {
+              prefixes.add('${parts[0]}.${parts[1]}.${parts[2]}.');
+            }
+          }
+        }
+      }
+      if (prefixes.isEmpty) {
+        prefixes.add('192.168.1.');
+        prefixes.add('192.168.0.');
+      }
+
+      final futures = <Future<void>>[];
+      for (final prefix in prefixes) {
+        for (int i = 1; i <= 254; i++) {
+          final targetIp = '$prefix$i';
+          futures.add(_probeIp(targetIp, discovered));
+        }
+      }
+      await Future.wait(futures);
+    } catch (e) {
+      debugPrint('CastService: LAN subnet scan error: $e');
+    }
+    return discovered;
+  }
+
+  Future<void> _probeIp(String ip, List<CastDevice> discovered) async {
+    // 1. Sondeo puerto Bump Comba TV (7345)
+    try {
+      final sTv = await Socket.connect(
+        ip,
+        TvProto.port,
+        timeout: const Duration(milliseconds: 700),
+      );
+      sTv.destroy();
+      debugPrint('CastService: LAN Probe encontró Bump Comba TV en $ip');
+      final sName = 'tv-$ip';
+      _tvServiceNames.add(sName);
+      discovered.add(
+        CastDevice(
+          serviceName: sName,
+          name: 'Bump Comba TV ($ip)',
+          host: ip,
+          port: TvProto.port,
+        ),
+      );
+      return;
+    } catch (_) {}
+
+    // 2. Sondeo puerto Chromecast (8009)
+    try {
+      final sCast = await Socket.connect(
+        ip,
+        _kCastPort,
+        timeout: const Duration(milliseconds: 700),
+      );
+      sCast.destroy();
+      debugPrint('CastService: LAN Probe encontró Chromecast en $ip');
+      discovered.add(
+        CastDevice(
+          serviceName: 'chromecast-$ip',
+          name: 'Chromecast ($ip)',
+          host: ip,
+          port: _kCastPort,
+        ),
+      );
+    } catch (_) {}
+  }
+
+  /// Guarda el host/nombre del último MiApp TV visto.
   Future<void> _persistLastTv(CastDevice device) async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -230,8 +321,7 @@ class CastService {
     } catch (_) {}
   }
 
-  /// Sondea por TCP el último MiApp TV conocido. Si responde en el puerto fijo,
-  /// lo devuelve como dispositivo aunque el mDNS no lo haya encontrado.
+  /// Sondea por TCP el último MiApp TV conocido.
   Future<CastDevice?> _probeLastKnownTv() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -258,33 +348,51 @@ class CastService {
     }
   }
 
-  /// Extrae la IP del host de un servicio bonsoir resuelto.
-  ///
-  /// Bonsoir 5.x cambiaron las claves JSON respecto a versiones anteriores.
-  /// Probamos múltiples accesos para máxima compatibilidad.
-  String? _extractHost(BonsoirService service) {
-    // 1. Propiedad directa (BonsoirService resuelto en bonsoir 5.x)
+  /// Extrae la dirección IP o resuelve el host de un servicio bonsoir resuelto.
+  Future<String?> _extractHost(BonsoirService service) async {
+    String? rawHost;
     if (service is ResolvedBonsoirService) {
-      final host = service.host;
-      if (host != null && host.isNotEmpty) return host;
+      rawHost = service.host;
     }
 
-    // 2. Fallback: buscar en el JSON del servicio
+    if (rawHost == null || rawHost.isEmpty) {
+      try {
+        final json = service.toJson();
+        final candidates = [
+          json['ip'],
+          json['service.ip'],
+          json['address'],
+          json['host'],
+          json['service.host'],
+        ];
+        for (final candidate in candidates) {
+          if (candidate is String && candidate.isNotEmpty) {
+            rawHost = candidate;
+            break;
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (rawHost == null || rawHost.isEmpty) return null;
+
+    if (_isIpAddress(rawHost)) return rawHost;
+
     try {
-      final json = service.toJson();
-      // Bonsoir 5.x usa 'service.host' o 'host'
-      final candidates = [
-        json['host'],
-        json['service.host'],
-        json['service.ip'],
-        json['ip'],
-      ];
-      for (final candidate in candidates) {
-        if (candidate is String && candidate.isNotEmpty) return candidate;
+      final addresses = await InternetAddress.lookup(rawHost);
+      for (final addr in addresses) {
+        if (addr.type == InternetAddressType.IPv4) {
+          return addr.address;
+        }
       }
+      if (addresses.isNotEmpty) return addresses.first.address;
     } catch (_) {}
 
-    return null;
+    return rawHost;
+  }
+
+  bool _isIpAddress(String str) {
+    return RegExp(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$').hasMatch(str);
   }
 
   /// Conecta a un dispositivo Chromecast y lanza el receptor de medios predeterminado.

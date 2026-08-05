@@ -3141,7 +3141,7 @@ List<M3UItem> _computeRecentItemsInBackground(List<M3UItem> items) {
 
   int maxYear = 0;
   for (var item in items) {
-    if (item.sourceName == 'Supabase') continue;
+    if (item.isLive) continue;
     final match = regexYear.firstMatch(item.name);
     if (match != null) {
       final year = int.tryParse(match.group(1) ?? '');
@@ -3154,7 +3154,7 @@ List<M3UItem> _computeRecentItemsInBackground(List<M3UItem> items) {
 
   final recent =
       items.where((item) {
-        if (item.isLive || item.sourceName == 'Supabase') return false;
+        if (item.isLive) return false;
         final match = regexYear.firstMatch(item.name);
         if (match != null) {
           final year = int.tryParse(match.group(1) ?? '');
@@ -3672,8 +3672,8 @@ List<M3UItem> _calculateLatestItems(List<M3UItem> items) {
   final regexYear = RegExp(r'\b(202[0-9]|19[0-9]{2})\b');
 
   for (var item in items) {
-    // STRICT FILTER: No live streams or Supabase content in "latest" calculations
-    if (item.isLive || item.sourceName == 'Supabase') {
+    // STRICT FILTER: No live streams in "latest" calculations
+    if (item.isLive) {
       itemScores[item] = -1000.0;
       continue;
     }
