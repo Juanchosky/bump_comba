@@ -213,6 +213,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   // Download progress
   String? _downloadDetail;
 
+  // Remote config for content requests
+  bool _allowContentRequests = true;
+
   // Progressive loading for categories rows
   int _loadedHomeCategories = 3;
   int _loadedMovieCategories = 3;
@@ -248,6 +251,18 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         SnackBarUtils.showAppSnackBar(context, 'No se pudo abrir el enlace');
       }
     }
+  }
+
+  Future<void> _checkContentRequestsConfig() async {
+    try {
+      final isEnabled =
+          await _m3uService.isRemoteConfigEnabled('allow_content_requests');
+      if (mounted && isEnabled != _allowContentRequests) {
+        setState(() {
+          _allowContentRequests = isEnabled;
+        });
+      }
+    } catch (_) {}
   }
 
   void _startInlineHideTimer() {
@@ -287,6 +302,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     _initService();
     _initSearchHistory();
     _detectCountry();
+    _checkContentRequestsConfig();
     // Listen to global ad state to pause live player
     AdService.isAdInProgress.addListener(_handleAdStateChange);
     // FIX: Escuchar al M3UService para cuando el cómputo async de items
@@ -6309,6 +6325,7 @@ class _SearchPageState extends State<_SearchPage> {
   List<dynamic> _combinedResults = [];
   List<M3UItem> _popularItems = [];
   bool _isLoading = false;
+  bool _allowContentRequests = true;
   Timer? _debounceTimer;
   String? _activeSearchQuery;
 
@@ -6318,6 +6335,15 @@ class _SearchPageState extends State<_SearchPage> {
     // Fetch popular items
     _popularItems = widget.m3uService.getPopularSearchItems();
     widget.m3uService.addListener(_onServiceUpdate);
+    widget.m3uService.isRemoteConfigEnabled('allow_content_requests').then((
+      isEnabled,
+    ) {
+      if (mounted && isEnabled != _allowContentRequests) {
+        setState(() {
+          _allowContentRequests = isEnabled;
+        });
+      }
+    });
 
     // Explicit focus request after transition to fix Android responsiveness
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -6452,6 +6478,45 @@ class _SearchPageState extends State<_SearchPage> {
 
   Widget _buildEmptySearchState() {
     final query = _searchController.text.trim();
+    if (!_allowContentRequests) {
+      return SingleChildScrollView(
+        physics: const BouncingScrollPhysics(),
+        padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 36),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(
+              Icons.search_off_rounded,
+              color: Colors.white38,
+              size: 52,
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'No se encontraron resultados',
+              style: TextStyle(
+                color: Color.fromARGB(255, 224, 224, 224),
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.2,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              query.isNotEmpty
+                  ? 'No encontramos resultados para "$query".'
+                  : 'Intenta buscar con otra palabra clave.',
+              style: const TextStyle(
+                color: Colors.white54,
+                fontSize: 13.5,
+                height: 1.4,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      );
+    }
     return SingleChildScrollView(
       physics: const BouncingScrollPhysics(),
       padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 25),

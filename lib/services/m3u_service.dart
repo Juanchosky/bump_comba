@@ -759,17 +759,41 @@ class M3UService extends ChangeNotifier {
       final data =
           await _supabase!
               .from('sys_config')
-              .select('value')
+              .select('value, is_active')
               .eq('key', key)
-              .eq('is_active', true)
               .maybeSingle();
-      if (data != null && data['value'] != null) {
-        return data['value'] as String;
+      if (data != null) {
+        final isActive = data['is_active'] == true;
+        if (!isActive) return 'false';
+        return data['value'] as String?;
       }
     } catch (e) {
       debugPrint('Error fetching config: $e');
     }
     return null;
+  }
+
+  Future<bool> isRemoteConfigEnabled(
+    String key, {
+    bool defaultValue = true,
+  }) async {
+    if (_supabase == null) return defaultValue;
+    try {
+      final data =
+          await _supabase!
+              .from('sys_config')
+              .select('value, is_active')
+              .eq('key', key)
+              .maybeSingle();
+      if (data != null) {
+        final isActive = data['is_active'] == true;
+        final val = (data['value'] as String?)?.trim().toLowerCase();
+        return isActive && (val == 'true' || val == '1');
+      }
+    } catch (e) {
+      debugPrint('Error checking remote config $key: $e');
+    }
+    return defaultValue;
   }
 
   /// ROBUST-4: resolveM3UInput validates constructed URLs before returning.
