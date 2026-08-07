@@ -1379,7 +1379,7 @@ class _AppLoadingAnimationState extends State<_AppLoadingAnimation>
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 2),
+      duration: const Duration(milliseconds: 1100),
     )..repeat();
   }
 
