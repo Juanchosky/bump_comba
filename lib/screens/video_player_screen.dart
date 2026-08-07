@@ -112,6 +112,88 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   final ValueNotifier<Duration> _bufferedDuration = ValueNotifier<Duration>(
     Duration.zero,
   );
+  Duration _knownDuration = Duration.zero;
+  Timer? _speedPollTimer;
+  final ValueNotifier<double> _downloadSpeedBytesPerSec = ValueNotifier<double>(
+    0.0,
+  );
+
+  String _formatLoadingSpeed(double bytesPerSec) {
+    final hasVideoFrame =
+        (_player?.state.width ?? 0) > 0 ||
+        _bufferedDuration.value > Duration.zero ||
+        _isBuffering;
+    final prefix = hasVideoFrame ? 'Cargando video' : 'Conectando al servidor';
+
+    if (bytesPerSec <= 0) return '$prefix...';
+    final mbPerSec = bytesPerSec / (1024 * 1024);
+    if (mbPerSec >= 0.1) {
+      return '$prefix ${mbPerSec.toStringAsFixed(2).replaceAll('.', ',')} MB/s';
+    } else {
+      final kbPerSec = bytesPerSec / 1024;
+      if (kbPerSec >= 1) {
+        return '$prefix · ${kbPerSec.toStringAsFixed(0)} KB/s';
+      } else {
+        return '$prefix...';
+      }
+    }
+  }
+
+  void _startSpeedPolling() {
+    if (_speedPollTimer?.isActive == true) return;
+    _speedPollTimer = Timer.periodic(const Duration(milliseconds: 300), (
+      _,
+    ) async {
+      if (!mounted) return;
+      if (!_isVideoLoading && !_isBuffering && !_isSeeking) {
+        _speedPollTimer?.cancel();
+        _speedPollTimer = null;
+        return;
+      }
+      double speed = 0.0;
+      try {
+        final mpv = _player?.platform as dynamic;
+        if (mpv != null) {
+          final raw = await mpv.getProperty('cache-speed');
+          speed = double.tryParse(raw?.toString() ?? '') ?? 0.0;
+        }
+      } catch (_) {}
+
+      if (speed <= 0 && _turboActive) {
+        final mbps = TurboProxy().sampleMbps();
+        if (mbps > 0) {
+          speed = (mbps * 1000000) / 8;
+        }
+      }
+
+      if (mounted && _downloadSpeedBytesPerSec.value != speed) {
+        _downloadSpeedBytesPerSec.value = speed;
+      }
+    });
+  }
+
+  Duration _parseItemDuration(String? raw) {
+    if (raw == null || raw.trim().isEmpty) return Duration.zero;
+    final clean = raw.trim();
+    final parts = clean.split(':');
+    if (parts.length == 3) {
+      final h = int.tryParse(parts[0]) ?? 0;
+      final m = int.tryParse(parts[1]) ?? 0;
+      final s = int.tryParse(parts[2]) ?? 0;
+      final secs = h * 3600 + m * 60 + s;
+      if (secs > 0) return Duration(seconds: secs);
+    } else if (parts.length == 2) {
+      final m = int.tryParse(parts[0]) ?? 0;
+      final s = int.tryParse(parts[1]) ?? 0;
+      final secs = m * 60 + s;
+      if (secs > 0) return Duration(seconds: secs);
+    } else {
+      final secs = int.tryParse(clean);
+      if (secs != null && secs > 0) return Duration(seconds: secs);
+    }
+    return Duration.zero;
+  }
+
   // Muestreo de la velocidad REAL de descarga (cache-speed de MPV) cada 5s.
   int _throughputSampleTick = 0;
   int _stallSeconds = 0;
@@ -218,6 +300,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     CastService().castPlaying.addListener(_syncFromCast);
     _currentItem = widget.item;
     _playlist = widget.playlist;
+    _knownDuration = _parseItemDuration(_currentItem.duration);
 
     _swipeAnimController = AnimationController(
       vsync: this,
@@ -413,6 +496,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _networkQuality.stop();
     _hideControlsTimer?.cancel();
     _stallTimer?.cancel();
+    _speedPollTimer?.cancel();
     _seekFeedbackTimer?.cancel();
     _countdownTimer?.cancel();
     _progressSaveTimer?.cancel();
@@ -444,6 +528,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _videoFitNotifier.dispose();
     _videoControllerNotifier.dispose();
     _bufferedDuration.dispose();
+    _downloadSpeedBytesPerSec.dispose();
     _noticeAnimController.dispose();
 
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
@@ -512,6 +597,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         startFrom = Duration(seconds: progress.positionSeconds);
       } else if (shouldResume == false) {
         await _watchProgressService.clearProgress(_currentItem.url);
+      }
+      if (progress.durationSeconds > 0) {
+        _knownDuration = Duration(seconds: progress.durationSeconds);
       }
     }
 
@@ -651,6 +739,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // Limpieza de URL para evitar fragmentos de tiempo (#t=...)
     final cleanedUrl = NormalizationUtils.cleanUrl(item.url);
     item = item.copyWith(url: cleanedUrl);
+    _currentItem = item;
+    if (_knownDuration == Duration.zero) {
+      _knownDuration = _parseItemDuration(item.duration);
+    }
 
     // 1. Manejo de Scraping (enlaces dinámicos)
     if (DynamicScraperService().isSupported(item.url)) {
@@ -1314,10 +1406,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         duration = castService.castDuration.value;
       } else if (_player != null) {
         position = _player!.state.position;
-        duration = _player!.state.duration;
+        duration =
+            _player!.state.duration > Duration.zero
+                ? _player!.state.duration
+                : _knownDuration;
       }
 
       if (duration.inSeconds > 0) {
+        _knownDuration = duration;
         _watchProgressService.saveProgress(
           _currentItem.url,
           position,
@@ -1390,7 +1486,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             !_isVideoLoading &&
             !_autoPlayCancelled) {
           final pos = _player!.state.position;
-          final dur = _player!.state.duration;
+          final rawDur = _player!.state.duration;
+          final dur = rawDur > Duration.zero ? rawDur : _knownDuration;
 
           if (CastService().isCasting.value && !_localAudioDuringCast) {
             // Si estamos transmitiendo y NO estamos escuchando localmente,
@@ -1422,7 +1519,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _streamSubscriptions.add(
       _player!.stream.position.listen((position) {
         if (!mounted || _player == null) return;
-        final duration = _player!.state.duration;
+        final rawDur = _player!.state.duration;
+        if (rawDur > Duration.zero) {
+          _knownDuration = rawDur;
+        }
+        final duration = rawDur > Duration.zero ? rawDur : _knownDuration;
 
         // Log de progreso (1×/s) SOLO con TurboProxy activo: confirma que la
         // reproducción AVANZA de verdad, no solo que el stream abrió.
@@ -4485,6 +4586,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   Widget _buildVideoLoading({bool showBackground = false}) {
+    _startSpeedPolling();
     return Stack(
       children: [
         if (showBackground)
@@ -4516,7 +4618,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           ),
         Align(
           alignment: Alignment.center,
-          child:
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
               defaultTargetPlatform == TargetPlatform.iOS
                   ? CupertinoActivityIndicator(
                     radius:
@@ -4538,6 +4642,42 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                 .clamp(0.8, 1.25) *
                             1.02),
                   ),
+              const SizedBox(height: 18),
+              ValueListenableBuilder<double>(
+                valueListenable: _downloadSpeedBytesPerSec,
+                builder: (context, bytesPerSec, _) {
+                  final text = _formatLoadingSpeed(bytesPerSec);
+                  final size = MediaQuery.of(context).size;
+                  final double scale =
+                      (size.shortestSide / 414.0).clamp(0.8, 1.25) * 1.02;
+                  return Container(
+                    padding: EdgeInsets.symmetric(
+                      horizontal: 16 * scale,
+                      vertical: 8 * scale,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.55),
+                      borderRadius: BorderRadius.circular(20 * scale),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.15),
+                        width: 1,
+                      ),
+                    ),
+                    child: Text(
+                      text,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 12.0 * scale,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0.2,
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
         ),
         if (showBackground && _isInitialLoad)
           const Align(
@@ -4866,7 +5006,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                             castService.castDuration.value;
                                       } else if (_player != null) {
                                         position = _player!.state.position;
-                                        duration = _player!.state.duration;
+                                        duration =
+                                            _player!.state.duration >
+                                                    Duration.zero
+                                                ? _player!.state.duration
+                                                : _knownDuration;
                                       }
 
                                       if (duration.inSeconds > 0) {
@@ -5109,12 +5253,33 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                             : (positionSnapshot
                                                                     .data ??
                                                                 Duration.zero);
-                                                    final duration =
+                                                    final durSnapVal =
+                                                        durationSnapshot.data ??
+                                                        Duration.zero;
+                                                    final playerStateDur =
+                                                        _player
+                                                            ?.state
+                                                            .duration ??
+                                                        Duration.zero;
+                                                    Duration duration =
                                                         isCasting
                                                             ? castDur
-                                                            : (durationSnapshot
-                                                                    .data ??
-                                                                Duration.zero);
+                                                            : (durSnapVal >
+                                                                    Duration
+                                                                        .zero
+                                                                ? durSnapVal
+                                                                : (playerStateDur >
+                                                                        Duration
+                                                                            .zero
+                                                                    ? playerStateDur
+                                                                    : _knownDuration));
+                                                    if (!isCasting &&
+                                                        duration >
+                                                            Duration.zero &&
+                                                        duration !=
+                                                            _knownDuration) {
+                                                      _knownDuration = duration;
+                                                    }
                                                     final max =
                                                         duration.inMilliseconds
                                                             .toDouble();
@@ -5128,7 +5293,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                   0.0,
                                                                   max > 0
                                                                       ? max
-                                                                      : 0.0,
+                                                                      : (position.inMilliseconds >
+                                                                              0
+                                                                          ? position
+                                                                              .inMilliseconds
+                                                                              .toDouble()
+                                                                          : 0.0),
                                                                 );
 
                                                     return GestureDetector(
@@ -5264,16 +5434,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                             child: Row(
                                                               children: [
                                                                 Text(
-                                                                  // Mostrar la
-                                                                  // posición REAL
-                                                                  // (no el value
-                                                                  // recortado al
-                                                                  // slider): si el
-                                                                  // stream no
-                                                                  // reporta
-                                                                  // duración, el
-                                                                  // clamp dejaría
-                                                                  // esto en 0.
                                                                   WatchProgressService.formatDuration(
                                                                     _isDragging
                                                                         ? Duration(
@@ -6263,8 +6423,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       castService.seekForward(seconds: 10);
     } else {
       final pos = _player!.state.position + const Duration(seconds: 10);
-      final dur = _player!.state.duration;
-      _player!.seek(pos > dur ? dur : pos);
+      final dur =
+          _player!.state.duration > Duration.zero
+              ? _player!.state.duration
+              : _knownDuration;
+      if (dur > Duration.zero) {
+        _player!.seek(pos > dur ? dur : pos);
+      } else {
+        _player!.seek(pos);
+      }
     }
     _startHideControlsTimer(showIfHidden: showControls);
     _resetSeekFeedback();
