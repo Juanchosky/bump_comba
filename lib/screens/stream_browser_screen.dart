@@ -1394,7 +1394,10 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   }
 
   List<String> _getDynamicSearchSuggestions() {
-    List<M3UItem> pool = [..._m3uService.getRecentItems(), ..._m3uService.latestItems];
+    List<M3UItem> pool = [
+      ..._m3uService.getRecentItems(),
+      ..._m3uService.latestItems,
+    ];
 
     if (pool.isEmpty) {
       pool = _m3uService.items.where((i) => !i.isLive).toList();
@@ -1437,11 +1440,12 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
     candidates.shuffle();
     // 3. Return TITLE ONLY (no "Buscar" prefix)
-    final results = candidates
-        .where((i) => i.name.trim().isNotEmpty)
-        .take(5)
-        .map((item) => item.name)
-        .toList();
+    final results =
+        candidates
+            .where((i) => i.name.trim().isNotEmpty)
+            .take(5)
+            .map((item) => item.name)
+            .toList();
 
     return results.isNotEmpty ? results : ['Películas y series...'];
   }
@@ -6450,16 +6454,18 @@ class _SearchPageState extends State<_SearchPage> {
     final query = _searchController.text.trim();
     return SingleChildScrollView(
       physics: const BouncingScrollPhysics(),
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 37),
+      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 25),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
+          const Icon(Icons.search_off_rounded, color: Colors.white38, size: 52),
+          const SizedBox(height: 16),
           const Text(
             '¿No encuentras lo que buscas?',
             style: TextStyle(
-              color: Color.fromARGB(255, 231, 231, 231),
-              fontSize: 17.5,
-              fontWeight: FontWeight.w600,
+              color: Color.fromARGB(255, 224, 224, 224),
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
               letterSpacing: 0.2,
             ),
             textAlign: TextAlign.center,
@@ -6467,30 +6473,30 @@ class _SearchPageState extends State<_SearchPage> {
           const SizedBox(height: 8),
           Text(
             query.isNotEmpty
-                ? 'Pídenos "$query" y la agregaremos lo antes posible.'
-                : 'Pídenos que deseas ver y la agregaremos pronto.',
-            style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.65),
+                ? 'Pídenos lo que deseas ver y lo agregaremos pronto...'
+                : 'Pídenos lo que deseas ver y lo agregaremos pronto...',
+            style: const TextStyle(
+              color: Colors.white54,
               fontSize: 13.5,
               height: 1.4,
             ),
             textAlign: TextAlign.center,
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 23),
           ElevatedButton.icon(
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color.fromARGB(220, 255, 61, 61),
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
+              backgroundColor: const Color(0xFFE50914),
+              foregroundColor: const Color.fromARGB(255, 243, 243, 243),
+              elevation: 0,
+              padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(28),
+                borderRadius: BorderRadius.circular(8),
               ),
-              elevation: 4,
             ),
-            icon: const Icon(Icons.send_rounded, size: 18),
+            icon: const Icon(Icons.add_rounded, size: 18),
             label: const Text(
-              'Solicitar ahora',
-              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500),
+              'Solicitar contenido',
+              style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600),
             ),
             onPressed:
                 () => _showContentRequestModal(context, initialTitle: query),
@@ -6520,20 +6526,10 @@ class _SearchPageState extends State<_SearchPage> {
                 bottom: MediaQuery.of(context).viewInsets.bottom,
               ),
               child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 24,
-                  vertical: 24,
-                ),
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
                 decoration: const BoxDecoration(
-                  color: AppColors.surface,
-                  borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black54,
-                      blurRadius: 20,
-                      offset: Offset(0, -5),
-                    ),
-                  ],
+                  color: Color(0xFF141414),
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
                 ),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -6541,7 +6537,7 @@ class _SearchPageState extends State<_SearchPage> {
                   children: [
                     Center(
                       child: Container(
-                        width: 40,
+                        width: 36,
                         height: 4,
                         decoration: BoxDecoration(
                           color: Colors.white24,
@@ -6549,80 +6545,64 @@ class _SearchPageState extends State<_SearchPage> {
                         ),
                       ),
                     ),
-                    const SizedBox(height: 18),
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(10),
-                          decoration: BoxDecoration(
-                            color: Colors.redAccent.withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: const Icon(
-                            Icons.send_rounded,
-                            color: Colors.redAccent,
-                            size: 22,
-                          ),
-                        ),
-                        const SizedBox(width: 14),
-                        const Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'Solicitar Contenido',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              Text(
-                                'Dinos qué quieres ver y lo agregaremos',
-                                style: TextStyle(
-                                  color: Colors.white54,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Solicitar contenido',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'Escribe el nombre del título que deseas ver en la app.',
+                      style: TextStyle(color: Colors.white54, fontSize: 12.5),
                     ),
                     const SizedBox(height: 20),
                     const Text(
-                      'Título*',
+                      'Título *',
                       style: TextStyle(
                         color: Colors.white70,
-                        fontSize: 13,
+                        fontSize: 12.5,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
                     const SizedBox(height: 6),
                     TextField(
                       controller: titleController,
-                      style: const TextStyle(color: Colors.white),
+                      style: const TextStyle(color: Colors.white, fontSize: 14),
                       decoration: InputDecoration(
-                        hintText: 'Escribe el título...',
-                        hintStyle: const TextStyle(color: Colors.white38),
+                        hintText: 'Ej: Nombre de la película o serie...',
+                        hintStyle: const TextStyle(
+                          color: Colors.white38,
+                          fontSize: 13.5,
+                        ),
                         filled: true,
-                        fillColor: AppColors.surfaceVariant,
+                        fillColor: const Color(0xFF222222),
                         border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: BorderRadius.circular(8),
                           borderSide: BorderSide.none,
                         ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: const BorderSide(
+                            color: Color(0xFFE50914),
+                            width: 1.5,
+                          ),
+                        ),
                         contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 14,
+                          horizontal: 14,
+                          vertical: 12,
                         ),
                       ),
                     ),
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 14),
                     const Text(
-                      'Detalles o notas adicionales (opcional)',
+                      'Detalles adicionales (opcional)',
                       style: TextStyle(
                         color: Colors.white70,
-                        fontSize: 13,
+                        fontSize: 12.5,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -6630,39 +6610,47 @@ class _SearchPageState extends State<_SearchPage> {
                     TextField(
                       controller: detailsController,
                       maxLines: 2,
-                      style: const TextStyle(color: Colors.white),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 13.5,
+                      ),
                       decoration: InputDecoration(
-                        hintText: 'Opcionales...',
-                        hintStyle: const TextStyle(color: Colors.white38),
+                        hintText: 'Año, temporada o notas extra...',
+                        hintStyle: const TextStyle(
+                          color: Colors.white38,
+                          fontSize: 13,
+                        ),
                         filled: true,
-                        fillColor: AppColors.surfaceVariant,
+                        fillColor: const Color(0xFF222222),
                         border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: BorderRadius.circular(8),
                           borderSide: BorderSide.none,
                         ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: const BorderSide(
+                            color: Color(0xFFE50914),
+                            width: 1.5,
+                          ),
+                        ),
                         contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16,
+                          horizontal: 14,
                           vertical: 12,
                         ),
                       ),
                     ),
-                    const SizedBox(height: 24),
+                    const SizedBox(height: 22),
                     SizedBox(
                       width: double.infinity,
-                      height: 48,
+                      height: 46,
                       child: ElevatedButton(
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color.fromARGB(
-                            224,
-                            255,
-                            60,
-                            60,
-                          ),
+                          backgroundColor: const Color(0xFFE50914),
                           foregroundColor: Colors.white,
+                          elevation: 0,
                           shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14),
+                            borderRadius: BorderRadius.circular(8),
                           ),
-                          elevation: 2,
                         ),
                         onPressed:
                             isSubmitting
@@ -6672,7 +6660,7 @@ class _SearchPageState extends State<_SearchPage> {
                                   if (title.isEmpty) {
                                     SnackBarUtils.showAppSnackBar(
                                       context,
-                                      'Ingresa el título',
+                                      'Ingresa el título del contenido',
                                     );
                                     return;
                                   }
@@ -6700,7 +6688,7 @@ class _SearchPageState extends State<_SearchPage> {
                                       Navigator.pop(ctx);
                                       SnackBarUtils.showAppSnackBar(
                                         context,
-                                        '¡Solicitud enviada! Trabajaremos para agregarla pronto.',
+                                        '¡Solicitud enviada! La agregaremos muy pronto.',
                                       );
                                     }
                                   } catch (e) {
@@ -6725,23 +6713,16 @@ class _SearchPageState extends State<_SearchPage> {
                                     strokeWidth: 2,
                                   ),
                                 )
-                                : const Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(Icons.send_rounded, size: 18),
-                                    SizedBox(width: 8),
-                                    Text(
-                                      'Enviar Solicitud',
-                                      style: TextStyle(
-                                        fontSize: 15,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                  ],
+                                : const Text(
+                                  'Enviar solicitud',
+                                  style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.bold,
+                                  ),
                                 ),
                       ),
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 8),
                   ],
                 ),
               ),

@@ -4652,8 +4652,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                       (size.shortestSide / 414.0).clamp(0.8, 1.25) * 1.02;
                   return Container(
                     padding: EdgeInsets.symmetric(
-                      horizontal: 15.5 * scale,
-                      vertical: 8 * scale,
+                      horizontal: 16 * scale,
+                      vertical: 7 * scale,
                     ),
                     decoration: BoxDecoration(
                       color: Colors.black.withValues(alpha: 0.55),
