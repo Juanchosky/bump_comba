@@ -1006,22 +1006,71 @@ class TurboProxy {
         final pipeline = _TurboPipeline(session, currentOffset);
         try {
           while (!closed) {
-            final data = await pipeline.next();
-            if (data == null) break;
-            if (closed) break;
+            Uint8List? data;
             try {
-              resp.add(data);
+              data = await pipeline.next();
             } catch (e) {
-              debugPrint('TurboProxy: resp.add (turbo) falló: $e');
-              closed = true;
+              debugPrint(
+                'TurboProxy: pipeline.next mid-stream falló: $e -> Retornando a Passthrough de emergencia',
+              );
+              session.noteFailure();
               break;
             }
+            if (data == null) break;
+            if (closed) break;
+            resp.add(data);
+            currentOffset += data.length;
             pendingFlushBytes += data.length;
             await maybeFlush();
           }
           await maybeFlush(force: true);
+
+          // FALLBACK TO PASSTHROUGH ON FAILURE
+          if (!closed && currentOffset < session.length) {
+            debugPrint(
+              'TurboProxy: Iniciando fallback Passthrough mid-stream desde offset $currentOffset',
+            );
+            while (!closed && currentOffset < session.length) {
+              final legSize = 2 * 1024 * 1024; // 2 MB legs
+              final legRangeHeader =
+                  'bytes=$currentOffset-${math.min(currentOffset + legSize - 1, session.length - 1)}';
+
+              try {
+                final targetUri = await session.getEffectiveTarget();
+                final rq = await session.client.getUrl(targetUri);
+                session.headers.forEach((k, v) => rq.headers.set(k, v));
+                rq.headers.set('Accept-Encoding', 'identity');
+                rq.headers.set(HttpHeaders.rangeHeader, legRangeHeader);
+
+                final rs = await rq.close().timeout(const Duration(seconds: 5));
+                if (rs.statusCode == HttpStatus.partialContent ||
+                    rs.statusCode == HttpStatus.ok) {
+                  await for (final chunk in rs.timeout(
+                    const Duration(seconds: 6),
+                  )) {
+                    if (closed) break;
+                    resp.add(chunk);
+                    currentOffset += chunk.length;
+                    pendingFlushBytes += chunk.length;
+                    unawaited(maybeFlush());
+                    session.proxy._noteBytes(chunk.length);
+                  }
+                } else {
+                  throw HttpException('status ${rs.statusCode}');
+                }
+              } catch (err) {
+                debugPrint(
+                  'TurboProxy: fallback Passthrough mid-stream error: $err',
+                );
+                if (err is SocketException) await session.refreshTarget();
+                await Future.delayed(const Duration(milliseconds: 1000));
+              }
+            }
+          }
         } catch (e) {
-          debugPrint('TurboProxy: error en pipeline turbo mid-stream: $e');
+          debugPrint(
+            'TurboProxy: error en pipeline turbo mid-stream general: $e',
+          );
         } finally {
           pipeline.cancel();
         }
@@ -1105,18 +1154,70 @@ class TurboProxy {
       lastFlushAt = DateTime.now();
     }
 
+    int currentOffset = start;
     try {
       while (!closed) {
-        final data = await pipeline.next();
+        Uint8List? data;
+        try {
+          data = await pipeline.next();
+        } catch (e) {
+          debugPrint(
+            'TurboProxy: pipeline.next falló: $e -> Conmutando a Passthrough de emergencia',
+          );
+          session.noteFailure();
+          break;
+        }
         if (data == null) break;
         if (closed) break;
         resp.add(data);
+        currentOffset += data.length;
         pendingFlushBytes += data.length;
         await maybeFlush();
       }
       await maybeFlush(force: true);
+
+      // FALLBACK TO PASSTHROUGH ON FAILURE
+      if (!closed && currentOffset < session.length) {
+        debugPrint(
+          'TurboProxy: Iniciando fallback Passthrough de emergencia desde offset $currentOffset',
+        );
+        while (!closed && currentOffset < session.length) {
+          final legSize = 2 * 1024 * 1024; // 2 MB legs
+          final legRangeHeader =
+              'bytes=$currentOffset-${math.min(currentOffset + legSize - 1, session.length - 1)}';
+
+          try {
+            final targetUri = await session.getEffectiveTarget();
+            final rq = await session.client.getUrl(targetUri);
+            session.headers.forEach((k, v) => rq.headers.set(k, v));
+            rq.headers.set('Accept-Encoding', 'identity');
+            rq.headers.set(HttpHeaders.rangeHeader, legRangeHeader);
+
+            final rs = await rq.close().timeout(const Duration(seconds: 5));
+            if (rs.statusCode == HttpStatus.partialContent ||
+                rs.statusCode == HttpStatus.ok) {
+              await for (final chunk in rs.timeout(
+                const Duration(seconds: 6),
+              )) {
+                if (closed) break;
+                resp.add(chunk);
+                currentOffset += chunk.length;
+                pendingFlushBytes += chunk.length;
+                unawaited(maybeFlush());
+                session.proxy._noteBytes(chunk.length);
+              }
+            } else {
+              throw HttpException('status ${rs.statusCode}');
+            }
+          } catch (err) {
+            debugPrint('TurboProxy: fallback Passthrough error: $err');
+            if (err is SocketException) await session.refreshTarget();
+            await Future.delayed(const Duration(milliseconds: 1000));
+          }
+        }
+      }
     } catch (e) {
-      debugPrint('TurboProxy: turbo stream error: $e');
+      debugPrint('TurboProxy: turbo stream error general: $e');
       session.noteFailure();
     } finally {
       pipeline.cancel();
@@ -1409,7 +1510,7 @@ class _TurboPipeline {
         session.headers.forEach((k, v) => rq.headers.set(k, v));
         rq.headers.set(HttpHeaders.rangeHeader, 'bytes=${startB + got}-$endB');
 
-        final rs = await rq.close().timeout(const Duration(seconds: 12));
+        final rs = await rq.close().timeout(const Duration(seconds: 5));
 
         // Solo 206 es válido para un chunk con Range. Un 200 indica que el
         // servidor ignoró la cabecera Range y devuelve el archivo completo,
@@ -1436,7 +1537,7 @@ class _TurboPipeline {
           }
         }
 
-        await for (final part in rs.timeout(const Duration(seconds: 15))) {
+        await for (final part in rs.timeout(const Duration(seconds: 6))) {
           builder.add(part);
           got += part.length;
           session.proxy._noteBytes(part.length);
@@ -1451,10 +1552,14 @@ class _TurboPipeline {
           break;
         }
         lastErr = HttpException('parcial $got/$expected');
-        session.noteFailure();
+        if (attempt == 3) {
+          session.noteFailure();
+        }
       } catch (err) {
         lastErr = err;
-        session.noteFailure();
+        if (attempt == 3) {
+          session.noteFailure();
+        }
         if (_cancelled) break;
         if (err is SocketException) await session.refreshTarget();
         await Future.delayed(Duration(milliseconds: 200 * (attempt + 1)));
