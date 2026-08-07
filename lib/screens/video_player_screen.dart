@@ -4652,14 +4652,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                       (size.shortestSide / 414.0).clamp(0.8, 1.25) * 1.02;
                   return Container(
                     padding: EdgeInsets.symmetric(
-                      horizontal: 16 * scale,
+                      horizontal: 15.5 * scale,
                       vertical: 8 * scale,
                     ),
                     decoration: BoxDecoration(
                       color: Colors.black.withValues(alpha: 0.55),
                       borderRadius: BorderRadius.circular(20 * scale),
                       border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.15),
+                        color: const Color.fromARGB(14, 255, 255, 255),
                         width: 1,
                       ),
                     ),
@@ -4667,8 +4667,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                       text,
                       textAlign: TextAlign.center,
                       style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 12.0 * scale,
+                        color: const Color.fromARGB(255, 223, 223, 223),
+                        fontSize: 12.7 * scale,
                         fontWeight: FontWeight.w600,
                         letterSpacing: 0.2,
                       ),
