@@ -23,6 +23,7 @@ import '../services/dynamic_scraper_service.dart';
 import '../services/cast_service.dart';
 import '../services/network_quality_service.dart';
 import '../services/ad_service.dart';
+import '../services/turbo_proxy.dart';
 import 'stream_browser_screen.dart';
 
 class ContentDetailScreen extends StatefulWidget {
@@ -226,6 +227,13 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
         final prewarmHeaders = _buildPrewarmHeaders(widget.item.url);
 
+        unawaited(
+          TurboProxy.instance.preconnect(
+            widget.item.url,
+            headers: prewarmHeaders,
+          ),
+        );
+
         await _prewarmPlayer!.open(
           Media(widget.item.url, httpHeaders: prewarmHeaders),
           play: false,
@@ -261,6 +269,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
     _snapBackController.dispose();
     _detailScrollController.dispose();
     NetworkQualityService().quality.removeListener(_onNetworkQualityChanged);
+    TurboProxy.instance.cancelPreconnect(widget.item.url);
 
     // -- CRITICAL DISPOSAL SEQUENCE FOR MOTOROLA/ANDROID 15 --
     final p = _prewarmPlayer;

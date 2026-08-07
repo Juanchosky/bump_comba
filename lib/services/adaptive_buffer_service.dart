@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart';
 import 'network_quality_service.dart';
 import 'performance_service.dart';
@@ -59,22 +61,6 @@ class AdaptiveBufferService {
   factory AdaptiveBufferService() => _instance;
   AdaptiveBufferService._internal();
 
-  // ── Estado anti-flush ───────────────────────────────────────────────────
-  // El decoder de hardware (mediacodec / mediacodec-copy / videotoolbox) se
-  // REINICIA por completo cada vez que se escribe la propiedad `hwdec`,
-  // aunque el valor destino sea igual al que ya estaba activo — mpv no hace
-  // ese chequeo por nosotros. Si no lo cacheamos acá, cada oscilación de
-  // NetworkQuality (good↔fair con la misma señal real) dispara un
-  // reinicio de decoder completo (flush + release + create) en pleno
-  // playback, causando micro-cortes con la red totalmente estable.
-  String? _lastAppliedHwdec;
-  String? _lastAppliedProfileName;
-
-  void resetState() {
-    _lastAppliedHwdec = null;
-    _lastAppliedProfileName = null;
-  }
-
   // ── Perfiles ─────────────────────────────────────────────────────────────
 
   static const AdaptiveBufferConfig _excellent = AdaptiveBufferConfig(
@@ -84,7 +70,7 @@ class AdaptiveBufferService {
     demuxerMaxBackBytes: 67108864, // 64 MB
     streamBufferSize: 16777216, // 16 MB
     demuxerReadaheadSecs: 180,
-    cachePauseWait: '5',
+    cachePauseWait: '2',
     hwdec: 'mediacodec', // Zero-copy, máxima eficiencia
     skipLoopFilter: 'none',
     framedrop: 'vo',
@@ -93,7 +79,7 @@ class AdaptiveBufferService {
     networkTimeout: 60,
     reconnectSleep: '0.5',
     httpPipelining: true,
-    hlsBitrate: 'auto',
+    hlsBitrate: 'max',
   );
 
   static const AdaptiveBufferConfig _good = AdaptiveBufferConfig(
@@ -103,7 +89,7 @@ class AdaptiveBufferService {
     demuxerMaxBackBytes: 33554432, // 32 MB
     streamBufferSize: 8388608, // 8 MB
     demuxerReadaheadSecs: 90,
-    cachePauseWait: '8',
+    cachePauseWait: '3',
     hwdec: 'mediacodec',
     skipLoopFilter: 'none',
     framedrop: 'vo',
@@ -122,10 +108,11 @@ class AdaptiveBufferService {
     demuxerMaxBackBytes: 10485760, // 10 MB
     streamBufferSize: 4194304, // 4 MB
     demuxerReadaheadSecs: 30,
-    cachePauseWait: '12', // Esperar 12s antes de reanudar para acumular colchón de buffer
-    hwdec: 'mediacodec', // Mantener zero-copy para no reiniciar el decoder
-    skipLoopFilter: 'none',
-    framedrop: 'vo',
+    cachePauseWait: '5', // Esperar 5s antes de pausar para acumular buffer
+    hwdec: 'mediacodec-copy', // Más estable en dispositivos mid-range
+    skipLoopFilter:
+        'nonref', // Saltar filtro en frames no-referencia → -20% CPU
+    framedrop: 'decoder+vo', // Drop agresivo para mantener sync
     fastDecoding: true,
     videoSync: 'audio',
     networkTimeout: 30,
@@ -141,22 +128,20 @@ class AdaptiveBufferService {
     demuxerMaxBackBytes: 4194304, // 4 MB
     streamBufferSize: 2097152, // 2 MB
     demuxerReadaheadSecs: 10,
-    cachePauseWait: '15', // Acumular 15s de buffer antes de reanudar
-    hwdec: 'mediacodec',
-    // Ver nota en el perfil Fair: los valores 'nonref'/'nonkey' rompen el
-    // stream con decoders de hardware (mediacodec/videotoolbox).
-    skipLoopFilter: 'none',
-    framedrop: 'vo',
+    cachePauseWait: '8', // Acumular más buffer antes de reproducir
+    hwdec: 'mediacodec-copy',
+    skipLoopFilter: 'nonkey', // Solo decodificar keyframes referencia
+    framedrop: 'decoder+vo',
     fastDecoding: true,
     videoSync: 'audio',
     networkTimeout: 20,
     reconnectSleep: '2',
     httpPipelining: false,
-    // skip_frame=nonref (vd-lavc-o) tampoco es fiable con decoders de
-    // hardware; el ahorro real ya viene de framedrop + hls-bitrate=min.
-    dropNonRefFrames: false,
+    dropNonRefFrames: true, // Modo de emergencia: solo keyframes
     hlsBitrate: 'min',
   );
+
+  void resetState() {}
 
   AdaptiveBufferConfig getConfig(NetworkQuality quality) {
     switch (quality) {
@@ -180,86 +165,82 @@ class AdaptiveBufferService {
     bool isLive = false,
   }) async {
     if (mpv == null) return;
+
+    // ── LIVE: perfil RESILIENTE al jitter (no data-saver) ────────────────────
+    // La TV en vivo es un stream de bitrate único (.ts/HLS sin escalera ABR):
+    // no se puede "bajar de calidad", así que el único remedio real contra el
+    // jitter de datos móviles es un buffer amplio y un decoder estable.
+    // Los perfiles VOD degradados hacían lo contrario (encoger buffer a 5-20s +
+    // decodificar solo keyframes), lo que provoca justo el síntoma clásico:
+    // cortes cada 1-3s y pantalla en negro. Por eso el live tiene su propia
+    // ruta, que AUMENTA la colchoneta cuando la red flaquea en lugar de recortarla.
+    if (isLive) {
+      await _applyLiveResilientConfig(mpv, quality);
+      return;
+    }
+
     final cfg = getConfig(quality);
-
-    // VOD con red débil: NO encoger el buffer. En un archivo único (sin
-    // variantes de calidad) la defensa real contra cortes es acumular más
-    // segundos mientras haya señal; reducir el readahead cuando la red
-    // empeora deja al player sin margen justo cuando más lo necesita.
-    // En live sí se reduce: ahí manda la latencia.
-    int cacheSecs = cfg.cacheSecs;
-    int demuxerMaxBytes = cfg.demuxerMaxBytes;
-    int demuxerMaxBackBytes = cfg.demuxerMaxBackBytes;
-    int streamBufferSize = cfg.streamBufferSize;
-    int readaheadSecs = cfg.demuxerReadaheadSecs;
-    if (!isLive) {
-      if (cacheSecs < _good.cacheSecs) cacheSecs = _good.cacheSecs;
-      if (demuxerMaxBytes < _good.demuxerMaxBytes) {
-        demuxerMaxBytes = _good.demuxerMaxBytes;
-      }
-      if (demuxerMaxBackBytes < _good.demuxerMaxBackBytes) {
-        demuxerMaxBackBytes = _good.demuxerMaxBackBytes;
-      }
-      if (streamBufferSize < _good.streamBufferSize) {
-        streamBufferSize = _good.streamBufferSize;
-      }
-      if (readaheadSecs < _good.demuxerReadaheadSecs) {
-        readaheadSecs = _good.demuxerReadaheadSecs;
-      }
-    }
-
-    // En gama baja limitamos los buffers en RAM independientemente del perfil:
-    // 128–256 MB de demuxer pueden provocar kills por memoria en dispositivos
-    // de 2–3 GB de RAM.
-    if (PerformanceService().isLowPerformance) {
-      if (demuxerMaxBytes > 67108864) demuxerMaxBytes = 67108864; // 64 MB
-      if (demuxerMaxBackBytes > 16777216) {
-        demuxerMaxBackBytes = 16777216; // 16 MB
-      }
-      if (streamBufferSize > 4194304) streamBufferSize = 4194304; // 4 MB
-    }
 
     debugPrint('AdaptiveBuffer: Applying profile "${cfg.name}"');
 
+    // ── VOD: el buffer NUNCA se encoge por red débil ────────────────────────
+    // Una película es un archivo único sin variantes de calidad: la ÚNICA
+    // defensa contra cortes (túneles, ascensores, señal fluctuante en datos
+    // móviles) es acumular MÁS buffer mientras hay señal. Los perfiles
+    // "data saver" que reducían cache/readahead eran contraproducentes.
+    // Piso = perfil normal (180s / 128MB / readahead 90s); la gama baja
+    // mantiene su tope de RAM (~64MB) para no provocar GC/ANR.
+    final bool lowMem = PerformanceService().lowMemoryLimit;
+    final int cacheSecs = lowMem ? 90 : math.max(cfg.cacheSecs, 180);
+    final int maxBytes =
+        lowMem ? 67108864 : math.max(cfg.demuxerMaxBytes, 134217728);
+    final int backBytes =
+        lowMem ? 16777216 : math.max(cfg.demuxerMaxBackBytes, 33554432);
+    final int readahead = lowMem ? 60 : math.max(cfg.demuxerReadaheadSecs, 90);
+    final int streamBuf = math.max(cfg.streamBufferSize, 8388608);
+
     try {
-      // Buffer — estas propiedades son de cache/demuxer, mpv las aplica
-      // sin reiniciar el pipeline de video, así que no hace falta cachearlas.
+      // Buffer (con piso VOD — ver bloque de arriba)
       await mpv.setProperty('cache-secs', cacheSecs.toString());
-      await mpv.setProperty('demuxer-max-bytes', demuxerMaxBytes.toString());
-      await mpv.setProperty(
-        'demuxer-max-back-bytes',
-        demuxerMaxBackBytes.toString(),
-      );
-      await mpv.setProperty('stream-buffer-size', streamBufferSize.toString());
-      await mpv.setProperty('demuxer-readahead-secs', readaheadSecs.toString());
+      await mpv.setProperty('demuxer-max-bytes', maxBytes.toString());
+      await mpv.setProperty('demuxer-max-back-bytes', backBytes.toString());
+      await mpv.setProperty('stream-buffer-size', streamBuf.toString());
+      await mpv.setProperty('demuxer-readahead-secs', readahead.toString());
       await mpv.setProperty('cache-pause-wait', cfg.cachePauseWait);
 
-      // Decoder — `hwdec` SÍ reinicia el decoder de video al escribirse
-      // (flush + release + create de MediaCodec/VideoToolbox), sin importar
-      // si el valor nuevo es igual al actual. Por eso acá NO seguimos el
-      // patrón de las demás propiedades: solo tocamos la propiedad si el
-      // valor realmente cambió respecto al último aplicado.
-      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
-        if (cfg.hwdec != _lastAppliedHwdec) {
-          debugPrint(
-            'AdaptiveBuffer: hwdec cambia de $_lastAppliedHwdec a '
-            '${cfg.hwdec} — reiniciando decoder',
-          );
-          await mpv.setProperty('hwdec', cfg.hwdec);
-          _lastAppliedHwdec = cfg.hwdec;
-        }
-      }
+      // ── Decoder — hardware-safe en Android E iOS ───────────────────────────
+      // En Android el decoder es mediacodec y en iOS es videotoolbox (AMBOS
+      // hardware) y NO se debe:
+      //  (a) cambiar 'hwdec' EN CALIENTE → fuerza reinicio del decoder =
+      //      parpadeo negro/stutter cada vez que la red cambia a mitad de peli.
+      //      El hwdec correcto ya se fijó al abrir el media (según gama/reintento).
+      //  (b) enviar skiploopfilter/skip_frame 'nonref' → argumento inválido para
+      //      el codec HW → error de stream → recarga → pantalla negra.
+      //  (c) usar framedrop 'decoder' → drops a nivel de codec HW = stutter.
+      // Estas optimizaciones de CPU solo son válidas y útiles en decoders de
+      // software (desktop), así que las aplicamos únicamente allí. (Antes iOS
+      // caía en la rama "software" y recibía nonref/nonkey con videotoolbox →
+      // error de stream → reload, justo cuando la red estaba débil.)
+      final bool hwDecoder =
+          !kIsWeb &&
+          (defaultTargetPlatform == TargetPlatform.android ||
+              defaultTargetPlatform == TargetPlatform.iOS);
 
-      if (cfg.name != _lastAppliedProfileName) {
+      if (hwDecoder) {
+        // hwdec: NO se toca en caliente (evita reinicio del decoder).
+        await mpv.setProperty('vd-lavc-skiploopfilter', 'none');
+        await mpv.setProperty(
+          'framedrop',
+          'vo',
+        ); // solo en pantalla, nunca en el codec
+        await mpv.setProperty(
+          'vd-lavc-o',
+          'err_detect=ignore_err,flags2=+fast',
+        );
+      } else {
         await mpv.setProperty('vd-lavc-skiploopfilter', cfg.skipLoopFilter);
         await mpv.setProperty('framedrop', cfg.framedrop);
-        await mpv.setProperty(
-          'vd-lavc-fast-decoding',
-          cfg.fastDecoding ? 'yes' : 'no',
-        );
-        await mpv.setProperty('video-sync', cfg.videoSync);
-
-        // Modo emergencia: solo decodificar keyframes
+        // Modo emergencia (solo software): decodificar casi solo keyframes.
         if (cfg.dropNonRefFrames) {
           await mpv.setProperty(
             'vd-lavc-o',
@@ -271,8 +252,12 @@ class AdaptiveBufferService {
             'err_detect=ignore_err,flags2=+fast',
           );
         }
-        _lastAppliedProfileName = cfg.name;
       }
+      await mpv.setProperty(
+        'vd-lavc-fast-decoding',
+        cfg.fastDecoding ? 'yes' : 'no',
+      );
+      await mpv.setProperty('video-sync', cfg.videoSync);
 
       // Red
       await mpv.setProperty('network-timeout', cfg.networkTimeout.toString());
@@ -286,14 +271,83 @@ class AdaptiveBufferService {
       if (cfg.hlsBitrate != null) {
         await mpv.setProperty('hls-bitrate', cfg.hlsBitrate!);
       }
-
-      // Si es live y la calidad es mala, usar menor latencia de buffer
-      if (isLive && quality == NetworkQuality.poor) {
-        await mpv.setProperty('cache-pause-wait', '3');
-        await mpv.setProperty('demuxer-readahead-secs', '5');
-      }
     } catch (e) {
       debugPrint('AdaptiveBuffer: Error applying config: $e');
+    }
+  }
+
+  /// Perfil de buffer para TV EN VIVO, diseñado para absorber el jitter de
+  /// datos móviles sin cortes. Regla de oro: cuando la red flaquea NO se
+  /// reduce el buffer — se AMPLÍA la colchoneta de tiempo y se sube el umbral
+  /// de reanudación para no caer en el ciclo pausa-1s→reproduce-1s (thrash).
+  /// Además, el decoder se mantiene 100% seguro para hardware (mediacodec):
+  /// jamás keyframe-only ni skiploopfilter 'nonref', que en Android generan
+  /// error de stream → recarga → pantalla negra.
+  Future<void> _applyLiveResilientConfig(
+    dynamic mpv,
+    NetworkQuality quality,
+  ) async {
+    final bool weak =
+        quality == NetworkQuality.poor ||
+        quality == NetworkQuality.fair ||
+        quality == NetworkQuality.offline;
+
+    debugPrint(
+      'AdaptiveBuffer: Applying LIVE-resilient profile '
+      '(${quality.name}${weak ? ' → colchón ampliado' : ''})',
+    );
+
+    try {
+      // ── Buffer: piso alto SIEMPRE; más colchón de tiempo si la red es débil ──
+      await mpv.setProperty('cache', 'yes');
+      await mpv.setProperty('cache-secs', weak ? '240' : '180');
+      await mpv.setProperty('demuxer-max-bytes', '134217728'); // 128 MB fijo
+      await mpv.setProperty('demuxer-max-back-bytes', '33554432'); // 32 MB
+      // Colchón de tiempo GRANDE en red débil para absorber el jitter (NO 5-10s).
+      await mpv.setProperty('demuxer-readahead-secs', weak ? '60' : '40');
+      await mpv.setProperty('stream-buffer-size', '8388608'); // 8 MB
+
+      // ── Reanudación tras vaciado: esperar un colchón SANO antes de volver a
+      // reproducir para romper el thrash. Más alto en red débil. ──────────────
+      await mpv.setProperty('cache-pause', 'yes');
+      await mpv.setProperty('cache-pause-wait', weak ? '4' : '3');
+
+      // ── Decoder: hardware-safe SIEMPRE ──────────────────────────────────────
+      // En Android (mediacodec) e iOS (videotoolbox) el loop-filter y el drop
+      // de frames los hace el propio codec. Enviar skiploopfilter/skip_frame
+      // 'nonref' genera un argumento inválido → error de stream → recarga →
+      // pantalla negra. Solo en decoders de software (desktop) se puede
+      // ahorrar CPU con el loop filter.
+      final bool hwDecoder =
+          !kIsWeb &&
+          (defaultTargetPlatform == TargetPlatform.android ||
+              defaultTargetPlatform == TargetPlatform.iOS);
+      if (hwDecoder) {
+        await mpv.setProperty('vd-lavc-skiploopfilter', 'none');
+      } else {
+        // En decoders de software sí podemos ahorrar CPU con el loop filter.
+        await mpv.setProperty(
+          'vd-lavc-skiploopfilter',
+          weak ? 'nonref' : 'none',
+        );
+      }
+      // framedrop=vo descarta solo en pantalla (nunca en el decoder) → no
+      // desincroniza ni provoca flushes del codec por hardware.
+      await mpv.setProperty('framedrop', 'vo');
+      await mpv.setProperty('vd-lavc-fast-decoding', 'yes');
+      await mpv.setProperty('vd-lavc-o', 'err_detect=ignore_err,flags2=+fast');
+      await mpv.setProperty('video-sync', 'audio');
+
+      // ── Red: timeouts GENEROSOS para live en móvil. Un pico de latencia
+      // normal en 4G no debe disparar una reconexión prematura. ───────────────
+      await mpv.setProperty('network-timeout', weak ? '30' : '20');
+      await mpv.setProperty('http-reconnect', 'yes');
+      await mpv.setProperty('http-reconnect-sleep', '0.5');
+      // HLS: mantener 'auto'. 'min' fuerza la peor calidad sin necesidad y para
+      // .ts crudo (Xtream) no aplica.
+      await mpv.setProperty('hls-bitrate', 'auto');
+    } catch (e) {
+      debugPrint('AdaptiveBuffer: Error applying LIVE-resilient config: $e');
     }
   }
 }

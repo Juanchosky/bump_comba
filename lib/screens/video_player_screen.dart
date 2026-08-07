@@ -22,6 +22,7 @@ import '../services/cast_service.dart';
 import '../services/network_quality_service.dart';
 import '../services/adaptive_buffer_service.dart';
 import '../services/video_prewarm_service.dart';
+import '../services/turbo_proxy.dart';
 import 'package:http/http.dart' as http;
 
 import '../utils/snack_bar_utils.dart';
@@ -133,6 +134,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool _blackScreenReloadDone = false;
   double _dragValue = 0.0;
   Timer? _hideControlsTimer;
+
+  // ── TurboProxy (aceleración VOD multi-conexión) ──────────────────────────
+  Timer? _turboWatchdog;
+  bool _turboActive = false;
+  int _lastTurboProgressSec = -1;
+  int _lastTurboLogBytes = 0;
+  DateTime _lastTurboLogAt = DateTime.now();
+  String _diagTurbo = '-';
 
   // ── Panel de diagnóstico en pantalla (toque largo en el título) ──────────
   bool _showDiagPanel = false;
@@ -409,6 +418,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _progressSaveTimer?.cancel();
     _noticeTimer?.cancel();
     _diagTimer?.cancel();
+    _turboWatchdog?.cancel();
 
     for (final s in _streamSubscriptions) {
       s.cancel();
@@ -703,11 +713,33 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
 
     try {
-      // iOS NUNCA reutiliza un player precalentado: media_kit necesita el
-      // VideoController adjunto al abrir el media para inicializar la salida de
-      // video (de lo contrario: audio OK, video negro). En iOS siempre abrimos
-      // un player fresco con la textura ya montada.
-      await _cleanupPlayer();
+      final bool isIOSPlatform = defaultTargetPlatform == TargetPlatform.iOS;
+      final isPrewarmed =
+          !isLocalReload &&
+          (!isIOSPlatform &&
+              widget.prewarmedPlayer != null &&
+              widget.prewarmedPlayer!.platform != null &&
+              _retryCount == 0);
+
+      // Si llegó un player precalentado en iOS (no debería, pero por seguridad),
+      // lo liberamos para que no quede consumiendo recursos en segundo plano.
+      if (isIOSPlatform &&
+          widget.prewarmedPlayer != null &&
+          _retryCount == 0 &&
+          !isLocalReload) {
+        try {
+          final pw = widget.prewarmedPlayer!;
+          final mpv = pw.platform as dynamic;
+          mpv?.setProperty('vid', 'no');
+          mpv?.setProperty('vo', 'null');
+          await pw.stop();
+          await pw.dispose();
+        } catch (_) {}
+      }
+
+      if (!isPrewarmed) {
+        await _cleanupPlayer();
+      }
 
       AdService().recordVideoStart();
 
@@ -746,27 +778,32 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         }
       });
 
-      final currentPlayer = Player(
-        configuration: PlayerConfiguration(
-          // En gama baja, 256 MB de buffer nativo arriesgan un kill por
-          // memoria del SO (dispositivos de 2–3 GB de RAM).
-          bufferSize:
-              PerformanceService().isLowPerformance
-                  ? 64 * 1024 * 1024
-                  : 256 * 1024 * 1024,
-          title: 'Bump Comba Player',
-          logLevel: MPVLogLevel.error,
-          libass: true, // ← Renderizador nativo, mucho más eficiente
-        ),
-      );
-      // -- CRITICAL SILENCING --
-      // Mute native engine IMMEDIATELY after creation to prevent callbacks
-      // that could survive a Hot Restart.
-      try {
-        final mpv = currentPlayer.platform as dynamic;
-        mpv?.setProperty('terminal', 'no');
-        mpv?.setProperty('msg-level', 'all=no');
-      } catch (_) {}
+      Player currentPlayer;
+      if (isPrewarmed) {
+        currentPlayer = widget.prewarmedPlayer!;
+      } else {
+        currentPlayer = Player(
+          configuration: PlayerConfiguration(
+            // En gama baja, 256 MB de buffer nativo arriesgan un kill por
+            // memoria del SO (dispositivos de 2–3 GB de RAM).
+            bufferSize:
+                PerformanceService().isLowPerformance
+                    ? 64 * 1024 * 1024
+                    : 256 * 1024 * 1024,
+            title: 'Bump Comba Player',
+            logLevel: MPVLogLevel.error,
+            libass: true, // ← Renderizador nativo, mucho más eficiente
+          ),
+        );
+        // -- CRITICAL SILENCING --
+        // Mute native engine IMMEDIATELY after creation to prevent callbacks
+        // that could survive a Hot Restart.
+        try {
+          final mpv = currentPlayer.platform as dynamic;
+          mpv?.setProperty('terminal', 'no');
+          mpv?.setProperty('msg-level', 'all=no');
+        } catch (_) {}
+      }
 
       _player = currentPlayer;
       AdaptiveBufferService().resetState();
@@ -988,62 +1025,107 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         await frameReady.future;
       }
 
-      await _player!.open(
-        Media(resolvedUrl, httpHeaders: _buildHeaders(currentUrl)),
-        play: shouldPlayLocally,
-      );
+      _turboWatchdog?.cancel();
+      _turboActive = false;
+      _lastTurboProgressSec = -1;
+      _lastTurboLogBytes = 0;
+      _lastTurboLogAt = DateTime.now();
 
-      // Cargar y registrar subtítulos extraídos de la web (VTT/SRT)
-      if (_scrapedSubtitles.isNotEmpty && _player != null) {
-        for (final sub in _scrapedSubtitles) {
+      if (!isPrewarmed) {
+        // ── TurboProxy: acelerar VOD directo con descargas multi-conexión ──
+        // Solo VOD local (no live, no cast: si casteamos, el dispositivo
+        // receptor descarga por su cuenta). Fallback total y silencioso.
+        String playbackUrl = resolvedUrl;
+        final headers = _buildHeaders(currentUrl);
+        if (!_isLiveContent && !castService.isCasting.value) {
           try {
-            debugPrint(
-              'VideoPlayerScreen: Registering Web Subtitle (${sub.label}): ${sub.url}',
-            );
-            await _player?.setSubtitleTrack(
-              SubtitleTrack.uri(
-                sub.url,
-                title: sub.label,
-                language: sub.language,
-              ),
-            );
-          } catch (e) {
-            debugPrint('VideoPlayerScreen: Error adding subtitle track: $e');
+            final turbo = await TurboProxy()
+                .wrap(resolvedUrl, headers)
+                .timeout(const Duration(seconds: 7));
+            if (turbo != null) {
+              playbackUrl = turbo;
+              _turboActive = true;
+            }
+          } catch (_) {
+            // Silencioso: seguimos con resolvedUrl.
           }
         }
 
-        // Auto-activar pista en español si existe
-        final tracks = _player?.state.tracks.subtitle ?? [];
-        for (final t in tracks) {
-          final tTitle = (t.title ?? t.language ?? '').toLowerCase();
-          if (tTitle.contains('es') ||
-              tTitle.contains('spa') ||
-              tTitle.contains('lat') ||
-              tTitle.contains('web')) {
-            await _player?.setSubtitleTrack(t);
-            if (mounted) setState(() => _subtitlesEnabled = true);
-            break;
+        await _player!.open(
+          Media(playbackUrl, httpHeaders: headers, start: startFrom),
+          play: shouldPlayLocally,
+        );
+
+        if (!mounted || _player == null) return;
+
+        // Watchdog de auto-recuperación
+        if (_turboActive) {
+          _turboWatchdog = Timer(const Duration(seconds: 8), () async {
+            if (!mounted || _player == null) return;
+            final st = _player!.state;
+            if (st.position == Duration.zero && st.duration == Duration.zero) {
+              debugPrint(
+                'TurboProxy watchdog: sin avance en 8s → reabriendo con URL directa',
+              );
+              _turboActive = false;
+              try {
+                await _player!.open(
+                  Media(resolvedUrl, httpHeaders: headers, start: startFrom),
+                  play: shouldPlayLocally,
+                );
+                final mpvWd = _player?.platform as dynamic;
+                await mpvWd?.setProperty('vid', 'auto');
+              } catch (e) {
+                debugPrint('TurboProxy watchdog: fallo al reabrir directo: $e');
+              }
+            }
+          });
+        }
+
+        // Cargar y registrar subtítulos extraídos de la web (VTT/SRT)
+        if (_scrapedSubtitles.isNotEmpty && _player != null) {
+          for (final sub in _scrapedSubtitles) {
+            try {
+              debugPrint(
+                'VideoPlayerScreen: Registering Web Subtitle (${sub.label}): ${sub.url}',
+              );
+              await _player?.setSubtitleTrack(
+                SubtitleTrack.uri(
+                  sub.url,
+                  title: sub.label,
+                  language: sub.language,
+                ),
+              );
+            } catch (e) {
+              debugPrint('VideoPlayerScreen: Error adding subtitle track: $e');
+            }
+          }
+
+          // Auto-activar pista en español si existe
+          final tracks = _player?.state.tracks.subtitle ?? [];
+          for (final t in tracks) {
+            final tTitle = (t.title ?? t.language ?? '').toLowerCase();
+            if (tTitle.contains('es') ||
+                tTitle.contains('spa') ||
+                tTitle.contains('lat') ||
+                tTitle.contains('web')) {
+              await _player?.setSubtitleTrack(t);
+              if (mounted) setState(() => _subtitlesEnabled = true);
+              break;
+            }
           }
         }
-      }
-      // REFUERZO del fix vid=auto: tras open(), volvemos a forzar la
-      // selección de pista de video (salvo en Cast). Cubre el caso en que
-      // el VideoController de media_kit no logró poner vid=auto al adjuntarse
-      // en iOS, dejando el video desactivado (audio sí, video 0×0).
-      if (!castService.isCasting.value) {
-        try {
-          final mpvActive = _player?.platform as dynamic;
-          await mpvActive?.setProperty('vid', 'auto');
-        } catch (_) {}
-      }
-      // Durante Cast sin audio local, cerramos la descarga del player local
-      // completamente para liberar el ancho de banda al Chromecast.
-      // Un player pausado-pero-abierto sigue consumiendo red en background.
-      if (castService.isCasting.value && !_localAudioDuringCast) {
-        await Future.delayed(const Duration(milliseconds: 300));
-        try {
-          _player?.stop();
-        } catch (_) {}
+      } else {
+        if (!mounted || _player == null) return;
+        if (shouldPlayLocally) {
+          try {
+            _player!.play();
+          } catch (_) {}
+        } else {
+          try {
+            _player!.pause();
+          } catch (_) {}
+        }
       }
 
       // Sincronizar con Chromecast si estamos transmitiendo
@@ -1341,6 +1423,30 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       _player!.stream.position.listen((position) {
         if (!mounted || _player == null) return;
         final duration = _player!.state.duration;
+
+        // Log de progreso (1×/s) SOLO con TurboProxy activo: confirma que la
+        // reproducción AVANZA de verdad, no solo que el stream abrió.
+        if (_turboActive) {
+          final sec = position.inSeconds;
+          if (sec != _lastTurboProgressSec) {
+            _lastTurboProgressSec = sec;
+            // Mbps de bajada del origen, con muestreo propio (no toca el del panel).
+            final now = DateTime.now();
+            final bytesNow = TurboProxy().currentBytesDownloaded;
+            final dtMs = now.difference(_lastTurboLogAt).inMilliseconds;
+            final delta = bytesNow - _lastTurboLogBytes;
+            final mbps =
+                (dtMs > 0 && delta >= 0) ? (delta * 8) / (dtMs * 1000) : 0.0;
+            _lastTurboLogBytes = bytesNow;
+            _lastTurboLogAt = now;
+            debugPrint(
+              'TurboProxy playback: pos=${sec}s '
+              'dur=${duration.inSeconds}s buf=${_player!.state.buffer.inSeconds}s '
+              '↓${mbps.toStringAsFixed(1)}Mbps',
+            );
+          }
+        }
+
         if (duration.inSeconds == 0) return;
 
         // 1. Detección de fin de episodio (antes de los créditos)
@@ -5354,6 +5460,19 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           }
         }
         _diagVideoTracks = _player?.state.tracks.video.length ?? -1;
+
+        // ── TurboProxy: velocidad real de bajada desde el origen ──
+        final tp = TurboProxy();
+        final mbps = tp.sampleMbps();
+        if (tp.isActive) {
+          _diagTurbo =
+              '⚡ ${mbps.toStringAsFixed(1)} Mbps · '
+              '${tp.currentParallel} conex · '
+              '${tp.currentTotalMB.toStringAsFixed(0)} MB';
+        } else {
+          _diagTurbo = 'inactivo — ${tp.lastReason}';
+        }
+
         if (mounted && _showDiagPanel) setState(() {});
       });
     }
@@ -5371,6 +5490,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
     final lines = <String>[
       line('Plataforma', defaultTargetPlatform.name),
+      line('TurboProxy', _diagTurbo),
       line('Decoder', _activeDecoder),
       line('Retry', '$_retryCount'),
       line('Reproduciendo', (st?.playing ?? false) ? 'sí' : 'no'),
