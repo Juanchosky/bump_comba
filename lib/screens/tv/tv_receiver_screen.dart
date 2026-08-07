@@ -131,9 +131,13 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
         mpv.setProperty('cache-pause', 'yes'),
         mpv.setProperty('hls-bitrate', 'min'),
         mpv.setProperty('stream-buffer-size', '8388608'),
-        mpv.setProperty('network-timeout', '15'),
+        mpv.setProperty('network-timeout', '35'),
         mpv.setProperty('http-reconnect', 'yes'),
         mpv.setProperty('http-reconnect-sleep', '0.5'),
+        mpv.setProperty(
+          'stream-lavf-o',
+          'reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,reconnect_delay_max=2,reconnect_on_network_error=1,reconnect_on_http_error=5xx,429',
+        ),
         mpv.setProperty('http-pipelining', 'yes'),
         mpv.setProperty('tls-verify', 'no'),
         mpv.setProperty('force-seekable', 'yes'),
@@ -242,11 +246,20 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
         final mpv = _player.platform as dynamic;
         if (mpv != null) {
           if (isFromDB) {
-            // Contenido de la base de datos: reproducir en la máxima calidad HD disponible
+            // Contenido de la base de datos: máxima calidad HD, suavizado de bordes pixelados en luz lineal y deblocking por hardware
             await mpv.setProperty('hls-bitrate', 'max');
+            await mpv.setProperty('scale', 'mitchell');
+            await mpv.setProperty('cscale', 'mitchell');
+            await mpv.setProperty('linear-upscale', 'yes');
+            await mpv.setProperty('deband', 'no');
+            // Forzar deblocking de hardware (elimina macrobloques pixelados 720p en el decodificador H.264 a 60 FPS)
+            await mpv.setProperty('vd-lavc-skiploopfilter', 'none');
+            await mpv.setProperty('sws-scaler', 'bicubic');
           } else {
             // Canales IPTV normales: optimizado para evitar cortes en TV
             await mpv.setProperty('hls-bitrate', 'min');
+            await mpv.setProperty('scale', 'bilinear');
+            await mpv.setProperty('deband', 'no');
           }
         }
       } catch (_) {}

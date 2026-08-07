@@ -43,7 +43,9 @@ class NormalizationUtils {
     String result = category.trim();
 
     // 2. Eliminar etiquetas comunes entre corchetes o paréntesis
-    result = result.replaceAll(RegExp(r'\[.*?\]'), '').replaceAll(RegExp(r'\(.*?\)'), '');
+    result = result
+        .replaceAll(RegExp(r'\[.*?\]'), '')
+        .replaceAll(RegExp(r'\(.*?\)'), '');
 
     // 3. Eliminar términos técnicos sueltos
     result = result.replaceAll(
@@ -59,7 +61,7 @@ class NormalizationUtils {
 
     if (result.isEmpty) return 'General';
 
-  /// Title Case: Primera Mayúscula, demás minúsculas
+    /// Title Case: Primera Mayúscula, demás minúsculas
     return result[0].toUpperCase() + result.substring(1).toLowerCase();
   }
 
@@ -71,11 +73,16 @@ class NormalizationUtils {
     String result = name.toLowerCase();
 
     // 1. Eliminar años entre paréntesis o solos (ej: (2024), 2023)
-    result = result.replaceAll(RegExp(r'[\(\[\{]?\b(19|20)\d{2}\b[\)\]\}]?'), '');
+    result = result.replaceAll(
+      RegExp(r'[\(\[\{]?\b(19|20)\d{2}\b[\)\]\}]?'),
+      '',
+    );
 
     // 2. Eliminar etiquetas de calidad y técnicas
     result = result.replaceAll(
-      RegExp(r'\b(4k|uhd|fhd|hd|sd|720p|1080p|latino|castellano|español|multi|sub|scr|cam|ts)\b'),
+      RegExp(
+        r'\b(4k|uhd|fhd|hd|sd|720p|1080p|latino|castellano|español|multi|sub|scr|cam|ts)\b',
+      ),
       '',
     );
 
@@ -86,7 +93,10 @@ class NormalizationUtils {
     result = result.replaceAll(RegExp(r'\s+'), ' ').trim();
 
     // 5. Eliminar prefijos comunes redundantes (opcional pero reduce ruido)
-    result = result.replaceFirst(RegExp(r'^(the|tv series|series|serie)\s+'), '');
+    result = result.replaceFirst(
+      RegExp(r'^(the|tv series|series|serie)\s+'),
+      '',
+    );
 
     return result;
   }
@@ -125,7 +135,10 @@ class NormalizationUtils {
     final patterns = [
       RegExp(r'\bS\d+E(\d+)\b', caseSensitive: false),
       RegExp(r'\bE(\d+)\b', caseSensitive: false),
-      RegExp(r'\b(?:Cap|Capitulo|Episodio|Episode|Cap\.|Ep\.)\s*(\d+)\b', caseSensitive: false),
+      RegExp(
+        r'\b(?:Cap|Capitulo|Episodio|Episode|Cap\.|Ep\.)\s*(\d+)\b',
+        caseSensitive: false,
+      ),
       RegExp(r'\d+x(\d+)\b', caseSensitive: false),
     ];
 
@@ -186,7 +199,7 @@ class NormalizationUtils {
     const withoutDia =
         'AAAAAAaaaaaaOOOOOOOooooooEEEEeeeeecCcDIIIIiiiiUUUUuuuuNnSsYyyZz';
     for (int i = 0; i < withDia.length; i++) {
-       str = str.replaceAll(withDia[i], withoutDia[i]);
+      str = str.replaceAll(withDia[i], withoutDia[i]);
     }
     return str;
   }
