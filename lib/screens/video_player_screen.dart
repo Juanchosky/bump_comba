@@ -3667,6 +3667,22 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                     ),
                   ),
                   const Divider(color: Colors.white12, height: 1),
+                  if (!_currentItem.isLive)
+                    ListTile(
+                      leading: const Icon(Icons.speed, color: Colors.white),
+                      title: const Text(
+                        'Velocidad',
+                        style: TextStyle(color: Colors.white),
+                      ),
+                      trailing: const Icon(
+                        Icons.chevron_right,
+                        color: Colors.white54,
+                      ),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _showSpeedSelection();
+                      },
+                    ),
                   if (_serverItems.length > 1 || _serverUrls.length > 1)
                     ListTile(
                       leading: const Icon(
@@ -3684,22 +3700,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                       onTap: () {
                         Navigator.pop(context);
                         _showServerSelection();
-                      },
-                    ),
-                  if (!_currentItem.isLive)
-                    ListTile(
-                      leading: const Icon(Icons.speed, color: Colors.white),
-                      title: const Text(
-                        'Velocidad',
-                        style: TextStyle(color: Colors.white),
-                      ),
-                      trailing: const Icon(
-                        Icons.chevron_right,
-                        color: Colors.white54,
-                      ),
-                      onTap: () {
-                        Navigator.pop(context);
-                        _showSpeedSelection();
                       },
                     ),
                   ListTile(
