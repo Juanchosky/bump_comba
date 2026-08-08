@@ -4587,6 +4587,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   Widget _buildVideoLoading({bool showBackground = false}) {
     _startSpeedPolling();
+    final size = MediaQuery.of(context).size;
+    final double scale = (size.shortestSide / 414.0).clamp(0.8, 1.25) * 1.02;
+    final double spinnerSize = 56.0 * scale;
+
     return Stack(
       children: [
         if (showBackground)
@@ -4618,63 +4622,60 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           ),
         Align(
           alignment: Alignment.center,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
+          child: Stack(
+            alignment: Alignment.center,
+            clipBehavior: Clip.none,
             children: [
-              defaultTargetPlatform == TargetPlatform.iOS
-                  ? CupertinoActivityIndicator(
-                    radius:
-                        16.0 *
-                        ((MediaQuery.of(context).size.shortestSide / 414.0)
-                                .clamp(0.8, 1.25) *
-                            1.02),
-                    color: Colors.white,
-                  )
-                  : _AppLoadingAnimation(
-                    size:
-                        56.0 *
-                        ((MediaQuery.of(context).size.shortestSide / 414.0)
-                                .clamp(0.8, 1.25) *
-                            1.02),
-                    strokeWidth:
-                        3.5 *
-                        ((MediaQuery.of(context).size.shortestSide / 414.0)
-                                .clamp(0.8, 1.25) *
-                            1.02),
-                  ),
-              const SizedBox(height: 18),
-              ValueListenableBuilder<double>(
-                valueListenable: _downloadSpeedBytesPerSec,
-                builder: (context, bytesPerSec, _) {
-                  final text = _formatLoadingSpeed(bytesPerSec);
-                  final size = MediaQuery.of(context).size;
-                  final double scale =
-                      (size.shortestSide / 414.0).clamp(0.8, 1.25) * 1.02;
-                  return Container(
-                    padding: EdgeInsets.symmetric(
-                      horizontal: 16 * scale,
-                      vertical: 7 * scale,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.55),
-                      borderRadius: BorderRadius.circular(20 * scale),
-                      border: Border.all(
-                        color: const Color.fromARGB(14, 255, 255, 255),
-                        width: 1,
+              // Spinner centrado exactamente al mismo nivel que los botones de reproducir / pausa
+              SizedBox(
+                width: spinnerSize,
+                height: spinnerSize,
+                child: Center(
+                  child:
+                      defaultTargetPlatform == TargetPlatform.iOS
+                          ? CupertinoActivityIndicator(
+                            radius: 16.0 * scale,
+                            color: Colors.white,
+                          )
+                          : _AppLoadingAnimation(
+                            size: spinnerSize,
+                            strokeWidth: 3.5 * scale,
+                          ),
+                ),
+              ),
+              // Texto de velocidad de descarga colocado exactamente debajo del spinner
+              Positioned(
+                top: spinnerSize + (14.0 * scale),
+                child: ValueListenableBuilder<double>(
+                  valueListenable: _downloadSpeedBytesPerSec,
+                  builder: (context, bytesPerSec, _) {
+                    final text = _formatLoadingSpeed(bytesPerSec);
+                    return Container(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 15.5 * scale,
+                        vertical: 7.4 * scale,
                       ),
-                    ),
-                    child: Text(
-                      text,
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: const Color.fromARGB(255, 223, 223, 223),
-                        fontSize: 12.7 * scale,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0.2,
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.55),
+                        borderRadius: BorderRadius.circular(20 * scale),
+                        border: Border.all(
+                          color: const Color.fromARGB(14, 255, 255, 255),
+                          width: 1,
+                        ),
                       ),
-                    ),
-                  );
-                },
+                      child: Text(
+                        text,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: const Color.fromARGB(255, 223, 223, 223),
+                          fontSize: 12.7 * scale,
+                          fontWeight: FontWeight.w500,
+                          letterSpacing: 0.2,
+                        ),
+                      ),
+                    );
+                  },
+                ),
               ),
             ],
           ),
