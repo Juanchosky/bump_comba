@@ -458,12 +458,17 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   void _syncFromCast() {
-    if (!mounted || !CastService().isConnected || _isDragging || _isSeeking) {
-      return;
-    }
-    if (!_localAudioDuringCast) return;
+    if (!mounted || !CastService().isConnected) return;
 
     final isCastPlaying = CastService().castPlaying.value;
+    final castPos = CastService().castPosition.value;
+
+    if (isCastPlaying || castPos.inMilliseconds > 300) {
+      _serverFailoverTimer?.cancel();
+    }
+
+    if (_isDragging || _isSeeking || !_localAudioDuringCast) return;
+
     final localPlaying = _player?.state.playing ?? false;
 
     // Sincronizar estado de reproducción
@@ -474,9 +479,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
 
     // Sincronizar posición con tolerancia y offset personalizado
-    final castPos = CastService().castPosition.value;
     final localPos = _player?.state.position ?? Duration.zero;
-
     final targetPos = castPos + Duration(milliseconds: _syncOffsetMs.toInt());
 
     if (castPos > Duration.zero &&
@@ -866,20 +869,36 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         }
 
         // Automatic 6-second failover: if Xtream (server 0) takes > 6s to start playing,
-        // auto-switch to fast DB server (server 1) if available.
+        // auto-switch to fast DB server (server 1) if available (handles both local & Cast playback).
         _serverFailoverTimer?.cancel();
         if (_currentServerIndex == 0 && _serverItems.length > 1) {
           _serverFailoverTimer = Timer(const Duration(seconds: 6), () {
-            if (!mounted || _player == null) return;
-            final st = _player!.state;
-            if (_isVideoLoading ||
-                !st.playing ||
-                st.position.inMilliseconds < 300) {
+            if (!mounted) return;
+            final bool isCasting = CastService().isCasting.value;
+            final bool isNotPlaying;
+
+            if (isCasting) {
+              final isCastPlaying = CastService().castPlaying.value;
+              final castPos = CastService().castPosition.value;
+              isNotPlaying = !isCastPlaying || castPos.inMilliseconds < 300;
+            } else {
+              if (_player == null) return;
+              final st = _player!.state;
+              isNotPlaying =
+                  _isVideoLoading ||
+                  !st.playing ||
+                  st.position.inMilliseconds < 300;
+            }
+
+            if (isNotPlaying) {
               debugPrint(
-                'Xtream failover: Server 1 took > 6s to load. Auto-switching to fast DB server (Server 2)...',
+                'Xtream failover (isCasting=$isCasting): Server 1 took > 6s to load. Auto-switching to fast DB server (Server 2)...',
               );
               _showVisualNotice('Cambiando a 720p (Más rápida)...');
-              final currentPos = _player?.state.position ?? startFrom;
+              final currentPos =
+                  isCasting
+                      ? CastService().castPosition.value
+                      : (_player?.state.position ?? startFrom);
               setState(() {
                 _currentServerIndex = 1;
               });
@@ -3862,7 +3881,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                       onTap: () {
                         Navigator.pop(context);
                         if (!isSelected) {
-                          final currentPos = _player?.state.position;
+                          final currentPos =
+                              CastService().isCasting.value
+                                  ? CastService().castPosition.value
+                                  : _player?.state.position;
                           setState(() {
                             _currentServerIndex = index;
                           });
