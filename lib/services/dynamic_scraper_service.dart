@@ -8,68 +8,195 @@ class ScrapedSubtitle {
   final String label;
   final String? language;
 
-  ScrapedSubtitle({
-    required this.url,
-    required String label,
-    this.language,
-  }) : label = cleanLanguageLabel(label, language, url);
+  ScrapedSubtitle({required this.url, required String label, this.language})
+    : label = cleanLanguageLabel(label, language, url);
 
-  static String cleanLanguageLabel(String rawLabel, [String? rawLang, String? url]) {
-    final combined = '${rawLabel.toLowerCase()} ${rawLang?.toLowerCase() ?? ''} ${url?.toLowerCase() ?? ''}';
+  static String cleanLanguageLabel(
+    String rawLabel, [
+    String? rawLang,
+    String? url,
+  ]) {
+    final text = '${rawLabel.toLowerCase()} ${rawLang?.toLowerCase() ?? ''}';
+    final u = (url ?? '').toLowerCase();
 
-    if (combined.contains('latino') || combined.contains('lat') || combined.contains('es-la') || combined.contains('es_la')) {
+    // 1. Spanish
+    if (text.contains('latino') ||
+        text.contains('es-la') ||
+        text.contains('es_la') ||
+        u.contains('es-la') ||
+        u.contains('es_la') ||
+        u.contains('_lat.')) {
       return 'Español (Latino)';
     }
-    if (combined.contains('castellano') || combined.contains('es-es') || combined.contains('es_es')) {
+    if (text.contains('castellano') ||
+        text.contains('es-es') ||
+        text.contains('es_es') ||
+        u.contains('es-es') ||
+        u.contains('es_es')) {
       return 'Español (España)';
     }
-    if (combined.contains('es') ||
-        combined.contains('spa') ||
-        combined.contains('spanish') ||
-        combined.contains('espanol') ||
-        combined.contains('español')) {
+    if (text.contains('spa') ||
+        text.contains('spanish') ||
+        text.contains('espanol') ||
+        text.contains('español') ||
+        text.contains('es') ||
+        u.contains('_es.') ||
+        u.contains('_es_') ||
+        u.contains('/es/') ||
+        u.contains('-es.') ||
+        u.contains('lang=es')) {
       return 'Español';
     }
-    if (combined.contains('en') ||
-        combined.contains('eng') ||
-        combined.contains('english') ||
-        combined.contains('inglés') ||
-        combined.contains('ingles')) {
+
+    // 2. English
+    if (text.contains('eng') ||
+        text.contains('english') ||
+        text.contains('inglés') ||
+        text.contains('ingles') ||
+        text.contains('en') ||
+        u.contains('_en.') ||
+        u.contains('_en_') ||
+        u.contains('/en/') ||
+        u.contains('-en.') ||
+        u.contains('lang=en')) {
       return 'Inglés';
     }
-    if (combined.contains('pt') ||
-        combined.contains('por') ||
-        combined.contains('portuguese') ||
-        combined.contains('portugués') ||
-        combined.contains('portugues')) {
-      return 'Portugués';
+
+    // 3. Arabic
+    if (text.contains('ara') ||
+        text.contains('arabic') ||
+        text.contains('عربي') ||
+        text.contains('ar') ||
+        u.contains('_ar.') ||
+        u.contains('_ar_') ||
+        u.contains('/ar/') ||
+        u.contains('-ar.') ||
+        u.contains('lang=ar')) {
+      return 'Árabe';
     }
-    if (combined.contains('fr') ||
-        combined.contains('fra') ||
-        combined.contains('french') ||
-        combined.contains('francés') ||
-        combined.contains('frances')) {
+
+    // 4. French
+    if (text.contains('fra') ||
+        text.contains('french') ||
+        text.contains('francés') ||
+        text.contains('frances') ||
+        text.contains('français') ||
+        text.contains('fr') ||
+        u.contains('_fr.') ||
+        u.contains('_fr_') ||
+        u.contains('/fr/') ||
+        u.contains('-fr.') ||
+        u.contains('lang=fr')) {
       return 'Francés';
     }
-    if (combined.contains('de') ||
-        combined.contains('ger') ||
-        combined.contains('german') ||
-        combined.contains('alemán') ||
-        combined.contains('aleman')) {
+
+    // 5. Portuguese
+    if (text.contains('por') ||
+        text.contains('portuguese') ||
+        text.contains('portugués') ||
+        text.contains('portugues') ||
+        text.contains('pt') ||
+        u.contains('_pt.') ||
+        u.contains('_pt_') ||
+        u.contains('/pt/') ||
+        u.contains('-pt.') ||
+        u.contains('lang=pt')) {
+      return 'Portugués';
+    }
+
+    // 6. German
+    if (text.contains('ger') ||
+        text.contains('german') ||
+        text.contains('alemán') ||
+        text.contains('aleman') ||
+        text.contains('de') ||
+        u.contains('_de.') ||
+        u.contains('_de_') ||
+        u.contains('/de/') ||
+        u.contains('-de.') ||
+        u.contains('lang=de')) {
       return 'Alemán';
     }
-    if (combined.contains('it') ||
-        combined.contains('ita') ||
-        combined.contains('italian') ||
-        combined.contains('italiano')) {
+
+    // 7. Italian
+    if (text.contains('ita') ||
+        text.contains('italian') ||
+        text.contains('italiano') ||
+        text.contains('it') ||
+        u.contains('_it.') ||
+        u.contains('_it_') ||
+        u.contains('/it/') ||
+        u.contains('-it.') ||
+        u.contains('lang=it')) {
       return 'Italiano';
     }
-    if (combined.contains('ja') ||
-        combined.contains('jpn') ||
-        combined.contains('japanese') ||
-        combined.contains('japonés') ||
-        combined.contains('japones')) {
+
+    // 8. Japanese
+    if (text.contains('jpn') ||
+        text.contains('japanese') ||
+        text.contains('japonés') ||
+        text.contains('japones') ||
+        text.contains('ja') ||
+        u.contains('_ja.') ||
+        u.contains('_ja_') ||
+        u.contains('/ja/') ||
+        u.contains('-ja.') ||
+        u.contains('lang=ja')) {
       return 'Japonés';
+    }
+
+    // 9. Korean
+    if (text.contains('kor') ||
+        text.contains('korean') ||
+        text.contains('coreano') ||
+        text.contains('ko') ||
+        u.contains('_ko.') ||
+        u.contains('_ko_') ||
+        u.contains('/ko/') ||
+        u.contains('-ko.') ||
+        u.contains('lang=ko')) {
+      return 'Coreano';
+    }
+
+    // 10. Russian
+    if (text.contains('rus') ||
+        text.contains('russian') ||
+        text.contains('ruso') ||
+        text.contains('ru') ||
+        u.contains('_ru.') ||
+        u.contains('_ru_') ||
+        u.contains('/ru/') ||
+        u.contains('-ru.') ||
+        u.contains('lang=ru')) {
+      return 'Ruso';
+    }
+
+    // 11. Turkish
+    if (text.contains('tur') ||
+        text.contains('turkish') ||
+        text.contains('turco') ||
+        text.contains('türkçe') ||
+        text.contains('tr') ||
+        u.contains('_tr.') ||
+        u.contains('_tr_') ||
+        u.contains('/tr/') ||
+        u.contains('-tr.') ||
+        u.contains('lang=tr')) {
+      return 'Turco';
+    }
+
+    // 12. Chinese
+    if (text.contains('chi') ||
+        text.contains('chinese') ||
+        text.contains('chino') ||
+        text.contains('zho') ||
+        text.contains('zh') ||
+        u.contains('_zh.') ||
+        u.contains('_zh_') ||
+        u.contains('/zh/') ||
+        u.contains('-zh.') ||
+        u.contains('lang=zh')) {
+      return 'Chino';
     }
 
     final cleanLabel = rawLabel.trim();
@@ -131,6 +258,14 @@ class DynamicScraperService {
     if (url.isEmpty) return false;
     final lowUrl = url.toLowerCase();
 
+    // 123flms / 123movies / flmsfree / 123flmsfree / subtitles
+    if (lowUrl.contains('123flms') ||
+        lowUrl.contains('123movies') ||
+        lowUrl.contains('flmsfree') ||
+        lowUrl.contains('subtitles.')) {
+      return true;
+    }
+
     // Playspelis variants
     if (lowUrl.contains('playspelis.com') ||
         lowUrl.contains('playspelis.org') ||
@@ -168,9 +303,12 @@ class DynamicScraperService {
       return true;
     }
 
-    // PeliculaPlay variants
-    if (lowUrl.contains('peliculaplay.com') ||
-        lowUrl.contains('peliculaplay.org')) {
+    // PeliculaPlay / VidSrc / Embed / SuperEmbed
+    if (lowUrl.contains('peliculaplay') ||
+        lowUrl.contains('vidsrc') ||
+        lowUrl.contains('superembed') ||
+        lowUrl.contains('2embed') ||
+        lowUrl.contains('embed')) {
       return true;
     }
 
@@ -185,7 +323,8 @@ class DynamicScraperService {
           lowUrl.contains('/movie/') ||
           lowUrl.contains('/serie/') ||
           lowUrl.contains('/watch/') ||
-          lowUrl.contains('/ver/')) {
+          lowUrl.contains('/ver/') ||
+          lowUrl.startsWith('http')) {
         return true;
       }
     }
@@ -568,22 +707,21 @@ class DynamicScraperService {
             );
           }
 
-          // Intercept subtitle tracks (.vtt, .srt, .ass)
+          // Intercept subtitle tracks (.vtt, .srt, .ass, /subtitle, /subtitles, /caption, /captions)
           if ((urlStr.contains('.vtt') ||
                   urlStr.contains('.srt') ||
                   urlStr.contains('.ass') ||
                   urlStr.contains('/subtitle') ||
-                  urlStr.contains('/subtitles')) &&
+                  urlStr.contains('/subtitles') ||
+                  urlStr.contains('/caption') ||
+                  urlStr.contains('/captions')) &&
               !urlStr.contains('.m3u8') &&
-              !urlStr.contains('.mp4')) {
-            final label =
-                (urlStr.contains('spa') ||
-                        urlStr.contains('es') ||
-                        urlStr.contains('lat'))
-                    ? 'Español'
-                    : 'Subtítulo Web';
+              !urlStr.contains('.mp4') &&
+              !urlStr.contains('.html') &&
+              !urlStr.contains('.js') &&
+              !urlStr.contains('.css')) {
             detectedSubtitles.add(
-              ScrapedSubtitle(url: urlStr, label: label, language: 'es'),
+              ScrapedSubtitle(url: urlStr, label: '', language: null),
             );
             debugPrint(
               'DynamicScraperService: Intercepted subtitle track: $urlStr',
@@ -628,7 +766,7 @@ class DynamicScraperService {
               }
 
               final dynamic evalResult = await controller.evaluateJavascript(
-                source: """
+                source: r"""
                 (function() {
                   try {
                     function getQualityScore(text, url) {
@@ -661,8 +799,11 @@ class DynamicScraperService {
                       const videoUrl = el.getAttribute('data-url') || el.getAttribute('data-src') || el.getAttribute('href') || el.dataset?.url || '';
                       const text = el.innerText || el.textContent || '';
                       if (videoUrl && (videoUrl.includes('.m3u8') || videoUrl.includes('.mp4') || videoUrl.startsWith('http'))) {
-                        const score = getQualityScore(text, videoUrl);
-                        results.push({ url: videoUrl, score: score });
+                        // Exclude subtitle files from stream results
+                        if (!videoUrl.includes('.srt') && !videoUrl.includes('.vtt') && !videoUrl.includes('.ass') && !videoUrl.includes('/subtitle') && !videoUrl.includes('/subtitles')) {
+                          const score = getQualityScore(text, videoUrl);
+                          results.push({ url: videoUrl, score: score });
+                        }
                       }
                     });
 
@@ -712,24 +853,50 @@ class DynamicScraperService {
                       try { highestBtn.click(); } catch(e) {}
                     }
 
-                    // 5. Harvest <track> and subtitle elements
+                    // 5. Universal subtitle harvester (<track>, buttons with data-url/data-language/data-text, links, and script regex)
                     try {
+                      // a) HTML <track> elements
                       const tracks = document.querySelectorAll('track');
                       tracks.forEach(tr => {
                         const src = tr.getAttribute('src') || tr.src || '';
-                        const label = tr.getAttribute('label') || tr.label || tr.getAttribute('srclang') || 'Español';
-                        const lang = tr.getAttribute('srclang') || tr.srclang || 'es';
-                        if (src && (src.includes('.vtt') || src.includes('.srt') || src.includes('.ass') || src.startsWith('http'))) {
+                        const label = tr.getAttribute('label') || tr.label || tr.getAttribute('srclang') || '';
+                        const lang = tr.getAttribute('srclang') || tr.srclang || '';
+                        if (src && (src.includes('.vtt') || src.includes('.srt') || src.includes('.ass') || src.includes('subtitle') || src.startsWith('http'))) {
                           subtitles.push({ url: src, label: label, lang: lang });
                         }
                       });
 
-                      const subElements = document.querySelectorAll('a[href*=".vtt"], a[href*=".srt"], a[href*=".ass"], button[data-sub], [data-subtitle], [data-caption], [data-vtt], [data-srt]');
+                      // b) Subtitle buttons, options, and data-url attributes (e.g. 123flmsfree, cuevana, flixlat, etc.)
+                      const subSelectors = 'button[data-url], [data-url*="subtitle"], [data-url*="subtitles"], [data-url*=".srt"], [data-url*=".vtt"], ' +
+                                           'a[href*=".vtt"], a[href*=".srt"], a[href*=".ass"], a[href*="subtitle"], ' +
+                                           'button[data-sub], [data-subtitle], [data-caption], [data-vtt], [data-srt], [data-language], ' +
+                                           'option[value*=".vtt"], option[value*=".srt"], option[data-url]';
+                      const subElements = document.querySelectorAll(subSelectors);
                       subElements.forEach(el => {
-                        const subUrl = el.getAttribute('href') || el.getAttribute('data-sub') || el.getAttribute('data-subtitle') || el.getAttribute('data-caption') || el.getAttribute('data-vtt') || el.getAttribute('data-srt') || '';
-                        const text = el.innerText || el.textContent || 'Subtítulo';
-                        if (subUrl && (subUrl.includes('.vtt') || subUrl.includes('.srt') || subUrl.includes('.ass'))) {
-                          subtitles.push({ url: subUrl, label: text.trim(), lang: 'es' });
+                        const subUrl = el.getAttribute('data-url') || el.getAttribute('href') || el.getAttribute('data-sub') || el.getAttribute('data-subtitle') || el.getAttribute('data-src') || el.getAttribute('value') || el.getAttribute('data-caption') || el.getAttribute('data-vtt') || el.getAttribute('data-srt') || '';
+                        const lang = el.getAttribute('data-language') || el.getAttribute('data-lang') || el.getAttribute('lang') || '';
+                        const textLabel = el.getAttribute('data-text') || el.getAttribute('data-label') || el.innerText || el.textContent || '';
+                        
+                        if (subUrl && (subUrl.includes('.vtt') || subUrl.includes('.srt') || subUrl.includes('.ass') || subUrl.includes('subtitle') || subUrl.includes('subtitles') || subUrl.startsWith('http'))) {
+                          if (!subUrl.includes('.m3u8') && !subUrl.includes('.mp4')) {
+                            subtitles.push({ url: subUrl, label: textLabel.trim(), lang: lang.trim() });
+                          }
+                        }
+                      });
+
+                      // c) Embedded script tags scanning for .srt and .vtt subtitle URLs
+                      const scripts = document.querySelectorAll('script');
+                      scripts.forEach(s => {
+                        const code = s.innerText || s.textContent || '';
+                        if (code.includes('.srt') || code.includes('.vtt') || code.includes('subtitles') || code.includes('captions')) {
+                          const srtRegex = /(https?:\/\/[^\s"'<>]+\.(?:srt|vtt|ass)(?:\?[^\s"'<>]*)?)/gi;
+                          let match;
+                          while ((match = srtRegex.exec(code)) !== null) {
+                            const subUrl = match[1];
+                            if (subUrl && !subUrl.includes('.m3u8') && !subUrl.includes('.mp4')) {
+                              subtitles.push({ url: subUrl, label: '', lang: '' });
+                            }
+                          }
                         }
                       });
                     } catch(e) {}
