@@ -1004,6 +1004,7 @@ class TurboProxy {
         session.mode = _ProxyMode.turbo;
 
         final pipeline = _TurboPipeline(session, currentOffset);
+        bool pipelineDone = false;
         try {
           while (!closed) {
             Uint8List? data;
@@ -1016,7 +1017,10 @@ class TurboProxy {
               session.noteFailure();
               break;
             }
-            if (data == null) break;
+            if (data == null) {
+              pipelineDone = true;
+              break;
+            }
             if (closed) break;
             resp.add(data);
             currentOffset += data.length;
@@ -1026,11 +1030,16 @@ class TurboProxy {
           await maybeFlush(force: true);
 
           // FALLBACK TO PASSTHROUGH ON FAILURE
-          if (!closed && currentOffset < session.length) {
+          if (!closed && !pipelineDone && currentOffset < session.length) {
             debugPrint(
               'TurboProxy: Iniciando fallback Passthrough mid-stream desde offset $currentOffset',
             );
-            while (!closed && currentOffset < session.length) {
+            int fallbackRetries = 0;
+            while (!closed &&
+                currentOffset < session.length &&
+                fallbackRetries < 3) {
+              final useRange =
+                  session.supportsRange && !session.profile.effectiveIsHostile;
               final legSize = 2 * 1024 * 1024; // 2 MB legs
               final legRangeHeader =
                   'bytes=$currentOffset-${math.min(currentOffset + legSize - 1, session.length - 1)}';
@@ -1040,11 +1049,14 @@ class TurboProxy {
                 final rq = await session.client.getUrl(targetUri);
                 session.headers.forEach((k, v) => rq.headers.set(k, v));
                 rq.headers.set('Accept-Encoding', 'identity');
-                rq.headers.set(HttpHeaders.rangeHeader, legRangeHeader);
+                if (useRange) {
+                  rq.headers.set(HttpHeaders.rangeHeader, legRangeHeader);
+                }
 
                 final rs = await rq.close().timeout(const Duration(seconds: 5));
                 if (rs.statusCode == HttpStatus.partialContent ||
                     rs.statusCode == HttpStatus.ok) {
+                  fallbackRetries = 0;
                   await for (final chunk in rs.timeout(
                     const Duration(seconds: 6),
                   )) {
@@ -1055,16 +1067,43 @@ class TurboProxy {
                     unawaited(maybeFlush());
                     session.proxy._noteBytes(chunk.length);
                   }
+                  if (!useRange) break;
                 } else {
                   throw HttpException('status ${rs.statusCode}');
                 }
               } catch (err) {
+                fallbackRetries++;
+                // FIX: antes este catch no llamaba a session.noteFailure(),
+                // así que el _HostProfile nunca se enteraba de que el
+                // origen estaba fallando en modo fallback, y una sesión
+                // nueva repetía el mismo ciclo passthrough -> turbo ->
+                // fallback contra un host ya muerto, generando la cadena
+                // de TimeoutException que se ve en el log.
+                session.noteFailure();
                 debugPrint(
-                  'TurboProxy: fallback Passthrough mid-stream error: $err',
+                  'TurboProxy: fallback Passthrough mid-stream error ($fallbackRetries/3): $err',
                 );
                 if (err is SocketException) await session.refreshTarget();
-                await Future.delayed(const Duration(milliseconds: 1000));
+                // Backoff creciente en vez de fijo (1000ms, 1600ms, 2000ms...)
+                await Future.delayed(
+                  Duration(milliseconds: math.min(800 * fallbackRetries, 4000)),
+                );
               }
+            }
+
+            // Si se agotaron los 3 reintentos sin terminar el archivo, el
+            // origen está efectivamente caído: penalizamos más fuerte para
+            // que el host se marque hostil antes y las próximas sesiones
+            // no repitan este mismo ciclo costoso contra un servidor muerto.
+            if (!closed &&
+                fallbackRetries >= 3 &&
+                currentOffset < session.length) {
+              for (var i = 0; i < 3; i++) {
+                session.noteFailure();
+              }
+              _setReason(
+                'origen no responde tras reintentos (${session.profile.host}) — penalizando perfil',
+              );
             }
           }
         } catch (e) {
@@ -1155,6 +1194,7 @@ class TurboProxy {
     }
 
     int currentOffset = start;
+    bool pipelineDone = false;
     try {
       while (!closed) {
         Uint8List? data;
@@ -1167,7 +1207,10 @@ class TurboProxy {
           session.noteFailure();
           break;
         }
-        if (data == null) break;
+        if (data == null) {
+          pipelineDone = true;
+          break;
+        }
         if (closed) break;
         resp.add(data);
         currentOffset += data.length;
@@ -1177,11 +1220,16 @@ class TurboProxy {
       await maybeFlush(force: true);
 
       // FALLBACK TO PASSTHROUGH ON FAILURE
-      if (!closed && currentOffset < session.length) {
+      if (!closed && !pipelineDone && currentOffset < session.length) {
         debugPrint(
           'TurboProxy: Iniciando fallback Passthrough de emergencia desde offset $currentOffset',
         );
-        while (!closed && currentOffset < session.length) {
+        int fallbackRetries = 0;
+        while (!closed &&
+            currentOffset < session.length &&
+            fallbackRetries < 3) {
+          final useRange =
+              session.supportsRange && !session.profile.effectiveIsHostile;
           final legSize = 2 * 1024 * 1024; // 2 MB legs
           final legRangeHeader =
               'bytes=$currentOffset-${math.min(currentOffset + legSize - 1, session.length - 1)}';
@@ -1191,11 +1239,14 @@ class TurboProxy {
             final rq = await session.client.getUrl(targetUri);
             session.headers.forEach((k, v) => rq.headers.set(k, v));
             rq.headers.set('Accept-Encoding', 'identity');
-            rq.headers.set(HttpHeaders.rangeHeader, legRangeHeader);
+            if (useRange) {
+              rq.headers.set(HttpHeaders.rangeHeader, legRangeHeader);
+            }
 
             final rs = await rq.close().timeout(const Duration(seconds: 5));
             if (rs.statusCode == HttpStatus.partialContent ||
                 rs.statusCode == HttpStatus.ok) {
+              fallbackRetries = 0;
               await for (final chunk in rs.timeout(
                 const Duration(seconds: 6),
               )) {
@@ -1206,14 +1257,37 @@ class TurboProxy {
                 unawaited(maybeFlush());
                 session.proxy._noteBytes(chunk.length);
               }
+              if (!useRange) break;
             } else {
               throw HttpException('status ${rs.statusCode}');
             }
           } catch (err) {
-            debugPrint('TurboProxy: fallback Passthrough error: $err');
+            fallbackRetries++;
+            // FIX: mismo problema que en _servePassthrough — sin esto el
+            // perfil del host nunca aprendía que el origen estaba fallando
+            // en el camino de fallback.
+            session.noteFailure();
+            debugPrint(
+              'TurboProxy: fallback Passthrough error ($fallbackRetries/3): $err',
+            );
             if (err is SocketException) await session.refreshTarget();
-            await Future.delayed(const Duration(milliseconds: 1000));
+            // Backoff creciente en vez de fijo.
+            await Future.delayed(
+              Duration(milliseconds: math.min(800 * fallbackRetries, 4000)),
+            );
           }
+        }
+
+        // Igual que en el camino passthrough: si se agotaron los
+        // reintentos y no se terminó el archivo, penalizar fuerte para
+        // que el host se marque hostil antes.
+        if (!closed && fallbackRetries >= 3 && currentOffset < session.length) {
+          for (var i = 0; i < 3; i++) {
+            session.noteFailure();
+          }
+          _setReason(
+            'origen no responde tras reintentos (${session.profile.host}) — penalizando perfil',
+          );
         }
       }
     } catch (e) {

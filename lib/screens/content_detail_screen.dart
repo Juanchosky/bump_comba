@@ -1438,10 +1438,16 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   Future<WatchProgress?> _getButtonProgress() async {
     if (widget.item.isSeries) {
       final episodes = _allEpisodes;
-      final urls = episodes.map((e) => e.url).toList();
+      final urls = <String>[];
+      for (final ep in episodes) {
+        if (ep.url.isNotEmpty) urls.add(ep.url);
+        for (final alt in ep.alternatives) {
+          if (alt.url.isNotEmpty) urls.add(alt.url);
+        }
+      }
       return await WatchProgressService().getLastWatchedFromList(urls);
     } else {
-      return await WatchProgressService().getProgress(widget.item.url);
+      return await WatchProgressService().getProgressForItem(widget.item);
     }
   }
 
@@ -2048,8 +2054,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                             ),
                             // Progress Indicator (Timeline)
                             FutureBuilder<WatchProgress?>(
-                              future: WatchProgressService().getProgress(
-                                episode.url,
+                              future: WatchProgressService().getProgressForItem(
+                                episode,
                               ),
                               builder: (context, snapshot) {
                                 if (snapshot.hasData && snapshot.data != null) {
@@ -2195,21 +2201,16 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                           ],
                         ),
                       ),
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          IconButton(
-                            icon: const Icon(
-                              Icons.share_outlined,
-                              color: Colors.white54,
-                              size: 18,
-                            ),
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(),
-                            onPressed: () => _shareEpisode(episode),
-                            tooltip: 'Compartir episodio',
-                          ),
-                        ],
+                      IconButton(
+                        icon: const Icon(
+                          Icons.share_outlined,
+                          color: Colors.white54,
+                          size: 18,
+                        ),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        onPressed: () => _shareEpisode(episode),
+                        tooltip: 'Compartir episodio',
                       ),
                     ],
                   ),
@@ -2241,7 +2242,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
           spacing: 12,
           runSpacing: 12,
           children: [
-            // Current version (disabled-look but indicated)
+            // Current version
             _buildVersionChip(widget.item, isCurrent: true),
             // Other versions
             ..._otherVersions.map((v) => _buildVersionChip(v)),

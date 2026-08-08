@@ -256,6 +256,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   int _currentServerIndex = 0;
   List<String> _serverUrls = [];
+  List<M3UItem> _serverItems = [];
 
   // Swipe orientation animation
   double _swipeDragOffset = 0.0;
@@ -578,7 +579,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _blackScreenReloadDone = false;
     _diagTrackCodecs = '?';
 
-    final progress = await _watchProgressService.getProgress(_currentItem.url);
+    final progress = await _watchProgressService.getProgressForItem(
+      _currentItem,
+    );
     Duration? startFrom;
 
     if (progress != null && mounted) {
@@ -596,7 +599,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       if (shouldResume == true) {
         startFrom = Duration(seconds: progress.positionSeconds);
       } else if (shouldResume == false) {
-        await _watchProgressService.clearProgress(_currentItem.url);
+        await _watchProgressService.clearProgressForItem(_currentItem);
       }
       if (progress.durationSeconds > 0) {
         _knownDuration = Duration(seconds: progress.durationSeconds);
@@ -851,8 +854,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         _hasError = false;
         _videoKey = '${item.url}_${DateTime.now().millisecondsSinceEpoch}';
 
-        if (_serverUrls.isEmpty || _serverUrls[0] != item.url) {
-          _serverUrls = [item.url, ...item.alternatives.map((a) => a.url)];
+        final existingIdx = _serverUrls.indexOf(item.url);
+        if (existingIdx != -1) {
+          _currentServerIndex = existingIdx;
+        } else {
+          _serverItems = [item, ...item.alternatives];
+          _serverUrls = _serverItems.map((a) => a.url).toList();
           _currentServerIndex = 0;
         }
 
@@ -1414,10 +1421,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
       if (duration.inSeconds > 0) {
         _knownDuration = duration;
+        final altUrls = _serverItems.map((a) => a.url).toList();
         _watchProgressService.saveProgress(
           _currentItem.url,
           position,
           duration,
+          alternativeUrls: altUrls,
           name: _currentItem.name,
           seriesName: _currentItem.seriesName,
           seasonNumber: _currentItem.seasonNumber,
@@ -2377,25 +2386,30 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                       if (_lastPosition.inSeconds > 5) {
                         resumeFrom = _lastPosition;
                       } else {
-                        final saved = await _watchProgressService.getProgress(
-                          _currentItem.url,
-                        );
+                        final saved = await _watchProgressService
+                            .getProgressForItem(_currentItem);
                         if (saved != null && saved.positionSeconds > 5) {
                           resumeFrom = Duration(seconds: saved.positionSeconds);
                         }
                       }
                     }
                     if (!mounted) return;
-                    // Resetear todo el estado de reintentos y volver a intentar
+                    final nextIndex =
+                        (_serverItems.isNotEmpty)
+                            ? (_currentServerIndex + 1) % _serverItems.length
+                            : 0;
+                    final targetItem =
+                        (_serverItems.length > nextIndex)
+                            ? _serverItems[nextIndex]
+                            : _currentItem;
                     setState(() {
                       _hasError = false;
                       _scrapingError = null;
                       _retryCount = 0;
-                      _currentServerIndex = 0;
+                      _currentServerIndex = nextIndex;
                       _userAgentIndex++;
-                      _serverUrls = [];
                     });
-                    _initializePlayer(_currentItem, startFrom: resumeFrom);
+                    _initializePlayer(targetItem, startFrom: resumeFrom);
                   },
                   icon: const Icon(Icons.refresh_rounded, size: 20),
                   label: const Text(
@@ -3627,35 +3641,71 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                       ? Border.all(color: Colors.white12, width: 1)
                       : null,
             ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        'Configuración',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
+            child: Material(
+              color: Colors.transparent,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Configuración',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.close, color: Colors.white70),
-                        onPressed: () => Navigator.pop(context),
-                      ),
-                    ],
+                        IconButton(
+                          icon: const Icon(Icons.close, color: Colors.white70),
+                          onPressed: () => Navigator.pop(context),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-                const Divider(color: Colors.white12, height: 1),
-                if (!_currentItem.isLive)
+                  const Divider(color: Colors.white12, height: 1),
+                  if (_serverItems.length > 1 || _serverUrls.length > 1)
+                    ListTile(
+                      leading: const Icon(
+                        CupertinoIcons.slider_horizontal_3,
+                        color: Colors.white,
+                      ),
+                      title: const Text(
+                        'Calidad',
+                        style: TextStyle(color: Colors.white),
+                      ),
+                      trailing: const Icon(
+                        Icons.chevron_right,
+                        color: Colors.white54,
+                      ),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _showServerSelection();
+                      },
+                    ),
+                  if (!_currentItem.isLive)
+                    ListTile(
+                      leading: const Icon(Icons.speed, color: Colors.white),
+                      title: const Text(
+                        'Velocidad',
+                        style: TextStyle(color: Colors.white),
+                      ),
+                      trailing: const Icon(
+                        Icons.chevron_right,
+                        color: Colors.white54,
+                      ),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _showSpeedSelection();
+                      },
+                    ),
                   ListTile(
-                    leading: const Icon(Icons.speed, color: Colors.white),
+                    leading: const Icon(Icons.subtitles, color: Colors.white),
                     title: const Text(
-                      'Velocidad',
+                      'Subtítulos',
                       style: TextStyle(color: Colors.white),
                     ),
                     trailing: const Icon(
@@ -3664,42 +3714,126 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                     ),
                     onTap: () {
                       Navigator.pop(context);
-                      _showSpeedSelection();
+                      _showSubtitleSelection();
                     },
                   ),
-                ListTile(
-                  leading: const Icon(Icons.subtitles, color: Colors.white),
-                  title: const Text(
-                    'Subtítulos',
-                    style: TextStyle(color: Colors.white),
-                  ),
-                  trailing: const Icon(
-                    Icons.chevron_right,
-                    color: Colors.white54,
-                  ),
-                  onTap: () {
-                    Navigator.pop(context);
-                    _showSubtitleSelection();
-                  },
-                ),
 
-                ListTile(
-                  leading: const Icon(Icons.audiotrack, color: Colors.white),
-                  title: const Text(
-                    'Audio',
-                    style: TextStyle(color: Colors.white),
+                  ListTile(
+                    leading: const Icon(Icons.audiotrack, color: Colors.white),
+                    title: const Text(
+                      'Audio',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                    trailing: const Icon(
+                      Icons.chevron_right,
+                      color: Colors.white54,
+                    ),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _showAudioSelection();
+                    },
                   ),
-                  trailing: const Icon(
-                    Icons.chevron_right,
-                    color: Colors.white54,
+                  const SizedBox(height: 16),
+                ],
+              ),
+            ),
+          ),
+    );
+  }
+
+  void _showServerSelection() {
+    if (_serverItems.isEmpty) {
+      _serverItems = [_currentItem, ..._currentItem.alternatives];
+    }
+    if (_serverItems.isEmpty) return;
+
+    _showVisualBottomSheet(
+      builder:
+          (context) => Container(
+            width: _isLandscape ? 380 : double.infinity,
+            margin: _isLandscape ? const EdgeInsets.all(24) : EdgeInsets.zero,
+            decoration: BoxDecoration(
+              color: const Color.fromARGB(255, 27, 27, 27),
+              borderRadius:
+                  _isLandscape
+                      ? BorderRadius.circular(24)
+                      : const BorderRadius.vertical(top: Radius.circular(20)),
+              border:
+                  _isLandscape
+                      ? Border.all(color: Colors.white12, width: 1)
+                      : null,
+            ),
+            child: Material(
+              color: Colors.transparent,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Calidad',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(Icons.close, color: Colors.white70),
+                        ),
+                      ],
+                    ),
                   ),
-                  onTap: () {
-                    Navigator.pop(context);
-                    _showAudioSelection();
-                  },
-                ),
-                const SizedBox(height: 16),
-              ],
+                  const Divider(color: Colors.white10, height: 1),
+                  ...List.generate(_serverItems.length, (index) {
+                    final item = _serverItems[index];
+                    final isSelected = index == _currentServerIndex;
+                    final isV2 =
+                        item.sourceName?.contains('V2') == true ||
+                        item.sourceName == 'Supabase';
+
+                    final String title =
+                        isV2 || index > 0
+                            ? '720p (Más rapida)'
+                            : '1080p (Máxima calidad)';
+
+                    return ListTile(
+                      leading: Icon(
+                        CupertinoIcons.slider_horizontal_3,
+                        color: isSelected ? Colors.white : Colors.white70,
+                      ),
+                      title: Text(
+                        title,
+                        style: TextStyle(
+                          color: isSelected ? Colors.white : Colors.white70,
+                          fontWeight:
+                              isSelected ? FontWeight.w500 : FontWeight.w400,
+                        ),
+                      ),
+                      trailing:
+                          isSelected
+                              ? const Icon(Icons.check, color: Colors.white)
+                              : null,
+                      onTap: () {
+                        Navigator.pop(context);
+                        if (!isSelected) {
+                          final currentPos = _player?.state.position;
+                          setState(() {
+                            _currentServerIndex = index;
+                          });
+                          _showVisualNotice('Cambiando a $title...');
+                          _initializePlayer(item, startFrom: currentPos);
+                        }
+                      },
+                    );
+                  }),
+                  const SizedBox(height: 16),
+                ],
+              ),
             ),
           ),
     );
@@ -3735,74 +3869,85 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                         top: BorderSide(color: Colors.white10, width: 1),
                       ),
             ),
-            child: SingleChildScrollView(
-              padding: EdgeInsets.zero,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text(
-                          'Velocidad',
+            child: Material(
+              color: Colors.transparent,
+              child: SingleChildScrollView(
+                padding: EdgeInsets.zero,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            'Velocidad',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          IconButton(
+                            onPressed: () => Navigator.pop(context),
+                            icon: const Icon(
+                              Icons.close,
+                              color: Colors.white70,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Divider(color: Colors.white10, height: 1),
+                    ...speeds.map((speed) {
+                      final isSelected = _player!.state.rate == speed;
+                      final isLocked = !isPremium && speed != 1.0;
+
+                      return ListTile(
+                        leading: Icon(
+                          Icons.speed,
+                          color: isSelected ? Colors.white : Colors.white70,
+                        ),
+                        title: Text(
+                          '${speed}x',
                           style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
+                            color: isSelected ? Colors.white : Colors.white70,
+                            fontWeight:
+                                isSelected
+                                    ? FontWeight.bold
+                                    : FontWeight.normal,
                           ),
                         ),
-                        IconButton(
-                          onPressed: () => Navigator.pop(context),
-                          icon: const Icon(Icons.close, color: Colors.white70),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const Divider(color: Colors.white10, height: 1),
-                  ...speeds.map((speed) {
-                    final isSelected = _player!.state.rate == speed;
-                    final isLocked = !isPremium && speed != 1.0;
-
-                    return ListTile(
-                      leading: Icon(
-                        Icons.speed,
-                        color: isSelected ? Colors.white : Colors.white70,
-                      ),
-                      title: Text(
-                        '${speed}x',
-                        style: TextStyle(
-                          color: isSelected ? Colors.white : Colors.white70,
-                          fontWeight:
-                              isSelected ? FontWeight.bold : FontWeight.normal,
-                        ),
-                      ),
-                      trailing:
-                          isLocked
-                              ? const Icon(
-                                CupertinoIcons.lock_fill,
-                                color: Color(0xFFFACC15),
-                                size: 18,
-                              )
-                              : (isSelected
-                                  ? const Icon(Icons.check, color: Colors.white)
-                                  : null),
-                      onTap: () {
-                        if (isLocked) {
+                        trailing:
+                            isLocked
+                                ? const Icon(
+                                  CupertinoIcons.lock_fill,
+                                  color: Color(0xFFFACC15),
+                                  size: 18,
+                                )
+                                : (isSelected
+                                    ? const Icon(
+                                      Icons.check,
+                                      color: Colors.white,
+                                    )
+                                    : null),
+                        onTap: () {
+                          if (isLocked) {
+                            Navigator.pop(context);
+                            _showPremiumRequirement(
+                              'Velocidades de reproducción solo en Premium',
+                            );
+                            return;
+                          }
+                          _player!.setRate(speed);
                           Navigator.pop(context);
-                          _showPremiumRequirement(
-                            'Velocidades de reproducción solo en Premium',
-                          );
-                          return;
-                        }
-                        _player!.setRate(speed);
-                        Navigator.pop(context);
-                      },
-                    );
-                  }),
-                  const SizedBox(height: 16),
-                ],
+                        },
+                      );
+                    }),
+                    const SizedBox(height: 16),
+                  ],
+                ),
               ),
             ),
           ),

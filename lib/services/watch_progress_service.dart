@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'premium_service.dart';
 import '../utils/security_utils.dart';
+import '../models/m3u_item.dart';
 import 'package:flutter/foundation.dart';
 
 /// Model for storing watch progress
@@ -94,6 +95,7 @@ class WatchProgressService with ChangeNotifier {
     String videoUrl,
     Duration position,
     Duration duration, {
+    List<String>? alternativeUrls,
     String? name,
     String? seriesName,
     int? seasonNumber,
@@ -123,12 +125,14 @@ class WatchProgressService with ChangeNotifier {
       completed = true;
     }
 
+    final now = DateTime.now().millisecondsSinceEpoch;
+
     // Save progress
     final progress = WatchProgress(
       url: videoUrl,
       positionSeconds: positionSeconds,
       durationSeconds: durationSeconds,
-      timestamp: DateTime.now().millisecondsSinceEpoch,
+      timestamp: now,
       isCompleted: completed,
       name: name,
       seriesName: seriesName,
@@ -138,6 +142,26 @@ class WatchProgressService with ChangeNotifier {
 
     final allProgress = await _getAllProgress();
     allProgress[videoUrl] = progress.toJson();
+
+    // Synchronize progress to all alternative server URLs of the same content
+    if (alternativeUrls != null && alternativeUrls.isNotEmpty) {
+      for (final altUrl in alternativeUrls) {
+        if (altUrl.isNotEmpty && altUrl != videoUrl) {
+          final altProgress = WatchProgress(
+            url: altUrl,
+            positionSeconds: positionSeconds,
+            durationSeconds: durationSeconds,
+            timestamp: now,
+            isCompleted: completed,
+            name: name,
+            seriesName: seriesName,
+            seasonNumber: seasonNumber,
+            episodeNumber: episodeNumber,
+          );
+          allProgress[altUrl] = altProgress.toJson();
+        }
+      }
+    }
 
     final jsonStr = jsonEncode(allProgress);
     await _prefs!.setString(_progressKey, SecurityUtils.obfuscate(jsonStr));
@@ -157,6 +181,16 @@ class WatchProgressService with ChangeNotifier {
     return WatchProgress.fromJson(videoUrl, progressData);
   }
 
+  /// Get watch progress for an M3UItem checking its main URL and any alternative URLs
+  Future<WatchProgress?> getProgressForItem(M3UItem item) async {
+    final urls = <String>[
+      if (item.url.isNotEmpty) item.url,
+      ...item.alternatives.map((a) => a.url).where((u) => u.isNotEmpty),
+    ];
+    if (urls.isEmpty) return null;
+    return getLastWatchedFromList(urls);
+  }
+
   /// Clear progress for a specific video URL
   Future<void> clearProgress(String videoUrl) async {
     await _ensureInitialized();
@@ -166,6 +200,17 @@ class WatchProgressService with ChangeNotifier {
     final jsonStr = jsonEncode(allProgress);
     await _prefs!.setString(_progressKey, SecurityUtils.obfuscate(jsonStr));
     notifyListeners();
+  }
+
+  /// Clear progress for an M3UItem and all its alternative URLs
+  Future<void> clearProgressForItem(M3UItem item) async {
+    final urls = <String>[
+      if (item.url.isNotEmpty) item.url,
+      ...item.alternatives.map((a) => a.url).where((u) => u.isNotEmpty),
+    ];
+    for (final url in urls) {
+      await clearProgress(url);
+    }
   }
 
   /// Get all progress data

@@ -1909,18 +1909,133 @@ class M3UService extends ChangeNotifier {
   // INTELLIGENT CUSTOM CONTENT INTERLEAVING
   // ===========================================================================
 
+  /// Normaliza el nombre/título para hacer matching flexible entre Xtream y DB (custom_content).
+  String _normalizeTitleForMatching(String raw) {
+    String n = _removeAccents(raw.toLowerCase());
+    n = n.replaceAll(RegExp(r'\(.*?\)'), ' ');
+    n = n.replaceAll(RegExp(r'\[.*?\]'), ' ');
+    n = n.replaceAll(RegExp(r'\b(19\d\d|20\d\d)\b'), ' ');
+    n = n.replaceAll(
+      RegExp(
+        r'\b(4k|uhd|hd|fhd|sd|multi|latino|castellano|sub|subtitulado|dual|cam|ts|tc|hd-ts|telesync|scr|opc?\s*\d+|opcion\s*\d+|opo\s*\d+|server\s*\d+|dual|lat|spa|esp|eng|vo|vose|h264|h265|x264|x265|web-dl|webrip|bluray|brrip|dvdrip|telesync|scr)\b',
+      ),
+      ' ',
+    );
+    return n.replaceAll(RegExp(r'[^a-z0-9]'), '').trim();
+  }
+
+  /// Vincula items de la base de datos (custom_content) como alternativas V2 (Más rápida)
+  /// a items coincidentes de Xtream en lugar de crear tarjetas duplicadas.
+  (List<M3UItem>, List<M3UItem>) _linkCustomContentAlternatives(
+    List<M3UItem> regularItems,
+    List<M3UItem> customItems,
+  ) {
+    if (regularItems.isEmpty || customItems.isEmpty) {
+      return (regularItems, customItems);
+    }
+
+    final List<M3UItem> updatedRegular = [];
+    final Set<M3UItem> matchedCustomItems = {};
+
+    final Map<String, List<M3UItem>> customByNormTitle = {};
+    for (final cItem in customItems) {
+      final normKey = _normalizeTitleForMatching(cItem.name);
+      if (normKey.isNotEmpty) {
+        customByNormTitle.putIfAbsent(normKey, () => []).add(cItem);
+      }
+    }
+
+    for (final regItem in regularItems) {
+      final regNormKey = _normalizeTitleForMatching(regItem.name);
+      final matchingCustoms = customByNormTitle[regNormKey] ?? [];
+
+      M3UItem? matchedCustom;
+      for (final candidate in matchingCustoms) {
+        if (regItem.isSeries == candidate.isSeries &&
+            regItem.isLive == candidate.isLive) {
+          matchedCustom = candidate;
+          break;
+        }
+      }
+
+      if (matchedCustom != null) {
+        matchedCustomItems.add(matchedCustom);
+
+        final labeledCustom = matchedCustom.copyWith(
+          sourceName: 'V2 (Más rápida)',
+        );
+
+        List<M3UItem> updatedEpisodes = regItem.episodes;
+        if (regItem.isSeries &&
+            regItem.episodes.isNotEmpty &&
+            matchedCustom.episodes.isNotEmpty) {
+          updatedEpisodes = [];
+          for (final regEp in regItem.episodes) {
+            final regEpNorm = _normalizeTitleForMatching(regEp.name);
+            M3UItem? matchedEp;
+            for (final cEp in matchedCustom.episodes) {
+              if (regEp.seasonNumber != null &&
+                  cEp.seasonNumber != null &&
+                  regEp.seasonNumber == cEp.seasonNumber &&
+                  regEp.episodeNumber != null &&
+                  cEp.episodeNumber != null &&
+                  regEp.episodeNumber == cEp.episodeNumber) {
+                matchedEp = cEp;
+                break;
+              }
+              if (regEp.episodeNumber != null &&
+                  cEp.episodeNumber != null &&
+                  regEp.episodeNumber == cEp.episodeNumber) {
+                matchedEp = cEp;
+                break;
+              }
+              if (regEpNorm.isNotEmpty &&
+                  regEpNorm == _normalizeTitleForMatching(cEp.name)) {
+                matchedEp = cEp;
+                break;
+              }
+            }
+
+            if (matchedEp != null) {
+              final labeledCustomEp = matchedEp.copyWith(
+                sourceName: 'V2 (Más rápida)',
+              );
+              final existingAlts = List<M3UItem>.from(regEp.alternatives);
+              if (!existingAlts.any((a) => a.url == labeledCustomEp.url)) {
+                existingAlts.add(labeledCustomEp);
+              }
+              updatedEpisodes.add(regEp.copyWith(alternatives: existingAlts));
+            } else {
+              updatedEpisodes.add(regEp);
+            }
+          }
+        }
+
+        final existingAlts = List<M3UItem>.from(regItem.alternatives);
+        if (!existingAlts.any((a) => a.url == labeledCustom.url)) {
+          existingAlts.add(labeledCustom);
+        }
+
+        updatedRegular.add(
+          regItem.copyWith(
+            alternatives: existingAlts,
+            episodes: updatedEpisodes,
+          ),
+        );
+      } else {
+        updatedRegular.add(regItem);
+      }
+    }
+
+    final orphanCustom =
+        customItems.where((c) => !matchedCustomItems.contains(c)).toList();
+
+    return (updatedRegular, orphanCustom);
+  }
+
   /// Mezcla los items personalizados (Supabase custom_content) de forma
   /// inteligente entre los items regulares, en vez de ponerlos siempre al
   /// principio.
-  ///
-  /// Estrategia:
-  /// 1. Agrupa custom items por categoría.
-  /// 2. Para cada categoría, los inserta a intervalos regulares entre los items
-  ///    de esa misma categoría, empezando DESPUÉS de los primeros items
-  ///    regulares (nunca en posición 0).
-  /// 3. Los items cuya categoría no coincide con ninguna categoría existente se
-  ///    distribuyen uniformemente a lo largo de toda la lista final.
-  /// 4. Si no hay items regulares, los custom se devuelven tal cual.
   List<M3UItem> _interleaveCustomContent(
     List<M3UItem> regularItems,
     List<M3UItem> customItems,
@@ -1928,17 +2043,25 @@ class M3UService extends ChangeNotifier {
     if (customItems.isEmpty) return regularItems;
     if (regularItems.isEmpty) return customItems;
 
-    // ── Paso 1: Agrupar custom items por categoría ──
+    // ── Paso 0: Emparejar alternativas de custom_content (BD V2) ──
+    final (linkedRegular, orphanCustom) = _linkCustomContentAlternatives(
+      regularItems,
+      customItems,
+    );
+
+    if (orphanCustom.isEmpty) return linkedRegular;
+
+    // ── Paso 1: Agrupar custom items huérfanos por categoría ──
     final Map<String, List<M3UItem>> customByCategory = {};
-    for (final item in customItems) {
+    for (final item in orphanCustom) {
       customByCategory.putIfAbsent(item.category, () => []).add(item);
     }
 
     // ── Paso 2: Construir mapa de posiciones de items regulares por categoría ──
     // Para cada categoría, guardamos los índices donde aparecen items regulares.
     final Map<String, List<int>> regularIndicesByCategory = {};
-    for (int i = 0; i < regularItems.length; i++) {
-      final cat = regularItems[i].category;
+    for (int i = 0; i < linkedRegular.length; i++) {
+      final cat = linkedRegular[i].category;
       regularIndicesByCategory.putIfAbsent(cat, () => []).add(i);
     }
 
@@ -1946,8 +2069,9 @@ class M3UService extends ChangeNotifier {
     // Para cada categoría que tiene custom items Y items regulares, calculamos
     // las posiciones donde insertarlos (distribuidos uniformemente, nunca al
     // principio de la categoría).
-    final List<M3UItem> result = List<M3UItem>.from(regularItems);
-    final List<M3UItem> orphanCustom = []; // custom sin categoría correspondiente
+    final List<M3UItem> result = List<M3UItem>.from(linkedRegular);
+    final List<M3UItem> unmappedCategoryCustom =
+        []; // custom sin categoría correspondiente
     int insertionOffset = 0; // compensación acumulada por inserciones previas
 
     // Procesar categorías en orden determinista
@@ -1959,7 +2083,7 @@ class M3UService extends ChangeNotifier {
 
       if (catRegularIndices == null || catRegularIndices.isEmpty) {
         // No hay items regulares de esta categoría → huérfanos
-        orphanCustom.addAll(catCustom);
+        unmappedCategoryCustom.addAll(catCustom);
         continue;
       }
 
@@ -1969,7 +2093,8 @@ class M3UService extends ChangeNotifier {
       // Espaciado: insertar un custom item cada N items regulares de la
       // categoría, empezando mínimo después del 3.º item regular (o después
       // de la mitad si hay pocos).
-      final int minStartOffset = (regularCount < 6) ? (regularCount ~/ 2).clamp(1, regularCount) : 3;
+      final int minStartOffset =
+          (regularCount < 6) ? (regularCount ~/ 2).clamp(1, regularCount) : 3;
       final int availableSlots = regularCount - minStartOffset;
 
       if (availableSlots <= 0) {
@@ -1987,28 +2112,33 @@ class M3UService extends ChangeNotifier {
 
       for (int c = 0; c < customCount; c++) {
         // Posición dentro de los índices regulares de esta categoría
-        final int slotInCategory = minStartOffset + (step * (c + 1)).round().clamp(0, availableSlots);
-        final int regularIdx = slotInCategory < catRegularIndices.length
-            ? catRegularIndices[slotInCategory]
-            : catRegularIndices.last;
+        final int slotInCategory =
+            minStartOffset + (step * (c + 1)).round().clamp(0, availableSlots);
+        final int regularIdx =
+            slotInCategory < catRegularIndices.length
+                ? catRegularIndices[slotInCategory]
+                : catRegularIndices.last;
         // Insertar DESPUÉS del item regular en esa posición
-        final int insertAt = (regularIdx + 1 + insertionOffset).clamp(0, result.length);
+        final int insertAt = (regularIdx + 1 + insertionOffset).clamp(
+          0,
+          result.length,
+        );
         result.insert(insertAt, catCustom[c]);
         insertionOffset++;
       }
     }
 
     // ── Paso 4: Distribuir huérfanos uniformemente en toda la lista ──
-    if (orphanCustom.isNotEmpty) {
+    if (unmappedCategoryCustom.isNotEmpty) {
       final int totalLen = result.length;
-      final double orphanStep = totalLen / (orphanCustom.length + 1);
+      final double orphanStep = totalLen / (unmappedCategoryCustom.length + 1);
       // Insertar empezando como mínimo después del 20% de la lista
       final int orphanMinStart = (totalLen * 0.2).round().clamp(1, totalLen);
 
-      for (int i = 0; i < orphanCustom.length; i++) {
+      for (int i = 0; i < unmappedCategoryCustom.length; i++) {
         int pos = orphanMinStart + (orphanStep * (i + 1)).round();
         pos = pos.clamp(1, result.length); // nunca en posición 0
-        result.insert(pos, orphanCustom[i]);
+        result.insert(pos, unmappedCategoryCustom[i]);
       }
     }
 
@@ -2214,6 +2344,61 @@ class M3UService extends ChangeNotifier {
       }
     }
 
+    // Link alternatives from custom DB series if available
+    if (episodes.isNotEmpty && item.alternatives.isNotEmpty) {
+      final customSeriesAlt = item.alternatives.firstWhere(
+        (a) =>
+            a.episodes.isNotEmpty ||
+            a.sourceName?.contains('V2') == true ||
+            a.sourceName == 'Supabase',
+        orElse: () => M3UItem(name: '', url: '', category: ''),
+      );
+
+      if (customSeriesAlt.episodes.isNotEmpty) {
+        final List<M3UItem> linkedEpisodes = [];
+        for (final ep in episodes) {
+          final regEpNorm = _normalizeTitleForMatching(ep.name);
+          M3UItem? matchedEp;
+          for (final cEp in customSeriesAlt.episodes) {
+            if (ep.seasonNumber != null &&
+                cEp.seasonNumber != null &&
+                ep.seasonNumber == cEp.seasonNumber &&
+                ep.episodeNumber != null &&
+                cEp.episodeNumber != null &&
+                ep.episodeNumber == cEp.episodeNumber) {
+              matchedEp = cEp;
+              break;
+            }
+            if (ep.episodeNumber != null &&
+                cEp.episodeNumber != null &&
+                ep.episodeNumber == cEp.episodeNumber) {
+              matchedEp = cEp;
+              break;
+            }
+            if (regEpNorm.isNotEmpty &&
+                regEpNorm == _normalizeTitleForMatching(cEp.name)) {
+              matchedEp = cEp;
+              break;
+            }
+          }
+
+          if (matchedEp != null) {
+            final labeledCustomEp = matchedEp.copyWith(
+              sourceName: 'V2 (Más rápida)',
+            );
+            final existingAlts = List<M3UItem>.from(ep.alternatives);
+            if (!existingAlts.any((a) => a.url == labeledCustomEp.url)) {
+              existingAlts.add(labeledCustomEp);
+            }
+            linkedEpisodes.add(ep.copyWith(alternatives: existingAlts));
+          } else {
+            linkedEpisodes.add(ep);
+          }
+        }
+        episodes = linkedEpisodes;
+      }
+    }
+
     // Dynamic indexing: add newly fetched episodes to the global URL index
     // so resolveItemFromProgress can find them immediately via URL.
     if (episodes.isNotEmpty) {
@@ -2282,9 +2467,36 @@ class M3UService extends ChangeNotifier {
     if (_items.isEmpty) return [];
     final q = query.toLowerCase();
     final results = <M3UItem>[];
+    final seenKeys = <String>{};
+
     for (final item in _items) {
       if (item.isLive) continue; // Excluir canales en vivo
       if (item.name.toLowerCase().contains(q)) {
+        final norm = _normalizeTitleForMatching(item.name);
+        final key = '${item.isSeries}_$norm';
+
+        if (norm.isNotEmpty && seenKeys.contains(key)) {
+          // Anexar como alternativa en la tarjeta existente si la URL difiere
+          final existingIdx = results.indexWhere(
+            (r) =>
+                r.isSeries == item.isSeries &&
+                _normalizeTitleForMatching(r.name) == norm,
+          );
+          if (existingIdx != -1) {
+            final existing = results[existingIdx];
+            if (!existing.alternatives.any((a) => a.url == item.url) &&
+                item.url != existing.url) {
+              final newAlts = List<M3UItem>.from(existing.alternatives)
+                ..add(item);
+              results[existingIdx] = existing.copyWith(alternatives: newAlts);
+            }
+          }
+          continue;
+        }
+
+        if (norm.isNotEmpty) {
+          seenKeys.add(key);
+        }
         results.add(item);
         if (results.length >= 100) break;
       }
@@ -2377,10 +2589,7 @@ class M3UService extends ChangeNotifier {
 
       // SMART FALLBACK: If no trends matched or matched nothing, pick recent/random items
       if (finalResults.isEmpty && _items.isNotEmpty) {
-        final vods =
-            _items
-                .where((i) => !i.isLive)
-                .toList();
+        final vods = _items.where((i) => !i.isLive).toList();
 
         if (vods.isNotEmpty) {
           final regexYear = RegExp(r'\b(202[0-9]|19[0-9]{2})\b');
@@ -2507,10 +2716,7 @@ class M3UService extends ChangeNotifier {
 
       // SMART FALLBACK: If no trends matched, pick recent/random items with logos
       if (finalResults.isEmpty && _items.isNotEmpty) {
-        final vods =
-            _items
-                .where((i) => !i.isLive)
-                .toList();
+        final vods = _items.where((i) => !i.isLive).toList();
 
         if (vods.isNotEmpty) {
           final regexYear = RegExp(r'\b(202[0-9]|19[0-9]{2})\b');
