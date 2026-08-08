@@ -253,6 +253,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool _nextEpisodePrewarmStarted = false;
   bool _isFastForwarding = false;
   int? _adCountdown;
+  Timer? _serverFailoverTimer;
 
   int _currentServerIndex = 0;
   List<String> _serverUrls = [];
@@ -504,6 +505,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _noticeTimer?.cancel();
     _diagTimer?.cancel();
     _turboWatchdog?.cancel();
+    _serverFailoverTimer?.cancel();
 
     for (final s in _streamSubscriptions) {
       s.cancel();
@@ -861,6 +863,29 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           _serverItems = [item, ...item.alternatives];
           _serverUrls = _serverItems.map((a) => a.url).toList();
           _currentServerIndex = 0;
+        }
+
+        // Automatic 6-second failover: if Xtream (server 0) takes > 6s to start playing,
+        // auto-switch to fast DB server (server 1) if available.
+        _serverFailoverTimer?.cancel();
+        if (_currentServerIndex == 0 && _serverItems.length > 1) {
+          _serverFailoverTimer = Timer(const Duration(seconds: 6), () {
+            if (!mounted || _player == null) return;
+            final st = _player!.state;
+            if (_isVideoLoading ||
+                !st.playing ||
+                st.position.inMilliseconds < 300) {
+              debugPrint(
+                'Xtream failover: Server 1 took > 6s to load. Auto-switching to fast DB server (Server 2)...',
+              );
+              _showVisualNotice('Cambiando a 720p (Más rápida)...');
+              final currentPos = _player?.state.position ?? startFrom;
+              setState(() {
+                _currentServerIndex = 1;
+              });
+              _initializePlayer(_serverItems[1], startFrom: currentPos);
+            }
+          });
         }
 
         // VALIDATION: If URL looks like a web page and scraper didn't catch it,
@@ -1321,6 +1346,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           final hasBuffer = _isLiveContent || state.buffer.inSeconds >= 2;
 
           if (hasVideo && isPlayingAndAdvanced && hasBuffer) {
+            _serverFailoverTimer?.cancel();
             break;
           }
 
@@ -1355,6 +1381,21 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       }
     } catch (e) {
       if (mounted) {
+        _serverFailoverTimer?.cancel();
+        if (_currentServerIndex == 0 && _serverItems.length > 1) {
+          debugPrint(
+            'Xtream error: Server 1 failed ($e). Auto-switching to fast DB server (Server 2)...',
+          );
+          _showVisualNotice(
+            'Servidor no disponible. Cambiando a 720p (Más rápida)...',
+          );
+          final currentPos = _player?.state.position ?? startFrom;
+          setState(() {
+            _currentServerIndex = 1;
+          });
+          _initializePlayer(_serverItems[1], startFrom: currentPos);
+          return;
+        }
         setState(() => _isVideoLoading = false);
         _showAppSnackBar('Error al reproducir: $e');
       }
