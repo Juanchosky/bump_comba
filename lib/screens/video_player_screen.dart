@@ -1033,16 +1033,20 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           _activeDecoder = decoder;
 
           final futures = <Future<dynamic>>[
+            mpv.setProperty('alang', 'es,spa,esp,es-ES,es-MX,es-419'),
             mpv.setProperty('cache', 'yes'),
             mpv.setProperty('cache-pause', 'yes'),
             mpv.setProperty('cache-on-disk', 'no'),
-            mpv.setProperty('cache-pause-wait', _isLiveContent ? '2' : '10'),
-            mpv.setProperty('cache-pause-initial', 'yes'),
+            mpv.setProperty(
+              'cache-pause-wait',
+              _isLiveContent ? '2' : (lowPerf ? '2' : '1.5'),
+            ),
+            mpv.setProperty('cache-pause-initial', 'no'),
             mpv.setProperty(
               'stream-buffer-size',
-              _isLiveContent ? '4194304' : (lowPerf ? '8388608' : '33554432'),
+              _isLiveContent ? '4194304' : (lowPerf ? '8388608' : '16777216'),
             ),
-            mpv.setProperty('network-timeout', '10'),
+            mpv.setProperty('network-timeout', '20'),
             mpv.setProperty('http-header-fields', 'Connection: keep-alive'),
             mpv.setProperty('demuxer-seekable-cache', 'yes'),
             mpv.setProperty('http-reconnect', 'yes'),
@@ -1088,7 +1092,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             ]);
           } else {
             futures.addAll([
-              mpv.setProperty('cache-secs', '300'),
+              mpv.setProperty('cache-secs', lowPerf ? '90' : '300'),
               mpv.setProperty(
                 'demuxer-max-bytes',
                 lowPerf ? '67108864' : '268435456',
@@ -1097,9 +1101,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 'demuxer-max-back-bytes',
                 lowPerf ? '16777216' : '67108864',
               ),
-              mpv.setProperty('demuxer-readahead-secs', '180'),
+              mpv.setProperty('demuxer-readahead-secs', lowPerf ? '60' : '180'),
               mpv.setProperty('hls-bitrate', 'auto'),
               mpv.setProperty('force-seekable', 'yes'),
+              mpv.setProperty(
+                'stream-lavf-o',
+                'reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_delay_max=5',
+              ),
             ]);
           }
 
