@@ -114,7 +114,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   );
   Duration _knownDuration = Duration.zero;
   Timer? _speedPollTimer;
-  String? _vodProxyCacheUrl;
   final ValueNotifier<double> _downloadSpeedBytesPerSec = ValueNotifier<double>(
     0.0,
   );
@@ -727,12 +726,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// Si la URL es un M3U8, la ruteamos por el Worker para acelerar
   /// la descarga de la playlist inicial (la más lenta desde Colombia).
   String _resolveStreamUrl(String url) {
-    if (!_isLiveContent &&
-        _vodProxyCacheUrl != null &&
-        _vodProxyCacheUrl!.trim().isNotEmpty) {
-      final proxy = _vodProxyCacheUrl!.trim();
-      return '$proxy$url';
-    }
     return url;
   }
 
@@ -750,15 +743,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     if (_knownDuration == Duration.zero) {
       _knownDuration = _parseItemDuration(item.duration);
     }
-
-    try {
-      final remoteProxy = await M3UService().fetchRemoteConfiguration(
-        'vod_proxy_cache_url',
-      );
-      if (mounted && remoteProxy != null && remoteProxy.trim().isNotEmpty) {
-        _vodProxyCacheUrl = remoteProxy.trim();
-      }
-    } catch (_) {}
 
     // 1. Manejo de Scraping (enlaces dinámicos)
     if (DynamicScraperService().isSupported(item.url)) {
