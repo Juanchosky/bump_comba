@@ -69,6 +69,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
     final List<_HistoryEntry> entries = [];
     final Set<String> seenContentKeys = {};
+    final Set<String> seenEpisodeKeys = {};
 
     for (final progress in history) {
       final item = _m3uService.resolveItemFromProgress(progress);
@@ -78,6 +79,18 @@ class _HistoryScreenState extends State<HistoryScreen> {
         // shells and the same movie saved under different URLs (distinct
         // sources / refreshed tokens) from appearing twice.
         if (!seenContentKeys.add(item.contentKey)) continue;
+
+        // Extra dedup for series episodes
+        if (progress.seriesName != null &&
+            progress.seriesName!.isNotEmpty &&
+            progress.episodeNumber != null) {
+          final epKey =
+              '${progress.seriesName!.toLowerCase().trim()}'
+              '_s${progress.seasonNumber ?? 0}'
+              '_e${progress.episodeNumber}';
+          if (!seenEpisodeKeys.add(epKey)) continue;
+        }
+
         entries.add(_HistoryEntry(item, progress));
       }
     }

@@ -1882,18 +1882,33 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                   final history = snapshot.data ?? [];
                   final continueWatchingItems = <Map<String, dynamic>>[];
                   final seenContentKeys = <String>{};
+                  final seenEpisodeKeys = <String>{};
 
                   for (var progress in history) {
                     final item = _m3uService.resolveItemFromProgress(progress);
 
                     if (item == null) continue;
-                    if (progress.isCompleted) continue;
 
-                    // Dedup by normalized content identity so the same title
-                    // saved under different URLs (distinct sources / refreshed
-                    // tokens) doesn't appear twice. History is sorted newest
-                    // first, so we keep the most recent occurrence.
-                    if (!seenContentKeys.add(item.contentKey)) continue;
+                    // Register dedup keys FIRST (history is sorted newest first).
+                    // If the newest record for a content/episode is completed,
+                    // registering its key here ensures older uncompleted records
+                    // for the same title won't leak through to 'Seguir viendo'.
+                    final isAlreadySeenContent =
+                        !seenContentKeys.add(item.contentKey);
+
+                    bool isAlreadySeenEpisode = false;
+                    if (progress.seriesName != null &&
+                        progress.seriesName!.isNotEmpty &&
+                        progress.episodeNumber != null) {
+                      final epKey =
+                          '${progress.seriesName!.toLowerCase().trim()}'
+                          '_s${progress.seasonNumber ?? 0}'
+                          '_e${progress.episodeNumber}';
+                      isAlreadySeenEpisode = !seenEpisodeKeys.add(epKey);
+                    }
+
+                    if (isAlreadySeenContent || isAlreadySeenEpisode) continue;
+                    if (progress.isCompleted) continue;
 
                     continueWatchingItems.add({
                       'item': item,

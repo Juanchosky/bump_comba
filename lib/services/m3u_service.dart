@@ -1920,11 +1920,179 @@ class M3UService extends ChangeNotifier {
     n = n.replaceAll(RegExp(r'\b(19\d\d|20\d\d)\b'), ' ');
     n = n.replaceAll(
       RegExp(
-        r'\b(4k|uhd|hd|fhd|sd|multi|latino|castellano|sub|subtitulado|dual|cam|ts|tc|hd-ts|telesync|scr|opc?\s*\d+|opcion\s*\d+|opo\s*\d+|server\s*\d+|dual|lat|spa|esp|eng|vo|vose|h264|h265|x264|x265|web-dl|webrip|bluray|brrip|dvdrip|telesync|scr)\b',
+        r'\b(4k|uhd|hd|fhd|sd|720p|1080p|2160p|60fps|hdr|hdr10|dv|dolby|multi|latino|castellano|sub|subtitulado|dual|cam|ts|tc|hd-ts|telesync|scr|opc?\s*\d+|opcion\s*\d+|opo\s*\d+|server\s*\d+|dual|lat|spa|esp|eng|vo|vose|h264|h265|x264|x265|web-dl|webrip|bluray|brrip|dvdrip|telesync|scr|full hd|movies|vod|extended|uncut|complete|edition|version|versión)\b',
       ),
       ' ',
     );
     return n.replaceAll(RegExp(r'[^a-z0-9]'), '').trim();
+  }
+
+  /// Clave canónica inteligente para matching entre títulos en distintos idiomas (Español / Inglés),
+  /// con o sin artículos ("The", "El", "La"), números romanos, o diferentes formatos.
+  String _canonicalTitleKey(String raw) {
+    String n = _removeAccents(raw.toLowerCase());
+
+    // 1. Quitar corchetes, paréntesis y años
+    n = n.replaceAll(RegExp(r'\(.*?\)'), ' ');
+    n = n.replaceAll(RegExp(r'\[.*?\]'), ' ');
+    n = n.replaceAll(RegExp(r'\b(19\d\d|20\d\d)\b'), ' ');
+
+    // 2. Quitar etiquetas técnicas de calidad, idioma y formato
+    n = n.replaceAll(
+      RegExp(
+        r'\b(4k|uhd|hd|fhd|sd|720p|1080p|2160p|60fps|hdr|hdr10|dv|dolby|multi|latino|castellano|sub|subtitulado|dual|cam|ts|tc|hd-ts|telesync|scr|opc?\s*\d+|opcion\s*\d+|opo\s*\d+|server\s*\d+|dual|lat|spa|esp|eng|vo|vose|h264|h265|x264|x265|web-dl|webrip|bluray|brrip|dvdrip|telesync|scr|full hd|movies|vod|extended|uncut|complete|edition|version|versión|coleccion|collection|saga|trilogia|pelicula|movie)\b',
+      ),
+      ' ',
+    );
+
+    // 3. Normalizar números romanos comunes (II -> 2, III -> 3, IV -> 4, V -> 5, VI -> 6, VII -> 7, VIII -> 8, IX -> 9, X -> 10)
+    n = n.replaceAll(RegExp(r'\bviii\b'), '8');
+    n = n.replaceAll(RegExp(r'\bvii\b'), '7');
+    n = n.replaceAll(RegExp(r'\bvi\b'), '6');
+    n = n.replaceAll(RegExp(r'\biii\b'), '3');
+    n = n.replaceAll(RegExp(r'\bii\b'), '2');
+    n = n.replaceAll(RegExp(r'\biv\b'), '4');
+    n = n.replaceAll(RegExp(r'\bv\b'), '5');
+    n = n.replaceAll(RegExp(r'\bix\b'), '9');
+    n = n.replaceAll(RegExp(r'\bx\b'), '10');
+
+    // 4. Mapeo de equivalencias de franquicias / nombres en español vs inglés
+    n = n.replaceAll(RegExp(r'\bvengadores\b'), 'avengers');
+    n = n.replaceAll(
+      RegExp(
+        r'\brapidos y furiosos\b|\brapido y furioso\b|\brapidos & furiosos\b',
+      ),
+      'fast and furious',
+    );
+    n = n.replaceAll(RegExp(r'\bguerra de las galaxias\b'), 'star wars');
+    n = n.replaceAll(
+      RegExp(r'\bel senor de los anillos\b|\bsenor de los anillos\b'),
+      'lord of the rings',
+    );
+    n = n.replaceAll(RegExp(r'\bjuego de tronos\b'), 'game of thrones');
+    n = n.replaceAll(
+      RegExp(r'\bel hombre arana\b|\bhombre arana\b'),
+      'spiderman',
+    );
+    n = n.replaceAll(
+      RegExp(r'\bpiratas del caribe\b'),
+      'pirates of the caribbean',
+    );
+    n = n.replaceAll(RegExp(r'\bmi villano favorito\b'), 'despicable me');
+    n = n.replaceAll(
+      RegExp(r'\blos increibles\b|\bincreibles\b'),
+      'incredibles',
+    );
+    n = n.replaceAll(RegExp(r'\bestacion 19\b'), 'station 19');
+    n = n.replaceAll(RegExp(r'\banatomia de grey\b'), 'greys anatomy');
+    n = n.replaceAll(RegExp(r'\blos simpson\b|\blos simpsons\b'), 'simpsons');
+    n = n.replaceAll(
+      RegExp(r'\bla casa de papel\b|\bcasa de papel\b'),
+      'money heist',
+    );
+
+    // 5. Eliminar caracteres especiales (conservar letras, números y espacios)
+    n = n.replaceAll(RegExp(r'[^a-z0-9\s]'), ' ');
+
+    // 6. Quitar artículos comunes al inicio
+    n = n.replaceAll(
+      RegExp(r'^\s*(the|el|la|los|las|les|un|una|unos|unas)\s+'),
+      '',
+    );
+
+    // 7. Normalizar espacios múltiples
+    return n.replaceAll(RegExp(r'\s+'), ' ').trim();
+  }
+
+  /// Extrae los números significativos de un título (ej: "2", "3", "9" para secuelas/partes)
+  Set<String> _extractNumbersFromTitle(String title) {
+    final matches = RegExp(r'\b\d+\b').allMatches(title);
+    return matches.map((m) => m.group(0)!).toSet();
+  }
+
+  /// Calcula la distancia Levenshtein entre dos cadenas para fuzzy matching
+  int _levenshtein(String s1, String s2) {
+    if (s1 == s2) return 0;
+    if (s1.isEmpty) return s2.length;
+    if (s2.isEmpty) return s1.length;
+
+    List<int> v0 = List<int>.generate(s2.length + 1, (i) => i);
+    List<int> v1 = List<int>.filled(s2.length + 1, 0);
+
+    for (int i = 0; i < s1.length; i++) {
+      v1[0] = i + 1;
+      for (int j = 0; j < s2.length; j++) {
+        int cost = (s1[i] == s2[j]) ? 0 : 1;
+        v1[j + 1] = min(v1[j] + 1, min(v0[j + 1] + 1, v0[j] + cost));
+      }
+      for (int j = 0; j <= s2.length; j++) {
+        v0[j] = v1[j];
+      }
+    }
+    return v1[s2.length];
+  }
+
+  /// Evalúa si dos títulos representan el mismo contenido usando reglas multitrama:
+  /// - Normalización básica
+  /// - Clave canónica (traducciones, artículos, etiquetas)
+  /// - Coincidencia de tokens / subpalabras
+  /// - Similitud Levenshtein
+  bool _isSmartTitleMatch(String raw1, String raw2) {
+    if (raw1.isEmpty || raw2.isEmpty) return false;
+
+    // 1. Match Exacto por Normalización básica
+    final norm1 = _normalizeTitleForMatching(raw1);
+    final norm2 = _normalizeTitleForMatching(raw2);
+    if (norm1.isNotEmpty && norm1 == norm2) return true;
+
+    // 2. Match por Clave Canónica
+    final canon1 = _canonicalTitleKey(raw1);
+    final canon2 = _canonicalTitleKey(raw2);
+    final canon1NoSpace = canon1.replaceAll(' ', '');
+    final canon2NoSpace = canon2.replaceAll(' ', '');
+
+    if (canon1NoSpace.isNotEmpty && canon1NoSpace == canon2NoSpace) return true;
+
+    // Verificar que si hay números (secuelas como "2", "3"), coincidan exactamente
+    final nums1 = _extractNumbersFromTitle(canon1);
+    final nums2 = _extractNumbersFromTitle(canon2);
+    if (nums1.isNotEmpty || nums2.isNotEmpty) {
+      if (nums1.length != nums2.length || !nums1.containsAll(nums2)) {
+        return false; // Números distintos = secuelas distintas (ej. Avengers 1 vs Avengers 2)
+      }
+    }
+
+    // 3. Match por inclusión de palabras clave (tokens)
+    final words1 = canon1.split(' ').where((w) => w.length >= 2).toSet();
+    final words2 = canon2.split(' ').where((w) => w.length >= 2).toSet();
+
+    if (words1.isNotEmpty && words2.isNotEmpty) {
+      final intersection = words1.intersection(words2);
+      final union = words1.union(words2);
+      final jaccard = intersection.length / union.length;
+
+      // Si una lista de palabras está totalmente contenida en la otra (y tiene al menos 2 palabras)
+      if (words1.length >= 2 && words1.every((w) => words2.contains(w))) {
+        return true;
+      }
+      if (words2.length >= 2 && words2.every((w) => words1.contains(w))) {
+        return true;
+      }
+
+      // Si la similitud Jaccard es >= 0.70
+      if (jaccard >= 0.70) return true;
+    }
+
+    // 4. Fuzzy Levenshtein Match
+    if (canon1NoSpace.length >= 5 && canon2NoSpace.length >= 5) {
+      final dist = _levenshtein(canon1NoSpace, canon2NoSpace);
+      final maxLen = max(canon1NoSpace.length, canon2NoSpace.length);
+      final similarity = 1.0 - (dist / maxLen);
+
+      if (similarity >= 0.82) return true;
+    }
+
+    return false;
   }
 
   /// Vincula items de la base de datos (custom_content) como alternativas V2 (Más rápida)
@@ -1940,24 +2108,52 @@ class M3UService extends ChangeNotifier {
     final List<M3UItem> updatedRegular = [];
     final Set<M3UItem> matchedCustomItems = {};
 
+    // Mapas primarios para búsqueda ultra-rápida O(1)
     final Map<String, List<M3UItem>> customByNormTitle = {};
+    final Map<String, List<M3UItem>> customByCanonTitle = {};
+
     for (final cItem in customItems) {
       final normKey = _normalizeTitleForMatching(cItem.name);
       if (normKey.isNotEmpty) {
         customByNormTitle.putIfAbsent(normKey, () => []).add(cItem);
       }
+      final canonKey = _canonicalTitleKey(cItem.name).replaceAll(' ', '');
+      if (canonKey.isNotEmpty) {
+        customByCanonTitle.putIfAbsent(canonKey, () => []).add(cItem);
+      }
     }
 
     for (final regItem in regularItems) {
       final regNormKey = _normalizeTitleForMatching(regItem.name);
-      final matchingCustoms = customByNormTitle[regNormKey] ?? [];
+      final regCanonKey = _canonicalTitleKey(regItem.name).replaceAll(' ', '');
+
+      // 1. Intentar match rápido por mapa directo o canónico
+      List<M3UItem> candidates = [
+        ...?customByNormTitle[regNormKey],
+        ...?customByCanonTitle[regCanonKey],
+      ];
 
       M3UItem? matchedCustom;
-      for (final candidate in matchingCustoms) {
+      for (final candidate in candidates) {
         if (regItem.isSeries == candidate.isSeries &&
-            regItem.isLive == candidate.isLive) {
+            regItem.isLive == candidate.isLive &&
+            !matchedCustomItems.contains(candidate)) {
           matchedCustom = candidate;
           break;
+        }
+      }
+
+      // 2. Si no hubo match por mapa directo, intentar Smart Match recorriendo los no vinculados
+      if (matchedCustom == null) {
+        for (final candidate in customItems) {
+          if (regItem.isSeries == candidate.isSeries &&
+              regItem.isLive == candidate.isLive &&
+              !matchedCustomItems.contains(candidate)) {
+            if (_isSmartTitleMatch(regItem.name, candidate.name)) {
+              matchedCustom = candidate;
+              break;
+            }
+          }
         }
       }
 
@@ -1974,7 +2170,6 @@ class M3UService extends ChangeNotifier {
             matchedCustom.episodes.isNotEmpty) {
           updatedEpisodes = [];
           for (final regEp in regItem.episodes) {
-            final regEpNorm = _normalizeTitleForMatching(regEp.name);
             M3UItem? matchedEp;
             for (final cEp in matchedCustom.episodes) {
               if (regEp.seasonNumber != null &&
@@ -1986,10 +2181,6 @@ class M3UService extends ChangeNotifier {
                 matchedEp = cEp;
                 break;
               }
-              // Fallback: match por episodeNumber SOLO si al menos uno
-              // de los dos no tiene temporada (dato ausente). Si ambos
-              // tienen seasonNumber explícito pero distinto, NO matchear
-              // — evita que S03E01 caiga en S01E01.
               if (regEp.episodeNumber != null &&
                   cEp.episodeNumber != null &&
                   regEp.episodeNumber == cEp.episodeNumber &&
@@ -1997,8 +2188,7 @@ class M3UService extends ChangeNotifier {
                 matchedEp = cEp;
                 break;
               }
-              if (regEpNorm.isNotEmpty &&
-                  regEpNorm == _normalizeTitleForMatching(cEp.name)) {
+              if (_isSmartTitleMatch(regEp.name, cEp.name)) {
                 matchedEp = cEp;
                 break;
               }
@@ -2367,7 +2557,6 @@ class M3UService extends ChangeNotifier {
       if (customSeriesAlt.episodes.isNotEmpty) {
         final List<M3UItem> linkedEpisodes = [];
         for (final ep in episodes) {
-          final regEpNorm = _normalizeTitleForMatching(ep.name);
           M3UItem? matchedEp;
           for (final cEp in customSeriesAlt.episodes) {
             if (ep.seasonNumber != null &&
@@ -2390,8 +2579,7 @@ class M3UService extends ChangeNotifier {
               matchedEp = cEp;
               break;
             }
-            if (regEpNorm.isNotEmpty &&
-                regEpNorm == _normalizeTitleForMatching(cEp.name)) {
+            if (_isSmartTitleMatch(ep.name, cEp.name)) {
               matchedEp = cEp;
               break;
             }
