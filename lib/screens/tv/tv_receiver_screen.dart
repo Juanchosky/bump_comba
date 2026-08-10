@@ -94,6 +94,9 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
   // (error crítico #10 del brief)
   DateTime _lastLoadAt = DateTime.fromMillisecondsSinceEpoch(0);
 
+  Timer? _speedPollTimer;
+  double _downloadSpeedKbps = 0.0;
+
   @override
   void initState() {
     super.initState();
@@ -102,6 +105,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     _startService();
     _listenPlayer();
     _startStatusPush();
+    _startSpeedPolling();
     WakelockPlus.enable();
   }
 
@@ -425,6 +429,25 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     });
   }
 
+  void _startSpeedPolling() {
+    _speedPollTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
+      if (!mounted || !_hasMedia) return;
+      try {
+        final mpv = _player.platform as dynamic;
+        if (mpv != null) {
+          final raw = await mpv.getProperty('cache-speed');
+          final speedBytes = double.tryParse(raw?.toString() ?? '') ?? 0.0;
+          final kbps = speedBytes / 1024;
+          if (mounted && _downloadSpeedKbps != kbps) {
+            setState(() {
+              _downloadSpeedKbps = kbps;
+            });
+          }
+        }
+      } catch (_) {}
+    });
+  }
+
   void _pushStatus() {
     if (!_service.hasClient.value) return;
     try {
@@ -680,6 +703,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
   @override
   void dispose() {
     _statusTimer?.cancel();
+    _speedPollTimer?.cancel();
     _commandSub?.cancel();
     _hideControlsTimer?.cancel();
     _seekDebounce?.cancel();
@@ -733,6 +757,20 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
             if (_hasMedia && _buffering)
               const Center(
                 child: _AppLoadingAnimation(size: 54, strokeWidth: 4),
+              ),
+            if (_hasMedia && (_downloadSpeedKbps > 0 || _buffering))
+              Positioned(
+                top: 40,
+                left: 48,
+                child: Text(
+                  '${_downloadSpeedKbps.toStringAsFixed(0)} KB/s',
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 16.6,
+                    fontWeight: FontWeight.w400,
+                    shadows: [Shadow(color: Colors.black, blurRadius: 4)],
+                  ),
+                ),
               ),
             if (_hasMedia && _controlsVisible)
               _TvControlsOverlay(

@@ -180,6 +180,9 @@ class M3UService extends ChangeNotifier {
   List<M3UItem>? _cachedPopularTMDB;
   bool _isFetchingPopularTMDB = false;
   bool get isFetchingPopularTMDB => _isFetchingPopularTMDB;
+  // SMART-SEARCH: Pre-computed normalized names for fast search
+  Map<M3UItem, String> _searchIndex = {};
+  Map<M3UItem, List<String>> _searchIndexWords = {};
   // Cache for TMDB trending banner items (hero banner)
   List<M3UItem>? _cachedTrendingBanner;
   bool _isFetchingTrendingBanner = false;
@@ -2223,6 +2226,8 @@ class M3UService extends ChangeNotifier {
     _items = items;
     _cachedLatestItems = _calculateLatestItems(items).take(50).toList();
     _cachedRecentItems = null;
+    // SMART-SEARCH: rebuild search index
+    _rebuildSearchIndex();
 
     try {
       final result = await compute(_indexItemsInBackground, {
@@ -2461,65 +2466,209 @@ class M3UService extends ChangeNotifier {
     return null;
   }
 
+  /// Rebuilds the pre-computed search index for all non-live items.
+  void _rebuildSearchIndex() {
+    _searchIndex = {};
+    _searchIndexWords = {};
+    for (final item in _items) {
+      if (item.isLive) continue;
+      final normalized = _normalizeForSearch(item.name);
+      _searchIndex[item] = normalized;
+      _searchIndexWords[item] =
+          normalized.split(' ').where((w) => w.isNotEmpty).toList();
+    }
+  }
+
   /// Search items by name (synchronous for instant results).
+  /// Uses 3-layer smart search: normalized match, word match, fuzzy match.
   List<M3UItem> search(String query) {
     if (query.isEmpty) return _items.where((i) => !i.isLive).toList();
     if (_items.isEmpty) return [];
-    final q = query.toLowerCase();
-    final results = <M3UItem>[];
+
+    final normalizedQuery = _normalizeForSearch(query);
+    final queryWords =
+        normalizedQuery.split(' ').where((w) => w.isNotEmpty).toList();
+    // Collapsed query (no spaces) for substring matching
+    final queryCollapsed = normalizedQuery.replaceAll(' ', '');
+
+    if (queryWords.isEmpty) return [];
+
+    final scored = <_ScoredItem>[];
     final seenKeys = <String>{};
 
     for (final item in _items) {
-      if (item.isLive) continue; // Excluir canales en vivo
-      if (item.name.toLowerCase().contains(q)) {
-        final norm = _normalizeTitleForMatching(item.name);
-        final key = '${item.isSeries}_$norm';
+      if (item.isLive) continue;
 
-        if (norm.isNotEmpty && seenKeys.contains(key)) {
-          // Anexar como alternativa en la tarjeta existente si la URL difiere
-          final existingIdx = results.indexWhere(
-            (r) =>
-                r.isSeries == item.isSeries &&
-                _normalizeTitleForMatching(r.name) == norm,
-          );
-          if (existingIdx != -1) {
-            final existing = results[existingIdx];
-            if (!existing.alternatives.any((a) => a.url == item.url) &&
-                item.url != existing.url) {
-              final newAlts = List<M3UItem>.from(existing.alternatives)
-                ..add(item);
-              results[existingIdx] = existing.copyWith(alternatives: newAlts);
+      final normalizedName =
+          _searchIndex[item] ?? _normalizeForSearch(item.name);
+      final nameWords =
+          _searchIndexWords[item] ??
+          normalizedName.split(' ').where((w) => w.isNotEmpty).toList();
+      final nameCollapsed = normalizedName.replaceAll(' ', '');
+
+      int score = 0;
+
+      // === LAYER 1: Normalized contains (accent-free, article-free) ===
+      if (nameCollapsed.contains(queryCollapsed)) {
+        score = 80;
+        // Bonus: exact match
+        if (nameCollapsed == queryCollapsed) {
+          score = 100;
+        }
+        // Bonus: starts with query
+        else if (nameCollapsed.startsWith(queryCollapsed)) {
+          score = 90;
+        }
+      }
+      // Also check the reverse: query contains the full name
+      else if (queryCollapsed.length > 3 &&
+          queryCollapsed.contains(nameCollapsed) &&
+          nameCollapsed.length > 3) {
+        score = 70;
+      }
+
+      // === LAYER 2: Word-level matching ===
+      if (score == 0 && queryWords.length > 1) {
+        int matchedWords = 0;
+        for (final qw in queryWords) {
+          if (qw.length < 2) continue;
+          for (final nw in nameWords) {
+            if (nw.contains(qw) || qw.contains(nw)) {
+              matchedWords++;
+              break;
             }
           }
-          continue;
         }
-
-        if (norm.isNotEmpty) {
-          seenKeys.add(key);
+        final significantQueryWords =
+            queryWords.where((w) => w.length >= 2).length;
+        if (significantQueryWords > 0) {
+          final ratio = matchedWords / significantQueryWords;
+          if (ratio >= 1.0) {
+            score = 75;
+          } else if (ratio >= 0.7) {
+            score = 50;
+          } else if (ratio >= 0.5 && significantQueryWords >= 3) {
+            score = 30;
+          }
         }
-        results.add(item);
-        if (results.length >= 100) break;
       }
+
+      // === LAYER 3: Fuzzy matching (Levenshtein) for typo tolerance ===
+      if (score == 0) {
+        // Only apply fuzzy on short-enough strings to keep it fast
+        if (queryCollapsed.length >= 3 && queryCollapsed.length <= 30) {
+          // Check against each word in the name
+          for (final nw in nameWords) {
+            if (nw.length < 3) continue;
+            for (final qw in queryWords) {
+              if (qw.length < 3) continue;
+              final maxDist = qw.length <= 4 ? 1 : 2;
+              final dist = _levenshteinDistance(qw, nw, maxDist + 1);
+              if (dist <= 1) {
+                score = score < 60 ? 60 : score;
+              } else if (dist <= 2 && qw.length > 4) {
+                score = score < 40 ? 40 : score;
+              }
+            }
+            if (score > 0) break;
+          }
+
+          // Also try full collapsed string fuzzy if single-word query
+          if (score == 0 && queryWords.length == 1) {
+            final dist = _levenshteinDistance(
+              queryCollapsed,
+              nameCollapsed,
+              3,
+            );
+            if (dist <= 1) {
+              score = 55;
+            } else if (dist <= 2 && queryCollapsed.length > 5) {
+              score = 35;
+            }
+          }
+        }
+      }
+
+      if (score <= 0) continue;
+
+      // Deduplication by normalized title
+      final norm = _normalizeTitleForMatching(item.name);
+      final key = '${item.isSeries}_$norm';
+
+      if (norm.isNotEmpty && seenKeys.contains(key)) {
+        final existingIdx = scored.indexWhere(
+          (s) =>
+              s.item.isSeries == item.isSeries &&
+              _normalizeTitleForMatching(s.item.name) == norm,
+        );
+        if (existingIdx != -1) {
+          final existing = scored[existingIdx].item;
+          if (!existing.alternatives.any((a) => a.url == item.url) &&
+              item.url != existing.url) {
+            final newAlts = List<M3UItem>.from(existing.alternatives)
+              ..add(item);
+            scored[existingIdx] = _ScoredItem(
+              existing.copyWith(alternatives: newAlts),
+              scored[existingIdx].score,
+            );
+          }
+        }
+        continue;
+      }
+
+      if (norm.isNotEmpty) seenKeys.add(key);
+      scored.add(_ScoredItem(item, score));
+      if (scored.length >= 100) break;
     }
-    return results;
+
+    // Sort by score descending
+    scored.sort((a, b) => b.score.compareTo(a.score));
+    return scored.map((s) => s.item).toList();
   }
 
   /// Search for categories (collections/sagas) matching the query.
   List<String> searchCategories(String query) {
     if (query.isEmpty || _cachedCategories == null) return [];
-    final queryLower = query.toLowerCase();
-    final results =
-        _cachedCategories!.where((cat) {
-          return cat.toLowerCase().contains(queryLower);
-        }).toList();
-    results.sort((a, b) {
-      final aIsColl = a.startsWith('Colección:');
-      final bIsColl = b.startsWith('Colección:');
+    final normalizedQuery = _normalizeForSearch(query);
+    final queryWords =
+        normalizedQuery.split(' ').where((w) => w.isNotEmpty).toList();
+    if (queryWords.isEmpty) return [];
+
+    final scored = <MapEntry<String, int>>[];
+    for (final cat in _cachedCategories!) {
+      final normalizedCat = _normalizeForSearch(cat);
+      int score = 0;
+
+      // Exact substring match
+      if (normalizedCat.contains(normalizedQuery.replaceAll(' ', ''))) {
+        score = 100;
+      } else {
+        // Word matching
+        int matched = 0;
+        for (final qw in queryWords) {
+          if (qw.length < 2) continue;
+          if (normalizedCat.contains(qw)) matched++;
+        }
+        final significant = queryWords.where((w) => w.length >= 2).length;
+        if (significant > 0 && matched == significant) {
+          score = 80;
+        } else if (significant > 0 && matched / significant >= 0.6) {
+          score = 50;
+        }
+      }
+
+      if (score > 0) scored.add(MapEntry(cat, score));
+    }
+
+    scored.sort((a, b) {
+      if (a.value != b.value) return b.value.compareTo(a.value);
+      final aIsColl = a.key.startsWith('Colección:');
+      final bIsColl = b.key.startsWith('Colección:');
       if (aIsColl && !bIsColl) return -1;
       if (!aIsColl && bIsColl) return 1;
-      return a.compareTo(b);
+      return a.key.compareTo(b.key);
     });
-    return results.take(5).toList();
+    return scored.take(5).map((e) => e.key).toList();
   }
 
   List<M3UItem> getRecentItems() {
@@ -3266,6 +3415,8 @@ class M3UService extends ChangeNotifier {
   Future<void> clearCache() async {
     try {
       _items.clear();
+      _searchIndex.clear();
+      _searchIndexWords.clear();
       _movies.clear();
       _series.clear();
       _cachedCategories = null;
@@ -3302,6 +3453,8 @@ class M3UService extends ChangeNotifier {
 
       // Invalidate in-memory caches
       _items = [];
+      _searchIndex = {};
+      _searchIndexWords = {};
       _movies = [];
       _series = [];
       _cachedRecentItems = null;
@@ -4221,6 +4374,68 @@ String _removeAccents(String input) {
     buf.write(idx >= 0 ? noAcc[idx] : input[i]);
   }
   return buf.toString();
+}
+
+/// SMART-SEARCH: Normalize text for search — removes accents, articles,
+/// special chars, extra spaces. Used for both query and indexed item names.
+String _normalizeForSearch(String input) {
+  String n = _removeAccents(input.toLowerCase().trim());
+  // Remove articles in Spanish and English
+  n = n.replaceAll(
+    RegExp(r'\b(the|el|la|los|las|un|una|unos|unas|a|an)\b'),
+    ' ',
+  );
+  // Remove content in parentheses and brackets (quality tags, years, etc.)
+  n = n.replaceAll(RegExp(r'[\(\[].*?[\)\]]'), ' ');
+  // Remove special characters except alphanumeric and spaces
+  n = n.replaceAll(RegExp(r'[^a-z0-9\s]'), ' ');
+  // Collapse multiple spaces
+  n = n.replaceAll(RegExp(r'\s+'), ' ').trim();
+  return n;
+}
+
+/// SMART-SEARCH: Compute Levenshtein distance between two strings.
+/// [maxDist] is an early-exit threshold — if the distance exceeds it during
+/// computation, it returns maxDist immediately (performance optimization).
+int _levenshteinDistance(String a, String b, int maxDist) {
+  if (a == b) return 0;
+  if (a.isEmpty) return b.length;
+  if (b.isEmpty) return a.length;
+
+  // Quick length-diff check
+  final lenDiff = (a.length - b.length).abs();
+  if (lenDiff >= maxDist) return maxDist;
+
+  // Use single-row DP for memory efficiency
+  final bLen = b.length;
+  final row = List<int>.generate(bLen + 1, (i) => i);
+
+  for (int i = 1; i <= a.length; i++) {
+    int prev = row[0];
+    row[0] = i;
+    int rowMin = row[0];
+    for (int j = 1; j <= bLen; j++) {
+      final cost = a[i - 1] == b[j - 1] ? 0 : 1;
+      final val = [
+        row[j] + 1, // deletion
+        row[j - 1] + 1, // insertion
+        prev + cost, // substitution
+      ].reduce((a, b) => a < b ? a : b);
+      prev = row[j];
+      row[j] = val;
+      if (val < rowMin) rowMin = val;
+    }
+    // Early exit if minimum in this row already exceeds maxDist
+    if (rowMin >= maxDist) return maxDist;
+  }
+  return row[bLen];
+}
+
+/// Helper class for scored search results (used internally by search()).
+class _ScoredItem {
+  final M3UItem item;
+  final int score;
+  const _ScoredItem(this.item, this.score);
 }
 
 String _normalizeCategoryKey(String category) {

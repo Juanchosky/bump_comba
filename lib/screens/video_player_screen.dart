@@ -286,6 +286,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   // Cast local audio
   bool _localAudioDuringCast = false;
   double _syncOffsetMs = 0.0;
+  Timer? _castStallMonitorTimer;
+  Duration _lastCastMonitoredPosition = Duration.zero;
+  int _castNoMovementSeconds = 0;
+  bool _castFailoverInProgress = false;
+  DateTime? _lastCastFailoverAt;
+  static const Duration _castFailoverCooldown = Duration(seconds: 15);
+  static const int _castStallThresholdSeconds = 15;
 
   // Visual Notice system
   String? _noticeMessage;
@@ -356,17 +363,123 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     final isCasting = CastService().isCasting.value;
 
     if (isCasting) {
-      // Si empezamos a transmitir, destruimos el controlador de video local
-      // para liberar los buffers de hardware (evita BLASTBufferQueue).
       if (_videoControllerNotifier.value != null) {
         debugPrint('CastService: Disposing VideoController due to active Cast');
         _videoControllerNotifier.value = null;
       }
+      _startCastStallMonitor();
     } else {
-      // Si dejamos de transmitir, recuperamos la reproducción local completa.
-      // Diferido con microtask: los ValueNotifier notifican sincrónicamente y
-      // no debemos hacer setState/loadMedia en plena fase de build.
+      _stopCastStallMonitor();
       Future.microtask(() => _restoreLocalPlayback());
+    }
+  }
+
+  void _startCastStallMonitor() {
+    _castStallMonitorTimer?.cancel();
+    _castNoMovementSeconds = 0;
+    _lastCastMonitoredPosition = CastService().castPosition.value;
+
+    _castStallMonitorTimer = Timer.periodic(const Duration(seconds: 1), (
+      timer,
+    ) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      final castService = CastService();
+      if (!castService.isCasting.value) {
+        timer.cancel();
+        _castStallMonitorTimer = null;
+        _castNoMovementSeconds = 0;
+        return;
+      }
+
+      final inCooldown =
+          _lastCastFailoverAt != null &&
+          DateTime.now().difference(_lastCastFailoverAt!) <
+              _castFailoverCooldown;
+
+      // En vivo, cargando, ya recargando, o en cooldown post-failover: no evaluar.
+      if (_currentItem.isLive ||
+          _isVideoLoading ||
+          _castFailoverInProgress ||
+          inCooldown) {
+        _castNoMovementSeconds = 0;
+        _lastCastMonitoredPosition = castService.castPosition.value;
+        return;
+      }
+
+      final isPlaying = castService.castPlaying.value;
+      final pos = castService.castPosition.value;
+
+      // Pausado por el usuario: no cuenta como stall.
+      if (!isPlaying) {
+        _castNoMovementSeconds = 0;
+        _lastCastMonitoredPosition = pos;
+        return;
+      }
+
+      // Aún no arrancó de verdad: eso lo cubre el failover inicial de 10s.
+      if (pos.inMilliseconds < 500) {
+        _lastCastMonitoredPosition = pos;
+        return;
+      }
+
+      if (pos == _lastCastMonitoredPosition) {
+        _castNoMovementSeconds++;
+      } else {
+        _castNoMovementSeconds = 0;
+      }
+      _lastCastMonitoredPosition = pos;
+
+      if (_castNoMovementSeconds >= _castStallThresholdSeconds) {
+        _castNoMovementSeconds = 0;
+        _triggerCastFailover(
+          'Sin avance en el TV por $_castStallThresholdSeconds s',
+        );
+      }
+    });
+  }
+
+  void _stopCastStallMonitor() {
+    _castStallMonitorTimer?.cancel();
+    _castStallMonitorTimer = null;
+    _castNoMovementSeconds = 0;
+  }
+
+  Future<void> _triggerCastFailover(String reason) async {
+    if (!mounted || _castFailoverInProgress) return;
+    final castService = CastService();
+    if (!castService.isCasting.value) return;
+    if (_serverItems.length < 2) return; // No hay servidor alterno
+    if (_currentServerIndex >= _serverItems.length - 1)
+      return; // Ya en el último
+
+    _castFailoverInProgress = true;
+    _lastCastFailoverAt = DateTime.now();
+    debugPrint('CastFailover: $reason. Cambiando de servidor...');
+    if (mounted) {
+      _showAppSnackBar('');
+    }
+
+    final currentPos = castService.castPosition.value;
+    final nextIndex = _currentServerIndex + 1;
+    final nextItem = _serverItems[nextIndex];
+
+    if (mounted) {
+      setState(() => _currentServerIndex = nextIndex);
+    }
+
+    try {
+      await _initializePlayer(
+        nextItem,
+        startFrom: currentPos,
+        isLocalReload: true,
+      );
+    } catch (e) {
+      debugPrint('CastFailover: error al recargar: $e');
+    } finally {
+      _castFailoverInProgress = false;
     }
   }
 
@@ -509,6 +622,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _diagTimer?.cancel();
     _turboWatchdog?.cancel();
     _serverFailoverTimer?.cancel();
+    _castStallMonitorTimer?.cancel();
 
     for (final s in _streamSubscriptions) {
       s.cancel();
@@ -4377,39 +4491,29 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               Navigator.pop(context);
               _showVisualNotice('Conectando a ${device.name}...');
 
+              // Capturamos la posición ANTES de tocar nada del player local,
+              // porque _initializePlayer va a limpiar/recrear el player.
+              final Duration resumeFrom =
+                  _player?.state.position ?? Duration.zero;
+
               final connected = await castService.connectToDevice(device);
               if (!mounted) return;
 
               if (connected) {
-                // Pausar la reproducción local ANTES de cargar en Chromecast
-                if (_player?.state.playing ?? false) {
-                  _player?.pause();
-                }
-                // Desactivar track de video local para ahorrar recursos
-                try {
-                  final mpv = _player?.platform as dynamic;
-                  mpv?.setProperty('vid', 'no');
-                } catch (_) {}
-
-                final currentUrl =
-                    _serverUrls[_currentServerIndex % _serverUrls.length];
-
-                castAudioHandler.setMediaItem(
-                  id: currentUrl,
-                  title: _currentItem.name,
-                  artist: 'Bump Comba',
-                  album: device.name,
-                  artUri: _currentItem.logo,
+                // connectToDevice() ya dejó CastService().isCasting.value = true.
+                // _initializePlayer detecta eso y:
+                //  - NO crea VideoController (libera buffers de video, igual
+                //    que hacía el mpv.setProperty('vid','no') manual de antes)
+                //  - arma el watchdog de 10s (_serverFailoverTimer) para
+                //    cambiar de servidor automático si el TV no arranca a tiempo
+                //  - al final llama castService.loadMedia(...) por nosotros
+                await _initializePlayer(
+                  _currentItem,
+                  startFrom: resumeFrom,
+                  isLocalReload: true,
                 );
-                await castService.loadMedia(
-                  url: currentUrl,
-                  title: _currentItem.name,
-                  thumbnailUrl: _currentItem.logo,
-                  startPosition:
-                      (_player?.state.position.inSeconds ?? 0).toDouble(),
-                  headers: _buildHeaders(currentUrl),
-                  isFromDB: _currentItem.sourceName == 'Supabase',
-                );
+
+                if (!mounted) return;
 
                 _showVisualNotice('Transmitiendo a ${device.name}');
                 // Advertencia sobre compatibilidad de audio
