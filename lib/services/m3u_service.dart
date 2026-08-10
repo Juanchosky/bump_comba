@@ -1986,9 +1986,14 @@ class M3UService extends ChangeNotifier {
                 matchedEp = cEp;
                 break;
               }
+              // Fallback: match por episodeNumber SOLO si al menos uno
+              // de los dos no tiene temporada (dato ausente). Si ambos
+              // tienen seasonNumber explícito pero distinto, NO matchear
+              // — evita que S03E01 caiga en S01E01.
               if (regEp.episodeNumber != null &&
                   cEp.episodeNumber != null &&
-                  regEp.episodeNumber == cEp.episodeNumber) {
+                  regEp.episodeNumber == cEp.episodeNumber &&
+                  (regEp.seasonNumber == null || cEp.seasonNumber == null)) {
                 matchedEp = cEp;
                 break;
               }
@@ -2374,9 +2379,14 @@ class M3UService extends ChangeNotifier {
               matchedEp = cEp;
               break;
             }
+            // Fallback: match por episodeNumber SOLO si al menos uno
+            // de los dos no tiene temporada (dato ausente). Si ambos
+            // tienen seasonNumber explícito pero distinto, NO matchear
+            // — evita que S03E01 caiga en S01E01.
             if (ep.episodeNumber != null &&
                 cEp.episodeNumber != null &&
-                ep.episodeNumber == cEp.episodeNumber) {
+                ep.episodeNumber == cEp.episodeNumber &&
+                (ep.seasonNumber == null || cEp.seasonNumber == null)) {
               matchedEp = cEp;
               break;
             }
