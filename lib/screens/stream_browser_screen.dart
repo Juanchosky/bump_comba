@@ -6395,8 +6395,8 @@ class _SearchPageState extends State<_SearchPage> {
     _activeSearchQuery = query;
     if (_debounceTimer?.isActive ?? false) _debounceTimer?.cancel();
 
-    // Snappier debounce time (from 250ms to 150ms)
-    _debounceTimer = Timer(const Duration(milliseconds: 100), () {
+    // Smooth 250ms debounce time to prevent UI thread drops during rapid typing
+    _debounceTimer = Timer(const Duration(milliseconds: 250), () {
       _performSearch(query);
     });
   }
@@ -6417,25 +6417,11 @@ class _SearchPageState extends State<_SearchPage> {
 
     if (mounted && _activeSearchQuery == query) {
       final List<dynamic> combined = [];
-      if (categories.isEmpty) {
-        combined.addAll(results);
-      } else {
-        // Interleave categories among results
-        final interval =
-            results.length > categories.length
-                ? (results.length / (categories.length + 1)).ceil()
-                : 1;
-        int catIdx = 0;
-        for (int i = 0; i < results.length; i++) {
-          combined.add(results[i]);
-          if (catIdx < categories.length && (i + 1) % interval == 0) {
-            combined.add(categories[catIdx++]);
-          }
-        }
-        // Add remaining categories at the end
-        while (catIdx < categories.length) {
-          combined.add(categories[catIdx++]);
-        }
+      // Contenidos (películas/series) con mayor puntuación de coincidencia PRIMERO
+      combined.addAll(results);
+      // Categorías coincidentes AL FINAL
+      if (categories.isNotEmpty) {
+        combined.addAll(categories);
       }
 
       setState(() {

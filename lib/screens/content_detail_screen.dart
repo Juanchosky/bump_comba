@@ -764,7 +764,15 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
         _dynamicEpisodes.isNotEmpty ? _dynamicEpisodes : widget.item.episodes;
 
     final filteredEpisodes = _m3uService.filterValidItems(episodesToGroup);
+    final Set<String> seenEpisodeKeys = {};
+
     for (var ep in filteredEpisodes) {
+      // Deduplicar episodios repetidos por URL o combinación de temporada + episodio + nombre
+      final String epKey = ep.url.isNotEmpty
+          ? ep.url
+          : 's${ep.seasonNumber ?? 0}_e${ep.episodeNumber ?? 0}_${ep.name.toLowerCase().trim()}';
+      if (!seenEpisodeKeys.add(epKey)) continue;
+
       // Filtrar episodios cuya serie tenga diferente estilo de capitalización
       if (ep.seriesName != null && ep.seriesName!.isNotEmpty) {
         final epCapSig = _capSignature(ep.seriesName!);

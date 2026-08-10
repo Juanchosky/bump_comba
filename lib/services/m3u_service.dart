@@ -135,7 +135,7 @@ class M3UService extends ChangeNotifier {
   static const String _favoriteTipKey = 'show_favorite_tip';
   static const String _isUnifiedModeKey = 'is_unified_mode';
   static const String _logicVersionKey = 'm3u_logic_version';
-  static const int _currentLogicVersion = 12;
+  static const int _currentLogicVersion = 13;
   // FEAT-2: key prefix for liked content deduplication
   static const String _likedUrlsKey = 'm3u_liked_urls';
   static const String _failedLogosKey = 'm3u_failed_logos';
@@ -1957,6 +1957,11 @@ class M3UService extends ChangeNotifier {
     n = n.replaceAll(RegExp(r'\bx\b'), '10');
 
     // 4. Mapeo de equivalencias de franquicias / nombres en español vs inglés
+    n = n.replaceAll(
+      RegExp(r'\blobezno\b|\baguja dinamica\b|\bgloton\b'),
+      'wolverine',
+    );
+    n = n.replaceAll(RegExp(r'\borigenes\b|\borigen\b'), 'origins');
     n = n.replaceAll(RegExp(r'\bvengadores\b'), 'avengers');
     n = n.replaceAll(
       RegExp(
@@ -1990,6 +1995,18 @@ class M3UService extends ChangeNotifier {
       RegExp(r'\bla casa de papel\b|\bcasa de papel\b'),
       'money heist',
     );
+    n = n.replaceAll(
+      RegExp(r'\bel caballero de la noche\b|\bel caballero oscuro\b'),
+      'dark knight',
+    );
+    n = n.replaceAll(RegExp(r'\bel hombre de acero\b'), 'man of steel');
+    n = n.replaceAll(
+      RegExp(r'\bintensa mente\b|\bintensamente\b'),
+      'inside out',
+    );
+    n = n.replaceAll(RegExp(r'\buna aventura congelada\b'), 'frozen');
+    n = n.replaceAll(RegExp(r'\bzootropolis\b'), 'zootopia');
+    n = n.replaceAll(RegExp(r'\bvaiana\b'), 'moana');
 
     // 5. Eliminar caracteres especiales (conservar letras, números y espacios)
     n = n.replaceAll(RegExp(r'[^a-z0-9\s]'), ' ');
@@ -2037,8 +2054,33 @@ class M3UService extends ChangeNotifier {
   /// - Clave canónica (traducciones, artículos, etiquetas)
   /// - Coincidencia de tokens / subpalabras
   /// - Similitud Levenshtein
+  /// Extrae el año de estreno de un título si existe (ej: 2009 de "Wolverine (2009)")
+  int? _extractYearFromTitle(String title) {
+    final match = RegExp(
+      r'[\(\[\{]?\b(19\d\d|20\d\d)\b[\)\]\}]?',
+    ).firstMatch(title);
+    if (match != null) {
+      return int.tryParse(match.group(1)!);
+    }
+    return null;
+  }
+
+  /// Evalúa si dos títulos representan el mismo contenido usando reglas multitrama:
+  /// - Verificación estricta de año de estreno
+  /// - Normalización básica y clave canónica
+  /// - Coincidencia de tokens con protección de subtítulos/spin-offs
+  /// - Similitud Levenshtein
   bool _isSmartTitleMatch(String raw1, String raw2) {
     if (raw1.isEmpty || raw2.isEmpty) return false;
+
+    // 0. Verificación estricta de Año de Estreno (evita unir secuelas/spin-offs de distintas épocas)
+    final year1 = _extractYearFromTitle(raw1);
+    final year2 = _extractYearFromTitle(raw2);
+    if (year1 != null && year2 != null) {
+      if ((year1 - year2).abs() > 1) {
+        return false; // Años con diferencia > 1 (ej: 2000 vs 2009) = Películas distintas
+      }
+    }
 
     // 1. Match Exacto por Normalización básica
     final norm1 = _normalizeTitleForMatching(raw1);
@@ -2071,16 +2113,52 @@ class M3UService extends ChangeNotifier {
       final union = words1.union(words2);
       final jaccard = intersection.length / union.length;
 
-      // Si una lista de palabras está totalmente contenida en la otra (y tiene al menos 2 palabras)
-      if (words1.length >= 2 && words1.every((w) => words2.contains(w))) {
-        return true;
+      // Palabras genéricas permitidas en diferencias de títulos
+      const genericStopWords = {
+        'movie',
+        'pelicula',
+        'film',
+        'full',
+        'hd',
+        '4k',
+        'official',
+        'video',
+        'parte',
+        'part',
+        'latino',
+        'castellano',
+        'sub',
+        'subtitulado',
+        'version',
+        'edition',
+        'versión',
+        'edicion',
+        'edición',
+      };
+
+      // Si una lista de palabras está contenida en la otra, solo aceptar si
+      // la lista menor tiene al menos 2 palabras Y las palabras extra no son
+      // un subtítulo distintivo de secuela/spin-off (ej: "origenes", "wolverine").
+      bool checkInclusion(Set<String> sub, Set<String> superSet) {
+        if (sub.length < 2) return false;
+        if (sub.every((w) => superSet.contains(w))) {
+          final extraWords = superSet.difference(sub);
+          final distinctiveExtra = extraWords.where(
+            (w) => w.length >= 3 && !genericStopWords.contains(w),
+          );
+          if (distinctiveExtra.isEmpty) {
+            return true; // Las palabras extras eran solo rellenos genéricos
+          }
+        }
+        return false;
       }
-      if (words2.length >= 2 && words2.every((w) => words1.contains(w))) {
+
+      if (checkInclusion(words1, words2) || checkInclusion(words2, words1)) {
         return true;
       }
 
-      // Si la similitud Jaccard es >= 0.70
-      if (jaccard >= 0.70) return true;
+      // Si la similitud Jaccard es >= 0.75
+      if (jaccard >= 0.75) return true;
     }
 
     // 4. Fuzzy Levenshtein Match
@@ -2089,7 +2167,7 @@ class M3UService extends ChangeNotifier {
       final maxLen = max(canon1NoSpace.length, canon2NoSpace.length);
       final similarity = 1.0 - (dist / maxLen);
 
-      if (similarity >= 0.82) return true;
+      if (similarity >= 0.85) return true;
     }
 
     return false;
@@ -2625,11 +2703,21 @@ class M3UService extends ChangeNotifier {
     // Dynamic indexing: add newly fetched episodes to the global URL index
     // so resolveItemFromProgress can find them immediately via URL.
     if (episodes.isNotEmpty) {
+      final Set<String> seenEpKeys = {};
+      final List<M3UItem> dedupedEpisodes = [];
       for (final ep in episodes) {
-        if (ep.url.isNotEmpty) {
-          _urlIndex?[ep.url] = ep;
+        final String epKey =
+            ep.url.isNotEmpty
+                ? ep.url
+                : 's${ep.seasonNumber ?? 0}_e${ep.episodeNumber ?? 0}_${ep.name.toLowerCase().trim()}';
+        if (seenEpKeys.add(epKey)) {
+          dedupedEpisodes.add(ep);
+          if (ep.url.isNotEmpty) {
+            _urlIndex?[ep.url] = ep;
+          }
         }
       }
+      episodes = dedupedEpisodes;
     }
 
     return episodes;
@@ -2712,7 +2800,7 @@ class M3UService extends ChangeNotifier {
     if (queryWords.isEmpty) return [];
 
     final scored = <_ScoredItem>[];
-    final seenKeys = <String>{};
+    final Map<String, int> seenKeyToIndex = {};
 
     for (final item in _items) {
       if (item.isLive) continue;
@@ -2772,14 +2860,15 @@ class M3UService extends ChangeNotifier {
       }
 
       // === LAYER 3: Fuzzy matching (Levenshtein) for typo tolerance ===
-      if (score == 0) {
-        // Only apply fuzzy on short-enough strings to keep it fast
+      // Solo aplicar a candidatos que compartan la letra inicial para evitar ANR (bloqueo de UI)
+      if (score == 0 && scored.length < 250) {
         if (queryCollapsed.length >= 3 && queryCollapsed.length <= 30) {
-          // Check against each word in the name
           for (final nw in nameWords) {
             if (nw.length < 3) continue;
             for (final qw in queryWords) {
               if (qw.length < 3) continue;
+              // Optimización ultra-rápida: omitir Levenshtein si la palabra no empieza por la misma letra
+              if (nw[0] != qw[0]) continue;
               final maxDist = qw.length <= 4 ? 1 : 2;
               final dist = _levenshteinDistance(qw, nw, maxDist + 1);
               if (dist <= 1) {
@@ -2791,17 +2880,20 @@ class M3UService extends ChangeNotifier {
             if (score > 0) break;
           }
 
-          // Also try full collapsed string fuzzy if single-word query
+          // Intentar coincidencia difusa de toda la cadena solo si es consulta de una sola palabra
           if (score == 0 && queryWords.length == 1) {
-            final dist = _levenshteinDistance(
-              queryCollapsed,
-              nameCollapsed,
-              3,
-            );
-            if (dist <= 1) {
-              score = 55;
-            } else if (dist <= 2 && queryCollapsed.length > 5) {
-              score = 35;
+            if (nameCollapsed.isNotEmpty &&
+                nameCollapsed[0] == queryCollapsed[0]) {
+              final dist = _levenshteinDistance(
+                queryCollapsed,
+                nameCollapsed,
+                3,
+              );
+              if (dist <= 1) {
+                score = 55;
+              } else if (dist <= 2 && queryCollapsed.length > 5) {
+                score = 35;
+              }
             }
           }
         }
@@ -2809,17 +2901,12 @@ class M3UService extends ChangeNotifier {
 
       if (score <= 0) continue;
 
-      // Deduplication by normalized title
+      // Deduplication by normalized title in O(1) time
       final norm = _normalizeTitleForMatching(item.name);
-      final key = '${item.isSeries}_$norm';
-
-      if (norm.isNotEmpty && seenKeys.contains(key)) {
-        final existingIdx = scored.indexWhere(
-          (s) =>
-              s.item.isSeries == item.isSeries &&
-              _normalizeTitleForMatching(s.item.name) == norm,
-        );
-        if (existingIdx != -1) {
+      if (norm.isNotEmpty) {
+        final key = '${item.isSeries}_$norm';
+        final existingIdx = seenKeyToIndex[key];
+        if (existingIdx != null) {
           final existing = scored[existingIdx].item;
           if (!existing.alternatives.any((a) => a.url == item.url) &&
               item.url != existing.url) {
@@ -2830,18 +2917,17 @@ class M3UService extends ChangeNotifier {
               scored[existingIdx].score,
             );
           }
+          continue;
         }
-        continue;
+        seenKeyToIndex[key] = scored.length;
       }
 
-      if (norm.isNotEmpty) seenKeys.add(key);
       scored.add(_ScoredItem(item, score));
-      if (scored.length >= 100) break;
     }
 
-    // Sort by score descending
+    // Sort by score descending and return top 100 best matches
     scored.sort((a, b) => b.score.compareTo(a.score));
-    return scored.map((s) => s.item).toList();
+    return scored.take(100).map((s) => s.item).toList();
   }
 
   /// Search for categories (collections/sagas) matching the query.
@@ -4598,6 +4684,46 @@ String _removeAccents(String input) {
 /// special chars, extra spaces. Used for both query and indexed item names.
 String _normalizeForSearch(String input) {
   String n = _removeAccents(input.toLowerCase().trim());
+
+  // Franchise & title translations so searching in Spanish or English matches both
+  n = n.replaceAll(RegExp(r'\bjuego de tronos\b'), 'game of thrones');
+  n = n.replaceAll(
+    RegExp(r'\blobezno\b|\baguja dinamica\b|\bgloton\b'),
+    'wolverine',
+  );
+  n = n.replaceAll(RegExp(r'\borigenes\b|\borigen\b'), 'origins');
+  n = n.replaceAll(RegExp(r'\bvengadores\b'), 'avengers');
+  n = n.replaceAll(
+    RegExp(
+      r'\brapidos y furiosos\b|\brapido y furioso\b|\brapidos & furiosos\b',
+    ),
+    'fast and furious',
+  );
+  n = n.replaceAll(RegExp(r'\bguerra de las galaxias\b'), 'star wars');
+  n = n.replaceAll(
+    RegExp(r'\bel senor de los anillos\b|\bsenor de los anillos\b'),
+    'lord of the rings',
+  );
+  n = n.replaceAll(
+    RegExp(r'\bel hombre arana\b|\bhombre arana\b'),
+    'spiderman',
+  );
+  n = n.replaceAll(
+    RegExp(r'\bpiratas del caribe\b'),
+    'pirates of the caribbean',
+  );
+  n = n.replaceAll(RegExp(r'\bmi villano favorito\b'), 'despicable me');
+  n = n.replaceAll(RegExp(r'\blos increibles\b|\bincreibles\b'), 'incredibles');
+  n = n.replaceAll(
+    RegExp(r'\bel caballero de la noche\b|\bel caballero oscuro\b'),
+    'dark knight',
+  );
+  n = n.replaceAll(RegExp(r'\bel hombre de acero\b'), 'man of steel');
+  n = n.replaceAll(RegExp(r'\bintensa mente\b|\bintensamente\b'), 'inside out');
+  n = n.replaceAll(RegExp(r'\buna aventura congelada\b'), 'frozen');
+  n = n.replaceAll(RegExp(r'\bzootropolis\b'), 'zootopia');
+  n = n.replaceAll(RegExp(r'\bvaiana\b'), 'moana');
+
   // Remove articles in Spanish and English
   n = n.replaceAll(
     RegExp(r'\b(the|el|la|los|las|un|una|unos|unas|a|an)\b'),
