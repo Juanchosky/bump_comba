@@ -2834,12 +2834,17 @@ class M3UService extends ChangeNotifier {
       }
 
       // === LAYER 2: Word-level matching ===
-      if (score == 0 && queryWords.length > 1) {
+      if (score == 0 && queryWords.isNotEmpty) {
         int matchedWords = 0;
         for (final qw in queryWords) {
           if (qw.length < 2) continue;
           for (final nw in nameWords) {
-            if (nw.contains(qw) || qw.contains(nw)) {
+            if (nw.length < 2) continue;
+            if (nw.contains(qw)) {
+              matchedWords++;
+              break;
+            }
+            if (nw.length >= 4 && qw.contains(nw)) {
               matchedWords++;
               break;
             }
@@ -4670,12 +4675,17 @@ final _reLeadingArticle = RegExp(
 final _reNonAlphaSpace = RegExp(r'[^a-z0-9\s]');
 
 String _removeAccents(String input) {
+  if (input.isEmpty) return input;
+  // 1. Quitar caracteres combinatorios diacríticos NFD del teclado de Android (\u0300-\u036f)
+  String text = input.replaceAll(RegExp(r'[\u0300-\u036f]'), '');
+
+  // 2. Mapear caracteres precompuestos NFC
   const withAcc = 'áàäâãåæÁÀÄÂÃÅÆéèëêÉÈËÊíìïîÍÌÏÎóòöôõøÓÒÖÔÕØúùüûÚÙÜÛýÝñÑçÇ';
   const noAcc = 'aaaaaaaaaaaaaaeeeeeeeeiiiiiiiiooooooooooooouuuuuuuuyynncc';
   final buf = StringBuffer();
-  for (int i = 0; i < input.length; i++) {
-    final idx = withAcc.indexOf(input[i]);
-    buf.write(idx >= 0 ? noAcc[idx] : input[i]);
+  for (int i = 0; i < text.length; i++) {
+    final idx = withAcc.indexOf(text[i]);
+    buf.write(idx >= 0 ? noAcc[idx] : text[i]);
   }
   return buf.toString();
 }
