@@ -104,8 +104,6 @@ class _FailedImageTracker with WidgetsBindingObserver {
   /// Fewer parallel connections on slow networks = each image gets more
   /// bandwidth and completes faster instead of all stalling together.
   void _adaptConnectionLimits(NetworkQuality quality) {
-    // No cambiar límites más de una vez cada 5 segundos
-    // Evita que fluctuaciones rápidas de red desestabilicen la GPU
     final now = DateTime.now();
     if (_lastLimitChange != null &&
         now.difference(_lastLimitChange!) < const Duration(seconds: 5) &&
@@ -116,13 +114,13 @@ class _FailedImageTracker with WidgetsBindingObserver {
 
     switch (quality) {
       case NetworkQuality.excellent:
-        _sharedHttpClient.maxConnectionsPerHost = 6;
+        _sharedHttpClient.maxConnectionsPerHost = 16;
       case NetworkQuality.good:
-        _sharedHttpClient.maxConnectionsPerHost = 4;
+        _sharedHttpClient.maxConnectionsPerHost = 12;
       case NetworkQuality.fair:
-        _sharedHttpClient.maxConnectionsPerHost = 3;
+        _sharedHttpClient.maxConnectionsPerHost = 8;
       case NetworkQuality.poor:
-        _sharedHttpClient.maxConnectionsPerHost = 2;
+        _sharedHttpClient.maxConnectionsPerHost = 4;
       case NetworkQuality.offline:
         _sharedHttpClient.maxConnectionsPerHost = 1;
     }
@@ -142,10 +140,9 @@ class _FailedImageTracker with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && _retryCallbacks.isNotEmpty) {
       final callbacks = List<VoidCallback>.from(_retryCallbacks);
-      for (int i = 0; i < callbacks.length; i++) {
-        Future.delayed(Duration(milliseconds: 300 + (i * 50)), () {
-          if (_retryCallbacks.contains(callbacks[i])) callbacks[i]();
-        });
+      // Re-intentar inmediatamente de forma instantánea al encender la pantalla o volver a la app
+      for (final callback in callbacks) {
+        if (_retryCallbacks.contains(callback)) callback();
       }
     }
   }
@@ -197,15 +194,15 @@ Duration _adaptiveTimeout() {
   final quality = NetworkQualityService().quality.value;
   switch (quality) {
     case NetworkQuality.excellent:
-      return const Duration(seconds: 8);
-    case NetworkQuality.good:
-      return const Duration(seconds: 10);
-    case NetworkQuality.fair:
-      return const Duration(seconds: 14);
-    case NetworkQuality.poor:
-      return const Duration(seconds: 18);
-    case NetworkQuality.offline:
       return const Duration(seconds: 4);
+    case NetworkQuality.good:
+      return const Duration(seconds: 5);
+    case NetworkQuality.fair:
+      return const Duration(seconds: 6);
+    case NetworkQuality.poor:
+      return const Duration(seconds: 8);
+    case NetworkQuality.offline:
+      return const Duration(seconds: 2);
   }
 }
 
@@ -237,11 +234,11 @@ class _ValidatingImageFileService extends FileService {
     HttpClientRequest? req;
     try {
       final host = Uri.tryParse(url)?.host ?? '';
+      // Estrategia Híbrida: Servidores IPTV (imágenes pesadas sin comprimir) usan Proxy WebP,
+      // mientras TMDB carga directo desde su CDN oficial optimizada (w185/w500) en 20ms.
       final shouldProxy =
-          host.contains('ultratvsv.site') ||
-          host.contains('image.tmdb.org') ||
-          host.contains('yt3.googleusercontent.com') ||
-          host.contains('red4tv.lat');
+          (host.contains('ultratvsv.site') || host.contains('red4tv.lat')) &&
+          !host.contains('image.tmdb.org');
 
       if (shouldProxy) {
         // Lista de proxies en orden de preferencia
@@ -436,10 +433,10 @@ class _DownloadSemaphore {
 
   void updateLimit(NetworkQuality quality) {
     _maxConcurrent = switch (quality) {
-      NetworkQuality.excellent => 4,
-      NetworkQuality.good => 3,
-      NetworkQuality.fair => 2,
-      NetworkQuality.poor => 1,
+      NetworkQuality.excellent => 18,
+      NetworkQuality.good => 14,
+      NetworkQuality.fair => 8,
+      NetworkQuality.poor => 4,
       NetworkQuality.offline => 0,
     };
     // Si ahora hay slots libres, despertar waiters
@@ -599,11 +596,11 @@ class FastImageService {
     switch (quality) {
       case NetworkQuality.excellent:
       case NetworkQuality.good:
-        return 8;
+        return 16;
       case NetworkQuality.fair:
-        return 4;
+        return 10;
       case NetworkQuality.poor:
-        return 2;
+        return 4;
       case NetworkQuality.offline:
         return 0;
     }
@@ -1004,10 +1001,10 @@ class _FastThumbnailState extends State<FastThumbnail>
     if (_hasLoaded) return;
     // Si en N segundos no hay frame ni error → forzar retry
     final seconds = switch (NetworkQualityService().quality.value) {
-      NetworkQuality.excellent || NetworkQuality.good => 12,
-      NetworkQuality.fair => 18,
-      NetworkQuality.poor => 25,
-      NetworkQuality.offline => 8,
+      NetworkQuality.excellent || NetworkQuality.good => 5,
+      NetworkQuality.fair => 7,
+      NetworkQuality.poor => 10,
+      NetworkQuality.offline => 3,
     };
     _hardTimeoutTimer = Timer(Duration(seconds: seconds), () {
       if (!mounted || _hasLoaded) return;
@@ -1025,9 +1022,10 @@ class _FastThumbnailState extends State<FastThumbnail>
     String clean = raw.trim();
 
     // Determine target CDN parameters based on whether HD is requested (Hero Banners & Details Screen)
-    final String targetParams = widget.isHD
-        ? 'imageView2/1/w/700/h/1050/format/webp/q/88'
-        : 'imageView2/1/w/300/h/450/format/webp/q/82';
+    final String targetParams =
+        widget.isHD
+            ? 'imageView2/1/w/700/h/1050/format/webp/q/88'
+            : 'imageView2/1/w/300/h/450/format/webp/q/82';
 
     // Upgrade or adjust existing params if present
     if (clean.contains('imageView2')) {
@@ -1042,6 +1040,15 @@ class _FastThumbnailState extends State<FastThumbnail>
       clean = clean.replaceAll(RegExp(r'!$'), '');
       final separator = clean.contains('?') ? '&' : '?';
       clean = '$clean$separator$targetParams';
+    }
+
+    // Optimizar URLs directas de TMDB asignando w185 (para cuadrículas, ~18KB) o w500 (pantalla de detalle)
+    if (clean.contains('image.tmdb.org/t/p/')) {
+      final String tmdbTargetSize = widget.isHD ? 'w500' : 'w185';
+      clean = clean.replaceAll(
+        RegExp(r'\/t\/p\/(w\d+(_and_h\d+_\w+)?|original)\/'),
+        '/t/p/$tmdbTargetSize/',
+      );
     }
 
     return clean;
