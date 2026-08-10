@@ -135,7 +135,7 @@ class M3UService extends ChangeNotifier {
   static const String _favoriteTipKey = 'show_favorite_tip';
   static const String _isUnifiedModeKey = 'is_unified_mode';
   static const String _logicVersionKey = 'm3u_logic_version';
-  static const int _currentLogicVersion = 11;
+  static const int _currentLogicVersion = 12;
   // FEAT-2: key prefix for liked content deduplication
   static const String _likedUrlsKey = 'm3u_liked_urls';
   static const String _failedLogosKey = 'm3u_failed_logos';
@@ -2111,26 +2111,34 @@ class M3UService extends ChangeNotifier {
     // Mapas primarios para búsqueda ultra-rápida O(1)
     final Map<String, List<M3UItem>> customByNormTitle = {};
     final Map<String, List<M3UItem>> customByCanonTitle = {};
+    final Map<String, List<M3UItem>> customByWord = {};
 
     for (final cItem in customItems) {
       final normKey = _normalizeTitleForMatching(cItem.name);
       if (normKey.isNotEmpty) {
         customByNormTitle.putIfAbsent(normKey, () => []).add(cItem);
       }
-      final canonKey = _canonicalTitleKey(cItem.name).replaceAll(' ', '');
-      if (canonKey.isNotEmpty) {
-        customByCanonTitle.putIfAbsent(canonKey, () => []).add(cItem);
+      final canonKey = _canonicalTitleKey(cItem.name);
+      final canonNoSpace = canonKey.replaceAll(' ', '');
+      if (canonNoSpace.isNotEmpty) {
+        customByCanonTitle.putIfAbsent(canonNoSpace, () => []).add(cItem);
+      }
+      // Indizar por palabras significativas para filtrado por cubetas (bucket filtering)
+      final words = canonKey.split(' ').where((w) => w.length >= 3).toSet();
+      for (final w in words) {
+        customByWord.putIfAbsent(w, () => []).add(cItem);
       }
     }
 
     for (final regItem in regularItems) {
       final regNormKey = _normalizeTitleForMatching(regItem.name);
-      final regCanonKey = _canonicalTitleKey(regItem.name).replaceAll(' ', '');
+      final regCanonKey = _canonicalTitleKey(regItem.name);
+      final regCanonNoSpace = regCanonKey.replaceAll(' ', '');
 
-      // 1. Intentar match rápido por mapa directo o canónico
+      // 1. Intentar match rápido O(1) por mapa directo o canónico
       List<M3UItem> candidates = [
         ...?customByNormTitle[regNormKey],
-        ...?customByCanonTitle[regCanonKey],
+        ...?customByCanonTitle[regCanonNoSpace],
       ];
 
       M3UItem? matchedCustom;
@@ -2143,9 +2151,21 @@ class M3UService extends ChangeNotifier {
         }
       }
 
-      // 2. Si no hubo match por mapa directo, intentar Smart Match recorriendo los no vinculados
+      // 2. Si no hubo match O(1), consultar ÚNICAMENTE los candidatos que comparten
+      // al menos una palabra clave significativa (filtrado O(k) ultrarrápido).
+      // Evita recorrer linealmente los cientos de customItems y previene bloqueos/ANR.
       if (matchedCustom == null) {
-        for (final candidate in customItems) {
+        final regWords =
+            regCanonKey.split(' ').where((w) => w.length >= 3).toSet();
+        final Set<M3UItem> smartCandidates = {};
+        for (final w in regWords) {
+          final bucket = customByWord[w];
+          if (bucket != null) {
+            smartCandidates.addAll(bucket);
+          }
+        }
+
+        for (final candidate in smartCandidates) {
           if (regItem.isSeries == candidate.isSeries &&
               regItem.isLive == candidate.isLive &&
               !matchedCustomItems.contains(candidate)) {

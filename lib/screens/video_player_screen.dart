@@ -5404,7 +5404,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                               _currentItem.url,
                                               position,
                                               duration,
-                                              alternativeUrls: _serverItems.map((a) => a.url).toList(),
+                                              alternativeUrls:
+                                                  _serverItems
+                                                      .map((a) => a.url)
+                                                      .toList(),
                                               name: _currentItem.name,
                                               seriesName:
                                                   _currentItem.seriesName,
@@ -6281,7 +6284,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                         _currentItem.url,
                                         pos,
                                         dur,
-                                        alternativeUrls: _serverItems.map((a) => a.url).toList(),
+                                        alternativeUrls:
+                                            _serverItems
+                                                .map((a) => a.url)
+                                                .toList(),
                                         name: _currentItem.name,
                                         seriesName: _currentItem.seriesName,
                                         seasonNumber: _currentItem.seasonNumber,

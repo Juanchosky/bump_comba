@@ -41,13 +41,13 @@ class M3UItem {
   }
 
   M3UItem({
-    required this.name,
+    required String name,
     required this.url,
     this.logo,
-    required this.category,
+    required String category,
     this.isFavorite = false,
     this.episodes = const [],
-    this.seriesName,
+    String? seriesName,
     this.seasonNumber,
     this.episodeNumber,
     bool? isSeries,
@@ -56,7 +56,12 @@ class M3UItem {
     this.alternatives = const [],
     this.sourceName,
     this.duration,
-  }) : _isSeries = isSeries;
+  })  : name = NormalizationUtils.fixMojibake(name),
+        category = NormalizationUtils.fixMojibake(category),
+        seriesName = seriesName != null
+            ? NormalizationUtils.fixMojibake(seriesName)
+            : null,
+        _isSeries = isSeries;
 
   M3UItem copyWith({
     String? name,

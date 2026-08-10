@@ -1,4 +1,65 @@
+import 'dart:convert';
+
 class NormalizationUtils {
+  /// Repara cadenas con codificación UTF-8 doble / Mojibake (garabatos raros).
+  /// Ej: "algÃºn" -> "algún", "SuperaciÃ³n" -> "Superación", "Â¿" -> "¿".
+  static String fixMojibake(String input) {
+    if (input.isEmpty) return input;
+    if (!input.contains('Ã') && !input.contains('Â')) return input;
+
+    String text = input;
+
+    // Intentar re-decodificar Latin1 a UTF8 si la cadena completa es Latin1 mal interpretado
+    try {
+      final latin1Bytes = latin1.encode(text);
+      final decoded = utf8.decode(latin1Bytes, allowMalformed: false);
+      if (decoded.isNotEmpty &&
+          !decoded.contains('Ã') &&
+          !decoded.contains('Â')) {
+        return decoded;
+      }
+    } catch (_) {}
+
+    // Tabla de reemplazo directa para secuencias Mojibake UTF-8 dobles
+    final Map<String, String> replacements = {
+      'Ã¡': 'á',
+      'Ã©': 'é',
+      'Ã\xAD': 'í',
+      'Ã­': 'í',
+      'Ã³': 'ó',
+      'Ãº': 'ú',
+      'Ã±': 'ñ',
+      'Ã‘': 'Ñ',
+      'Ã\x81': 'Á',
+      'Ã\x89': 'É',
+      'Ã\x8D': 'Í',
+      'Ã\x93': 'Ó',
+      'Ã\x9A': 'Ú',
+      'Ã¼': 'ü',
+      'ÃÜ': 'Ü',
+      'Â¿': '¿',
+      'Â¡': '¡',
+      'Ã§': 'ç',
+      'Ã‡': 'Ç',
+      'Ã¢': 'â',
+      'Ãª': 'ê',
+      'Ã®': 'î',
+      'Ã´': 'ô',
+      'Ã»': 'û',
+      'Ã°': 'ú',
+      'Â°': 'º',
+      'Â³': '³',
+      'Âª': 'ª',
+      'Â': '',
+    };
+
+    replacements.forEach((bad, good) {
+      text = text.replaceAll(bad, good);
+    });
+
+    return text;
+  }
+
   /// Limpia una URL de fragmentos de tiempo (#t=...) y parámetros de búsqueda comunes.
   static String cleanUrl(String url) {
     if (url.isEmpty) return url;
@@ -39,8 +100,8 @@ class NormalizationUtils {
   static String normalizeCategory(String category) {
     if (category.isEmpty) return 'Sin categoría';
 
-    // 1. Limpieza básica
-    String result = category.trim();
+    // 1. Limpieza básica y reparación de garabatos (Mojibake)
+    String result = fixMojibake(category.trim());
 
     // 2. Eliminar etiquetas comunes entre corchetes o paréntesis
     result = result
