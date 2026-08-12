@@ -768,9 +768,10 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
     for (var ep in filteredEpisodes) {
       // Deduplicar episodios repetidos por URL o combinación de temporada + episodio + nombre
-      final String epKey = ep.url.isNotEmpty
-          ? ep.url
-          : 's${ep.seasonNumber ?? 0}_e${ep.episodeNumber ?? 0}_${ep.name.toLowerCase().trim()}';
+      final String epKey =
+          ep.url.isNotEmpty
+              ? ep.url
+              : 's${ep.seasonNumber ?? 0}_e${ep.episodeNumber ?? 0}_${ep.name.toLowerCase().trim()}';
       if (!seenEpisodeKeys.add(epKey)) continue;
 
       // Filtrar episodios cuya serie tenga diferente estilo de capitalización

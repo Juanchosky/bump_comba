@@ -1914,7 +1914,8 @@ class M3UService extends ChangeNotifier {
 
   /// Normaliza el nombre/título para hacer matching flexible entre Xtream y DB (custom_content).
   String _normalizeTitleForMatching(String raw) {
-    String n = _removeAccents(raw.toLowerCase());
+    // Reparar mojibake de servidores Xtream (ej: "capitÃ¡n" → "capitán") antes de normalizar
+    String n = _removeAccents(NormalizationUtils.fixMojibake(raw).toLowerCase());
     n = n.replaceAll(RegExp(r'\(.*?\)'), ' ');
     n = n.replaceAll(RegExp(r'\[.*?\]'), ' ');
     n = n.replaceAll(RegExp(r'\b(19\d\d|20\d\d)\b'), ' ');
@@ -1930,7 +1931,8 @@ class M3UService extends ChangeNotifier {
   /// Clave canónica inteligente para matching entre títulos en distintos idiomas (Español / Inglés),
   /// con o sin artículos ("The", "El", "La"), números romanos, o diferentes formatos.
   String _canonicalTitleKey(String raw) {
-    String n = _removeAccents(raw.toLowerCase());
+    // Reparar mojibake de servidores Xtream antes de generar clave canónica
+    String n = _removeAccents(NormalizationUtils.fixMojibake(raw).toLowerCase());
 
     // 1. Quitar corchetes, paréntesis y años
     n = n.replaceAll(RegExp(r'\(.*?\)'), ' ');
@@ -2222,8 +2224,7 @@ class M3UService extends ChangeNotifier {
       M3UItem? matchedCustom;
       for (final candidate in candidates) {
         if (regItem.isSeries == candidate.isSeries &&
-            regItem.isLive == candidate.isLive &&
-            !matchedCustomItems.contains(candidate)) {
+            regItem.isLive == candidate.isLive) {
           matchedCustom = candidate;
           break;
         }
@@ -2245,8 +2246,7 @@ class M3UService extends ChangeNotifier {
 
         for (final candidate in smartCandidates) {
           if (regItem.isSeries == candidate.isSeries &&
-              regItem.isLive == candidate.isLive &&
-              !matchedCustomItems.contains(candidate)) {
+              regItem.isLive == candidate.isLive) {
             if (_isSmartTitleMatch(regItem.name, candidate.name)) {
               matchedCustom = candidate;
               break;
@@ -2256,6 +2256,8 @@ class M3UService extends ChangeNotifier {
       }
 
       if (matchedCustom != null) {
+        // Registrar como enlazado (para que no aparezca como tarjeta huérfana al final),
+        // pero NO impedir que otros items de Xtream del mismo contenido también lo enlacen.
         matchedCustomItems.add(matchedCustom);
 
         final labeledCustom = matchedCustom.copyWith(

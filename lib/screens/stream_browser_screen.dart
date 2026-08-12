@@ -6417,10 +6417,21 @@ class _SearchPageState extends State<_SearchPage> {
 
     if (mounted && _activeSearchQuery == query) {
       final List<dynamic> combined = [];
-      // Contenidos (películas/series) con mayor puntuación de coincidencia PRIMERO
-      combined.addAll(results);
-      // Categorías coincidentes AL FINAL
-      if (categories.isNotEmpty) {
+
+      if (categories.isNotEmpty && results.isNotEmpty) {
+        // Insertar categorías con alta relevancia AL INICIO (antes de resultados de baja puntuación).
+        // Las categorías con match exacto/casi-exacto van primero que películas con match parcial.
+        // Ej: "universo marvel" → categoría "Universo marvel" PRIMERO, luego "Universal Soldier", etc.
+        // Estrategia: los primeros ~5 resultados de contenido suelen ser los más relevantes,
+        // las categorías van justo después de esos top results.
+        final int insertPos = results.length < 4 ? results.length : 4;
+        combined.addAll(results.sublist(0, insertPos));
+        combined.addAll(categories);
+        if (results.length > insertPos) {
+          combined.addAll(results.sublist(insertPos));
+        }
+      } else {
+        combined.addAll(results);
         combined.addAll(categories);
       }
 
