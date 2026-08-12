@@ -1,6 +1,14 @@
 import 'dart:convert';
 
 class NormalizationUtils {
+  /// Detecta si un título o categoría corresponde a contenido 4K / UHD / 2160p.
+  static bool is4kTitle(String name) {
+    if (name.isEmpty) return false;
+    final n = name.toLowerCase();
+    if (n.contains('4k') || n.contains('4 k') || n.contains('2160p')) return true;
+    if (RegExp(r'\buhd\b', caseSensitive: false).hasMatch(n)) return true;
+    return false;
+  }
   /// Repara cadenas con codificación UTF-8 doble / Mojibake (garabatos raros).
   /// Ej: "algÃºn" -> "algún", "SuperaciÃ³n" -> "Superación", "Â¿" -> "¿".
   static String fixMojibake(String input) {
