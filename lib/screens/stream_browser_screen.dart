@@ -255,8 +255,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
   Future<void> _checkContentRequestsConfig() async {
     try {
-      final isEnabled =
-          await _m3uService.isRemoteConfigEnabled('allow_content_requests');
+      final isEnabled = await _m3uService.isRemoteConfigEnabled(
+        'allow_content_requests',
+      );
       if (mounted && isEnabled != _allowContentRequests) {
         setState(() {
           _allowContentRequests = isEnabled;
@@ -6419,16 +6420,21 @@ class _SearchPageState extends State<_SearchPage> {
       final List<dynamic> combined = [];
 
       if (categories.isNotEmpty && results.isNotEmpty) {
-        // Insertar categorías con alta relevancia AL INICIO (antes de resultados de baja puntuación).
-        // Las categorías con match exacto/casi-exacto van primero que películas con match parcial.
-        // Ej: "universo marvel" → categoría "Universo marvel" PRIMERO, luego "Universal Soldier", etc.
-        // Estrategia: los primeros ~5 resultados de contenido suelen ser los más relevantes,
-        // las categorías van justo después de esos top results.
-        final int insertPos = results.length < 4 ? results.length : 4;
-        combined.addAll(results.sublist(0, insertPos));
-        combined.addAll(categories);
-        if (results.length > insertPos) {
-          combined.addAll(results.sublist(insertPos));
+        // Intercalar las categorías/colecciones de forma distribuida cada 3 resultados de contenido,
+        // evitando que salgan agrupadas todas juntas en un solo bloque.
+        int categoryIndex = 0;
+        const int step = 3;
+
+        for (int i = 0; i < results.length; i++) {
+          combined.add(results[i]);
+          if ((i + 1) % step == 0 && categoryIndex < categories.length) {
+            combined.add(categories[categoryIndex]);
+            categoryIndex++;
+          }
+        }
+        while (categoryIndex < categories.length) {
+          combined.add(categories[categoryIndex]);
+          categoryIndex++;
         }
       } else {
         combined.addAll(results);
@@ -6490,7 +6496,10 @@ class _SearchPageState extends State<_SearchPage> {
 
   Widget _buildEmptySearchState() {
     final query = _searchController.text.trim();
-    if (!_allowContentRequests) {
+    final bool hasNoSourcesOrItems =
+        widget.m3uService.sources.isEmpty || widget.m3uService.items.isEmpty;
+
+    if (!_allowContentRequests || hasNoSourcesOrItems) {
       return SingleChildScrollView(
         physics: const BouncingScrollPhysics(),
         padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 36),
@@ -6515,9 +6524,11 @@ class _SearchPageState extends State<_SearchPage> {
             ),
             const SizedBox(height: 8),
             Text(
-              query.isNotEmpty
+              hasNoSourcesOrItems
                   ? 'No encontramos resultados para "$query".'
-                  : 'Intenta buscar con otra palabra clave.',
+                  : (query.isNotEmpty
+                      ? 'No encontramos resultados para "$query".'
+                      : 'Intenta buscar con otra palabra clave.'),
               style: const TextStyle(
                 color: Colors.white54,
                 fontSize: 13.5,
@@ -7009,6 +7020,8 @@ class _SearchPageState extends State<_SearchPage> {
                   width: 36,
                   height: 50,
                   fit: BoxFit.cover,
+                  isSeries: item.isSeries,
+                  useTMDBFallback: true,
                   onError: () {
                     // Fail silently or show icon via FastThumbnail's inherent state if needed
                   },
