@@ -1259,7 +1259,10 @@ class M3UService extends ChangeNotifier {
           ),
         );
         final bytes = transferable.materialize().asUint8List();
-        final parsedItems = BipbSerializer.deserialize(bytes);
+        final parsedItems = await compute(
+          _deserializeBinaryCacheInBackground,
+          bytes,
+        );
         return _processOutput(parsedItems, custom);
       } catch (e) {
         debugPrint('Error loading raw cache: $e');
@@ -1421,7 +1424,10 @@ class M3UService extends ChangeNotifier {
           ),
         );
         final bytes = transferable.materialize().asUint8List();
-        final parsedItems = BipbSerializer.deserialize(bytes);
+        final parsedItems = await compute(
+          _deserializeBinaryCacheInBackground,
+          bytes,
+        );
         allRawItems.addAll(parsedItems);
       }
     }
@@ -1565,7 +1571,10 @@ class M3UService extends ChangeNotifier {
             ),
           );
           final bytes = transferable.materialize().asUint8List();
-          final parsedItems = BipbSerializer.deserialize(bytes);
+          final parsedItems = await compute(
+            _deserializeBinaryCacheInBackground,
+            bytes,
+          );
           return _processOutput(parsedItems, custom);
         }
       }
@@ -1598,7 +1607,10 @@ class M3UService extends ChangeNotifier {
       ),
     );
     final bytes = transferable.materialize().asUint8List();
-    final parsedItems = BipbSerializer.deserialize(bytes);
+    final parsedItems = await compute(
+      _deserializeBinaryCacheInBackground,
+      bytes,
+    );
     return _processOutput(parsedItems, custom);
   }
 
@@ -2007,45 +2019,10 @@ class M3UService extends ChangeNotifier {
         if (regItem.isSeries &&
             regItem.episodes.isNotEmpty &&
             matchedCustom.episodes.isNotEmpty) {
-          updatedEpisodes = [];
-          for (final regEp in regItem.episodes) {
-            M3UItem? matchedEp;
-            for (final cEp in matchedCustom.episodes) {
-              if (regEp.seasonNumber != null &&
-                  cEp.seasonNumber != null &&
-                  regEp.seasonNumber == cEp.seasonNumber &&
-                  regEp.episodeNumber != null &&
-                  cEp.episodeNumber != null &&
-                  regEp.episodeNumber == cEp.episodeNumber) {
-                matchedEp = cEp;
-                break;
-              }
-              if (regEp.episodeNumber != null &&
-                  cEp.episodeNumber != null &&
-                  regEp.episodeNumber == cEp.episodeNumber &&
-                  (regEp.seasonNumber == null || cEp.seasonNumber == null)) {
-                matchedEp = cEp;
-                break;
-              }
-              if (_isSmartTitleMatch(regEp.name, cEp.name)) {
-                matchedEp = cEp;
-                break;
-              }
-            }
-
-            if (matchedEp != null) {
-              final labeledCustomEp = matchedEp.copyWith(
-                sourceName: 'V2 (Más rápida)',
-              );
-              final existingAlts = List<M3UItem>.from(regEp.alternatives);
-              if (!existingAlts.any((a) => a.url == labeledCustomEp.url)) {
-                existingAlts.add(labeledCustomEp);
-              }
-              updatedEpisodes.add(regEp.copyWith(alternatives: existingAlts));
-            } else {
-              updatedEpisodes.add(regEp);
-            }
-          }
+          updatedEpisodes = _linkEpisodeLists(
+            regItem.episodes,
+            matchedCustom.episodes,
+          );
         }
 
         final existingAlts = List<M3UItem>.from(regItem.alternatives);
@@ -2080,10 +2057,17 @@ class M3UService extends ChangeNotifier {
     if (customItems.isEmpty) return regularItems;
     if (regularItems.isEmpty) return customItems;
 
+    final swI = Stopwatch()..start();
+
     // ── Paso 0: Emparejar alternativas de custom_content (BD V2) ──
     final (linkedRegular, orphanCustom) = _linkCustomContentAlternatives(
       regularItems,
       customItems,
+    );
+    debugPrint(
+      'PERFTRACE _linkCustomContentAlternatives MAIN-THREAD '
+      'reg=${regularItems.length} custom=${customItems.length} '
+      '→ ${swI.elapsedMilliseconds}ms',
     );
 
     if (orphanCustom.isEmpty) return linkedRegular;
@@ -2186,17 +2170,23 @@ class M3UService extends ChangeNotifier {
   // OUTPUT PROCESSING — ROBUST-2
   // ===========================================================================
 
-  bool _processOutput(List<M3UItem> parsedItems, List<M3UItem> customItems) {
+  Future<bool> _processOutput(
+    List<M3UItem> parsedItems,
+    List<M3UItem> customItems,
+  ) async {
     // Merge custom items with M3U items — interleaved intelligently
     final combinedItems = _interleaveCustomContent(parsedItems, customItems);
 
     // Update global state via a unified indexing call.
     // scheduleRecentCompute: false porque _processOutput ya tiene su propio
     // Future.delayed más abajo que hace el mismo cómputo. Evita duplicación.
-    _indexItems(combinedItems, scheduleRecentCompute: false);
+    //
+    // IMPORTANTE: hay que esperarlo. _indexItems ahora publica _items (y
+    // _cachedLatestItems) recién cuando el isolate termina, y la sincronización
+    // de favoritos de aquí abajo lee _items.
+    await _indexItems(combinedItems, scheduleRecentCompute: false);
 
-    // Refresh other fields
-    _cachedLatestItems = _calculateLatestItems(parsedItems).take(50).toList();
+    // _cachedLatestItems ya lo dejó calculado _indexItems (en el isolate).
     _cachedRecentItems = null;
 
     // Sync _favoriteItems with newly parsed items
@@ -2257,18 +2247,44 @@ class M3UService extends ChangeNotifier {
     List<M3UItem> items, {
     bool scheduleRecentCompute = true,
   }) async {
-    items = _filterOut4kItems(items);
-    _items = items;
-    _cachedLatestItems = _calculateLatestItems(items).take(50).toList();
-    _cachedRecentItems = null;
-    // SMART-SEARCH: rebuild search index
-    _rebuildSearchIndex();
-
+    final sw = Stopwatch()..start();
     try {
+      // PERF: el filtrado 4K, el cálculo de "más recientes" y la normalización
+      // del índice de búsqueda son O(n) con regex por item. Antes corrían aquí,
+      // en el hilo de UI, y congelaban la pantalla varios segundos con listas
+      // grandes. Ahora los hace el mismo isolate que ya construía los índices.
       final result = await compute(_indexItemsInBackground, {
         'items': items,
         'hasSagas': true, // Logic to include saga detection
       });
+      final tIsolate = sw.elapsedMilliseconds;
+
+      _items = (result['items'] as List?)?.cast<M3UItem>() ?? const [];
+      _cachedLatestItems =
+          (result['latestItems'] as List?)?.cast<M3UItem>() ?? const [];
+      _cachedRecentItems = null;
+
+      // SMART-SEARCH: el isolate ya devolvió los nombres normalizados, así que
+      // aquí sólo se rellenan los mapas por identidad — sin regex, es barato.
+      final names = (result['searchNames'] as List?)?.cast<String>();
+      final words = result['searchWords'] as List?;
+      if (names != null && words != null && names.length == _items.length) {
+        _searchIndex = {};
+        _searchIndexWords = {};
+        for (int i = 0; i < _items.length; i++) {
+          final item = _items[i];
+          if (item.isLive) continue;
+          _searchIndex[item] = names[i];
+          _searchIndexWords[item] = (words[i] as List).cast<String>();
+        }
+      } else {
+        _rebuildSearchIndex();
+      }
+
+      debugPrint(
+        'PERFTRACE _indexItems n=${_items.length} isolate=${tIsolate}ms '
+        'mainThreadWiring=${sw.elapsedMilliseconds - tIsolate}ms',
+      );
 
       _movies = (result['movies'] as List?)?.cast<M3UItem>() ?? [];
       _series = (result['series'] as List?)?.cast<M3UItem>() ?? [];
@@ -2304,6 +2320,13 @@ class M3UService extends ChangeNotifier {
       }
     } catch (e) {
       debugPrint('Error en la indexación local: $e');
+      // FALLBACK: si el isolate falla, hacerlo en el hilo principal como antes.
+      // Es lento, pero es preferible a quedarse sin contenido.
+      _items = _filterOut4kItems(items);
+      _cachedLatestItems = _calculateLatestItems(_items).take(50).toList();
+      _cachedRecentItems = null;
+      _rebuildSearchIndex();
+      notifyListeners();
     }
   }
 
@@ -2395,50 +2418,7 @@ class M3UService extends ChangeNotifier {
       );
 
       if (customSeriesAlt.episodes.isNotEmpty) {
-        final List<M3UItem> linkedEpisodes = [];
-        for (final ep in episodes) {
-          M3UItem? matchedEp;
-          for (final cEp in customSeriesAlt.episodes) {
-            if (ep.seasonNumber != null &&
-                cEp.seasonNumber != null &&
-                ep.seasonNumber == cEp.seasonNumber &&
-                ep.episodeNumber != null &&
-                cEp.episodeNumber != null &&
-                ep.episodeNumber == cEp.episodeNumber) {
-              matchedEp = cEp;
-              break;
-            }
-            // Fallback: match por episodeNumber SOLO si al menos uno
-            // de los dos no tiene temporada (dato ausente). Si ambos
-            // tienen seasonNumber explícito pero distinto, NO matchear
-            // — evita que S03E01 caiga en S01E01.
-            if (ep.episodeNumber != null &&
-                cEp.episodeNumber != null &&
-                ep.episodeNumber == cEp.episodeNumber &&
-                (ep.seasonNumber == null || cEp.seasonNumber == null)) {
-              matchedEp = cEp;
-              break;
-            }
-            if (_isSmartTitleMatch(ep.name, cEp.name)) {
-              matchedEp = cEp;
-              break;
-            }
-          }
-
-          if (matchedEp != null) {
-            final labeledCustomEp = matchedEp.copyWith(
-              sourceName: 'V2 (Más rápida)',
-            );
-            final existingAlts = List<M3UItem>.from(ep.alternatives);
-            if (!existingAlts.any((a) => a.url == labeledCustomEp.url)) {
-              existingAlts.add(labeledCustomEp);
-            }
-            linkedEpisodes.add(ep.copyWith(alternatives: existingAlts));
-          } else {
-            linkedEpisodes.add(ep);
-          }
-        }
-        episodes = linkedEpisodes;
+        episodes = _linkEpisodeLists(episodes, customSeriesAlt.episodes);
       }
     }
 
@@ -2463,6 +2443,84 @@ class M3UService extends ChangeNotifier {
     }
 
     return episodes;
+  }
+
+  /// Match and link episodes efficiently using hash maps O(N+M) instead of O(N*M)
+  List<M3UItem> _linkEpisodeLists(
+    List<M3UItem> baseEpisodes,
+    List<M3UItem> customEpisodes,
+  ) {
+    if (baseEpisodes.isEmpty || customEpisodes.isEmpty) return baseEpisodes;
+
+    final Map<String, M3UItem> seasonEpMap = {};
+    final Map<int, M3UItem> epNumOnlyMap = {};
+    final Map<String, M3UItem> normTitleMap = {};
+
+    for (final cEp in customEpisodes) {
+      if (cEp.seasonNumber != null && cEp.episodeNumber != null) {
+        seasonEpMap.putIfAbsent(
+          's${cEp.seasonNumber}_e${cEp.episodeNumber}',
+          () => cEp,
+        );
+      }
+      if (cEp.episodeNumber != null && cEp.seasonNumber == null) {
+        epNumOnlyMap.putIfAbsent(cEp.episodeNumber!, () => cEp);
+      }
+      final norm = _normalizeTitleForMatching(cEp.name);
+      if (norm.isNotEmpty) {
+        normTitleMap.putIfAbsent(norm, () => cEp);
+      }
+    }
+
+    final List<M3UItem> linkedEpisodes = [];
+    for (final ep in baseEpisodes) {
+      M3UItem? matchedEp;
+
+      // 1. Season + episode number match
+      if (ep.seasonNumber != null && ep.episodeNumber != null) {
+        matchedEp = seasonEpMap['s${ep.seasonNumber}_e${ep.episodeNumber}'];
+      }
+
+      // 2. Episode number only match (if season absent in at least one)
+      if (matchedEp == null && ep.episodeNumber != null) {
+        if (ep.seasonNumber == null) {
+          matchedEp = epNumOnlyMap[ep.episodeNumber!];
+        }
+      }
+
+      // 3. Exact normalized title match
+      if (matchedEp == null) {
+        final norm = _normalizeTitleForMatching(ep.name);
+        if (norm.isNotEmpty) {
+          matchedEp = normTitleMap[norm];
+        }
+      }
+
+      // 4. Smart title match fallback ONLY if small number of candidates (< 50)
+      if (matchedEp == null && customEpisodes.length < 50) {
+        for (final cEp in customEpisodes) {
+          if (_isSmartTitleMatch(ep.name, cEp.name)) {
+            matchedEp = cEp;
+            break;
+          }
+        }
+      }
+
+      if (matchedEp != null) {
+        final labeledCustomEp = matchedEp.copyWith(
+          sourceName: 'V2 (Más rápida)',
+        );
+        final existingAlts = List<M3UItem>.from(ep.alternatives);
+        if (!existingAlts.any((a) => a.url == labeledCustomEp.url)) {
+          existingAlts.add(labeledCustomEp);
+        }
+        linkedEpisodes.add(ep.copyWith(alternatives: existingAlts));
+      } else {
+        linkedEpisodes.add(ep);
+      }
+    }
+
+    return linkedEpisodes;
   }
 
   // ===========================================================================
@@ -5179,7 +5237,29 @@ Map<String, dynamic> _indexItemsInBackground(Map<String, dynamic> input) {
     _addSagaCategories(movies, catIndex, sortedCats);
   }
 
+  // PERF: estos dos cálculos vivían en el hilo de UI (_indexItems). Son O(n)
+  // con regex por item, así que se hacen aquí y se devuelven ya resueltos.
+  // 'searchNames'/'searchWords' van alineados por índice con 'items' para que
+  // el hilo principal sólo tenga que rellenar los mapas.
+  final List<String> searchNames = List<String>.filled(items.length, '');
+  final List<List<String>> searchWords = List<List<String>>.filled(
+    items.length,
+    const <String>[],
+  );
+  for (int i = 0; i < items.length; i++) {
+    if (items[i].isLive) continue;
+    final normalized = _normalizeForSearch(items[i].name);
+    searchNames[i] = normalized;
+    searchWords[i] = normalized.split(' ').where((w) => w.isNotEmpty).toList();
+  }
+
+  final latestItems = _calculateLatestItems(items).take(50).toList();
+
   return {
+    'items': items,
+    'searchNames': searchNames,
+    'searchWords': searchWords,
+    'latestItems': latestItems,
     'movies': movies,
     'series': series,
     'catIndex': catIndex,

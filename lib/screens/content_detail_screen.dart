@@ -178,6 +178,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
   void _initPrewarm() {
     if (!PerformanceService().allowVideoPrewarm) return;
+    if (widget.item.isSeries) return;
 
     // iOS: NO precalentar. En iOS, media_kit necesita que el VideoController
     // (contexto de render) exista al abrir el media para inicializar la salida
@@ -189,6 +190,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
     // Solo pre-calentar si no es Live (los live gastan mucho ancho de banda)
     final url = widget.item.url.toLowerCase();
+    if (!url.startsWith('http://') && !url.startsWith('https://')) return;
+
     final isLive =
         url.contains('/live/') ||
         url.contains('type=live') ||
@@ -765,6 +768,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
     final filteredEpisodes = _m3uService.filterValidItems(episodesToGroup);
     final Set<String> seenEpisodeKeys = {};
+    final Map<String, String> capSigCache = {};
 
     for (var ep in filteredEpisodes) {
       // Deduplicar episodios repetidos por URL o combinación de temporada + episodio + nombre
@@ -776,7 +780,10 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
       // Filtrar episodios cuya serie tenga diferente estilo de capitalización
       if (ep.seriesName != null && ep.seriesName!.isNotEmpty) {
-        final epCapSig = _capSignature(ep.seriesName!);
+        final epCapSig = capSigCache.putIfAbsent(
+          ep.seriesName!,
+          () => _capSignature(ep.seriesName!),
+        );
         // 'mixed' se deja pasar para no sobre-filtrar casos edge
         if (epCapSig != 'mixed' && epCapSig != parentCapSig) continue;
       }

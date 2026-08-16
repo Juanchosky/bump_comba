@@ -74,6 +74,7 @@ class WatchProgressService with ChangeNotifier {
       95.0; // Consider completed if > 95%
 
   SharedPreferences? _prefs;
+  Map<String, dynamic>? _cachedAllProgress;
 
   /// Initialize the service
   Future<void> init() async {
@@ -215,22 +216,30 @@ class WatchProgressService with ChangeNotifier {
 
   /// Get all progress data
   Future<Map<String, dynamic>> _getAllProgress() async {
+    if (_cachedAllProgress != null) return _cachedAllProgress!;
+
     await _ensureInitialized();
 
     final raw = _prefs!.getString(_progressKey);
-    if (raw == null) return {};
+    if (raw == null) {
+      _cachedAllProgress = {};
+      return _cachedAllProgress!;
+    }
 
     try {
       final decrypted = SecurityUtils.deobfuscate(raw);
-      return Map<String, dynamic>.from(jsonDecode(decrypted));
+      _cachedAllProgress = Map<String, dynamic>.from(jsonDecode(decrypted));
+      return _cachedAllProgress!;
     } catch (e) {
       // If corrupted or legacy during first transition, return empty or try plain
       try {
         if (raw.isNotEmpty) {
-           return Map<String, dynamic>.from(jsonDecode(raw));
+          _cachedAllProgress = Map<String, dynamic>.from(jsonDecode(raw));
+          return _cachedAllProgress!;
         }
       } catch (_) {}
-      return {};
+      _cachedAllProgress = {};
+      return _cachedAllProgress!;
     }
   }
 
@@ -290,6 +299,7 @@ class WatchProgressService with ChangeNotifier {
   /// Clear all watch progress
   Future<void> clearAllProgress() async {
     await _ensureInitialized();
+    _cachedAllProgress = {};
     await _prefs!.remove(_progressKey);
     notifyListeners();
   }

@@ -11,7 +11,9 @@ class VideoPrewarmService {
   final Map<String, Player> _prewarmedPlayers = {};
 
   Future<void> prewarm(M3UItem item, String userAgent) async {
+    if (item.isSeries) return;
     final url = item.url;
+    if (!url.startsWith('http://') && !url.startsWith('https://')) return;
     if (_prewarmedPlayers.containsKey(url)) return;
 
     // Limit to 1 prewarmed player to save resources (Critical for Android 15/Motorola)

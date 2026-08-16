@@ -232,7 +232,9 @@ class _SettingsScreenState extends State<SettingsScreen>
                                                       'Lector de listas de terceros',
                                                       style: TextStyle(
                                                         color: Colors.white
-                                                            .withValues(alpha: 0.7),
+                                                            .withValues(
+                                                              alpha: 0.7,
+                                                            ),
                                                         fontSize: 12,
                                                         fontWeight:
                                                             FontWeight.bold,
@@ -620,7 +622,9 @@ class _SettingsScreenState extends State<SettingsScreen>
           border: Border.all(color: colors[_configService.difficulty - 1]),
           boxShadow: [
             BoxShadow(
-              color: colors[_configService.difficulty - 1].withValues(alpha: 0.5),
+              color: colors[_configService.difficulty - 1].withValues(
+                alpha: 0.5,
+              ),
               offset: const Offset(0, 4),
             ),
           ],
@@ -1321,7 +1325,10 @@ class _SettingsTile extends StatelessWidget {
             ),
             if (trailing != null) trailing!,
             if (onTap != null && trailing == null)
-              Icon(Icons.chevron_right, color: Colors.white.withValues(alpha: 0.5)),
+              Icon(
+                Icons.chevron_right,
+                color: Colors.white.withValues(alpha: 0.5),
+              ),
           ],
         ),
       ),
