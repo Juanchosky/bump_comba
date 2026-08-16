@@ -26,6 +26,8 @@ class _FailedImageTracker with WidgetsBindingObserver {
   final Set<VoidCallback> _retryCallbacks = {};
   NetworkQuality _lastQuality = NetworkQuality.excellent;
   DateTime? _lastLimitChange;
+  // Última calidad realmente aplicada al semáforo/HttpClient.
+  NetworkQuality? _lastAppliedQuality;
 
   void init() {
     if (_initialized) return;
@@ -104,12 +106,23 @@ class _FailedImageTracker with WidgetsBindingObserver {
   /// Fewer parallel connections on slow networks = each image gets more
   /// bandwidth and completes faster instead of all stalling together.
   void _adaptConnectionLimits(NetworkQuality quality) {
+    // Nada que hacer si la calidad no cambió.
+    if (_lastAppliedQuality == quality) return;
+
+    // FIX: el guard anti-rebote de 5s se saltaba updateLimit() por completo.
+    // Estando offline el semáforo queda en 0 descargas concurrentes, así que
+    // si la red volvía dentro de esos 5s — exactamente lo que pasa al apagar y
+    // encender la pantalla — el semáforo se quedaba en 0 y NINGUNA imagen
+    // podía descargar más. Ahora la salida anticipada nunca aplica cuando se
+    // viene de (o se va a) offline.
     final now = DateTime.now();
     if (_lastLimitChange != null &&
         now.difference(_lastLimitChange!) < const Duration(seconds: 5) &&
-        quality != NetworkQuality.offline) {
+        quality != NetworkQuality.offline &&
+        _lastAppliedQuality != NetworkQuality.offline) {
       return;
     }
+    _lastAppliedQuality = quality;
     _lastLimitChange = now;
 
     switch (quality) {
@@ -138,11 +151,27 @@ class _FailedImageTracker with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // Red de seguridad: re-aplicar los límites por si el semáforo quedó en 0
+      // concurrentes tras un corte de red mientras la pantalla estaba apagada.
+      _lastAppliedQuality = null;
+      _adaptConnectionLimits(NetworkQualityService().quality.value);
+    }
     if (state == AppLifecycleState.resumed && _retryCallbacks.isNotEmpty) {
       final callbacks = List<VoidCallback>.from(_retryCallbacks);
-      // Re-intentar inmediatamente de forma instantánea al encender la pantalla o volver a la app
-      for (final callback in callbacks) {
-        if (_retryCallbacks.contains(callback)) callback();
+      // Escalonado: disparar cientos de reintentos en el mismo frame satura la
+      // red y el semáforo de descargas, y termina haciendo que TODAS las
+      // carátulas tarden más. Las primeras salen ya (son las visibles) y el
+      // resto entra de a poco.
+      for (int i = 0; i < callbacks.length; i++) {
+        final cb = callbacks[i];
+        if (i < 8) {
+          if (_retryCallbacks.contains(cb)) cb();
+          continue;
+        }
+        Future.delayed(Duration(milliseconds: (i - 8) * 30), () {
+          if (_retryCallbacks.contains(cb)) cb();
+        });
       }
     }
   }
@@ -831,7 +860,10 @@ class _FastThumbnailState extends State<FastThumbnail>
   // Uses exponential backoff with cap at 30s.
   int _retryCount = 0;
   Timer? _retryTimer;
-  Timer? _hardTimeoutTimer; // ← NUEVO
+  Timer? _hardTimeoutTimer;
+  // Cuántas veces disparó ya el hard timeout — alarga el margen y decide
+  // a partir de cuándo vale la pena borrar el caché de disco.
+  int _hardTimeoutCount = 0;
   int _imageKey = 0;
   bool _hasLoaded = false;
 
@@ -902,10 +934,12 @@ class _FastThumbnailState extends State<FastThumbnail>
       }
 
       _retryCount = 0;
+      _hardTimeoutCount = 0;
       _retryTimer?.cancel();
       _hasLoaded = false;
       _imageKey = 0;
       _checkAndResolveFallback();
+      _resetHardTimeout();
     }
   }
 
@@ -914,6 +948,7 @@ class _FastThumbnailState extends State<FastThumbnail>
     if (!mounted || _hasLoaded) return;
     // Reset retry count so the user gets fresh attempts after resume
     _retryCount = 0;
+    _hardTimeoutCount = 0;
     _performRetry();
   }
 
@@ -950,11 +985,14 @@ class _FastThumbnailState extends State<FastThumbnail>
   /// Core retry logic shared by timer-based and app-resume retries.
   /// Awaits cache eviction before triggering a rebuild to guarantee
   /// the corrupted file is gone before a fresh download starts.
-  Future<void> _performRetry() async {
+  Future<void> _performRetry({bool evictCache = true}) async {
     if (!mounted || _hasLoaded) return;
 
     final url = _resolveUrl();
-    if (url != null) {
+    // FIX: con evictCache=false no se borra nada y sólo se vuelve a enganchar
+    // el stream. Es lo que usa el hard timeout en sus primeros disparos: una
+    // descarga lenta pero sana no debe perder el progreso ya bajado.
+    if (url != null && evictCache) {
       // 1. Evict from disk cache FIRST and wait for completion
       try {
         await AppCacheManager.instance.removeFile(url);
@@ -1000,15 +1038,21 @@ class _FastThumbnailState extends State<FastThumbnail>
     _hardTimeoutTimer?.cancel();
     if (_hasLoaded) return;
     // Si en N segundos no hay frame ni error → forzar retry
-    final seconds = switch (NetworkQualityService().quality.value) {
+    final base = switch (NetworkQualityService().quality.value) {
       NetworkQuality.excellent || NetworkQuality.good => 5,
       NetworkQuality.fair => 7,
       NetworkQuality.poor => 10,
       NetworkQuality.offline => 3,
     };
+    // FIX: antes el timeout era fijo y SIEMPRE borraba el caché de disco. En
+    // una red lenta, una carátula que necesitaba 8s se cancelaba a los 5s, se
+    // tiraba lo ya descargado y se empezaba de cero — en bucle, sin terminar
+    // nunca. Ahora cada intento da más margen y los primeros no borran nada.
+    final seconds = base * (1 << _hardTimeoutCount.clamp(0, 3));
     _hardTimeoutTimer = Timer(Duration(seconds: seconds), () {
       if (!mounted || _hasLoaded) return;
-      _performRetry(); // evict + reload
+      _hardTimeoutCount++;
+      _performRetry(evictCache: _hardTimeoutCount > 2);
     });
   }
 
@@ -1176,16 +1220,26 @@ class _FastThumbnailState extends State<FastThumbnail>
               fit: widget.fit,
               gaplessPlayback: true,
               frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
-                _hasLoaded = true;
-                _hardTimeoutTimer?.cancel(); // ← NUEVO
-                final url = _resolveUrl();
-                if (url != null) {
-                  if (_loadedUrls.length > 4000) {
-                    _loadedUrls.clear(); // evitar leak
+                // FIX: frame == null significa que la imagen TODAVÍA se está
+                // cargando. Antes se marcaba _hasLoaded=true en esa primera
+                // llamada, se cancelaba el hard timeout y se desregistraba del
+                // tracker de reintentos. Consecuencia: una carátula que nunca
+                // terminaba de bajar quedaba marcada como cargada para siempre
+                // y ya no se recuperaba — ni con reintentos ni al volver a la
+                // app. Sólo contamos como cargada si de verdad llegó un frame.
+                final bool hasFrame = frame != null || wasSynchronouslyLoaded;
+                if (hasFrame && !_hasLoaded) {
+                  _hasLoaded = true;
+                  _hardTimeoutTimer?.cancel();
+                  final url = _resolveUrl();
+                  if (url != null) {
+                    if (_loadedUrls.length > 4000) {
+                      _loadedUrls.clear(); // evitar leak
+                    }
+                    _loadedUrls.add(url);
                   }
-                  _loadedUrls.add(url);
+                  _FailedImageTracker.instance.unregister(_onAppResumeRetry);
                 }
-                _FailedImageTracker.instance.unregister(_onAppResumeRetry);
 
                 if (wasSynchronouslyLoaded) {
                   if (!_fadeController.isCompleted) {
@@ -1253,7 +1307,8 @@ class _FastChannelLogoState extends State<FastChannelLogo>
   // Silent retry state — NEVER gives up permanently.
   int _retryCount = 0;
   Timer? _retryTimer;
-  Timer? _hardTimeoutTimer; // ← NUEVO
+  Timer? _hardTimeoutTimer;
+  int _hardTimeoutCount = 0;
   int _imageKey = 0;
   bool _hasLoaded = false;
 
@@ -1295,9 +1350,11 @@ class _FastChannelLogoState extends State<FastChannelLogo>
       }
 
       _retryCount = 0;
+      _hardTimeoutCount = 0;
       _retryTimer?.cancel();
       _hasLoaded = false;
       _imageKey = 0;
+      _resetHardTimeout();
     }
   }
 
@@ -1305,6 +1362,7 @@ class _FastChannelLogoState extends State<FastChannelLogo>
   void _onAppResumeRetry() {
     if (!mounted || _hasLoaded) return;
     _retryCount = 0;
+    _hardTimeoutCount = 0;
     _performRetry();
   }
 
@@ -1333,11 +1391,11 @@ class _FastChannelLogoState extends State<FastChannelLogo>
   }
 
   /// Core retry logic shared by timer-based and app-resume retries.
-  Future<void> _performRetry() async {
+  Future<void> _performRetry({bool evictCache = true}) async {
     if (!mounted || _hasLoaded) return;
 
     final url = widget.url?.trim();
-    if (url != null) {
+    if (url != null && evictCache) {
       // Evict from disk cache FIRST and wait for completion
       try {
         await AppCacheManager.instance.removeFile(url);
@@ -1376,15 +1434,19 @@ class _FastChannelLogoState extends State<FastChannelLogo>
     _hardTimeoutTimer?.cancel();
     if (_hasLoaded) return;
     // Si en N segundos no hay frame ni error → forzar retry
-    final seconds = switch (NetworkQualityService().quality.value) {
+    final base = switch (NetworkQualityService().quality.value) {
       NetworkQuality.excellent || NetworkQuality.good => 12,
       NetworkQuality.fair => 18,
       NetworkQuality.poor => 25,
       NetworkQuality.offline => 8,
     };
+    // Mismo criterio que en FastThumbnail: margen creciente y sin borrar el
+    // caché en los primeros intentos, para no matar descargas lentas sanas.
+    final seconds = base * (1 << _hardTimeoutCount.clamp(0, 3));
     _hardTimeoutTimer = Timer(Duration(seconds: seconds), () {
       if (!mounted || _hasLoaded) return;
-      _performRetry(); // evict + reload
+      _hardTimeoutCount++;
+      _performRetry(evictCache: _hardTimeoutCount > 2);
     });
   }
 
@@ -1435,16 +1497,22 @@ class _FastChannelLogoState extends State<FastChannelLogo>
             fit: BoxFit.contain,
             gaplessPlayback: true,
             frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
-              _hasLoaded = true;
-              _hardTimeoutTimer?.cancel(); // ← NUEVO
-              final url = widget.url?.trim();
-              if (url != null) {
-                if (_loadedUrls.length > 4000) {
-                  _loadedUrls.clear(); // evitar leak
+              // FIX: ver la nota en FastThumbnail — frame == null es "cargando
+              // todavía", no "cargada". Marcarla aquí dejaba los logos que
+              // fallaban sin ningún reintento posible.
+              final bool hasFrame = frame != null || wasSynchronouslyLoaded;
+              if (hasFrame && !_hasLoaded) {
+                _hasLoaded = true;
+                _hardTimeoutTimer?.cancel();
+                final url = widget.url?.trim();
+                if (url != null) {
+                  if (_loadedUrls.length > 4000) {
+                    _loadedUrls.clear(); // evitar leak
+                  }
+                  _loadedUrls.add(url);
                 }
-                _loadedUrls.add(url);
+                _FailedImageTracker.instance.unregister(_onAppResumeRetry);
               }
-              _FailedImageTracker.instance.unregister(_onAppResumeRetry);
 
               if (wasSynchronouslyLoaded) {
                 if (!_fadeController.isCompleted) {
