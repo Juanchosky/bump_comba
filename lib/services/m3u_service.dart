@@ -1260,7 +1260,7 @@ class M3UService extends ChangeNotifier {
     final cachedItems = await _loadBinaryCache(ignoreExpiration: true);
     if (cachedItems != null && cachedItems.isNotEmpty) {
       final custom = await fetchCustomContent(forceRefresh: false);
-      await _indexItems(_interleaveCustomContent(cachedItems, custom));
+      await _indexItems(cachedItems, customItems: custom);
       return true;
     }
 
@@ -1394,7 +1394,7 @@ class M3UService extends ChangeNotifier {
       final cachedItems = await _loadBinaryCache();
       if (cachedItems != null && cachedItems.isNotEmpty) {
         final custom = await fetchCustomContent(forceRefresh: forceRefresh);
-        await _indexItems(_interleaveCustomContent(cachedItems, custom));
+        await _indexItems(cachedItems, customItems: custom);
         return true;
       }
     }
@@ -1461,10 +1461,9 @@ class M3UService extends ChangeNotifier {
 
     // 1. Fetch custom content and merge
     final customItems = await fetchCustomContent(forceRefresh: forceRefresh);
-    final allItems = _interleaveCustomContent(allRawItems, customItems);
-
-    // 2. Full background indexing
-    await _indexItems(allItems);
+    // 2. Full background indexing (el cruce con el contenido propio ocurre
+    //    dentro del isolate, ver _indexItemsInBackground)
+    await _indexItems(allRawItems, customItems: customItems);
 
     // 3. Save to binary cache for future instant loads
     _saveBinaryCache(allRawItems);
@@ -1487,7 +1486,7 @@ class M3UService extends ChangeNotifier {
         final cachedItems = await _loadBinaryCache();
         if (cachedItems != null && cachedItems.isNotEmpty) {
           final custom = await fetchCustomContent(forceRefresh: forceRefresh);
-          await _indexItems(_interleaveCustomContent(cachedItems, custom));
+          await _indexItems(cachedItems, customItems: custom);
           return true;
         }
       }
@@ -1506,7 +1505,7 @@ class M3UService extends ChangeNotifier {
         final fallback = await _loadBinaryCache(ignoreExpiration: true);
         if (fallback != null && fallback.isNotEmpty) {
           final custom = await fetchCustomContent(forceRefresh: false);
-          await _indexItems(_interleaveCustomContent(fallback, custom));
+          await _indexItems(fallback, customItems: custom);
           return true;
         }
         // Si tampoco hay caché, mantener los items actuales si existen
@@ -1549,7 +1548,7 @@ class M3UService extends ChangeNotifier {
           ];
 
           final custom = await fetchCustomContent(forceRefresh: false);
-          await _indexItems(_interleaveCustomContent(merged, custom));
+          await _indexItems(merged, customItems: custom);
           // NO guardar en caché el merge parcial — mantener el caché completo
           return true;
         }
@@ -1557,7 +1556,7 @@ class M3UService extends ChangeNotifier {
       }
 
       final custom = await fetchCustomContent(forceRefresh: forceRefresh);
-      await _indexItems(_interleaveCustomContent(items, custom));
+      await _indexItems(items, customItems: custom);
 
       // Guardar en cache para la próxima vez
       _saveBinaryCache(items);
@@ -1574,7 +1573,7 @@ class M3UService extends ChangeNotifier {
         final cachedItems = await _loadBinaryCache();
         if (cachedItems != null && cachedItems.isNotEmpty) {
           final custom = await fetchCustomContent(forceRefresh: forceRefresh);
-          await _indexItems(_interleaveCustomContent(cachedItems, custom));
+          await _indexItems(cachedItems, customItems: custom);
           return true;
         }
 
@@ -1948,7 +1947,7 @@ class M3UService extends ChangeNotifier {
 
   /// Vincula items de la base de datos (custom_content) como alternativas V2 (Más rápida)
   /// a items coincidentes de Xtream en lugar de crear tarjetas duplicadas.
-  (List<M3UItem>, List<M3UItem>) _linkCustomContentAlternatives(
+  static (List<M3UItem>, List<M3UItem>) _linkCustomContentAlternatives(
     List<M3UItem> regularItems,
     List<M3UItem> customItems,
   ) {
@@ -2072,7 +2071,7 @@ class M3UService extends ChangeNotifier {
   /// Mezcla los items personalizados (Supabase custom_content) de forma
   /// inteligente entre los items regulares, en vez de ponerlos siempre al
   /// principio.
-  List<M3UItem> _interleaveCustomContent(
+  static List<M3UItem> _interleaveCustomContent(
     List<M3UItem> regularItems,
     List<M3UItem> customItems,
   ) {
@@ -2087,7 +2086,7 @@ class M3UService extends ChangeNotifier {
       customItems,
     );
     debugPrint(
-      'PERFTRACE _linkCustomContentAlternatives MAIN-THREAD '
+      'PERFTRACE cruce-contenido-propio (en isolate) '
       'reg=${regularItems.length} custom=${customItems.length} '
       '→ ${swI.elapsedMilliseconds}ms',
     );
@@ -2196,8 +2195,8 @@ class M3UService extends ChangeNotifier {
     List<M3UItem> parsedItems,
     List<M3UItem> customItems,
   ) async {
-    // Merge custom items with M3U items — interleaved intelligently
-    final combinedItems = _interleaveCustomContent(parsedItems, customItems);
+    // El cruce con el contenido propio ya no se hace aquí: ocurre dentro del
+    // isolate de _indexItems, junto con el indexado (ver _indexItemsInBackground).
 
     // Update global state via a unified indexing call.
     // scheduleRecentCompute: false porque _processOutput ya tiene su propio
@@ -2206,7 +2205,11 @@ class M3UService extends ChangeNotifier {
     // IMPORTANTE: hay que esperarlo. _indexItems ahora publica _items (y
     // _cachedLatestItems) recién cuando el isolate termina, y la sincronización
     // de favoritos de aquí abajo lee _items.
-    await _indexItems(combinedItems, scheduleRecentCompute: false);
+    await _indexItems(
+      parsedItems,
+      customItems: customItems,
+      scheduleRecentCompute: false,
+    );
 
     // _cachedLatestItems ya lo dejó calculado _indexItems (en el isolate).
     _cachedRecentItems = null;
@@ -2268,15 +2271,19 @@ class M3UService extends ChangeNotifier {
   Future<void> _indexItems(
     List<M3UItem> items, {
     bool scheduleRecentCompute = true,
+    List<M3UItem> customItems = const [],
   }) async {
     final sw = Stopwatch()..start();
     try {
-      // PERF: el filtrado 4K, el cálculo de "más recientes" y la normalización
-      // del índice de búsqueda son O(n) con regex por item. Antes corrían aquí,
-      // en el hilo de UI, y congelaban la pantalla varios segundos con listas
-      // grandes. Ahora los hace el mismo isolate que ya construía los índices.
+      // PERF: el filtrado 4K, el cálculo de "más recientes", la normalización
+      // del índice de búsqueda y el CRUCE con el contenido propio de Supabase
+      // son O(n) con regex por item. Antes corrían aquí, en el hilo de UI, y
+      // congelaban la pantalla varios segundos. Ahora los hace el mismo isolate
+      // que ya construía los índices — y como los items se envían una sola vez,
+      // no se paga la serialización dos veces.
       final result = await compute(_indexItemsInBackground, {
         'items': items,
+        'customItems': customItems,
         'hasSagas': true, // Logic to include saga detection
       });
       final tIsolate = sw.elapsedMilliseconds;
@@ -2468,7 +2475,7 @@ class M3UService extends ChangeNotifier {
   }
 
   /// Match and link episodes efficiently using hash maps O(N+M) instead of O(N*M)
-  List<M3UItem> _linkEpisodeLists(
+  static List<M3UItem> _linkEpisodeLists(
     List<M3UItem> baseEpisodes,
     List<M3UItem> customEpisodes,
   ) {
@@ -5192,7 +5199,20 @@ void _addSagaCategories(
 @pragma('vm:entry-point')
 Map<String, dynamic> _indexItemsInBackground(Map<String, dynamic> input) {
   final List<M3UItem> rawItems = List<M3UItem>.from(input['items']);
-  final List<M3UItem> items = _filterOut4kItems(rawItems);
+  final List<M3UItem> customItems = List<M3UItem>.from(
+    input['customItems'] ?? const <M3UItem>[],
+  );
+
+  // CRUCE con el contenido propio (Supabase). Compara ~500 items propios
+  // contra decenas de miles de Xtream normalizando títulos con regex: es
+  // justo el trabajo que congelaba la pantalla al abrir la app. Aquí ya
+  // estamos fuera del hilo de UI.
+  final List<M3UItem> merged =
+      customItems.isEmpty
+          ? rawItems
+          : M3UService._interleaveCustomContent(rawItems, customItems);
+
+  final List<M3UItem> items = _filterOut4kItems(merged);
   final bool hasSagas = input['hasSagas'] ?? true;
 
   final Map<String, List<M3UItem>> catIndex = {};

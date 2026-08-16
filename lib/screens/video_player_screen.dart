@@ -197,6 +197,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   // Muestreo de la velocidad REAL de descarga (cache-speed de MPV) cada 5s.
   int _throughputSampleTick = 0;
   int _stallSeconds = 0;
+  /// Se decide al inicio de cada episodio de stall: true si la causa fue una
+  /// rotura del pipe del proxy local (reaccionar rapido) en vez de lentitud.
+  bool _stallPorRotura = false;
   bool _isLiveContent = false;
   int _retryCount = 0;
 
@@ -2075,6 +2078,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   void _startStallMonitor() {
     _stallTimer?.cancel();
     _stallSeconds = 0;
+    _stallPorRotura = false;
 
     _stallTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (!mounted || _player == null || _isReloading) return;
@@ -2100,6 +2104,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       // cierra la conexión inactiva.
       if (!playerState.playing || _isAppInBackground) {
         _stallSeconds = 0;
+        _stallPorRotura = false;
+    _stallPorRotura = false;
         _noMovementSeconds = 0;
         _noVideoSeconds = 0;
         if (mounted && _isBuffering) {
@@ -2114,6 +2120,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       if (playerState.buffering) {
         _stallSeconds++;
         showingSpinner = true;
+
+        // Al ARRANCAR el episodio de stall se decide, una sola vez, si la causa
+        // fue una rotura del pipe (reaccionar rápido) o simple lentitud de red
+        // (tener paciencia). Consumir la señal aquí evita que una única rotura
+        // afecte a los stalls posteriores.
+        if (_stallSeconds == 1) {
+          _stallPorRotura = TurboProxy.instance.consumeRecentStreamBreak();
+        }
 
         // Threshold dinámico según tipo de contenido y calidad de red:
         // En VOD recargar prematuramente (10-20s) destruye los datos descargados en RAM.
@@ -2145,9 +2159,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         // se rompió, la espera larga no sirve de nada — esa conexión ya está
         // muerta y no se recupera sola. El umbral largo existe para no cortar
         // una descarga lenta pero sana; este caso no es ese.
-        final ultimaRotura = TurboProxy.instance.lastStreamBreak;
-        if (ultimaRotura != null &&
-            DateTime.now().difference(ultimaRotura).inSeconds <= 40) {
+        //
+        // La decisión se toma UNA sola vez por episodio de stall (ver
+        // _stallPorRotura). Consultarla en cada segundo hacía que una única
+        // rotura encadenara recargas hasta que el reproductor abandonaba el
+        // servidor.
+        if (_stallPorRotura) {
           threshold = threshold < 6 ? threshold : 6;
         }
 
@@ -2195,12 +2212,20 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
           debugPrint('Stall persistente (${_stallSeconds}s). Recargando...');
           _stallSeconds = 0;
+        _stallPorRotura = false;
+    _stallPorRotura = false;
           _reloadVideo();
         }
       } else {
         // Detector de "congelamiento" (playing pero no avanza)
         if (playerState.playing && !_isSeeking && !_isDragging) {
-          if (currentPos == _lastPosition && currentPos != Duration.zero) {
+          // OJO: se cuenta tambien currentPos == 0. Antes se excluia con
+          // `currentPos != Duration.zero`, y eso dejaba el peor caso sin aviso:
+          // cuando el video nunca llega a arrancar, la posicion se queda en 0,
+          // el bucle de espera inicial se agota a los 20s y apaga
+          // _isVideoLoading... y aqui no entraba nadie. Resultado: pantalla
+          // negra, sin spinner y sin ninguna senal, hasta que cargara.
+          if (currentPos == _lastPosition) {
             _noMovementSeconds++;
             if (_noMovementSeconds >= 3) {
               showingSpinner = true;
@@ -2224,6 +2249,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           debugPrint('Buffer recuperado tras $_stallSeconds s.');
         }
         _stallSeconds = 0;
+        _stallPorRotura = false;
+    _stallPorRotura = false;
       }
 
       // ── Detección de "audio sin video" (pantalla negra con audio) ─────
@@ -2351,6 +2378,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
     // Reset de estado que dependía del ciclo de vida anterior.
     _stallSeconds = 0;
+    _stallPorRotura = false;
     _noMovementSeconds = 0;
     _noVideoSeconds = 0;
     _blackScreenReloadDone = false;

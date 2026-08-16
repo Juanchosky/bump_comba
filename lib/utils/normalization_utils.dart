@@ -1,12 +1,48 @@
 import 'dart:convert';
 
 class NormalizationUtils {
+  // ── Regex precompiladas ───────────────────────────────────────────────────
+  // PERF: antes se construian con RegExp(...) DENTRO de cada funcion, asi que
+  // se recompilaban en cada llamada. Con ~32.000 items por carga eso son
+  // cientos de miles de compilaciones y era una parte importante del tiempo
+  // de indexado. Declaradas aqui se compilan una sola vez.
+  static final RegExp _reUhd = RegExp(r'\buhd\b', caseSensitive: false);
+  static final RegExp _reUrlTime =
+      RegExp(r'[#&?](t|time|start|at|position)=\d+[smh]?.*$');
+  static final RegExp _reBrackets = RegExp(r'\[.*?\]');
+  static final RegExp _reParens = RegExp(r'\(.*?\)');
+  static final RegExp _reCatTags = RegExp(
+    r'\b(cam|ts|tc|hd|4k|uhd|fhd|sd|dual|multi|latino|sub|subtitulado|line|scr|full hd|movies|vod)\b',
+    caseSensitive: false,
+  );
+  static final RegExp _reSpaces = RegExp(r'\s+');
+  static final RegExp _reYear = RegExp(r'[\(\[\{]?\b(19|20)\d{2}\b[\)\]\}]?');
+  static final RegExp _reQualityTags = RegExp(
+    r'\b(4k|uhd|fhd|hd|sd|720p|1080p|latino|castellano|español|multi|sub|scr|cam|ts)\b',
+  );
+  static final RegExp _reNonAlnum = RegExp(r'[^a-z0-9\s]');
+  static final RegExp _rePrefixes = RegExp(r'^(the|tv series|series|serie)\s+');
+  static final RegExp _reEpMarker = RegExp(
+    r'\b(S\d+E\d+|S\d+\s+E\d+|\d+x\d+|Capitulo\s*\d+|Episodio\s*\d+|Episode\s*\d+|Ep\.\s*\d+|Cap\s*\d+|E\d+|Cap.\s*\d+)\b',
+    caseSensitive: false,
+  );
+  static final RegExp _reLeadSep = RegExp(r'^[:\s\-–—|]+');
+  static final List<RegExp> _reEpisodeNums = [
+    RegExp(r'\bS\d+E(\d+)\b', caseSensitive: false),
+    RegExp(r'\bE(\d+)\b', caseSensitive: false),
+    RegExp(
+      r'\b(?:Cap|Capitulo|Episodio|Episode|Cap\.|Ep\.)\s*(\d+)\b',
+      caseSensitive: false,
+    ),
+    RegExp(r'\d+x(\d+)\b', caseSensitive: false),
+  ];
+
   /// Detecta si un título o categoría corresponde a contenido 4K / UHD / 2160p.
   static bool is4kTitle(String name) {
     if (name.isEmpty) return false;
     final n = name.toLowerCase();
     if (n.contains('4k') || n.contains('4 k') || n.contains('2160p')) return true;
-    if (RegExp(r'\buhd\b', caseSensitive: false).hasMatch(n)) return true;
+    if (_reUhd.hasMatch(n)) return true;
     return false;
   }
   /// Repara cadenas con codificación UTF-8 doble / Mojibake (garabatos raros).
@@ -32,8 +68,9 @@ class NormalizationUtils {
     final Map<String, String> replacements = {
       'Ã¡': 'á',
       'Ã©': 'é',
+      // OJO: \xAD es un guion suave invisible. Escribirlo literal ('Ã­')
+      // produce la MISMA clave y el analizador lo marcaba como duplicada.
       'Ã\xAD': 'í',
-      'Ã­': 'í',
       'Ã³': 'ó',
       'Ãº': 'ú',
       'Ã±': 'ñ',
@@ -97,7 +134,7 @@ class NormalizationUtils {
     } catch (_) {
       // Fallback regex si Uri.parse falla
       return url.replaceFirst(
-        RegExp(r'[#&?](t|time|start|at|position)=\d+[smh]?.*$'),
+        _reUrlTime,
         '',
       );
     }
@@ -113,20 +150,14 @@ class NormalizationUtils {
 
     // 2. Eliminar etiquetas comunes entre corchetes o paréntesis
     result = result
-        .replaceAll(RegExp(r'\[.*?\]'), '')
-        .replaceAll(RegExp(r'\(.*?\)'), '');
+        .replaceAll(_reBrackets, '')
+        .replaceAll(_reParens, '');
 
     // 3. Eliminar términos técnicos sueltos
-    result = result.replaceAll(
-      RegExp(
-        r'\b(cam|ts|tc|hd|4k|uhd|fhd|sd|dual|multi|latino|sub|subtitulado|line|scr|full hd|movies|vod)\b',
-        caseSensitive: false,
-      ),
-      '',
-    );
+    result = result.replaceAll(_reCatTags, '');
 
     // 4. Limpiar espacios dobles generados por los reemplazos
-    result = result.replaceAll(RegExp(r'\s+'), ' ').trim();
+    result = result.replaceAll(_reSpaces, ' ').trim();
 
     if (result.isEmpty) return 'General';
 
@@ -142,30 +173,19 @@ class NormalizationUtils {
     String result = name.toLowerCase();
 
     // 1. Eliminar años entre paréntesis o solos (ej: (2024), 2023)
-    result = result.replaceAll(
-      RegExp(r'[\(\[\{]?\b(19|20)\d{2}\b[\)\]\}]?'),
-      '',
-    );
+    result = result.replaceAll(_reYear, '');
 
     // 2. Eliminar etiquetas de calidad y técnicas
-    result = result.replaceAll(
-      RegExp(
-        r'\b(4k|uhd|fhd|hd|sd|720p|1080p|latino|castellano|español|multi|sub|scr|cam|ts)\b',
-      ),
-      '',
-    );
+    result = result.replaceAll(_reQualityTags, '');
 
     // 3. Eliminar caracteres especiales (excepto espacios)
-    result = _removeDiacritics(result).replaceAll(RegExp(r'[^a-z0-9\s]'), '');
+    result = _removeDiacritics(result).replaceAll(_reNonAlnum, '');
 
     // 4. Limpiar espacios extra
-    result = result.replaceAll(RegExp(r'\s+'), ' ').trim();
+    result = result.replaceAll(_reSpaces, ' ').trim();
 
     // 5. Eliminar prefijos comunes redundantes (opcional pero reduce ruido)
-    result = result.replaceFirst(
-      RegExp(r'^(the|tv series|series|serie)\s+'),
-      '',
-    );
+    result = result.replaceFirst(_rePrefixes, '');
 
     return result;
   }
@@ -177,16 +197,11 @@ class NormalizationUtils {
     if (fullName.isEmpty) return '';
 
     // 1. Intentar encontrar marcadores comunes SXXEXX o NXN
-    final epRegex = RegExp(
-      r'\b(S\d+E\d+|S\d+\s+E\d+|\d+x\d+|Capitulo\s*\d+|Episodio\s*\d+|Episode\s*\d+|Ep\.\s*\d+|Cap\s*\d+|E\d+|Cap.\s*\d+)\b',
-      caseSensitive: false,
-    );
-
-    final match = epRegex.firstMatch(fullName);
+    final match = _reEpMarker.firstMatch(fullName);
     if (match != null) {
       String titlePart = fullName.substring(match.end).trim();
       // Limpiar separadores líderes como " - ", ": ", etc.
-      titlePart = titlePart.replaceFirst(RegExp(r'^[:\s\-–—|]+'), '').trim();
+      titlePart = titlePart.replaceFirst(_reLeadSep, '').trim();
       if (titlePart.isNotEmpty) return titlePart;
     }
 
@@ -201,17 +216,7 @@ class NormalizationUtils {
     if (fullName.isEmpty) return null;
 
     // Patrones comunes: E16, Cap 16, Episodio 16, 1x16, etc.
-    final patterns = [
-      RegExp(r'\bS\d+E(\d+)\b', caseSensitive: false),
-      RegExp(r'\bE(\d+)\b', caseSensitive: false),
-      RegExp(
-        r'\b(?:Cap|Capitulo|Episodio|Episode|Cap\.|Ep\.)\s*(\d+)\b',
-        caseSensitive: false,
-      ),
-      RegExp(r'\d+x(\d+)\b', caseSensitive: false),
-    ];
-
-    for (final pattern in patterns) {
+    for (final pattern in _reEpisodeNums) {
       final match = pattern.firstMatch(fullName);
       if (match != null && match.groupCount >= 1) {
         final val = int.tryParse(match.group(1)!);

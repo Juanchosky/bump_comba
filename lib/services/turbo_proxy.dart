@@ -313,6 +313,21 @@ class TurboProxy {
   DateTime? _lastStreamBreak;
   DateTime? get lastStreamBreak => _lastStreamBreak;
 
+  /// Devuelve true si hubo una rotura reciente Y la consume (one-shot).
+  ///
+  /// Es one-shot A PROPOSITO: si se dejara consultable durante una ventana de
+  /// tiempo, una unica rotura haria que TODOS los stalls siguientes — incluido
+  /// el de despues de recargar — usaran el umbral corto. Eso encadena recargas
+  /// y termina haciendo que el reproductor abandone el servidor por completo.
+  bool consumeRecentStreamBreak({
+    Duration within = const Duration(seconds: 15),
+  }) {
+    final t = _lastStreamBreak;
+    if (t == null) return false;
+    _lastStreamBreak = null;
+    return DateTime.now().difference(t) <= within;
+  }
+
   int _bytesInWindow = 0;
   DateTime _windowStart = DateTime.now();
   double _mbps = 0;
@@ -975,7 +990,15 @@ class TurboProxy {
             try {
               currentOffset += chunk.length;
               pendingFlushBytes += chunk.length;
-              unawaited(maybeFlush());
+              // NO se llama a flush() aqui a proposito. `resp.bufferOutput`
+              // ya esta en false, asi que cada add() va al socket sin buffer y
+              // el flush periodico no aportaba nada. Lo que si hacia era dejar
+              // un flush() corriendo en paralelo (unawaited) mientras seguian
+              // entrando add() sobre el mismo sink: esas dos operaciones se
+              // pisan y Dart lanza "StreamSink is bound to a stream", que
+              // rompia el pipe hacia el reproductor a mitad de reproduccion.
+              // Los flush que quedan son los de los limites de pierna, que si
+              // se esperan y nunca coinciden con un add().
             } catch (_) {
               closed = true;
               return;
@@ -1108,7 +1131,15 @@ class TurboProxy {
                     resp.add(chunk);
                     currentOffset += chunk.length;
                     pendingFlushBytes += chunk.length;
-                    unawaited(maybeFlush());
+                    // NO se llama a flush() aqui a proposito. `resp.bufferOutput`
+                    // ya esta en false, asi que cada add() va al socket sin buffer y
+                    // el flush periodico no aportaba nada. Lo que si hacia era dejar
+                    // un flush() corriendo en paralelo (unawaited) mientras seguian
+                    // entrando add() sobre el mismo sink: esas dos operaciones se
+                    // pisan y Dart lanza "StreamSink is bound to a stream", que
+                    // rompia el pipe hacia el reproductor a mitad de reproduccion.
+                    // Los flush que quedan son los de los limites de pierna, que si
+                    // se esperan y nunca coinciden con un add().
                     session.proxy._noteBytes(chunk.length);
                   }
                   if (!useRange) break;
@@ -1298,7 +1329,15 @@ class TurboProxy {
                 resp.add(chunk);
                 currentOffset += chunk.length;
                 pendingFlushBytes += chunk.length;
-                unawaited(maybeFlush());
+                // NO se llama a flush() aqui a proposito. `resp.bufferOutput`
+                // ya esta en false, asi que cada add() va al socket sin buffer y
+                // el flush periodico no aportaba nada. Lo que si hacia era dejar
+                // un flush() corriendo en paralelo (unawaited) mientras seguian
+                // entrando add() sobre el mismo sink: esas dos operaciones se
+                // pisan y Dart lanza "StreamSink is bound to a stream", que
+                // rompia el pipe hacia el reproductor a mitad de reproduccion.
+                // Los flush que quedan son los de los limites de pierna, que si
+                // se esperan y nunca coinciden con un add().
                 session.proxy._noteBytes(chunk.length);
               }
               if (!useRange) break;
