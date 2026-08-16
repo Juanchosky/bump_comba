@@ -248,8 +248,35 @@ class TurboProxy {
 
   static const String _prefsKey = 'turbo_proxy_host_profiles_v1';
   static const int _turboChunkSize = 1024 * 1024; // 1 MB por trozo de prefetch
-  static const int _defaultParallel = 4; // Concurrencia máxima
   static const int _windowChunks = 8; // ~8 MB de ventana de prefetch
+
+  /// Conexiones simultáneas permitidas CONTRA EL ORIGEN por reproducción.
+  ///
+  /// IMPORTANTE: las líneas Xtream se venden con un tope de conexiones
+  /// concurrentes (`max_connections` en player_api.php) que se reparte entre
+  /// TODOS los usuarios de la app. Con el valor anterior (4), un único
+  /// espectador podía agotar él solo una línea de 3 conexiones y dejar al
+  /// resto sin servicio — que era exactamente el síntoma de "se satura y se
+  /// corta cada minuto".
+  ///
+  /// Por eso el valor por defecto es 1: una reproducción, una conexión.
+  ///
+  /// Para subirlo cuando se contraten más conexiones NO hace falta publicar
+  /// una versión nueva: en Supabase, tabla `sys_config`, agregar la clave
+  /// `turbo_max_parallel` con el valor deseado (1..8) e `is_active = true`.
+  ///
+  /// Regla práctica: max_connections / espectadores simultáneos esperados.
+  /// Si el tope es 3 y esperás 3 espectadores a la vez, dejalo en 1.
+  static int maxParallel = 1;
+  static const int _parallelCeiling = 8;
+
+  /// Aplica el valor remoto de `turbo_max_parallel`. Ignora valores inválidos.
+  static void configureMaxParallel(String? raw) {
+    final parsed = int.tryParse((raw ?? '').trim());
+    if (parsed == null) return;
+    maxParallel = parsed.clamp(1, _parallelCeiling);
+    debugPrint('TurboProxy: maxParallel = $maxParallel (config remota)');
+  }
 
   /// Tiempo máximo que se conserva una conexión precalentada sin usar antes
   /// de considerarla obsoleta (el usuario pudo quedarse mirando el detalle
@@ -276,6 +303,15 @@ class TurboProxy {
   final ValueNotifier<TurboMetrics> metrics = ValueNotifier<TurboMetrics>(
     TurboMetrics(),
   );
+
+  /// Momento en que el pipe hacia el reproductor se rompió de forma
+  /// INESPERADA (no por un cierre normal del cliente al salir o hacer seek).
+  ///
+  /// El reproductor lo consulta para distinguir "va lento" de "se rompió":
+  /// en el primer caso conviene tener paciencia, en el segundo la conexión ya
+  /// está muerta y esperar 35s es tiempo perdido.
+  DateTime? _lastStreamBreak;
+  DateTime? get lastStreamBreak => _lastStreamBreak;
 
   int _bytesInWindow = 0;
   DateTime _windowStart = DateTime.now();
@@ -412,7 +448,9 @@ class TurboProxy {
   HttpClient _newClient() =>
       HttpClient()
         ..autoUncompress = false
-        ..maxConnectionsPerHost = _defaultParallel + 2
+        // +1 para dejar margen a la petición del redirect (302 → /vauth/…),
+        // no para abrir descargas extra.
+        ..maxConnectionsPerHost = maxParallel + 1
         ..connectionTimeout = const Duration(seconds: 8)
         ..badCertificateCallback = (_, _, _) => true;
 
@@ -917,12 +955,18 @@ class TurboProxy {
             try {
               resp.add(chunk);
             } catch (e) {
-              // La respuesta local ya no acepta escrituras (el cliente cortó la
-              // conexión justo antes de que el flag `closed` se actualizara).
-              // Sin este catch, la excepción se va al manejador global sin pasar
-              // por el completer, que queda colgado para siempre → el reproductor
-              // se queda sin bytes durante segundos hasta que algo más lo destrabe.
-              debugPrint('TurboProxy: resp.add falló (conexión cerrada): $e');
+              // La respuesta local ya no acepta escrituras. Puede ser un cierre
+              // normal del cliente (salir, hacer seek) o una rotura real del
+              // pipe. Sin este catch, la excepción se va al manejador global sin
+              // pasar por el completer, que queda colgado para siempre → el
+              // reproductor se queda sin bytes hasta que algo más lo destrabe.
+              debugPrint('TurboProxy: resp.add falló: $e');
+              if (!closed) {
+                // `closed` seguía en false → el cliente NO había cerrado: esto
+                // fue una rotura inesperada. Se marca para que el reproductor
+                // recargue rápido en vez de esperar el timeout completo.
+                _lastStreamBreak = DateTime.now();
+              }
               closed = true;
               if (!completer.isCompleted) completer.complete();
               return;
@@ -1325,7 +1369,10 @@ class _Session {
 
   _ProxyMode mode = _ProxyMode.passthrough;
 
-  late int activeParallel = math.min(2, profile.maxWorkingParallel);
+  late int activeParallel = math.min(
+    TurboProxy.maxParallel,
+    profile.maxWorkingParallel,
+  );
   int parallelFailures = 0;
   int successfulChunks = 0;
   int highSpeedStreak = 0;
@@ -1427,15 +1474,18 @@ class _Session {
     profile.noteSuccess(activeParallel, speedMbps);
     proxy._markProfilesDirty();
 
+    // El presupuesto de conexiones nunca puede superar el global: es el que
+    // protege el tope de la línea Xtream compartida entre todos los usuarios.
+    final budget = math.min(TurboProxy.maxParallel, profile.maxWorkingParallel);
     if (speedMbps < targetBitrateMbps * 1.2 &&
-        activeParallel < profile.maxWorkingParallel &&
+        activeParallel < budget &&
         parallelFailures == 0) {
-      if (successfulChunks >= 2 && activeParallel < 3) {
+      if (successfulChunks >= 2 && activeParallel < 3 && budget >= 3) {
         activeParallel = 3;
         debugPrint(
           'TurboProxy [${profile.host}]: rampa ascendente -> 3 conexiones',
         );
-      } else if (successfulChunks >= 5 && activeParallel < 4) {
+      } else if (successfulChunks >= 5 && activeParallel < 4 && budget >= 4) {
         activeParallel = 4;
         debugPrint(
           'TurboProxy [${profile.host}]: rampa ascendente -> 4 conexiones',
@@ -1487,7 +1537,13 @@ class _Session {
     updateMetrics();
   }
 
+  /// Con una sola conexión permitida, el pipeline Turbo no aporta velocidad y
+  /// sí mucho coste: trocea en peticiones de 1 MB y este proveedor responde un
+  /// 302 a `/vauth/…` en CADA petición, así que una película de 2 GB serían
+  /// ~2000 requests + 2000 redirects contra una línea ya saturada. En ese caso
+  /// conviene el passthrough, que mantiene un único stream continuo.
   bool get supportsTurbo =>
+      TurboProxy.maxParallel > 1 &&
       supportsRange &&
       length > 0 &&
       !profile.effectiveIsHostile &&

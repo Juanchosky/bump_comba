@@ -2119,7 +2119,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         // En VOD recargar prematuramente (10-20s) destruye los datos descargados en RAM.
         // Se otorgan 35–60s para que la descarga VOD avance a su ritmo.
         final networkQ = _networkQuality.quality.value;
-        final int threshold;
+        int threshold;
         if (_isLiveContent) {
           if (networkQ == NetworkQuality.poor ||
               networkQ == NetworkQuality.offline) {
@@ -2139,6 +2139,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           } else {
             threshold = 35;
           }
+        }
+
+        // EXCEPCIÓN: si el proxy local reportó que el pipe hacia el reproductor
+        // se rompió, la espera larga no sirve de nada — esa conexión ya está
+        // muerta y no se recupera sola. El umbral largo existe para no cortar
+        // una descarga lenta pero sana; este caso no es ese.
+        final ultimaRotura = TurboProxy.instance.lastStreamBreak;
+        if (ultimaRotura != null &&
+            DateTime.now().difference(ultimaRotura).inSeconds <= 40) {
+          threshold = threshold < 6 ? threshold : 6;
         }
 
         if (_stallSeconds >= threshold && !_isVideoLoading) {

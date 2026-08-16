@@ -12,6 +12,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import '../services/premium_service.dart';
 import '../services/dynamic_scraper_service.dart';
+import '../services/turbo_proxy.dart';
 import '../services/xtream_service.dart';
 import '../utils/security_utils.dart';
 import '../models/m3u_item.dart';
@@ -730,6 +731,27 @@ class M3UService extends ChangeNotifier {
           (filtersData as List).map((e) => FilterRule.fromJson(e)).toList();
     } catch (e) {
       debugPrint('Error loading remote filters: $e');
+    }
+
+    // OJO: en su propio try. La consulta de arriba falla siempre si la tabla
+    // m3u_filters no existe, y compartir el try dejaría esto sin ejecutar.
+    await _updateTurboParallelConfig();
+  }
+
+  /// Lee `turbo_max_parallel` de sys_config y ajusta cuántas conexiones
+  /// simultáneas abre el reproductor contra el servidor del proveedor.
+  ///
+  /// Existe para poder reaccionar al tope de conexiones de la línea Xtream
+  /// (`max_connections`) sin publicar una versión nueva de la app: al comprar
+  /// más conexiones, basta con subir este valor en Supabase.
+  Future<void> _updateTurboParallelConfig() async {
+    try {
+      final raw = await fetchRemoteConfiguration('turbo_max_parallel');
+      if (raw != null && raw != 'false') {
+        TurboProxy.configureMaxParallel(raw);
+      }
+    } catch (e) {
+      debugPrint('Error loading turbo_max_parallel: $e');
     }
   }
 
