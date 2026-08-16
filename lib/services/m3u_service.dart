@@ -1046,7 +1046,7 @@ class M3UService extends ChangeNotifier {
 
       final List<M3UItem> finalItems = [];
 
-      String? _sanitizeLogoUrl(dynamic rawLogo) {
+      String? sanitizeLogoUrl(dynamic rawLogo) {
         if (rawLogo == null) return null;
         final str = rawLogo.toString().trim();
         if (str.isEmpty) return null;
@@ -1075,7 +1075,7 @@ class M3UService extends ChangeNotifier {
           M3UItem(
             name: name,
             url: url,
-            logo: _sanitizeLogoUrl(row['thumbnail_url']),
+            logo: sanitizeLogoUrl(row['thumbnail_url']),
             category: category,
             isFavorite: _favorites.contains('${name}_$url'),
             isLive: false,
@@ -2534,7 +2534,9 @@ class M3UService extends ChangeNotifier {
   /// Search items by name (synchronous for instant results).
   /// Uses 3-layer smart search: normalized match, word match, fuzzy match.
   List<M3UItem> search(String query) {
-    if (query.isEmpty) return _filterOut4kItems(_items.where((i) => !i.isLive).toList());
+    if (query.isEmpty) {
+      return _filterOut4kItems(_items.where((i) => !i.isLive).toList());
+    }
     if (_items.isEmpty) return [];
 
     final normalizedQuery = _normalizeForSearch(query);

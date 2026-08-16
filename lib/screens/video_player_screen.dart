@@ -258,6 +258,19 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   int _currentServerIndex = 0;
   List<String> _serverUrls = [];
   List<M3UItem> _serverItems = [];
+  String? _primaryLogo;
+
+  String? _findFirstValidLogo(M3UItem mainItem) {
+    if (mainItem.logo != null && mainItem.logo!.trim().isNotEmpty) {
+      return mainItem.logo;
+    }
+    for (final alt in mainItem.alternatives) {
+      if (alt.logo != null && alt.logo!.trim().isNotEmpty) {
+        return alt.logo;
+      }
+    }
+    return null;
+  }
 
   // Swipe orientation animation
   double _swipeDragOffset = 0.0;
@@ -308,6 +321,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     CastService().castPosition.addListener(_syncFromCast);
     CastService().castPlaying.addListener(_syncFromCast);
     _currentItem = widget.item;
+    _primaryLogo = widget.item.logo ?? _findFirstValidLogo(widget.item);
     _playlist = widget.playlist;
     _knownDuration = _parseItemDuration(_currentItem.duration);
 
@@ -452,8 +466,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     final castService = CastService();
     if (!castService.isCasting.value) return;
     if (_serverItems.length < 2) return; // No hay servidor alterno
-    if (_currentServerIndex >= _serverItems.length - 1)
+    if (_currentServerIndex >= _serverItems.length - 1) {
       return; // Ya en el último
+    }
 
     _castFailoverInProgress = true;
     _lastCastFailoverAt = DateTime.now();
@@ -858,9 +873,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     bool isLocalReload = false,
   }) async {
     WakelockPlus.enable(); // ← Evitar que el sistema duerma el CPU/Red durante el Cast
-    // Limpieza de URL para evitar fragmentos de tiempo (#t=...)
     final cleanedUrl = NormalizationUtils.cleanUrl(item.url);
-    item = item.copyWith(url: cleanedUrl);
+    final effectiveLogo = _primaryLogo ?? item.logo;
+    if (effectiveLogo != null && effectiveLogo.isNotEmpty) {
+      _primaryLogo ??= effectiveLogo;
+      item = item.copyWith(url: cleanedUrl, logo: effectiveLogo);
+    } else {
+      item = item.copyWith(url: cleanedUrl);
+    }
     _currentItem = item;
     if (_knownDuration == Duration.zero) {
       _knownDuration = _parseItemDuration(item.duration);
@@ -977,7 +997,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         if (existingIdx != -1) {
           _currentServerIndex = existingIdx;
         } else {
-          _serverItems = [item, ...item.alternatives];
+          final logoToUse = _primaryLogo ?? item.logo;
+          _serverItems = [item, ...item.alternatives].map((s) {
+            return (logoToUse != null && logoToUse.isNotEmpty)
+                ? s.copyWith(logo: logoToUse)
+                : s;
+          }).toList();
           _serverUrls = _serverItems.map((a) => a.url).toList();
           _currentServerIndex = 0;
         }
@@ -2380,7 +2405,29 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
     try {
       if (!_isLiveContent) {
-        if (_retryCount < 2) {
+        // Si estamos en Servidor 0 (Xtream) y el contenido se congela más de 1 vez (_retryCount >= 1),
+        // cambiar automáticamente al Servidor 1 (Base de Datos / Supabase).
+        if (_currentServerIndex == 0 &&
+            _retryCount >= 1 &&
+            _serverItems.length > 1) {
+          _retryCount = 0;
+          _currentServerIndex = 1;
+          final targetItem = _serverItems[1];
+          debugPrint(
+            'Xtream se congeló más de 1 vez. Cambiando automáticamente al servidor BD (Server 2) a los ${currentPos.inSeconds}s',
+          );
+          _stallTimer?.cancel();
+          for (final s in _streamSubscriptions) {
+            s.cancel();
+          }
+          _streamSubscriptions.clear();
+
+          await _initializePlayer(
+            targetItem,
+            startFrom: currentPos.inSeconds > 5 ? currentPos : null,
+            isLocalReload: true,
+          );
+        } else if (_retryCount < 2) {
           _retryCount++;
           final startFrom = currentPos.inSeconds > 5 ? currentPos : null;
 
@@ -3928,25 +3975,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                         _showSpeedSelection();
                       },
                     ),
-                  if (_serverItems.length > 1 || _serverUrls.length > 1)
-                    ListTile(
-                      leading: const Icon(
-                        CupertinoIcons.slider_horizontal_3,
-                        color: Colors.white,
-                      ),
-                      title: const Text(
-                        'Calidad',
-                        style: TextStyle(color: Colors.white),
-                      ),
-                      trailing: const Icon(
-                        Icons.chevron_right,
-                        color: Colors.white54,
-                      ),
-                      onTap: () {
-                        Navigator.pop(context);
-                        _showServerSelection();
-                      },
-                    ),
+
                   ListTile(
                     leading: const Icon(Icons.subtitles, color: Colors.white),
                     title: const Text(
@@ -3986,106 +4015,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     );
   }
 
-  void _showServerSelection() {
-    if (_serverItems.isEmpty) {
-      _serverItems = [_currentItem, ..._currentItem.alternatives];
-    }
-    if (_serverItems.isEmpty) return;
 
-    _showVisualBottomSheet(
-      builder:
-          (context) => Container(
-            width: _isLandscape ? 380 : double.infinity,
-            margin: _isLandscape ? const EdgeInsets.all(24) : EdgeInsets.zero,
-            decoration: BoxDecoration(
-              color: const Color.fromARGB(255, 27, 27, 27),
-              borderRadius:
-                  _isLandscape
-                      ? BorderRadius.circular(24)
-                      : const BorderRadius.vertical(top: Radius.circular(20)),
-              border:
-                  _isLandscape
-                      ? Border.all(color: Colors.white12, width: 1)
-                      : null,
-            ),
-            child: Material(
-              color: Colors.transparent,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text(
-                          'Calidad',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        IconButton(
-                          onPressed: () => Navigator.pop(context),
-                          icon: const Icon(Icons.close, color: Colors.white70),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const Divider(color: Colors.white10, height: 1),
-                  ...List.generate(_serverItems.length, (index) {
-                    final item = _serverItems[index];
-                    final isSelected = index == _currentServerIndex;
-                    final isV2 =
-                        item.sourceName?.contains('V2') == true ||
-                        item.sourceName == 'Supabase';
-
-                    final String title =
-                        isV2 || index > 0
-                            ? '720p (Más rapida)'
-                            : '1080p (Máxima calidad)';
-
-                    return ListTile(
-                      leading: Icon(
-                        CupertinoIcons.slider_horizontal_3,
-                        color: isSelected ? Colors.white : Colors.white70,
-                      ),
-                      title: Text(
-                        title,
-                        style: TextStyle(
-                          color: isSelected ? Colors.white : Colors.white70,
-                          fontWeight:
-                              isSelected ? FontWeight.w500 : FontWeight.w400,
-                        ),
-                      ),
-                      trailing:
-                          isSelected
-                              ? const Icon(Icons.check, color: Colors.white)
-                              : null,
-                      onTap: () {
-                        Navigator.pop(context);
-                        if (!isSelected) {
-                          final currentPos =
-                              CastService().isCasting.value
-                                  ? CastService().castPosition.value
-                                  : _player?.state.position;
-                          setState(() {
-                            _currentServerIndex = index;
-                          });
-                          _showVisualNotice('Cambiando a $title...');
-                          _initializePlayer(item, startFrom: currentPos);
-                        }
-                      },
-                    );
-                  }),
-                  const SizedBox(height: 16),
-                ],
-              ),
-            ),
-          ),
-    );
-  }
 
   void _showSpeedSelection() {
     if (_player == null) return;
@@ -4982,14 +4912,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             child: Container(
               color: Colors.black,
               child:
-                  _currentItem.logo != null
+                  (_primaryLogo ?? _currentItem.logo) != null
                       ? Stack(
                         fit: StackFit.expand,
                         children: [
                           Opacity(
                             opacity: 0.7,
                             child: FastThumbnail(
-                              url: _currentItem.logo!,
+                              url: (_primaryLogo ?? _currentItem.logo)!,
                               width: double.infinity,
                               height: double.infinity,
                               fit: BoxFit.cover,
@@ -5113,11 +5043,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         fit: StackFit.expand,
         children: [
           // Fondo con Poster Desenfocado y Gradiente
-          if (_currentItem.logo != null) ...[
+          if ((_primaryLogo ?? _currentItem.logo) != null) ...[
             Opacity(
               opacity: 0.35,
               child: FastThumbnail(
-                url: _currentItem.logo!,
+                url: (_primaryLogo ?? _currentItem.logo)!,
                 width: double.infinity,
                 height: double.infinity,
                 fit: BoxFit.cover,

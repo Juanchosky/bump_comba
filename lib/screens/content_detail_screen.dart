@@ -1401,6 +1401,48 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
               ),
               const SizedBox(width: 12),
             ],
+            Builder(
+              builder: (context) {
+                final bool hasAlternatives =
+                    widget.item.alternatives.isNotEmpty ||
+                    _allEpisodes.any((ep) => ep.alternatives.isNotEmpty);
+                final bool isFromDB =
+                    widget.item.sourceName == 'Supabase' ||
+                    widget.item.sourceName?.contains('V2') == true ||
+                    _allEpisodes.any(
+                      (ep) =>
+                          ep.sourceName == 'Supabase' ||
+                          ep.sourceName?.contains('V2') == true,
+                    );
+
+                final String? serverBadgeText =
+                    hasAlternatives ? 'V1+' : (isFromDB ? 'V2' : null);
+
+                if (serverBadgeText == null) return const SizedBox.shrink();
+
+                return Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 4,
+                      vertical: 1,
+                    ),
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.white38, width: 0.8),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                    child: Text(
+                      serverBadgeText,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
             if (_m3uService.isUnifiedMode &&
                 widget.item.sourceName != null) ...[
               Container(
