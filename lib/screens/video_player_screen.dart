@@ -6125,6 +6125,24 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
   }
 
+  /// Cuál de los servidores está sirviendo el vídeo ahora mismo.
+  ///
+  /// `_serverItems[0]` es siempre el Xtream y el resto son las alternativas de
+  /// la BD, así que el índice ya dice de dónde viene. Se muestra tambien el host
+  /// real: es la forma rápida de ver si el tráfico pasa por el VPS o si se está
+  /// yendo directo al proveedor.
+  String _diagServidor() {
+    if (_serverItems.isEmpty) return 'único (sin alternativas)';
+    final total = _serverItems.length;
+    final n = _currentServerIndex + 1;
+    final nombre = _currentServerIndex == 0 ? 'Xtream' : 'BD';
+    if (_currentServerIndex < 0 || _currentServerIndex >= total) {
+      return '$n/$total (índice fuera de rango)';
+    }
+    final host = Uri.tryParse(_serverItems[_currentServerIndex].url)?.host ?? '';
+    return host.isEmpty ? '$n/$total $nombre' : '$n/$total $nombre · $host';
+  }
+
   Widget _buildDiagPanel() {
     final st = _player?.state;
     final controller = _videoControllerNotifier.value;
@@ -6137,6 +6155,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
     final lines = <String>[
       line('Plataforma', defaultTargetPlatform.name),
+      line('Servidor', _diagServidor()),
       line('TurboProxy', _diagTurbo),
       line('Decoder', _activeDecoder),
       line('Retry', '$_retryCount'),
