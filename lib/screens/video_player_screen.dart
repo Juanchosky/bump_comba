@@ -1164,20 +1164,25 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           String decoder;
           if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
             // mediacodec es el decodificador por hardware nativo (zero-copy a
-            // Surface). mediacodec-copy sigue siendo por hardware, pero copia
-            // los frames a memoria en vez de usar el camino de Surface: cuesta
-            // algo mas de CPU y es MUCHO mas estable.
+            // Surface). mediacodec-copy solo como último recurso en reintentos
+            // múltiples (>=2).
             //
-            // En equipos con el Surface inestable (MediaTek/Motorola) se usa
-            // -copy DESDE EL PRIMER INTENTO. Antes solo entraba tras 2
-            // reintentos fallidos, o sea que el usuario tenia que sufrir el
-            // congelamiento —audio sonando con el video pegado— dos veces
-            // antes de que la app le diera el decodificador que si funciona.
-            final surfaceInestable = PerformanceService().isMotorola;
-            decoder =
-                (surfaceInestable || _retryCount >= 2)
-                    ? 'mediacodec-copy'
-                    : 'mediacodec';
+            // NO forzar -copy desde el primer intento en MediaTek/Motorola.
+            // Se probó (mirando el `isMotorola` del perfil) con la idea de que
+            // costaba "algo más de CPU" a cambio de estabilidad, y el log del
+            // 2026-08-16 mostró que en este hardware el coste no es "algo":
+            //
+            //   buf=110s en memoria  ->  6 frames decodificados en 7,5 s
+            //
+            // O sea, red perfecta, buffer lleno, y el decodificador sin dar
+            // abasto porque cada frame 1080p se copia a RAM en vez de ir por
+            // Surface. Se veía en el log como `configure surface(0x0)` +
+            // "Client requested ByteBuffer mode decoder". Terminaba en ANR.
+            //
+            // El congelamiento con audio que -copy pretendía evitar es menos
+            // grave que no poder decodificar: para eso está el escalón de
+            // _retryCount >= 2, que llega solo si el Surface falla de verdad.
+            decoder = (_retryCount >= 2) ? 'mediacodec-copy' : 'mediacodec';
           } else if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
             decoder = 'videotoolbox-copy';
           } else {

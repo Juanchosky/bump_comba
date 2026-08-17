@@ -115,6 +115,20 @@ server {
         slice 1m;
         proxy_set_header Range $slice_range;
 
+        # Un slice son 1 MB, pero los proxy_buffers por defecto son 8x4k = 32 KB
+        # y arriba hay un `proxy_max_temp_file_size 0` que prohibe el fichero
+        # temporal. Resultado: nginx no puede absorber el slice y queda atado a
+        # la velocidad del CLIENTE. Con un movil a 1-2 Mbps el fetch al origen
+        # se arrastra hasta que se corta -> "Connection closed while receiving
+        # data" desde el primer chunk.
+        #
+        # Con 1,25 MB de buffers el slice entra entero en memoria, nginx lo
+        # termina de bajar a la velocidad del ORIGEN, lo cachea, y despues se
+        # lo va dando al cliente a su ritmo. Cuesta ~1,25 MB por conexion
+        # activa, que a cambio de esto sale barato.
+        proxy_buffer_size 64k;
+        proxy_buffers     20 64k;
+
         # OJO: aqui NO va `proxy_ignore_client_abort on` (si va en /images/).
         #
         # En imagenes la respuesta pesa ~150 KB y esta acotada, asi que dejar
