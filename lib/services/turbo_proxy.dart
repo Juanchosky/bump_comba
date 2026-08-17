@@ -171,7 +171,24 @@ class _HostProfile {
             : (avgSpeedMbps * 0.5) + (speedMbps * 0.5);
   }
 
-  void noteFailure() {
+  /// [porRotura] marca un corte a mitad de descarga —el origen cerró la
+  /// conexión con el cuerpo a medias— para diferenciarlo de un fallo
+  /// estructural del host.
+  ///
+  /// POR QUE ESTA DISTINCION
+  /// -----------------------
+  /// `isHostile` significa literalmente "este host no sirve rangos", y lo
+  /// único que puede demostrarlo es un 200 en respuesta a un Range (ver el
+  /// único sitio que llama sin `porRotura`). Un "Connection closed while
+  /// receiving data" NO demuestra eso: normalmente es un tramo concreto del
+  /// archivo que el origen corta siempre en el mismo offset.
+  ///
+  /// Antes ese corte escalaba hasta hostil, y como el perfil se guarda en
+  /// disco y la sanción dura 30 días, UNA película con un tramo roto
+  /// desactivaba Turbo para ese host —para TODAS las demás películas— durante
+  /// un mes. Ahora un corte baja el paralelismo, que sí ayuda cuando el origen
+  /// va justo, pero nunca llega a hostil.
+  void noteFailure({bool porRotura = false}) {
     consecutiveFailures++;
     lastEvaluation = DateTime.now();
     if (consecutiveFailures >= 3 && maxWorkingParallel > 2) {
@@ -180,7 +197,7 @@ class _HostProfile {
     } else if (consecutiveFailures >= 6 && maxWorkingParallel > 1) {
       maxWorkingParallel = 1;
       debugPrint('TurboProxy [$host]: perfil restringido a máx 1 conexión');
-    } else if (consecutiveFailures >= 10) {
+    } else if (consecutiveFailures >= 10 && !porRotura) {
       isHostile = true;
       debugPrint('TurboProxy [$host]: perfil marcado como Hostil (Sin Rangos)');
     }
@@ -247,6 +264,16 @@ class TurboProxy {
   factory TurboProxy() => instance;
 
   static const String _prefsKey = 'turbo_proxy_host_profiles_v1';
+
+  /// Versión de la limpieza de perfiles ya guardados. Subirla vuelve a
+  /// ejecutar la limpieza una vez en cada instalación. Ver `_loadHostProfiles`.
+  static const String _prefsCleanupKey = 'turbo_proxy_profiles_cleanup';
+  static const int _prefsCleanupVersion = 2;
+
+  /// Bytes mínimos que una pierna de fallback tiene que entregar para contar
+  /// como progreso y perdonar los reintentos acumulados. Por debajo de esto la
+  /// pierna no sirvió de nada aunque el servidor haya respondido 206.
+  static const int _kMinProgresoPierna = 64 * 1024;
   static const int _turboChunkSize = 1024 * 1024; // 1 MB por trozo de prefetch
   static const int _windowChunks = 8; // ~8 MB de ventana de prefetch
 
@@ -375,6 +402,36 @@ class TurboProxy {
         debugPrint(
           'TurboProxy: ${_hostProfiles.length} perfiles de host cargados de disco',
         );
+      }
+
+      // ── Limpieza única de sanciones mal puestas ────────────────────────
+      // Hasta ahora un corte a mitad de descarga podía escalar hasta
+      // `isHostile`, y esa marca se guarda en disco y dura 30 días. O sea que
+      // los perfiles ya guardados pueden traer hosts sanos —el propio VPS—
+      // marcados como "sin rangos" por culpa de una sola película con un tramo
+      // roto, con Turbo desactivado hasta que expire la sanción.
+      //
+      // Arreglar el código no basta: hay que borrar la marca que ya está
+      // escrita. Se hace una sola vez y queda registrado con la versión.
+      if (prefs.getInt(_prefsCleanupKey) != _prefsCleanupVersion) {
+        var limpiados = 0;
+        for (final p in _hostProfiles.values) {
+          if (p.isHostile) {
+            p.isHostile = false;
+            p.consecutiveFailures = 0;
+            p.maxWorkingParallel = 4;
+            limpiados++;
+          }
+        }
+        await prefs.setInt(_prefsCleanupKey, _prefsCleanupVersion);
+        if (limpiados > 0) {
+          _profilesDirty = true;
+          await _flushHostProfiles();
+          debugPrint(
+            'TurboProxy: $limpiados perfil(es) rehabilitados '
+            '(marca hostil puesta por cortes, no por falta de rangos)',
+          );
+        }
       }
     } catch (e) {
       debugPrint('TurboProxy: error cargando perfiles: $e');
@@ -1081,7 +1138,7 @@ class TurboProxy {
               debugPrint(
                 'TurboProxy: pipeline.next mid-stream falló: $e -> Retornando a Passthrough de emergencia',
               );
-              session.noteFailure();
+              session.noteFailure(porRotura: true);
               break;
             }
             if (data == null) {
@@ -1123,7 +1180,18 @@ class TurboProxy {
                 final rs = await rq.close().timeout(const Duration(seconds: 5));
                 if (rs.statusCode == HttpStatus.partialContent ||
                     rs.statusCode == HttpStatus.ok) {
-                  fallbackRetries = 0;
+                  // El contador se pone a cero SOLO si esta pierna entregó
+                  // bytes de verdad — nunca al recibir las cabeceras.
+                  //
+                  // Antes se reseteaba aquí mismo, y el corte de este
+                  // proveedor llega SIEMPRE con las cabeceras bien y el cuerpo
+                  // a medias. Resultado: cada vuelta ponía el contador en 0,
+                  // el catch lo subía a 1, y el `fallbackRetries < 3` del
+                  // while no se cumplía JAMAS -> reintento infinito cada
+                  // 800 ms, con el reproductor sin datos y el perfil del host
+                  // penalizado en cada vuelta. Es el "(1/3)" que se repite
+                  // eternamente en el log, sin llegar nunca a 2/3.
+                  final offsetAlEmpezar = currentOffset;
                   await for (final chunk in rs.timeout(
                     const Duration(seconds: 6),
                   )) {
@@ -1142,6 +1210,13 @@ class TurboProxy {
                     // se esperan y nunca coinciden con un add().
                     session.proxy._noteBytes(chunk.length);
                   }
+                  if (currentOffset - offsetAlEmpezar >= _kMinProgresoPierna) {
+                    fallbackRetries = 0;
+                  } else {
+                    // Cuerpo vacío o ridículamente corto sin lanzar error:
+                    // cuenta como intento fallido igual, o el while no avanza.
+                    fallbackRetries++;
+                  }
                   if (!useRange) break;
                 } else {
                   throw HttpException('status ${rs.statusCode}');
@@ -1154,7 +1229,7 @@ class TurboProxy {
                 // nueva repetía el mismo ciclo passthrough -> turbo ->
                 // fallback contra un host ya muerto, generando la cadena
                 // de TimeoutException que se ve en el log.
-                session.noteFailure();
+                session.noteFailure(porRotura: true);
                 debugPrint(
                   'TurboProxy: fallback Passthrough mid-stream error ($fallbackRetries/3): $err',
                 );
@@ -1166,15 +1241,18 @@ class TurboProxy {
               }
             }
 
-            // Si se agotaron los 3 reintentos sin terminar el archivo, el
-            // origen está efectivamente caído: penalizamos más fuerte para
-            // que el host se marque hostil antes y las próximas sesiones
-            // no repitan este mismo ciclo costoso contra un servidor muerto.
+            // Si se agotaron los 3 reintentos sin terminar el archivo,
+            // penalizamos más fuerte para que el host baje a 1 conexión antes
+            // y las próximas sesiones no repitan este mismo ciclo costoso.
+            //
+            // Sigue siendo `porRotura`: que un archivo no se pueda terminar no
+            // prueba que el host no sirva rangos, así que esto acelera el
+            // recorte de paralelismo pero nunca marca el perfil como hostil.
             if (!closed &&
                 fallbackRetries >= 3 &&
                 currentOffset < session.length) {
               for (var i = 0; i < 3; i++) {
-                session.noteFailure();
+                session.noteFailure(porRotura: true);
               }
               _setReason(
                 'origen no responde tras reintentos (${session.profile.host}) — penalizando perfil',
@@ -1279,7 +1357,7 @@ class TurboProxy {
           debugPrint(
             'TurboProxy: pipeline.next falló: $e -> Conmutando a Passthrough de emergencia',
           );
-          session.noteFailure();
+          session.noteFailure(porRotura: true);
           break;
         }
         if (data == null) {
@@ -1321,7 +1399,11 @@ class TurboProxy {
             final rs = await rq.close().timeout(const Duration(seconds: 5));
             if (rs.statusCode == HttpStatus.partialContent ||
                 rs.statusCode == HttpStatus.ok) {
-              fallbackRetries = 0;
+              // Ver la nota extensa en el fallback de _servePassthrough: el
+              // reseteo va DESPUES del cuerpo y solo si hubo progreso real.
+              // Resetear al recibir cabeceras convertía esto en un bucle
+              // infinito ante un proveedor que corta el cuerpo a mitad.
+              final offsetAlEmpezar = currentOffset;
               await for (final chunk in rs.timeout(
                 const Duration(seconds: 6),
               )) {
@@ -1340,6 +1422,11 @@ class TurboProxy {
                 // se esperan y nunca coinciden con un add().
                 session.proxy._noteBytes(chunk.length);
               }
+              if (currentOffset - offsetAlEmpezar >= _kMinProgresoPierna) {
+                fallbackRetries = 0;
+              } else {
+                fallbackRetries++;
+              }
               if (!useRange) break;
             } else {
               throw HttpException('status ${rs.statusCode}');
@@ -1349,7 +1436,7 @@ class TurboProxy {
             // FIX: mismo problema que en _servePassthrough — sin esto el
             // perfil del host nunca aprendía que el origen estaba fallando
             // en el camino de fallback.
-            session.noteFailure();
+            session.noteFailure(porRotura: true);
             debugPrint(
               'TurboProxy: fallback Passthrough error ($fallbackRetries/3): $err',
             );
@@ -1361,12 +1448,12 @@ class TurboProxy {
           }
         }
 
-        // Igual que en el camino passthrough: si se agotaron los
-        // reintentos y no se terminó el archivo, penalizar fuerte para
-        // que el host se marque hostil antes.
+        // Igual que en el camino passthrough: si se agotaron los reintentos y
+        // no se terminó el archivo, penalizar fuerte para bajar el
+        // paralelismo antes. Sigue sin marcar hostil (ver `porRotura`).
         if (!closed && fallbackRetries >= 3 && currentOffset < session.length) {
           for (var i = 0; i < 3; i++) {
-            session.noteFailure();
+            session.noteFailure(porRotura: true);
           }
           _setReason(
             'origen no responde tras reintentos (${session.profile.host}) — penalizando perfil',
@@ -1375,7 +1462,7 @@ class TurboProxy {
       }
     } catch (e) {
       debugPrint('TurboProxy: turbo stream error general: $e');
-      session.noteFailure();
+      session.noteFailure(porRotura: true);
     } finally {
       pipeline.cancel();
       session.noteSessionEndOnce();
@@ -1552,9 +1639,10 @@ class _Session {
     updateMetrics();
   }
 
-  void noteFailure() {
+  /// [porRotura] se propaga al perfil del host: ver `_HostProfile.noteFailure`.
+  void noteFailure({bool porRotura = false}) {
     parallelFailures++;
-    profile.noteFailure();
+    profile.noteFailure(porRotura: porRotura);
     proxy._markProfilesDirty();
 
     if (parallelFailures >= 3 && activeParallel > 2) {
@@ -1722,7 +1810,8 @@ class _TurboPipeline {
         }
         lastErr = HttpException('parcial $got/$expected');
         if (attempt == 3) {
-          session.noteFailure();
+          // Trozo truncado: es el caso de rotura por excelencia.
+          session.noteFailure(porRotura: true);
         }
       } catch (err) {
         lastErr = err;

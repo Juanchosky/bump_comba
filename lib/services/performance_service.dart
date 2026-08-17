@@ -26,6 +26,14 @@ class PerformanceService extends ChangeNotifier {
     return _isLowEndHeuristic;
   }
 
+  /// Hardware con el camino de Surface (zero-copy) inestable.
+  ///
+  /// En estos equipos el decodificador MediaTek se desincroniza: el audio
+  /// sigue sonando y el video se queda congelado, con errores de
+  /// BLASTBufferQueue / GraphicsTracker en el log. Por eso conviene usar
+  /// `mediacodec-copy` desde el primer intento en vez de esperar a que falle.
+  bool get isMotorola => _isMotorola;
+
   /// Certain hardware (Motorola) has very low Surface buffer limits.
   /// Pre-warming a second player can cause BLASTBufferQueue exhaustion.
   bool get allowVideoPrewarm {

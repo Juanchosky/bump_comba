@@ -247,6 +247,12 @@ Duration _adaptiveTimeout() {
 class _ValidatingImageFileService extends FileService {
   _ValidatingImageFileService();
 
+  /// Descargas directas al origen en curso ahora mismo, y su tope.
+  /// Ver la nota en `lanzarDirecta`: el origen hace rate-limiting a partir de
+  /// ~8 conexiones concurrentes, así que el adelanto se queda por debajo.
+  static int _directasEnVuelo = 0;
+  static const int _maxDirectasEnVuelo = 4;
+
   @override
   Future<FileServiceResponse> get(
     String url, {
@@ -260,93 +266,178 @@ class _ValidatingImageFileService extends FileService {
     String url, {
     Map<String, String>? headers,
   }) async {
+    final host = Uri.tryParse(url)?.host ?? '';
+    // Estrategia Híbrida: Servidores IPTV (imágenes pesadas sin comprimir) usan Proxy WebP,
+    // mientras TMDB carga directo desde su CDN oficial optimizada (w185/w500) en 20ms.
+    final shouldProxy =
+        (host.contains('ultratvsv.site') || host.contains('red4tv.lat')) &&
+        !host.contains('image.tmdb.org');
+
+    final directa = Uri.parse(url);
+
+    // UN SOLO proxy: el VPS propio, con caché en disco.
+    //
+    // Antes había tres proxies externos encadenados (un Worker de Cloudflare,
+    // wsrv.nl e images.weserv.nl). Cuando fallaban —cosa frecuente— cada uno
+    // agotaba su timeout antes de pasar al siguiente: ~18 segundos por carátula
+    // antes de intentar la descarga directa, que se comprobó que responde en
+    // 0,65s. Peor aún: eran tres dependencias externas fuera de nuestro control
+    // para algo crítico de la UI.
+    //
+    // Se reescribe SOLO el host, conservando la ruta:
+    //   http://ultratvsv.site/images/abc.jpg
+    //   -> http://217.216.80.212/images/abc.jpg
+    //
+    // NO se usa la variante /img?url=<codificada>: nginx no decodifica
+    // $arg_url, asi que la URL percent-encoded que manda la app no casa con el
+    // `map` que extrae la ruta, y el proxy termina pidiendo "/" al origen ->
+    // 404 (y encima se cachea). Reescribir el host evita todo ese problema: la
+    // ruta viaja tal cual.
+    Uri? viaVps;
+    if (shouldProxy && directa.path.length > 1) {
+      viaVps = Uri.parse('http://217.216.80.212${directa.path}');
+    }
+
+    if (viaVps == null) {
+      return _abrir(directa, headers: headers);
+    }
+    return _carreraVpsVsDirecto(viaVps, directa, headers);
+  }
+
+  /// Cuánto se espera al VPS antes de lanzar TAMBIÉN la descarga directa.
+  ///
+  /// Un HIT del VPS manda cabeceras en un RTT; un MISS no manda nada hasta que
+  /// el origen le contesta. Así que "no hay cabeceras todavía" es la señal de
+  /// que esa carátula aún no está cacheada, y es el momento de dejar de
+  /// esperarla.
+  static Duration _margenVps() {
+    switch (NetworkQualityService().quality.value) {
+      case NetworkQuality.excellent:
+      case NetworkQuality.good:
+        return const Duration(milliseconds: 600);
+      case NetworkQuality.fair:
+        return const Duration(milliseconds: 900);
+      case NetworkQuality.poor:
+        return const Duration(milliseconds: 1500);
+      case NetworkQuality.offline:
+        return const Duration(milliseconds: 400);
+    }
+  }
+
+  /// Pide la carátula al VPS y, si no contesta dentro de [_margenVps], lanza EN
+  /// PARALELO la descarga directa al origen. Gana la primera que devuelva
+  /// cabeceras válidas; la perdedora se aborta.
+  ///
+  /// POR QUE UNA CARRERA Y NO UNA CADENA
+  /// -----------------------------------
+  /// Antes esto era secuencial: VPS y, sólo si FALLABA, directo. El problema es
+  /// que un MISS no falla — se queda esperando a que el VPS baje la imagen del
+  /// origen, que es justo el servidor lento. Resultado: las carátulas que
+  /// todavía no estaban en el VPS cargaban MÁS lento que sin proxy.
+  ///
+  /// Abortar la petición perdedora no desperdicia el trabajo del VPS: nginx
+  /// tiene `proxy_ignore_client_abort on`, así que termina de bajarla y la deja
+  /// cacheada igual. O sea que cada miss se precarga solo y la próxima vez ya
+  /// sale del disco, instantánea.
+  Future<FileServiceResponse> _carreraVpsVsDirecto(
+    Uri viaVps,
+    Uri directa,
+    Map<String, String>? headers,
+  ) {
+    final resultado = Completer<FileServiceResponse>();
+    Timer? temporizador;
+    var lanzadas = 1;
+    var terminadas = 0;
+    var directaLanzada = false;
+
+    void entregar(_ValidatingHttpGetResponse respuesta) {
+      terminadas++;
+      if (resultado.isCompleted) {
+        // Llegó segunda: soltar la conexión sin leer el cuerpo.
+        respuesta.descartar();
+        return;
+      }
+      temporizador?.cancel();
+      resultado.complete(respuesta);
+    }
+
+    // `fallo` y `lanzarDirecta` se llaman entre sí, así que una de las dos
+    // tiene que ser una variable `late` para poder nombrarla antes.
+    late final void Function(Object error) fallo;
+
+    // [forzar] distingue las dos razones para ir al origen:
+    //
+    //  - Sin forzar (venció el margen): es un ADELANTO opcional. El VPS quizá
+    //    conteste igual; solo queremos no esperarlo. Si ya hay muchas directas
+    //    en vuelo se deja pasar y se sigue esperando al VPS.
+    //  - Con forzar (el VPS ya falló): es el último recurso y sale siempre.
+    //
+    // El tope existe porque el origen tiene rate-limiting: se comprobó que con
+    // 8 peticiones en paralelo empieza a descartar conexiones (fue lo que
+    // cortó la precarga nocturna a los 2.007 títulos). El semáforo de imágenes
+    // permite hasta 18 descargas a la vez, y con el catálogo frío casi todas
+    // agotarían el margen y saltarían al origen — más presión de la que ya se
+    // sabe que no tolera. Pasado el tope, esperar al VPS es lo correcto:
+    // perder unos milisegundos es mucho mejor que hacer que el origen nos
+    // corte y que fallen las dos vías a la vez.
+    void lanzarDirecta({bool forzar = false}) {
+      if (directaLanzada || resultado.isCompleted) return;
+      if (!forzar && _directasEnVuelo >= _maxDirectasEnVuelo) return;
+      directaLanzada = true;
+      lanzadas++;
+      _directasEnVuelo++;
+      _abrir(directa, headers: headers).then<void>(
+        (respuesta) {
+          _directasEnVuelo--;
+          entregar(respuesta);
+        },
+        onError: (Object error) {
+          _directasEnVuelo--;
+          fallo(error);
+        },
+      );
+    }
+
+    fallo = (Object error) {
+      terminadas++;
+      if (resultado.isCompleted) return;
+      // El VPS cayó (o el adelanto quedó bloqueado por el tope): la directa ya
+      // no es un adelanto opcional sino la única vía que queda.
+      if (!directaLanzada) {
+        lanzarDirecta(forzar: true);
+        return;
+      }
+      if (terminadas >= lanzadas) {
+        temporizador?.cancel();
+        resultado.completeError(error);
+      }
+    };
+
+    _abrir(viaVps, esVps: true).then<void>(entregar, onError: fallo);
+    temporizador = Timer(_margenVps(), lanzarDirecta);
+
+    return resultado.future;
+  }
+
+  /// Abre una petición y valida que la respuesta sea realmente una imagen.
+  ///
+  /// Con [esVps] se es más estricto: cualquier 4xx/5xx o JSON descarta esa vía
+  /// para que la carrera se quede con la directa. En la directa, en cambio, el
+  /// status se deja pasar tal cual — flutter_cache_manager lo convierte en
+  /// HttpExceptionWithStatus y así _isRetryableError puede distinguir un 404
+  /// real (no reintentar) de un problema de red (reintentar).
+  Future<_ValidatingHttpGetResponse> _abrir(
+    Uri uri, {
+    Map<String, String>? headers,
+    bool esVps = false,
+  }) async {
     HttpClientRequest? req;
     try {
-      final host = Uri.tryParse(url)?.host ?? '';
-      // Estrategia Híbrida: Servidores IPTV (imágenes pesadas sin comprimir) usan Proxy WebP,
-      // mientras TMDB carga directo desde su CDN oficial optimizada (w185/w500) en 20ms.
-      final shouldProxy =
-          (host.contains('ultratvsv.site') || host.contains('red4tv.lat')) &&
-          !host.contains('image.tmdb.org');
-
-      if (shouldProxy) {
-        // Lista de proxies en orden de preferencia
-        // Si tienes un Cloudflare Worker propio, ponlo primero
-        final proxies = [
-          'https://morning-night-2d8a.juandanielarrieta23.workers.dev/?url={URL}',
-          'https://wsrv.nl/?url={URL}&output=webp',
-          'https://images.weserv.nl/?url={URL}',
-        ];
-
-        for (final proxyTemplate in proxies) {
-          final proxyUrl = proxyTemplate.replaceAll(
-            '{URL}',
-            Uri.encodeComponent(url),
-          );
-          try {
-            // Solo loguear en modo debug — en producción estos logs saturan la consola
-            assert(() {
-              debugPrint('Image fetch: trying proxy $proxyUrl');
-              return true;
-            }());
-            final uri = Uri.parse(proxyUrl);
-            req = await _sharedHttpClient
-                .getUrl(uri)
-                .timeout(_adaptiveTimeout());
-            req.headers.set('Accept', 'image/webp,image/*,*/*;q=0.8');
-
-            final ioResponse = await req.close().timeout(_adaptiveTimeout());
-            final contentType =
-                ioResponse.headers.value('content-type')?.toLowerCase() ?? '';
-
-            if (contentType.contains('text/html') ||
-                contentType.contains('text/plain') ||
-                contentType.contains(
-                  'application/json',
-                ) || // ← NUEVO: rechazar JSON
-                ioResponse.statusCode >= 400) {
-              req.abort();
-              // Este proxy falló, probar el siguiente
-              continue;
-            }
-
-            // Proxy funcionó — construir respuesta
-            final responseHeaders = <String, String>{};
-            ioResponse.headers.forEach((key, values) {
-              responseHeaders[key] = values.join(',');
-            });
-            final streamedResponse = http.StreamedResponse(
-              ioResponse,
-              ioResponse.statusCode,
-              contentLength:
-                  ioResponse.contentLength == -1
-                      ? null
-                      : ioResponse.contentLength,
-              request: http.Request('GET', uri),
-              headers: responseHeaders,
-              isRedirect: ioResponse.isRedirect,
-              persistentConnection: ioResponse.persistentConnection,
-              reasonPhrase: ioResponse.reasonPhrase,
-            );
-            return _ValidatingHttpGetResponse(streamedResponse, req);
-          } catch (proxyError) {
-            req?.abort();
-            debugPrint(
-              'Proxy $proxyTemplate failed: $proxyError. Trying next...',
-            );
-            continue;
-          }
-        }
-
-        debugPrint(
-          'All proxies failed for $url. Falling back to direct fetch...',
-        );
-      }
-
-      final uri = Uri.parse(url);
       req = await _sharedHttpClient.getUrl(uri).timeout(_adaptiveTimeout());
 
-      if (headers != null) {
+      if (esVps) {
+        req.headers.set('Accept', 'image/webp,image/*,*/*;q=0.8');
+      } else if (headers != null) {
         headers.forEach((key, value) {
           req!.headers.set(key, value);
         });
@@ -357,8 +448,12 @@ class _ValidatingImageFileService extends FileService {
       // Check content-type BEFORE creating the cache response
       final contentType =
           ioResponse.headers.value('content-type')?.toLowerCase() ?? '';
-      if (contentType.contains('text/html') ||
-          contentType.contains('text/plain')) {
+      final noEsImagen =
+          contentType.contains('text/html') ||
+          contentType.contains('text/plain') ||
+          (esVps && contentType.contains('application/json'));
+
+      if (noEsImagen || (esVps && ioResponse.statusCode >= 400)) {
         // Abort the request cleanly to release connection resources
         req.abort();
         throw HttpExceptionWithStatus(
@@ -406,6 +501,14 @@ class _ValidatingHttpGetResponse extends HttpGetResponse {
 
   _ValidatingHttpGetResponse(this._rawResponse, this._ioRequest)
     : super(_rawResponse);
+
+  /// Soltar esta respuesta sin leerla — la usa la carrera VPS/directo para
+  /// cerrar la conexión de la que llegó segunda.
+  void descartar() {
+    try {
+      _ioRequest.abort();
+    } catch (_) {}
+  }
 
   @override
   Stream<List<int>> get content {

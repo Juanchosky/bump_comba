@@ -1,32 +1,29 @@
 # ============================================================================
-#  Proxy con caché para Xtream — instalación completa
-#  Uso:  bash setup.sh USUARIO CLAVE
+#  Cache de caratulas en el VPS — pegar en el servidor
 # ============================================================================
-# Sin `set -e`: si se pega en una sesión interactiva, cerraría la sesión.
+#
+#  DIMENSIONADO (importante: que no se llene el disco)
+#  ---------------------------------------------------
+#  Disco total: 96 GB. Reparto:
+#     video     60 GB   (se BAJA de 70 para hacerle lugar a las imagenes)
+#     imagenes  10 GB   (el catalogo entero son ~3,8 GB -> sobra el triple)
+#     catalogo   2 GB
+#     sistema    ~4 GB
+#     ----------------
+#     libre     ~20 GB de margen
+#
+#  Las caratulas pesan ~150 KB y NUNCA cambian, asi que se cachean 60 dias.
+#  Con 25.624 titulos el catalogo completo ocupa ~3,8 GB: entra de sobra y a
+#  partir de la segunda vista se sirve del disco sin tocar al proveedor.
+# ============================================================================
 
-USUARIO="$1"
-CLAVE="$2"
+set -e
 
-echo "==> 1/6 Instalando nginx..."
-apt-get update -qq
-apt-get install -y -qq nginx curl
+echo "==> 1/4 Creando cache de imagenes..."
+mkdir -p /var/cache/img
+chown -R www-data:www-data /var/cache/img
 
-echo "==> 2/6 Preparando caché..."
-mkdir -p /var/cache/vod /var/cache/vodapi /var/cache/img
-chown -R www-data:www-data /var/cache/vod /var/cache/vodapi /var/cache/img
-
-if [[ "$*" == *"--limpiar"* ]]; then
-  echo "    [!] Flag --limpiar detectado: vaciando carpetas de caché..."
-  rm -rf /var/cache/vod/* /var/cache/vodapi/* /var/cache/img/*
-else
-  echo "    [+] Preservando caché existente (usá --limpiar para vaciarla)."
-fi
-
-# Ubuntu trae un sitio de ejemplo que ya ocupa el puerto 80 como
-# default_server; sin quitarlo, nginx -t falla por "duplicate default server".
-rm -f /etc/nginx/sites-enabled/default
-
-echo "==> 3/6 Escribiendo configuración..."
+echo "==> 2/4 Configurando cache de video (60GB) e imagenes (10GB)..."
 cat > /etc/nginx/conf.d/vod.conf <<'NGINXCONF'
 proxy_cache_path /var/cache/vod    levels=1:2 keys_zone=vod:200m
                  max_size=60g inactive=30d use_temp_path=off;
@@ -52,11 +49,6 @@ map $arg_url $uri_de_imagen {
 
 # ---------------------------------------------------------------------------
 # CAPA 2 (interna, 127.0.0.1:8081) — resuelve el redirect 302 del proveedor.
-#
-# Va separada A PROPOSITO: el modulo `slice` trabaja con subpeticiones
-# internas, y en ese contexto la cabecera Location del 302 NO se propaga a la
-# named location -> $upstream_http_location llega vacio y nginx responde 500
-# ("invalid URL prefix"). Aqui, sin slice de por medio, el patron funciona.
 # ---------------------------------------------------------------------------
 server {
     listen 127.0.0.1:8081;
@@ -90,8 +82,6 @@ server {
     server_name _;
 
     proxy_max_temp_file_size 0;
-    # Los servidores IPTV suelen mandar cabeceras anti-cache que impedirian
-    # guardar nada; se ignoran a proposito.
     proxy_ignore_headers Cache-Control Expires Set-Cookie X-Accel-Expires;
 
     # Catalogo: cada arranque de la app pide 25.000+ titulos al proveedor.
@@ -109,28 +99,13 @@ server {
         add_header X-Cache $upstream_cache_status always;
     }
 
-    # Video. usuario/clave se capturan aparte para NO meterlos en la clave de
-    # cache: asi el cache sobrevive a un cambio de contrasena.
+    # Video.
     location ~ ^/(?<tipo>movie|series)/(?<usuario>[^/]+)/(?<clave>[^/]+)/(?<item>.+)$ {
         slice 1m;
         proxy_set_header Range $slice_range;
 
-        # OJO: aqui NO va `proxy_ignore_client_abort on` (si va en /images/).
-        #
-        # En imagenes la respuesta pesa ~150 KB y esta acotada, asi que dejar
-        # que termine tras un abort es barato. Aqui la respuesta es la PELICULA
-        # ENTERA: si nginx ignora el abort, sigue pidiendo slices al origen
-        # hasta terminarla. Un usuario que abre y cierra cinco titulos dejaria
-        # cinco peliculas completas descargandose solas de fondo, quemando
-        # ancho de banda del proveedor y llenando el disco.
-        #
-        # No hace falta: los slices YA completados se cachean igual sobre la
-        # marcha. Un corte solo pierde el slice en vuelo, y el reintento de la
-        # app vuelve a pedir ese 1 MB. Es barato.
-
         proxy_cache              vod;
         proxy_cache_key          "$tipo/$item$slice_range";
-        # Solo 206: un 200 aqui significa error o que ignoraron el Range.
         proxy_cache_valid        206 30d;
         proxy_cache_lock         on;
         proxy_cache_lock_timeout 30s;
@@ -142,16 +117,7 @@ server {
     }
 
     # Caratulas por ruta directa /images/...
-    #
-    # proxy_ignore_client_abort ES CLAVE: la app corre una carrera entre el VPS
-    # y el origen, y en cuanto gana uno ABORTA al otro. Sin esta directiva, cada
-    # abort cancelaria tambien la descarga upstream y la caratula NUNCA quedaria
-    # cacheada -> siempre MISS, siempre lenta. Con ella, nginx termina de bajarla
-    # y la guarda igual: cada miss se precarga solo y la proxima vez sale del
-    # disco.
     location /images/ {
-        proxy_ignore_client_abort on;
-
         proxy_cache               img;
         proxy_cache_key           "$uri";
         proxy_cache_valid         200 60d;
@@ -179,10 +145,6 @@ server {
     location = /img {
         if ($arg_url = "") { return 400; }
 
-        # Ver la nota en /images/ — sin esto, la carrera de la app dejaria la
-        # cache vacia para siempre.
-        proxy_ignore_client_abort on;
-
         proxy_cache               img;
         proxy_cache_key           "$arg_url";
         proxy_cache_valid         200 60d;
@@ -208,53 +170,25 @@ server {
 }
 NGINXCONF
 
-echo "==> 4/6 Validando..."
-if ! nginx -t 2>&1; then
+echo "==> 4/4 Validando y recargando..."
+if ! nginx -t; then
   echo ""
-  echo "!!! Configuracion invalida. nginx queda como estaba."
+  echo "!!! Configuracion invalida. Revisar el error de arriba."
+  echo "!!! nginx sigue con la configuracion anterior."
   exit 1
 fi
+systemctl reload nginx
 
-echo "==> 5/6 Recargando nginx y configurando guardián..."
-systemctl enable nginx >/dev/null 2>&1
-systemctl restart nginx
-
-cat << 'GUARD' > /etc/cron.hourly/vod-guard
-#!/bin/bash
-U=$(df --output=pcent / | tail -1 | tr -dc "0-9")
-if [ "$U" -ge 90 ]; then
-  find /var/cache/vod -type f -printf "%A@ %p\n" 2>/dev/null | sort -n | head -n 3000 | cut -d" " -f2- | xargs -r rm -f
-  logger -t vod-guard "Disco al ${U}%: purgada cache antigua"
-fi
-GUARD
-chmod +x /etc/cron.hourly/vod-guard
-
-
-if [ -z "$USUARIO" ] || [ -z "$CLAVE" ]; then
-  echo ""
-  echo "==> 6/6 Sin credenciales, salteo la prueba."
-  echo "    Volve a correr:  bash setup.sh TU_USUARIO TU_CLAVE"
-  exit 0
-fi
-
-echo "==> 6/6 Probando la cache (2 peticiones al mismo trozo)..."
 echo ""
-ID=759711
+echo "======================================================"
+echo " LISTO. Probando la cache de imagenes..."
+echo "======================================================"
+IMG="http://ultratvsv.site:80/images/1CX9HZ1TpsR6jq_dGSnHkF7DaaYG-JnaH_5zbvTz1M5mB5g6BUIWNSoocDNYisyLVipaAF4QJbwDnWQMvdXMiUG5xG3PO-z_HAgGFSW3xp0.jpg"
 for i in 1 2; do
   echo "--- Intento $i ---"
-  curl -s -o /dev/null -D - -H "Range: bytes=0-1048575" \
-    "http://127.0.0.1/movie/$USUARIO/$CLAVE/$ID.mkv" \
-    | grep -iE "^HTTP/|x-cache"
+  curl -s -m 20 -o /dev/null -D - "http://127.0.0.1/img?url=$IMG" | grep -iE "^HTTP/|x-cache|content-type"
 done
-
 echo ""
-echo "======================================================"
-echo " Esperado:  intento 1 -> 206 + X-Cache: MISS"
-echo "            intento 2 -> 206 + X-Cache: HIT"
+echo " Esperado: intento 1 -> 200 OK + MISS, intento 2 -> 200 OK + HIT"
 echo ""
-echo " Si ves HIT, la cache funciona: ese contenido ya no"
-echo " vuelve a consumir conexiones del proveedor."
-echo "======================================================"
-echo ""
-echo "Ultimos errores de nginx (vacio = todo bien):"
-tail -5 /var/log/nginx/error.log | grep -v "usr/share/nginx/html" || true
+df -h / | tail -1

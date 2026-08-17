@@ -1163,9 +1163,21 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
           String decoder;
           if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
-            // mediacodec es el decodificador por hardware nativo (zero-copy a Surface).
-            // mediacodec-copy solo como último recurso en reintentos múltiples (>=2).
-            decoder = (_retryCount >= 2) ? 'mediacodec-copy' : 'mediacodec';
+            // mediacodec es el decodificador por hardware nativo (zero-copy a
+            // Surface). mediacodec-copy sigue siendo por hardware, pero copia
+            // los frames a memoria en vez de usar el camino de Surface: cuesta
+            // algo mas de CPU y es MUCHO mas estable.
+            //
+            // En equipos con el Surface inestable (MediaTek/Motorola) se usa
+            // -copy DESDE EL PRIMER INTENTO. Antes solo entraba tras 2
+            // reintentos fallidos, o sea que el usuario tenia que sufrir el
+            // congelamiento —audio sonando con el video pegado— dos veces
+            // antes de que la app le diera el decodificador que si funciona.
+            final surfaceInestable = PerformanceService().isMotorola;
+            decoder =
+                (surfaceInestable || _retryCount >= 2)
+                    ? 'mediacodec-copy'
+                    : 'mediacodec';
           } else if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
             decoder = 'videotoolbox-copy';
           } else {
@@ -1178,9 +1190,22 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             mpv.setProperty('cache', 'yes'),
             mpv.setProperty('cache-pause', 'yes'),
             mpv.setProperty('cache-on-disk', 'no'),
+            // Cuanto búfer se junta ANTES de reanudar tras quedarse sin datos.
+            //
+            // Estaba en 1,5s para VOD y era muy poco: este proveedor entrega a
+            // ráfagas (se comprobó que trunca las respuestas), asi que 1,5s se
+            // consumian de inmediato y el ciclo se repetia -> "se para cada 2
+            // segundos". Peor aun, el audio conserva su búfer y sigue mientras
+            // el video se queda sin datos: al llegar la ráfaga siguiente el
+            // video ACELERA para alcanzarlo, que es el desfase visible.
+            //
+            // Con 5s se pausa menos veces pero de verdad: una espera algo mas
+            // larga y despues reproduccion continua, en vez de microcortes
+            // constantes. En vivo se mantiene bajo porque ahi no se puede
+            // acumular búfer sin quedarse atras de la emision.
             mpv.setProperty(
               'cache-pause-wait',
-              _isLiveContent ? '2' : (lowPerf ? '2' : '1.5'),
+              _isLiveContent ? '2' : (lowPerf ? '4' : '5'),
             ),
             mpv.setProperty('cache-pause-initial', 'no'),
             mpv.setProperty(
@@ -2168,6 +2193,26 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           threshold = threshold < 6 ? threshold : 6;
         }
 
+        // ── Salto rápido de Xtream a la Base de Datos ───────────────────────
+        // Si el contenido de Xtream YA habia arrancado (currentPos > 0) y hay
+        // una alternativa en la BD, no tiene sentido esperar los 35s largos:
+        // ese margen existe para descargas lentas pero sanas, y aqui hay un
+        // servidor alternativo listo.
+        //
+        //   1er congelamiento  ->  5s  -> recarga en Xtream
+        //   2do congelamiento  -> 10s  -> _reloadVideo() ve _retryCount >= 1
+        //                                 y salta al Servidor 2 (BD)
+        //
+        // Se exige currentPos > 0 a proposito: si nunca arranco, el problema es
+        // otro (lo cubre el failover de carga inicial) y saltar de servidor
+        // demasiado pronto solo cambiaria un origen frio por otro.
+        if (!_isLiveContent &&
+            _currentServerIndex == 0 &&
+            _serverItems.length > 1 &&
+            currentPos > Duration.zero) {
+          threshold = (_retryCount == 0) ? 5 : 10;
+        }
+
         if (_stallSeconds >= threshold && !_isVideoLoading) {
           // Sin red no hay nada que recargar: el reload rotaría de servidor y
           // quemaría reintentos contra una red caída (zona muerta, túnel).
@@ -2250,7 +2295,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         }
         _stallSeconds = 0;
         _stallPorRotura = false;
-    _stallPorRotura = false;
       }
 
       // ── Detección de "audio sin video" (pantalla negra con audio) ─────
@@ -2439,6 +2483,20 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       }
     } else {
       currentPos = _player?.state.position ?? Duration.zero;
+    }
+
+    // Red de seguridad contra el "volvió al minuto 0".
+    //
+    // Cuando el pipe se rompe a mitad de reproducción, MPV puede reportar
+    // position=0 justo cuando lo consultamos aquí. Con eso `startFrom` queda
+    // en null y la recarga arranca la película desde el principio: se vio en
+    // un log real perdiendo 6 min 37 s ya vistos.
+    //
+    // `_lastPosition` la actualiza el timer de stall cada segundo y sobrevive
+    // a la rotura, así que sirve de respaldo. Se toma la mayor de las dos
+    // porque cualquiera de ellas puede ser la que quedó vieja.
+    if (_lastPosition > currentPos) {
+      currentPos = _lastPosition;
     }
 
     try {
