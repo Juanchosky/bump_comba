@@ -150,14 +150,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         _speedPollTimer = null;
         return;
       }
-      double speed = 0.0;
-      try {
-        final mpv = _player?.platform as dynamic;
-        if (mpv != null) {
-          final raw = await mpv.getProperty('cache-speed');
-          speed = double.tryParse(raw?.toString() ?? '') ?? 0.0;
-        }
-      } catch (_) {}
+      double speed = await _leerCacheSpeedBytes();
 
       if (speed <= 0 && _turboActive) {
         final mbps = TurboProxy().sampleMbps();
@@ -310,6 +303,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool _localAudioDuringCast = false;
   double _syncOffsetMs = 0.0;
   Timer? _castStallMonitorTimer;
+
+  /// Vigila canales en vivo que emiten audio sin video (0x0 px).
+  /// Va en un campo, y no suelto, para poder cancelarlo al recrear el monitor
+  /// de stall — si no, se acumulaba uno por recarga. Ver `_startStallMonitor`.
+  Timer? _liveHealthTimer;
   Duration _lastCastMonitoredPosition = Duration.zero;
   int _castNoMovementSeconds = 0;
   bool _castFailoverInProgress = false;
@@ -639,6 +637,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _networkQuality.stop();
     _hideControlsTimer?.cancel();
     _stallTimer?.cancel();
+    _liveHealthTimer?.cancel();
     _speedPollTimer?.cancel();
     _seekFeedbackTimer?.cancel();
     _countdownTimer?.cancel();
@@ -2101,19 +2100,46 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// con el buffer lleno MPV deja de descargar y cache-speed cae a 0, lo que
   /// NO significa red mala.
   Future<void> _sampleRealThroughput() async {
+    final bytesPerSec = await _leerCacheSpeedBytes();
+    if (bytesPerSec <= 0) return;
+    final mbps = bytesPerSec * 8 / 1000000;
+    _networkQuality.reportStreamThroughput(mbps);
+  }
+
+  /// Lee `cache-speed` de MPV (bytes/s) SIEMPRE con techo de tiempo.
+  ///
+  /// El timeout no es decorativo: si MPV se traba —justo el escenario que estos
+  /// monitores vigilan— la llamada nativa no vuelve nunca. Y como los mensajes
+  /// del platform channel se procesan en el hilo principal, encolar uno cada
+  /// 300 ms (el poll de velocidad corre a esa frecuencia mientras hay buffering)
+  /// contra un MPV colgado es presion directa hacia el ANR. Devolver 0 al
+  /// vencer el plazo es correcto: los dos llamadores tratan el 0 como
+  /// "sin dato" y no lo reportan como red mala.
+  Future<double> _leerCacheSpeedBytes() async {
     try {
       final mpv = _player?.platform as dynamic;
-      if (mpv == null) return;
-      final raw = await mpv.getProperty('cache-speed');
-      final bytesPerSec = double.tryParse(raw?.toString() ?? '') ?? 0;
-      if (bytesPerSec <= 0) return;
-      final mbps = bytesPerSec * 8 / 1000000;
-      _networkQuality.reportStreamThroughput(mbps);
-    } catch (_) {}
+      if (mpv == null) return 0.0;
+      final Future<dynamic> pedido = mpv.getProperty('cache-speed');
+      final raw = await pedido.timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => null,
+      );
+      return double.tryParse(raw?.toString() ?? '') ?? 0.0;
+    } catch (_) {
+      return 0.0;
+    }
   }
 
   void _startStallMonitor() {
     _stallTimer?.cancel();
+    // El health monitor de vivo se cancela AQUI, junto con el stall timer.
+    //
+    // Antes se creaba sin guardarlo en ningun campo y solo se autocancelaba si
+    // `_stallTimer` estaba inactivo. Como esta funcion reemplaza el stall timer
+    // por uno NUEVO y activo, el watchdog viejo nunca veia la condicion de
+    // salida: cada recarga de un canal en vivo dejaba otro monitor corriendo,
+    // todos llamando a _reloadVideo() sobre el mismo reproductor.
+    _liveHealthTimer?.cancel();
     _stallSeconds = 0;
     _stallPorRotura = false;
 
@@ -2389,7 +2415,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
     // Health monitor para live: detectar stream sin video (pantalla negra)
     if (_isLiveContent) {
-      Timer.periodic(const Duration(seconds: 5), (timer) {
+      _liveHealthTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
         if (!mounted || _player == null || !_isLiveContent) {
           timer.cancel();
           return;

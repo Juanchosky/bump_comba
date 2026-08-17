@@ -363,6 +363,14 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   @override
   void dispose() {
     NetworkQualityService().quality.removeListener(_onNetworkQualityChanged);
+    // `AdService.isAdInProgress` es un ValueNotifier GLOBAL: si no se quita el
+    // listener, sobrevive a esta pantalla y se queda reteniendo el State
+    // entero (con su arbol de widgets y el _livePlayer) para siempre. Ademas
+    // _handleAdStateChange seguiria ejecutandose sobre una pantalla muerta,
+    // llegando a llamar play() sobre un reproductor ya desechado. Cada
+    // entrada/salida de la pantalla sumaba otro.
+    AdService.isAdInProgress.removeListener(_handleAdStateChange);
+    _homeScrollController.dispose();
     _watchProgressVersion.dispose();
     _liveVideoControllerNotifier.dispose();
     _lastLiveFrameBytesNotifier.dispose();

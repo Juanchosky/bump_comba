@@ -1703,28 +1703,23 @@ class M3UService extends ChangeNotifier {
         debugPrint('Error parsing server_info: $e');
       }
 
-      int liveBytes = 0;
       int vodBytes = 0;
       int seriesBytes = 0;
 
       void notify() {
-        onProgress?.call(
-          DownloadProgress(liveBytes + vodBytes + seriesBytes, null),
-        );
+        onProgress?.call(DownloadProgress(vodBytes + seriesBytes, null));
       }
 
-      // Parallel fetch for Live, VOD and Series with tracking
-      // Prioritize the configured host (succeeded during login validation)
+      // Fetch en paralelo de VOD y Series, priorizando el host configurado
+      // (el que funcionó al validar el login).
+      //
+      // NO se piden los canales en vivo. Estan desactivados y la UI los oculta
+      // (ver `filterValidItems`), pero se seguian descargando, parseando y
+      // guardando en el catalogo: miles de items invisibles costando ancho de
+      // banda, tiempo de arranque y memoria. Si algun dia se reactivan, hay que
+      // volver a agregar `xtream.fetchLiveStreams(...)` aqui Y en el bloque de
+      // fallback de mas abajo.
       var results = await Future.wait([
-        xtream.fetchLiveStreams(
-          effectiveHost,
-          user,
-          pass,
-          onProgress: (p) {
-            liveBytes = p.receivedBytes;
-            notify();
-          },
-        ),
         xtream.fetchVodStreams(
           effectiveHost,
           user,
@@ -1754,21 +1749,12 @@ class M3UService extends ChangeNotifier {
           'Falling back to real server: $fallbackHost',
         );
         // Reset progress counters before retrying
-        liveBytes = 0;
         vodBytes = 0;
         seriesBytes = 0;
         notify();
 
+        // Tampoco aqui se piden los canales en vivo — ver la nota de arriba.
         results = await Future.wait([
-          xtream.fetchLiveStreams(
-            fallbackHost,
-            user,
-            pass,
-            onProgress: (p) {
-              liveBytes = p.receivedBytes;
-              notify();
-            },
-          ),
           xtream.fetchVodStreams(
             fallbackHost,
             user,
