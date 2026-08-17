@@ -200,6 +200,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// Se decide al inicio de cada episodio de stall: true si la causa fue una
   /// rotura del pipe del proxy local (reaccionar rapido) en vez de lentitud.
   bool _stallPorRotura = false;
+  /// true SOLO cuando el salto a la BD lo pide el detector de congelamiento.
+  ///
+  /// Antes esto se deducia de `_retryCount >= 1`, pero _reloadVideo() se llama
+  /// tambien por fin de stream prematuro, pantalla negra o video 0x0. Al quitar
+  /// esa condicion, un corte normal a mitad de pelicula abandonaba Xtream en vez
+  /// de reconectar. Con una señal propia cada camino decide por si mismo.
+  bool _saltarABDPorCongelamiento = false;
   bool _isLiveContent = false;
   int _retryCount = 0;
 
@@ -2204,9 +2211,20 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         // ese margen existe para descargas lentas pero sanas, y aqui hay un
         // servidor alternativo listo.
         //
-        //   1er congelamiento  ->  5s  -> recarga en Xtream
-        //   2do congelamiento  -> 10s  -> _reloadVideo() ve _retryCount >= 1
-        //                                 y salta al Servidor 2 (BD)
+        // Un solo congelamiento basta: _reloadVideo() ya no gasta un reintento
+        // en Xtream, salta derecho a la BD.
+        //
+        // POR QUE 8s Y NO 5: `cache-pause-wait` esta en 5s, o sea que cuando el
+        // búfer se vacia mpv pausa A PROPOSITO hasta juntar 5s de datos. Esa
+        // pausa es sana — es la que evita el desfase audio/video. Con el umbral
+        // tambien en 5s se estaria cambiando de servidor en plena recuperacion
+        // normal. 8s deja terminar la recuperacion sana (5s de búfer + margen)
+        // y solo salta cuando de verdad no llegan datos.
+        //
+        // Tampoco 10s: con el spinner ya visible el usuario tolera la espera,
+        // pero 10 segundos mirando una pausa es justo lo que hace que una app
+        // se perciba como mala. 8 es el punto donde no se pelea con el búfer y
+        // todavia se siente rapido.
         //
         // Se exige currentPos > 0 a proposito: si nunca arranco, el problema es
         // otro (lo cubre el failover de carga inicial) y saltar de servidor
@@ -2215,7 +2233,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             _currentServerIndex == 0 &&
             _serverItems.length > 1 &&
             currentPos > Duration.zero) {
-          threshold = (_retryCount == 0) ? 5 : 10;
+          threshold = 8;
         }
 
         if (_stallSeconds >= threshold && !_isVideoLoading) {
@@ -2262,8 +2280,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
           debugPrint('Stall persistente (${_stallSeconds}s). Recargando...');
           _stallSeconds = 0;
-        _stallPorRotura = false;
-    _stallPorRotura = false;
+          _stallPorRotura = false;
+          // Señal explicita: SOLO este camino (congelamiento real) autoriza
+          // saltar al servidor de la BD.
+          _saltarABDPorCongelamiento = true;
           _reloadVideo();
         }
       } else {
@@ -2280,8 +2300,18 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             if (_noMovementSeconds >= 3) {
               showingSpinner = true;
             }
-            // Para canales en vivo, si el video se congela silenciosamente por 5 segundos, forzar recarga rápida
-            if (_isLiveContent && _noMovementSeconds >= 5 && !_isVideoLoading) {
+            // Para canales en vivo, si el video se congela silenciosamente por 5 segundos, forzar recarga rápida.
+            //
+            // OJO con `currentPos > Duration.zero`: el conteo de arriba SI
+            // incluye la posicion 0 (hace falta para mostrar el spinner cuando
+            // el video nunca arranca), pero la RECARGA no puede. Un canal que
+            // no logra arrancar se queda en 0 para siempre: recargaria cada 5s
+            // en bucle infinito, machacando al proveedor. El arranque fallido
+            // ya lo cubre el failover de carga inicial.
+            if (_isLiveContent &&
+                currentPos > Duration.zero &&
+                _noMovementSeconds >= 5 &&
+                !_isVideoLoading) {
               debugPrint(
                 'Congelamiento en canal en vivo (${_noMovementSeconds}s). Recargando...',
               );
@@ -2498,24 +2528,52 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // un log real perdiendo 6 min 37 s ya vistos.
     //
     // `_lastPosition` la actualiza el timer de stall cada segundo y sobrevive
-    // a la rotura, así que sirve de respaldo. Se toma la mayor de las dos
-    // porque cualquiera de ellas puede ser la que quedó vieja.
-    if (_lastPosition > currentPos) {
+    // a la rotura, así que sirve de respaldo.
+    //
+    // Se exige `currentPos == 0` A PROPOSITO, en vez de quedarse con la mayor
+    // de las dos. `_lastPosition` NO se reinicia al cambiar de contenido y el
+    // timer que la actualiza se cancela durante las recargas, así que puede
+    // traer la posición del episodio ANTERIOR. Quedándose con la mayor, una
+    // recarga en los primeros segundos del episodio siguiente lo arrancaría a
+    // mitad; y un seek hacia atrás seguido de recarga volvería al punto viejo.
+    // Con `== 0` solo actúa en el fallo que se observó de verdad —MPV
+    // reportando 0 tras romperse el pipe— y no puede pisar una posición buena.
+    if (currentPos == Duration.zero && _lastPosition > Duration.zero) {
       currentPos = _lastPosition;
     }
 
+    // La marca se CONSUME siempre, valga o no para esta recarga.
+    //
+    // Si se limpiara solo dentro de la rama que salta, sobreviviria a toda
+    // recarga que no salte —contenido en vivo, ya estabamos en la BD, o no hay
+    // alternativa— y quedaria armada. Entonces una recarga POSTERIOR por otra
+    // causa (pantalla negra, fin de stream prematuro) se encontraria la marca
+    // puesta y saltaria a la BD sin que hubiera habido ningun congelamiento.
+    final saltarABDPorCongelamiento = _saltarABDPorCongelamiento;
+    _saltarABDPorCongelamiento = false;
+
     try {
       if (!_isLiveContent) {
-        // Si estamos en Servidor 0 (Xtream) y el contenido se congela más de 1 vez (_retryCount >= 1),
-        // cambiar automáticamente al Servidor 1 (Base de Datos / Supabase).
+        // Si estamos en Xtream y EXISTE el mismo contenido en la BD, se salta
+        // al PRIMER congelamiento, sin gastar un reintento en Xtream.
+        //
+        // Antes se exigia _retryCount >= 1, o sea: se paraba, se recargaba en
+        // el MISMO Xtream que se acababa de trabar, se volvia a parar, y recien
+        // ahi se saltaba. El usuario pagaba la espera dos veces y para entonces
+        // ya percibia la app como lenta.
+        //
+        // Reintentar el servidor que acaba de fallar es una apuesta; saltar a
+        // uno que sabemos disponible no lo es. Si NO hay alternativa
+        // (_serverItems.length == 1) no se toca nada: sigue el reintento normal
+        // en Xtream, que es lo correcto cuando no hay a donde ir.
         if (_currentServerIndex == 0 &&
-            _retryCount >= 1 &&
-            _serverItems.length > 1) {
+            _serverItems.length > 1 &&
+            (saltarABDPorCongelamiento || _retryCount >= 1)) {
           _retryCount = 0;
           _currentServerIndex = 1;
           final targetItem = _serverItems[1];
           debugPrint(
-            'Xtream se congeló más de 1 vez. Cambiando automáticamente al servidor BD (Server 2) a los ${currentPos.inSeconds}s',
+            'Xtream se congeló. Saltando al servidor BD (Server 2) a los ${currentPos.inSeconds}s',
           );
           _stallTimer?.cancel();
           for (final s in _streamSubscriptions) {

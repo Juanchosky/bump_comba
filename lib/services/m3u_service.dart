@@ -2351,7 +2351,16 @@ class M3UService extends ChangeNotifier {
       debugPrint('Error en la indexación local: $e');
       // FALLBACK: si el isolate falla, hacerlo en el hilo principal como antes.
       // Es lento, pero es preferible a quedarse sin contenido.
-      _items = _filterOut4kItems(items);
+      //
+      // OJO: hay que rehacer AQUI el cruce con el contenido propio. Desde que
+      // se mudo al isolate, `items` llega crudo (solo Xtream/M3U); usarlo tal
+      // cual dejaba fuera los ~500 titulos de Supabase cada vez que el isolate
+      // fallaba — desaparecian de la app sin ningun aviso.
+      final combinado =
+          customItems.isEmpty
+              ? items
+              : _interleaveCustomContent(items, customItems);
+      _items = _filterOut4kItems(combinado);
       _cachedLatestItems = _calculateLatestItems(_items).take(50).toList();
       _cachedRecentItems = null;
       _rebuildSearchIndex();
