@@ -970,9 +970,31 @@ class _FastThumbnailState extends State<FastThumbnail>
   int _imageKey = 0;
   bool _hasLoaded = false;
 
+  /// true mientras hay un reintento pedido POR EL USUARIO en curso: es lo que
+  /// convierte el icono en spinner. Sin esto, tocar no daba ninguna señal y
+  /// parecía que el botón estuviera muerto aunque el reintento sí ocurriera.
+  bool _reintentando = false;
+
+  /// Evita reintentos superpuestos. Al mismo `_performRetry` pueden llegar a la
+  /// vez el toque del usuario, el hard timeout y el tracker de reanudación de la
+  /// app; encadenar dos borrados de caché sobre la misma URL solo desperdicia
+  /// trabajo y puede tirar lo que la otra pasada acababa de bajar.
+  bool _reintentoEnVuelo = false;
+
   // Retry intervals with exponential backoff, capped at 30s.
   // After index 7, all retries use 30s.
   static const List<int> _retryDelays = [1, 2, 4, 8, 15, 20, 25, 30];
+
+  /// Ancho por debajo del cual NO se dibuja el botón de reintento.
+  ///
+  /// En una carátula de cuadrícula el botón taparía una parte notable del
+  /// póster, y encima sería inútil: el tile tiene su propio `onTap` que navega
+  /// al detalle, así que el toque se lo lleva la navegación. El reintento
+  /// silencioso por toque sigue existiendo igual; lo que se omite es el adorno.
+  static const double _anchoMinimoBoton = 200;
+
+  bool get _cabeBotonReintento =>
+      !widget.width.isFinite || widget.width >= _anchoMinimoBoton;
 
   @override
   void initState() {
@@ -1061,6 +1083,13 @@ class _FastThumbnailState extends State<FastThumbnail>
   void _scheduleRetry(Object error) {
     if (!mounted || _hasLoaded) return;
 
+    // Llegó un error: el intento que el usuario pidió terminó, y terminó mal.
+    // Se apaga el spinner y vuelve el icono, asi puede volver a intentarlo.
+    if (_reintentando) {
+      _reintentando = false;
+      setState(() {});
+    }
+
     // Truly permanent errors — server says the image doesn't exist
     if (!_isRetryableError(error)) {
       return; // Stop retrying but don't mark as permanently failed
@@ -1089,8 +1118,16 @@ class _FastThumbnailState extends State<FastThumbnail>
   /// Awaits cache eviction before triggering a rebuild to guarantee
   /// the corrupted file is gone before a fresh download starts.
   Future<void> _performRetry({bool evictCache = true}) async {
-    if (!mounted || _hasLoaded) return;
+    if (!mounted || _hasLoaded || _reintentoEnVuelo) return;
+    _reintentoEnVuelo = true;
+    try {
+      await _performRetryInterno(evictCache: evictCache);
+    } finally {
+      _reintentoEnVuelo = false;
+    }
+  }
 
+  Future<void> _performRetryInterno({bool evictCache = true}) async {
     final url = _resolveUrl();
     // FIX: con evictCache=false no se borra nada y sólo se vuelve a enganchar
     // el stream. Es lo que usa el hard timeout en sus primeros disparos: una
@@ -1232,6 +1269,65 @@ class _FastThumbnailState extends State<FastThumbnail>
     return provider;
   }
 
+  /// Reintento pedido a mano, con aviso visual.
+  ///
+  /// Lo usan LOS DOS caminos —el botón y el `Listener` que cubre la imagen— a
+  /// proposito. El `Listener` dispara en `onPointerDown`, o sea ANTES del
+  /// `onTap` del botón: si cada uno llamara a `_performRetry` por su cuenta, el
+  /// del `Listener` ganaba, dejaba el reintento en vuelo, y para cuando llegaba
+  /// el `onTap` el guard lo descartaba sin haber encendido nunca el spinner.
+  void _reintentarAPeticion() {
+    if (_hasLoaded || _reintentoEnVuelo) return;
+    // Solo se enciende el spinner si hay botón donde mostrarlo; en las
+    // carátulas chicas seria un setState sin nada que dibujar.
+    if (_cabeBotonReintento) {
+      setState(() => _reintentando = true);
+    }
+    _performRetry();
+  }
+
+  /// Botón de reintento para imágenes grandes (backdrops, cabeceras).
+  ///
+  /// Es un botón DE VERDAD, con su propia área táctil de 40x40. Antes era solo
+  /// un icono decorativo encima de un `Listener` que cubría toda la imagen, y
+  /// en las pantallas con `SliverAppBar` quedaba debajo de la barra superior:
+  /// el `Material` de la barra se comía el toque y no pasaba absolutamente
+  /// nada. Por eso ahora va abajo a la derecha, fuera de la banda de la barra.
+  ///
+  /// Mismos colores que antes (negro al 70%, icono blanco al 70%) para no
+  /// alterar el estilo: lo único que cambia es que se puede tocar y que avisa.
+  Widget _botonReintento() {
+    return Material(
+      color: Colors.black.withValues(alpha: 0.7),
+      shape: const CircleBorder(),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: _reintentando ? null : _reintentarAPeticion,
+        child: SizedBox(
+          width: 40,
+          height: 40,
+          child: Center(
+            child:
+                _reintentando
+                    ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white70,
+                      ),
+                    )
+                    : const Icon(
+                      Icons.replay_outlined,
+                      color: Colors.white70,
+                      size: 18,
+                    ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _placeholder() {
     final bool isLow = PerformanceService().isLowPerformance;
     final bool hasError = _retryCount > 0;
@@ -1240,7 +1336,7 @@ class _FastThumbnailState extends State<FastThumbnail>
       behavior: HitTestBehavior.translucent,
       onPointerDown: (_) {
         if (!_hasLoaded) {
-          _performRetry();
+          _reintentarAPeticion();
         }
       },
       child: Container(
@@ -1275,23 +1371,8 @@ class _FastThumbnailState extends State<FastThumbnail>
                   size: 30,
                 ),
               ),
-            if (hasError)
-              Positioned(
-                top: 6,
-                right: 6,
-                child: Container(
-                  padding: const EdgeInsets.all(4),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.7),
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(
-                    Icons.replay_outlined,
-                    color: Colors.white70,
-                    size: 14,
-                  ),
-                ),
-              ),
+            if (hasError && _cabeBotonReintento)
+              Positioned(bottom: 8, right: 8, child: _botonReintento()),
           ],
         ),
       ),
@@ -1333,6 +1414,7 @@ class _FastThumbnailState extends State<FastThumbnail>
                 final bool hasFrame = frame != null || wasSynchronouslyLoaded;
                 if (hasFrame && !_hasLoaded) {
                   _hasLoaded = true;
+                  _reintentando = false;
                   _hardTimeoutTimer?.cancel();
                   final url = _resolveUrl();
                   if (url != null) {
