@@ -1164,6 +1164,17 @@ class TurboProxy {
                 fallbackRetries < 3) {
               final useRange =
                   session.supportsRange && !session.profile.effectiveIsHostile;
+
+              // Ver la nota del otro fallback: sin Range, reanudar a mitad
+              // duplicaria la pelicula dentro del mismo stream.
+              if (!useRange && currentOffset > 0) {
+                _setReason(
+                  'sin soporte de Range: no se puede reanudar desde '
+                  '$currentOffset sin duplicar contenido',
+                );
+                break;
+              }
+
               final legSize = 2 * 1024 * 1024; // 2 MB legs
               final legRangeHeader =
                   'bytes=$currentOffset-${math.min(currentOffset + legSize - 1, session.length - 1)}';
@@ -1178,8 +1189,20 @@ class TurboProxy {
                 }
 
                 final rs = await rq.close().timeout(const Duration(seconds: 5));
+
+                // Ver la nota del otro fallback: un 200 trae el cuerpo desde el
+                // byte 0 y solo vale si aun no enviamos nada.
+                final cuerpoDesdeCero = rs.statusCode == HttpStatus.ok;
+                if (cuerpoDesdeCero && currentOffset > 0) {
+                  await rs.listen(null).cancel();
+                  throw HttpException(
+                    'status 200 con offset $currentOffset: el cuerpo empezaria '
+                    'desde 0 y duplicaria contenido',
+                  );
+                }
+
                 if (rs.statusCode == HttpStatus.partialContent ||
-                    rs.statusCode == HttpStatus.ok) {
+                    cuerpoDesdeCero) {
                   // El contador se pone a cero SOLO si esta pierna entregó
                   // bytes de verdad — nunca al recibir las cabeceras.
                   //
@@ -1383,6 +1406,22 @@ class TurboProxy {
             fallbackRetries < 3) {
           final useRange =
               session.supportsRange && !session.profile.effectiveIsHostile;
+
+          // Sin Range NO se puede reanudar a mitad de archivo: el origen
+          // mandaria el cuerpo desde el byte 0 y esos bytes se pegarian detras
+          // de los currentOffset ya enviados. El reproductor ve la pelicula
+          // REPETIRSE a mitad, el timeline deja de coincidir con el audio, y de
+          // ahi los adelantos, los frenazos y la imagen corriendo para
+          // alcanzar al sonido. Mejor cortar el stream: el detector de
+          // congelamiento recarga y reanuda con un Range limpio.
+          if (!useRange && currentOffset > 0) {
+            _setReason(
+              'sin soporte de Range: no se puede reanudar desde '
+              '$currentOffset sin duplicar contenido',
+            );
+            break;
+          }
+
           final legSize = 2 * 1024 * 1024; // 2 MB legs
           final legRangeHeader =
               'bytes=$currentOffset-${math.min(currentOffset + legSize - 1, session.length - 1)}';
@@ -1397,8 +1436,21 @@ class TurboProxy {
             }
 
             final rs = await rq.close().timeout(const Duration(seconds: 5));
-            if (rs.statusCode == HttpStatus.partialContent ||
-                rs.statusCode == HttpStatus.ok) {
+
+            // Un 200 significa que el origen IGNORO el Range y esta mandando
+            // el cuerpo DESDE EL BYTE 0. Solo sirve si todavia no enviamos
+            // nada: si ya vamos por currentOffset, pegar eso duplica la
+            // pelicula a mitad del stream. Antes se aceptaba igual que un 206.
+            final cuerpoDesdeCero = rs.statusCode == HttpStatus.ok;
+            if (cuerpoDesdeCero && currentOffset > 0) {
+              await rs.listen(null).cancel();
+              throw HttpException(
+                'status 200 con offset $currentOffset: el cuerpo empezaria '
+                'desde 0 y duplicaria contenido',
+              );
+            }
+
+            if (rs.statusCode == HttpStatus.partialContent || cuerpoDesdeCero) {
               // Ver la nota extensa en el fallback de _servePassthrough: el
               // reseteo va DESPUES del cuerpo y solo si hubo progreso real.
               // Resetear al recibir cabeceras convertía esto en un bucle
