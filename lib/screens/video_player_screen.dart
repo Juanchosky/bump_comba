@@ -2412,6 +2412,23 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         }
         _stallSeconds = 0;
         _stallPorRotura = false;
+
+        // ── Aquí se APAGA el spinner ────────────────────────────────────
+        //
+        // `showingSpinner` arranca cada tick con el valor ANTERIOR
+        // (`_isBuffering`) y todos los caminos de abajo solo lo ponen en true.
+        // No habia ninguno que lo bajara: una vez encendido se quedaba
+        // encendido para siempre, con el video reproduciendose fino y el
+        // spinner y su texto encima. La unica forma de quitarlo era pausar y
+        // reanudar, porque ese camino pasa por la salida anticipada de mas
+        // arriba, que si limpia `_isBuffering`.
+        //
+        // Estamos en la rama de "MPV no reporta buffering". Si ademas
+        // `_noMovementSeconds` esta a cero —la posicion avanza, o el usuario
+        // pauso a proposito— no hay absolutamente nada que esperar.
+        if (_noMovementSeconds == 0) {
+          showingSpinner = false;
+        }
       }
 
       // ── Detección de "audio sin video" (pantalla negra con audio) ─────
