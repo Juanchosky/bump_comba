@@ -109,6 +109,35 @@ server {
         add_header X-Cache $upstream_cache_status always;
     }
 
+    # HLS para Chromecast — VA ANTES de la location de video A PROPOSITO.
+    #
+    # nginx evalua las expresiones regulares en ORDEN DE APARICION y se queda
+    # con la primera que casa. Si esta fuera despues, la de video se la comeria.
+    #
+    # Al transmitir al televisor, la app reescribe la URL de .mkv a .m3u8 (ver
+    # cast_service.dart). Un playlist HLS es un archivo de texto de unos pocos
+    # KB: trocearlo con `slice 1m` y exigir respuestas 206 hace que nginx se
+    # atragante, porque el origen contesta 200 con el playlist entero. La app
+    # tiene un respaldo que reintenta con la URL original, asi que la
+    # transmision acababa funcionando —pero pagando un intento fallido en cada
+    # arranque.
+    #
+    # Cache de 10s: el playlist puede cambiar, pero 10s bastan para que varios
+    # televisores viendo lo mismo no golpeen el origen a la vez.
+    location ~ ^/(movie|series|live)/[^/]+/[^/]+/.+\.m3u8$ {
+        proxy_cache              vodapi;
+        proxy_cache_key          "$uri$is_args$args";
+        proxy_cache_valid        200 10s;
+        proxy_cache_lock         on;
+        proxy_cache_lock_timeout 5s;
+
+        proxy_http_version 1.1;
+        proxy_set_header   Connection "";
+        proxy_pass         http://127.0.0.1:8081;
+
+        add_header X-Cache $upstream_cache_status always;
+    }
+
     # Video. usuario/clave se capturan aparte para NO meterlos en la clave de
     # cache: asi el cache sobrevive a un cambio de contrasena.
     location ~ ^/(?<tipo>movie|series)/(?<usuario>[^/]+)/(?<clave>[^/]+)/(?<item>.+)$ {

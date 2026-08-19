@@ -1269,16 +1269,46 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             ]);
           } else {
             futures.addAll([
-              mpv.setProperty('cache-secs', lowPerf ? '90' : '300'),
+              // ── Cuánto se adelanta la descarga ─────────────────────────
+              //
+              // Estaba en 300s / 256 MB / 180s de readahead: unos 340 segundos
+              // de película metidos en RAM del teléfono por reproducción. Eso
+              // hacía que un stream de 6 Mbps descargara a 30-46 Mbps en
+              // ráfagas (se midió en el log), o sea seis veces más de lo que
+              // necesita para verse.
+              //
+              // POR QUE IMPORTA MAS DE LO QUE PARECE: el puerto del VPS es de
+              // 200 Mbit/s y en hora pico hay decenas de streams a la vez. Cada
+              // uno pidiendo 40 Mbps satura el puerto, nginx no puede leer del
+              // origen a tiempo, la petición se alarga, y el proveedor la corta.
+              // Es el mismo `upstream prematurely closed connection` del log.
+              // O sea que el exceso de buffer no solo gastaba de más: estaba
+              // CAUSANDO los cortes que el buffer pretendía cubrir.
+              //
+              // 120s sigue siendo muchísimo para VOD —aguanta dos minutos de
+              // caída total— y los cortes que vimos duran segundos, no minutos.
+              // Los cuatro valores van coherentes entre sí: 96 MB a 6 Mbps son
+              // ~128s, justo por encima de los 120s de cache. Antes el tope de
+              // bytes (340s) era mayor que el de tiempo, así que no limitaba
+              // nada.
+              //
+              // De paso, bajar de 256 MB a 96 MB por reproducción quita presión
+              // de memoria al teléfono, que es sospechoso de los ANR.
+              mpv.setProperty('cache-secs', lowPerf ? '60' : '120'),
               mpv.setProperty(
                 'demuxer-max-bytes',
-                lowPerf ? '67108864' : '268435456',
+                lowPerf ? '50331648' : '100663296',
               ),
+              // Búfer HACIA ATRAS. Importa mas de lo que parece: al cambiar de
+              // idioma o activar subtitulos, MPV vuelve a demuxar la posicion
+              // actual para la pista nueva, y esos bytes ya quedaron detras de
+              // la cabeza del demuxer. Si el bufer de atras es corto hay que
+              // repedirlos por red, con seek y parón. 48 MB son ~64s a 6 Mbps.
               mpv.setProperty(
                 'demuxer-max-back-bytes',
-                lowPerf ? '16777216' : '67108864',
+                lowPerf ? '25165824' : '50331648',
               ),
-              mpv.setProperty('demuxer-readahead-secs', lowPerf ? '60' : '180'),
+              mpv.setProperty('demuxer-readahead-secs', lowPerf ? '45' : '90'),
               mpv.setProperty('hls-bitrate', 'auto'),
               mpv.setProperty('force-seekable', 'yes'),
               mpv.setProperty(
@@ -1520,9 +1550,23 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           for (int i = 0; i < 5; i++) {
             await Future.delayed(const Duration(milliseconds: 500));
             if (!mounted || _player == null) break;
-            final diff =
-                (_player!.state.position.inSeconds - startFrom.inSeconds).abs();
-            if (diff < 10) break;
+            final pos = _player!.state.position.inSeconds;
+
+            // Se sale en cuanto estamos EN el objetivo o ya lo pasamos.
+            //
+            // Antes la condicion era (pos - startFrom).abs() < 10. Con .abs(),
+            // en cuanto la reproduccion avanzaba mas de 10s POR ENCIMA del
+            // objetivo —cosa que pasa a los pocos segundos— la diferencia
+            // CRECIA en vez de encogerse, la salida no se cumplia nunca, y el
+            // bucle gastaba sus 5 intentos haciendo seek al mismo segundo una
+            // y otra vez. Cada uno arrastraba al espectador hacia atras y
+            // luego el video corria para recuperar: es el "se adelanta solo y
+            // se retrasa" con el audio desincronizado.
+            //
+            // Solo hay que reintentar si nos quedamos CORTOS, que es el unico
+            // fallo real del seek de arranque.
+            if (pos >= startFrom.inSeconds - 10) break;
+
             _lastSeekTime = DateTime.now();
             await _player!.seek(startFrom);
           }

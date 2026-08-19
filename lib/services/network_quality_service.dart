@@ -39,7 +39,6 @@ class NetworkQualityService {
   static const int _historySize = 4;
 
   // Anti-flicker: solo degradar si 2 mediciones seguidas son malas
-  int _consecutivePoorReadings = 0;
   int _consecutiveGoodReadings = 0;
 
   // Throughput REAL del stream reportado por el player (cache-speed de MPV).
@@ -61,7 +60,6 @@ class NetworkQualityService {
     if (url == null) {
       _activeStreamUrl = null;
       _bandwidthHistory.clear();
-      _consecutivePoorReadings = 0;
       _consecutiveGoodReadings = 0;
       return;
     }
@@ -87,7 +85,6 @@ class NetworkQualityService {
 
     // Different host: reset history but trigger immediate measurement so we have an estimate within 800ms
     _bandwidthHistory.clear();
-    _consecutivePoorReadings = 0;
     _consecutiveGoodReadings = 0;
     unawaited(_measure());
   }
@@ -314,7 +311,6 @@ class NetworkQualityService {
 
   void _applyQualityWithHysteresis(NetworkQuality newQuality) {
     if (newQuality == quality.value) {
-      _consecutivePoorReadings = 0;
       _consecutiveGoodReadings = 0;
       return;
     }
@@ -323,26 +319,25 @@ class NetworkQualityService {
     final isImproving = newQuality.index < quality.value.index;
 
     if (isDegrading) {
-      _consecutivePoorReadings++;
       _consecutiveGoodReadings = 0;
-      // Degradar inmediatamente si es muy grave (offline o poor) para evitar stalls
-      if (newQuality == NetworkQuality.offline ||
-          newQuality == NetworkQuality.poor) {
-        _applyQuality(
-          newQuality,
-          estimatedBandwidthMbps.value,
-          latencyMs.value,
-        );
-      } else if (newQuality == NetworkQuality.fair &&
-          _consecutivePoorReadings >= 1) {
-        _applyQuality(
-          newQuality,
-          estimatedBandwidthMbps.value,
-          latencyMs.value,
-        );
-      }
+
+      // Degradar se aplica SIEMPRE en la primera lectura.
+      //
+      // FIX: antes habia una rama para offline/poor, otra para fair, y
+      // NINGUNA para good. Una caida de excellent a good no se aplicaba jamas:
+      // la app se quedaba clavada en excellent hasta que la red se desplomara
+      // del todo hasta fair. Eso es lo que producia lineas como
+      // "NetworkQuality: excellent | 2.00 Mbps" en el log — y con esa etiqueta
+      // la app usaba 18 descargas de imagen en paralelo, timeouts de 4s y
+      // margenes de 600ms sobre un enlace de 2 Mbps, que es justo la receta
+      // para los atascos del arranque.
+      //
+      // Bajar es la direccion segura: equivocarse hacia abajo cuesta algo de
+      // velocidad, equivocarse hacia arriba cuesta stalls. Subir sigue
+      // exigiendo 3 lecturas consecutivas, que es donde la histeresis si
+      // aporta (evita oscilar con un bache pasajero).
+      _applyQuality(newQuality, estimatedBandwidthMbps.value, latencyMs.value);
     } else if (isImproving) {
-      _consecutivePoorReadings = 0;
 
       // Si la calidad anterior era 'offline', recuperamos inmediatamente
       // para evitar quedar atascados por 60 segundos debido a la histeresis

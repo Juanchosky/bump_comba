@@ -66,6 +66,22 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
 
   bool _hasMedia = false;
   bool _buffering = false;
+
+  /// true cuando la capa nativa ya pintó un frame de verdad a la textura.
+  ///
+  /// Hace falta porque MPV emite `buffering=false` en cuanto ABRE el archivo,
+  /// mucho antes de tener imagen. Con solo `_buffering` el spinner se apagaba
+  /// ahí, el widget `Video` todavía no tenía nada que pintar, y el televisor se
+  /// quedaba en negro sin ninguna señal de que estuviera cargando.
+  bool _primerFrameListo = false;
+
+  void _onRectCambio() {
+    final r = _videoController.rect.value;
+    final listo = r != null && r.width > 0 && r.height > 0;
+    if (listo && !_primerFrameListo && mounted) {
+      setState(() => _primerFrameListo = true);
+    }
+  }
   String _deviceName = 'Bump Comba TV';
 
   // Metadatos del contenido actual (llegan en el LOAD desde el teléfono).
@@ -126,10 +142,28 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
         mpv.setProperty('deband', 'no'),
         mpv.setProperty('dither-depth', 'no'),
         mpv.setProperty('cache', 'yes'),
-        mpv.setProperty('cache-secs', '300'),
-        mpv.setProperty('demuxer-max-bytes', '134217728'),
-        mpv.setProperty('demuxer-max-back-bytes', '16777216'),
-        mpv.setProperty('demuxer-readahead-secs', '300'),
+        // ── Reparto del búfer entre "adelante" y "atrás" ───────────────────
+        //
+        // Estaba en 128 MB adelante / 16 MB atras, con 300s de lectura
+        // adelantada. Esa proporcion 8:1 rompe el cambio de pista: al elegir
+        // otro idioma o activar subtitulos, MPV tiene que volver a demuxar la
+        // posicion ACTUAL para la pista nueva. Con 300s de readahead la cabeza
+        // del demuxer va lejisimos por delante, asi que los bytes de donde
+        // esta viendo el usuario caen en la parte de ATRAS del bufer — que solo
+        // guardaba 16 MB, unos 20 segundos a 6 Mbps. Ya estaban descartados.
+        //
+        // Sin esos bytes, MPV no puede servir el cambio desde memoria y vuelve
+        // a pedir por red: seek completo, decodificador vaciado y parón. Es lo
+        // que se ve al cambiar de idioma.
+        //
+        // El total sigue siendo 144 MB — importante, porque estos TV box tienen
+        // ~1 GB de RAM. Solo se reparte distinto: 48 MB atras son ~64s, de
+        // sobra para cualquier cambio de pista, y bajar el readahead evita que
+        // la cabeza se aleje tanto de la posicion de reproduccion.
+        mpv.setProperty('cache-secs', '120'),
+        mpv.setProperty('demuxer-max-bytes', '100663296'),
+        mpv.setProperty('demuxer-max-back-bytes', '50331648'),
+        mpv.setProperty('demuxer-readahead-secs', '90'),
         mpv.setProperty('cache-pause-initial', 'yes'),
         mpv.setProperty('cache-pause-wait', '4'),
         mpv.setProperty('cache-pause', 'yes'),
@@ -242,6 +276,9 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
       setState(() {
         _hasMedia = true;
         _buffering = true;
+        // Cada LOAD empieza sin imagen: el spinner se mantiene hasta que
+        // llegue el primer frame del contenido NUEVO, no del anterior.
+        _primerFrameListo = false;
       });
     }
     try {
@@ -323,8 +360,19 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
         debugPrint('TvReceiver: seek de arranque falló: $e');
       }
       await Future.delayed(const Duration(milliseconds: 500));
-      final diff = (_player.state.position - target).abs();
-      if (diff < const Duration(seconds: 5)) break;
+
+      // Se sale en cuanto estamos EN el objetivo o ya lo pasamos.
+      //
+      // Antes se comparaba (position - target).abs() < 5s. Con .abs(), en
+      // cuanto la reproduccion avanzaba mas de 5s por encima del objetivo la
+      // diferencia CRECIA, la salida no se cumplia nunca, y los 6 intentos se
+      // gastaban haciendo seek al mismo segundo. En el log del televisor se
+      // veia clarisimo: la posicion real iba por 484, 505, 522... y volvia una
+      // y otra vez a 404, con el decodificador vaciandose en cada salto.
+      //
+      // Solo se reintenta si nos quedamos CORTOS: ese es el unico fallo real
+      // del seek de arranque.
+      if (_player.state.position >= target - const Duration(seconds: 5)) break;
     }
     _pushStatus();
   }
@@ -340,6 +388,13 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
   // ─────────────────────────── Listeners del player ──────────────────────────
 
   void _listenPlayer() {
+    // El `rect` del VideoController queda en null hasta que la capa nativa
+    // renderiza el primer frame de verdad a la textura. Es la única señal
+    // fiable de "ya hay imagen" — el estado `buffering` de MPV se apaga mucho
+    // antes. Mismo criterio que usa el reproductor del teléfono para detectar
+    // pantalla negra.
+    _videoController.rect.addListener(_onRectCambio);
+
     _subs.add(
       _player.stream.tracks.listen((_) {
         _pushTracks();
@@ -708,6 +763,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     _hideControlsTimer?.cancel();
     _seekDebounce?.cancel();
     _focusNode.dispose();
+    _videoController.rect.removeListener(_onRectCambio);
     _service.hasClient.removeListener(_onClientChanged);
     for (final s in _subs) {
       s.cancel();
@@ -754,7 +810,10 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
                 )
                 : _WaitingScreen(deviceName: _deviceName),
             // Spinner de carga idéntico al del reproductor del teléfono.
-            if (_hasMedia && _buffering)
+            // Se mantiene mientras haya buffering O mientras no haya llegado el
+            // primer frame: sin lo segundo, el arranque de una transmisión era
+            // pantalla negra sin ninguna indicación de que estuviera cargando.
+            if (_hasMedia && (_buffering || !_primerFrameListo))
               const Center(
                 child: _AppLoadingAnimation(size: 54, strokeWidth: 4),
               ),

@@ -965,10 +965,21 @@ class TurboProxy {
 
         if (!headersSent) {
           headersSent = true;
-          resp.statusCode =
-              rangeHeader != null ? HttpStatus.partialContent : rs.statusCode;
 
           if (legging) {
+            // El status lo decide lo que pidio EL REPRODUCTOR, nunca lo que
+            // contesto el origen.
+            //
+            // Aqui troceamos en piernas con Range por dentro, asi que el origen
+            // responde 206 aunque el reproductor no haya pedido ningun rango.
+            // Antes ese 206 se reenviaba tal cual: el reproductor recibia una
+            // respuesta PARCIAL sin cabecera Content-Range —HTTP invalido, esa
+            // cabecera solo se pone si el reproductor pidio rango— y ademas con
+            // el Content-Length del archivo completo. Con esas cabeceras MPV
+            // calcula mal el timeline y se comporta de forma rara al buscar.
+            resp.statusCode =
+                rangeHeader != null ? HttpStatus.partialContent : HttpStatus.ok;
+
             // OJO: el Content-Length de ESTA pierna acotada no es el largo
             // total que enviaremos al reproductor (seguirán llegando más
             // piernas después). Construimos nosotros las cabeceras en vez
@@ -996,7 +1007,9 @@ class TurboProxy {
             // y Dart sirve la respuesta en chunked transfer-encoding.
           } else {
             // Sin soporte confirmado de Range, o pierna única con fin
-            // explícito: reenviamos las cabeceras del origen tal cual.
+            // explícito: aquí sí hay correspondencia 1:1 entre lo que pedimos
+            // al origen y lo que entregamos, así que se reenvía tal cual.
+            resp.statusCode = rs.statusCode;
             rs.headers.forEach((name, values) {
               if (name.toLowerCase() != 'transfer-encoding') {
                 for (final val in values) {
@@ -1868,7 +1881,10 @@ class _TurboPipeline {
       } catch (err) {
         lastErr = err;
         if (attempt == 3) {
-          session.noteFailure();
+          // Fallo de red bajando un trozo: es rotura, no prueba de que el host
+          // no sirva rangos. Marcar hostil desde aquí desactivaba Turbo 30 días
+          // para todo el host por culpa de un tramo con mala suerte.
+          session.noteFailure(porRotura: true);
         }
         if (_cancelled) break;
         if (err is SocketException) await session.refreshTarget();
