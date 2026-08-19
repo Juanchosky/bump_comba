@@ -809,6 +809,35 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
                   ),
                 )
                 : _WaitingScreen(deviceName: _deviceName),
+
+            // Fondo de carga: la carátula del contenido mientras no hay imagen.
+            //
+            // El arranque de una transmisión son unos 4 segundos en los que
+            // MPV abre el stream y todavía no hay ni un frame. Antes eso era
+            // negro absoluto. La carátula ya viaja en el mensaje LOAD, así que
+            // mostrarla no cuesta ni una petición extra de red y convierte una
+            // espera muerta en una pantalla que dice QUE se está cargando.
+            //
+            // Se apaga en cuanto llega el primer frame real, igual que el
+            // spinner, para no quedarse encima del vídeo.
+            if (_hasMedia && !_primerFrameListo && _mediaThumb != null)
+              Positioned.fill(
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Image.network(
+                      _mediaThumb!,
+                      fit: BoxFit.cover,
+                      // Si la carátula falla no pasa nada: se queda el negro de
+                      // siempre y el spinner sigue haciendo su trabajo.
+                      errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                    ),
+                    // Oscurecido para que el spinner y el título se lean encima.
+                    Container(color: Colors.black.withValues(alpha: 0.65)),
+                  ],
+                ),
+              ),
+
             // Spinner de carga idéntico al del reproductor del teléfono.
             // Se mantiene mientras haya buffering O mientras no haya llegado el
             // primer frame: sin lo segundo, el arranque de una transmisión era
