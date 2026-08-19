@@ -313,7 +313,19 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool _castFailoverInProgress = false;
   DateTime? _lastCastFailoverAt;
   static const Duration _castFailoverCooldown = Duration(seconds: 15);
-  static const int _castStallThresholdSeconds = 15;
+  /// Segundos sin avance en el TV antes de saltar al servidor alternativo.
+  ///
+  /// Estaba en 15 y se notaba: el usuario veia el televisor cargando mas de 8
+  /// segundos con el otro servidor disponible y sin que pasara nada.
+  ///
+  /// 8 es el mismo umbral que usa el reproductor del telefono para VOD, y deja
+  /// margen sobre el `cache-pause-wait` de 4s del receptor: una recarga de
+  /// bufer sana termina bastante antes, asi que no se pelean. Bajar mas
+  /// arriesgaria cambiar de servidor durante una pausa normal.
+  ///
+  /// La posicion del TV llega por STATUS cada 500 ms, asi que a 8s hay 16
+  /// muestras: resolucion de sobra para distinguir parado de lento.
+  static const int _castStallThresholdSeconds = 8;
 
   // Visual Notice system
   String? _noticeMessage;
