@@ -108,11 +108,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   bool _isOffline = false;
   bool _bannerDismissed = false;
 
-  // Slow loading feedback
-  bool _showSlowLoadingMessage = false;
-  Timer? _slowLoadingTimer;
-  // _stallTimer removed â€” no longer used
-
   // Search
   // bool _isSearching = false; // REMOVED
   // final TextEditingController _searchController = TextEditingController(); // REMOVED
@@ -377,7 +372,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     _m3uService.removeListener(_onM3UServiceUpdated);
     WatchProgressService().removeListener(_onWatchProgressUpdated);
     _disposeLivePlayer();
-    _slowLoadingTimer?.cancel();
     _liveSearchController.dispose();
     _inlineControlsTimer?.cancel();
     _pcLicenseController.dispose();
@@ -438,20 +432,11 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
   Future<void> _initService() async {
     try {
-      // Reset slow loading state and download indicators
+      _m3uService.reiniciarProgreso();
       setState(() {
-        _showSlowLoadingMessage = false;
         _downloadDetail = null;
         // FIX: Resetear para que se recalcule con los datos del caché al reiniciar
         _recommendedItems = null;
-      });
-      _slowLoadingTimer?.cancel();
-
-      // Start timer to show message if loading takes too long
-      _slowLoadingTimer = Timer(const Duration(seconds: 7), () {
-        if (mounted && _isLoading) {
-          setState(() => _showSlowLoadingMessage = true);
-        }
       });
 
       // Crucial: Initialize Premium Service immediately so the PC License is loaded
@@ -487,6 +472,11 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           useRetry: true,
           retryAttempts: 3,
           onProgress: (progress) {
+            if (progress.totalBytes != null && progress.totalBytes! > 0) {
+              final ratio = (progress.receivedBytes / progress.totalBytes!)
+                  .clamp(0.0, 1.0);
+              _m3uService.actualizarProgreso(0.20 + (ratio * 0.55));
+            }
             if (mounted) {
               setState(() {
                 if (progress.totalBytes != null && progress.totalBytes! > 0) {
@@ -501,16 +491,17 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           },
         );
 
-        _slowLoadingTimer?.cancel();
+        if (success) {
+          _m3uService.actualizarProgreso(1.0, 'Listo');
+          await Future.delayed(const Duration(milliseconds: 280));
+        }
+
         if (mounted) {
           setState(() {
             _downloadDetail = null;
             if (success) _isLoading = false;
           });
         }
-      } else {
-        // Si ya no estamos cargando (FastBoot), solo cancelamos el timer
-        _slowLoadingTimer?.cancel();
       }
 
       if (success) {
@@ -1101,30 +1092,13 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   }
 
   Widget _buildLoading() {
-    Widget loadingContent = const _HiddenMoviesShimmer();
-
-    if (!_showSlowLoadingMessage && _downloadDetail == null) {
-      return SizedBox.expand(
-        child: Align(alignment: Alignment.topCenter, child: loadingContent),
-      );
-    }
-
     return Stack(
       children: [
-        loadingContent,
-        Container(
-          color: AppColors.background.withValues(alpha: 0.7),
-          child: Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const CupertinoActivityIndicator(radius: 17),
-                if (_downloadDetail != null) ...[
-                  const SizedBox(height: 24),
-                  const _AnimatedLoadingMessages(),
-                ],
-              ],
-            ),
+        const _HiddenMoviesShimmer(),
+        Positioned.fill(
+          child: Container(
+            color: AppColors.background.withValues(alpha: 0.82),
+            child: const _CuadroDeCarga(),
           ),
         ),
         if (_downloadDetail != null)
@@ -1135,8 +1109,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             child: Center(
               child: Text(
                 _downloadDetail!,
-                style: TextStyle(
-                  color: const Color.fromARGB(255, 245, 245, 245),
+                style: const TextStyle(
+                  color: Color.fromARGB(255, 209, 209, 209),
                   fontSize: 13,
                   fontWeight: FontWeight.w500,
                   letterSpacing: 0.5,
@@ -7659,5 +7633,224 @@ class _HeroBannerRevealState extends State<_HeroBannerReveal>
         );
       },
     );
+  }
+}
+
+/// Cuadro de carga minimalista con spinner interior y borde perimetral que se completa
+class _CuadroDeCarga extends StatefulWidget {
+  const _CuadroDeCarga();
+
+  @override
+  State<_CuadroDeCarga> createState() => _CuadroDeCargaState();
+}
+
+class _CuadroDeCargaState extends State<_CuadroDeCarga>
+    with SingleTickerProviderStateMixin {
+  double _mostrado = 0;
+  Timer? _tick;
+  late AnimationController _waveController;
+
+  @override
+  void initState() {
+    super.initState();
+    _waveController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1600),
+    )..repeat();
+
+    _tick = Timer.periodic(const Duration(milliseconds: 35), (_) {
+      if (!mounted) return;
+      final objetivo = M3UService().progresoCarga.value;
+      double siguiente;
+
+      if (objetivo >= 1.0) {
+        // Cierre veloz y fluido hasta completar el 100% del cuadro
+        siguiente = _mostrado + (1.0 - _mostrado) * 0.22 + 0.03;
+        if (siguiente >= 0.99) siguiente = 1.0;
+      } else if (_mostrado < objetivo) {
+        siguiente = _mostrado + (objetivo - _mostrado) * 0.12 + 0.003;
+      } else {
+        // Avance continuo y orgánico para recorrer los lados del recuadro
+        siguiente = _mostrado + 0.0032;
+        if (siguiente > 0.94) siguiente = 0.94;
+      }
+
+      siguiente = siguiente.clamp(0.0, 1.0);
+      if ((siguiente - _mostrado).abs() > 0.0001) {
+        setState(() => _mostrado = siguiente);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _waveController.dispose();
+    _tick?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final porcentaje = (_mostrado * 100).clamp(0, 100).toInt();
+
+    return Center(
+      child: SizedBox(
+        width: 86,
+        height: 86,
+        child: AnimatedBuilder(
+          animation: _waveController,
+          builder: (context, child) {
+            return CustomPaint(
+              painter: _BordeProgresoPainter(
+                progress: _mostrado,
+                wavePhase: _waveController.value * 2 * pi,
+                borderRadius: 20,
+                strokeWidth: 2.8,
+              ),
+              child: Center(
+                child: Text(
+                  '$porcentaje%',
+                  style: TextStyle(
+                    color: const Color.fromARGB(255, 209, 209, 209),
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: -0.5,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                    shadows: [
+                      Shadow(
+                        color: Colors.white.withValues(alpha: 0.35),
+                        blurRadius: 10,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _BordeProgresoPainter extends CustomPainter {
+  final double progress;
+  final double wavePhase;
+  final double borderRadius;
+  final double strokeWidth;
+
+  _BordeProgresoPainter({
+    required this.progress,
+    required this.wavePhase,
+    this.borderRadius = 18,
+    this.strokeWidth = 2.6,
+  });
+
+  Path _createRoundedRectPath(Size size, double r, double sw) {
+    final double half = sw / 2;
+    final double w = size.width - sw;
+    final double h = size.height - sw;
+    final double rad = r.clamp(0.0, (w < h ? w : h) / 2);
+
+    final path = Path();
+    // Inicia en el centro superior y gira en sentido horario
+    path.moveTo(half + w / 2, half);
+    path.lineTo(half + w - rad, half);
+    path.arcToPoint(Offset(half + w, half + rad), radius: Radius.circular(rad));
+    path.lineTo(half + w, half + h - rad);
+    path.arcToPoint(
+      Offset(half + w - rad, half + h),
+      radius: Radius.circular(rad),
+    );
+    path.lineTo(half + rad, half + h);
+    path.arcToPoint(Offset(half, half + h - rad), radius: Radius.circular(rad));
+    path.lineTo(half, half + rad);
+    path.arcToPoint(Offset(half + rad, half), radius: Radius.circular(rad));
+    path.lineTo(half + w / 2, half);
+    return path;
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (progress <= 0.005) return;
+
+    final fullPath = _createRoundedRectPath(size, borderRadius, strokeWidth);
+
+    final metrics = fullPath.computeMetrics().toList();
+    if (metrics.isEmpty) return;
+
+    final metric = metrics.first;
+    final totalLength = metric.length;
+    final extractLength = totalLength * progress.clamp(0.0, 1.0);
+
+    // Construir trayectoria ondulada orgánica
+    final wavyPath = Path();
+    const double step = 2.0;
+    bool first = true;
+
+    for (double s = 0.0; s <= extractLength; s += step) {
+      final tangent = metric.getTangentForOffset(s);
+      if (tangent == null) continue;
+
+      // Vector normal perpendicular
+      final normal = Offset(-tangent.vector.dy, tangent.vector.dx);
+
+      // Taper suave en extremos para arranque y cierre perfectos
+      final double taper =
+          ((s / 12.0).clamp(0.0, 1.0)) *
+          (((extractLength - s) / 12.0).clamp(0.0, 1.0));
+
+      // Onda senoidal con fase animada continua
+      final double waveOffset = sin((s * 0.16) - wavePhase) * (2.2 * taper);
+
+      final point = tangent.position + normal * waveOffset;
+
+      if (first) {
+        wavyPath.moveTo(point.dx, point.dy);
+        first = false;
+      } else {
+        wavyPath.lineTo(point.dx, point.dy);
+      }
+    }
+
+    final endTangent = metric.getTangentForOffset(extractLength);
+    if (endTangent != null && !first) {
+      wavyPath.lineTo(endTangent.position.dx, endTangent.position.dy);
+    }
+
+    final rect = Offset.zero & size;
+
+    // Resplandor rojo suave (halo)
+    final glowPaint =
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = strokeWidth + 1.5
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round
+          ..color = const Color(0xFFE71C26).withValues(alpha: 0.32)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.solid, 3.5);
+    canvas.drawPath(wavyPath, glowPaint);
+
+    // Trazo principal rojo vibrante con gradiente
+    final paint =
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = strokeWidth
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round
+          ..shader = const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFFE22C35), Color(0xFFFF4854), Color(0xFFE22C35)],
+            stops: [0.0, 0.5, 1.0],
+          ).createShader(rect);
+
+    canvas.drawPath(wavyPath, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _BordeProgresoPainter oldDelegate) {
+    return oldDelegate.progress != progress ||
+        oldDelegate.wavePhase != wavePhase;
   }
 }
