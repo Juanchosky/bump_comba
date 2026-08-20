@@ -1672,13 +1672,24 @@ class M3UService extends ChangeNotifier {
       }
 
       if (loginResult == null) {
+        // Distinguir "tu red bloquea" de "el servidor te rechaza" importa: son
+        // problemas distintos con soluciones distintas, y decir siempre lo
+        // segundo hacía que un usuario en una red que bloquea IPTV —wifi de
+        // universidad, oficina, algunos ISP de España— creyera que su cuenta
+        // estaba mala. Con VPN funcionaba perfectamente.
+        final porRed =
+            xtream.ultimoFalloLogin == XtreamLoginFallo.red;
         debugPrint(
-          'Xtream login validation failed for $host — credentials may be '
-          'invalid, IP blocked, or server in maintenance.',
+          'Xtream login validation failed for $host '
+          '(${xtream.ultimoFalloLogin.name})',
         );
         _lastError =
-            'El servidor no acepta las credenciales actuales. '
-            'Puede que tu IP esté bloqueada o el servidor esté en mantenimiento.';
+            porRed
+                ? 'No se pudo conectar con el servidor. Tu red parece estar '
+                    'bloqueando el acceso: probá con datos móviles o una VPN.'
+                : 'El servidor no acepta las credenciales actuales. '
+                    'Puede que tu IP esté bloqueada o el servidor esté en '
+                    'mantenimiento.';
         return [];
       }
 

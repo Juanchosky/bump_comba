@@ -121,7 +121,7 @@ server {
         proxy_cache               img;
         proxy_cache_key           "$uri";
         proxy_cache_valid         200 60d;
-        proxy_cache_valid         404 403 1h;
+        proxy_cache_valid         404 403 1m;
         proxy_cache_valid         any 1m;
         proxy_cache_lock          on;
         proxy_cache_lock_timeout  10s;
@@ -148,7 +148,7 @@ server {
         proxy_cache               img;
         proxy_cache_key           "$arg_url";
         proxy_cache_valid         200 60d;
-        proxy_cache_valid         404 403 1h;
+        proxy_cache_valid         404 403 1m;
         proxy_cache_valid         any 1m;
         proxy_cache_lock          on;
         proxy_cache_lock_timeout  10s;

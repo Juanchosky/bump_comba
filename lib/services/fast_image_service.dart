@@ -970,11 +970,6 @@ class _FastThumbnailState extends State<FastThumbnail>
   int _imageKey = 0;
   bool _hasLoaded = false;
 
-  /// true mientras hay un reintento pedido POR EL USUARIO en curso: es lo que
-  /// convierte el icono en spinner. Sin esto, tocar no daba ninguna señal y
-  /// parecía que el botón estuviera muerto aunque el reintento sí ocurriera.
-  bool _reintentando = false;
-
   /// Evita reintentos superpuestos. Al mismo `_performRetry` pueden llegar a la
   /// vez el toque del usuario, el hard timeout y el tracker de reanudación de la
   /// app; encadenar dos borrados de caché sobre la misma URL solo desperdicia
@@ -984,17 +979,6 @@ class _FastThumbnailState extends State<FastThumbnail>
   // Retry intervals with exponential backoff, capped at 30s.
   // After index 7, all retries use 30s.
   static const List<int> _retryDelays = [1, 2, 4, 8, 15, 20, 25, 30];
-
-  /// Ancho por debajo del cual NO se dibuja el botón de reintento.
-  ///
-  /// En una carátula de cuadrícula el botón taparía una parte notable del
-  /// póster, y encima sería inútil: el tile tiene su propio `onTap` que navega
-  /// al detalle, así que el toque se lo lleva la navegación. El reintento
-  /// silencioso por toque sigue existiendo igual; lo que se omite es el adorno.
-  static const double _anchoMinimoBoton = 200;
-
-  bool get _cabeBotonReintento =>
-      !widget.width.isFinite || widget.width >= _anchoMinimoBoton;
 
   @override
   void initState() {
@@ -1083,18 +1067,14 @@ class _FastThumbnailState extends State<FastThumbnail>
   void _scheduleRetry(Object error) {
     if (!mounted || _hasLoaded) return;
 
-    // Llegó un error: el intento que el usuario pidió terminó, y terminó mal.
-    // Se apaga el spinner y vuelve el icono, asi puede volver a intentarlo.
-    if (_reintentando) {
-      _reintentando = false;
-      setState(() {});
-    }
-
-    // Truly permanent errors — server says the image doesn't exist
-    if (!_isRetryableError(error)) {
-      return; // Stop retrying but don't mark as permanently failed
-      // — network recovery or app resume can still trigger a retry
-    }
+    // Errores "permanentes" (404 / 403 / respuesta HTML): NO se abandona.
+    //
+    // Antes esto hacia `return` y la caratula quedaba MUERTA hasta reiniciar la
+    // app — que es exactamente el sintoma reportado. Pero un 404 aqui casi
+    // nunca es definitivo: el origen sobrecargado responde 404, y encima el VPS
+    // cachea esa respuesta un rato. Con un backoff largo la imagen se recupera
+    // sola en cuanto esa respuesta caduca, sin que el usuario haga nada.
+    final bool permanente = !_isRetryableError(error);
 
     // Don't schedule if offline — _FailedImageTracker will auto-retry
     // when network recovers
@@ -1102,9 +1082,16 @@ class _FastThumbnailState extends State<FastThumbnail>
       return;
     }
 
-    // Exponential backoff with cap at 30s
-    final delayIndex = _retryCount.clamp(0, _retryDelays.length - 1);
-    final delay = Duration(seconds: _retryDelays[delayIndex]);
+    // Backoff normal para fallos transitorios; mucho mas espaciado para los
+    // "permanentes", que no conviene machacar pero tampoco dar por perdidos.
+    final Duration delay;
+    if (permanente) {
+      delay = Duration(seconds: 45 * (1 << _retryCount.clamp(0, 3)));
+    } else {
+      delay = Duration(
+        seconds: _retryDelays[_retryCount.clamp(0, _retryDelays.length - 1)],
+      );
+    }
     _retryCount++;
     _retryTimer?.cancel();
 
@@ -1269,112 +1256,49 @@ class _FastThumbnailState extends State<FastThumbnail>
     return provider;
   }
 
-  /// Reintento pedido a mano, con aviso visual.
+  /// Marcador de posicion mientras la caratula no esta.
   ///
-  /// Lo usan LOS DOS caminos —el botón y el `Listener` que cubre la imagen— a
-  /// proposito. El `Listener` dispara en `onPointerDown`, o sea ANTES del
-  /// `onTap` del botón: si cada uno llamara a `_performRetry` por su cuenta, el
-  /// del `Listener` ganaba, dejaba el reintento en vuelo, y para cuando llegaba
-  /// el `onTap` el guard lo descartaba sin haber encendido nunca el spinner.
-  void _reintentarAPeticion() {
-    if (_hasLoaded || _reintentoEnVuelo) return;
-    // Solo se enciende el spinner si hay botón donde mostrarlo; en las
-    // carátulas chicas seria un setState sin nada que dibujar.
-    if (_cabeBotonReintento) {
-      setState(() => _reintentando = true);
-    }
-    _performRetry();
-  }
-
-  /// Botón de reintento para imágenes grandes (backdrops, cabeceras).
-  ///
-  /// Es un botón DE VERDAD, con su propia área táctil de 40x40. Antes era solo
-  /// un icono decorativo encima de un `Listener` que cubría toda la imagen, y
-  /// en las pantallas con `SliverAppBar` quedaba debajo de la barra superior:
-  /// el `Material` de la barra se comía el toque y no pasaba absolutamente
-  /// nada. Por eso ahora va abajo a la derecha, fuera de la banda de la barra.
-  ///
-  /// Mismos colores que antes (negro al 70%, icono blanco al 70%) para no
-  /// alterar el estilo: lo único que cambia es que se puede tocar y que avisa.
-  Widget _botonReintento() {
-    return Material(
-      color: Colors.black.withValues(alpha: 0.7),
-      shape: const CircleBorder(),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: _reintentando ? null : _reintentarAPeticion,
-        child: SizedBox(
-          width: 40,
-          height: 40,
-          child: Center(
-            child:
-                _reintentando
-                    ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white70,
-                      ),
-                    )
-                    : const Icon(
-                      Icons.replay_outlined,
-                      color: Colors.white70,
-                      size: 18,
-                    ),
-          ),
-        ),
-      ),
-    );
-  }
-
+  /// Sin boton de reintento ni gesto de toque: los reintentos ocurren SOLOS en
+  /// segundo plano (ver _scheduleRetry y _resetHardTimeout). El boton daba una
+  /// falsa sensacion de control —en las cuadriculas el toque se lo llevaba la
+  /// navegacion al detalle, asi que no pasaba nada— y encima ensuciaba el
+  /// diseño mostrando un icono de error en cada hueco.
   Widget _placeholder() {
     final bool isLow = PerformanceService().isLowPerformance;
-    final bool hasError = _retryCount > 0;
 
-    return Listener(
-      behavior: HitTestBehavior.translucent,
-      onPointerDown: (_) {
-        if (!_hasLoaded) {
-          _reintentarAPeticion();
-        }
-      },
-      child: Container(
-        width: widget.width,
-        height: widget.height,
-        color: const Color(0xFF1a1a1a),
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            if (widget.title != null && !isLow)
-              Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Text(
-                    widget.title!,
-                    textAlign: TextAlign.center,
-                    maxLines: 4,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.3),
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                    ),
+    return Container(
+      width: widget.width,
+      height: widget.height,
+      color: const Color(0xFF1a1a1a),
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          if (widget.title != null && !isLow)
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Text(
+                  widget.title!,
+                  textAlign: TextAlign.center,
+                  maxLines: 4,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.3),
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
                   ),
                 ),
-              )
-            else
-              Center(
-                child: Icon(
-                  Icons.movie_creation_outlined,
-                  color: Colors.white.withValues(alpha: 0.1),
-                  size: 30,
-                ),
               ),
-            if (hasError && _cabeBotonReintento)
-              Positioned(bottom: 8, right: 8, child: _botonReintento()),
-          ],
-        ),
+            )
+          else
+            Center(
+              child: Icon(
+                Icons.movie_creation_outlined,
+                color: Colors.white.withValues(alpha: 0.1),
+                size: 30,
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -1414,7 +1338,6 @@ class _FastThumbnailState extends State<FastThumbnail>
                 final bool hasFrame = frame != null || wasSynchronouslyLoaded;
                 if (hasFrame && !_hasLoaded) {
                   _hasLoaded = true;
-                  _reintentando = false;
                   _hardTimeoutTimer?.cancel();
                   final url = _resolveUrl();
                   if (url != null) {
