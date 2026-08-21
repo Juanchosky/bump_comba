@@ -192,25 +192,6 @@ class M3UService extends ChangeNotifier {
   // ROBUST-1: Completer-based init guard (prevents concurrent double-init)
   Completer<void>? _initCompleter;
 
-  // ── Progreso de la carga inicial ─────────────────────────────────────────
-  final ValueNotifier<double> progresoCarga = ValueNotifier<double>(0);
-  final ValueNotifier<String> etapaCarga = ValueNotifier<String>('');
-
-  void _etapa(double avance, String texto) {
-    if (avance > progresoCarga.value) progresoCarga.value = avance.clamp(0.0, 1.0);
-    etapaCarga.value = texto;
-  }
-
-  void actualizarProgreso(double avance, [String? texto]) {
-    if (avance > progresoCarga.value) progresoCarga.value = avance.clamp(0.0, 1.0);
-    if (texto != null) etapaCarga.value = texto;
-  }
-
-  void reiniciarProgreso() {
-    progresoCarga.value = 0;
-    etapaCarga.value = '';
-  }
-
   // ── Public getters ───────────────────────────────────────────────────────
   List<M3UItem> get items => _items;
   List<M3UItem> get movies => _movies;
@@ -1324,11 +1305,9 @@ class M3UService extends ChangeNotifier {
   }) async {
     _lastError = null;
     try {
-      _etapa(0.08, 'Conectando con el servidor…');
       // PERF: Si ya hay items y el caché NO ha expirado, devolvemos true inmediatamente
       final bool isExpired = _isCacheExpired();
       if (_items.isNotEmpty && !forceRefresh && !isExpired) {
-        _etapa(1.0, 'Listo');
         return true;
       }
 
@@ -1337,7 +1316,6 @@ class M3UService extends ChangeNotifier {
       // al servidor más actualizado y disponible.
       if (_items.isEmpty || isExpired || forceRefresh) {
         await _reResolveCodesIfNeeded();
-        _etapa(0.18, 'Verificando acceso…');
       }
 
       final filtersMap =
@@ -2292,7 +2270,6 @@ class M3UService extends ChangeNotifier {
     bool scheduleRecentCompute = true,
     List<M3UItem> customItems = const [],
   }) async {
-    actualizarProgreso(0.80, 'Organizando contenido…');
     final sw = Stopwatch()..start();
     try {
       // PERF: el filtrado 4K, el cálculo de "más recientes", la normalización

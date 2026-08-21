@@ -112,10 +112,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
           decoration: BoxDecoration(
             color: const Color(0xFF111111),
             borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-            border: Border.all(
-              color: Colors.white.withValues(alpha: 0.08),
-              width: 1,
-            ),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.08), width: 1),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,

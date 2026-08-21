@@ -190,11 +190,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   // Muestreo de la velocidad REAL de descarga (cache-speed de MPV) cada 5s.
   int _throughputSampleTick = 0;
   int _stallSeconds = 0;
-
   /// Se decide al inicio de cada episodio de stall: true si la causa fue una
   /// rotura del pipe del proxy local (reaccionar rapido) en vez de lentitud.
   bool _stallPorRotura = false;
-
   /// true SOLO cuando el salto a la BD lo pide el detector de congelamiento.
   ///
   /// Antes esto se deducia de `_retryCount >= 1`, pero _reloadVideo() se llama
@@ -315,7 +313,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool _castFailoverInProgress = false;
   DateTime? _lastCastFailoverAt;
   static const Duration _castFailoverCooldown = Duration(seconds: 15);
-
   /// Segundos sin avance en el TV antes de saltar al servidor alternativo.
   ///
   /// Estaba en 15 y se notaba: el usuario veia el televisor cargando mas de 8
@@ -1022,12 +1019,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           _currentServerIndex = existingIdx;
         } else {
           final logoToUse = _primaryLogo ?? item.logo;
-          _serverItems =
-              [item, ...item.alternatives].map((s) {
-                return (logoToUse != null && logoToUse.isNotEmpty)
-                    ? s.copyWith(logo: logoToUse)
-                    : s;
-              }).toList();
+          _serverItems = [item, ...item.alternatives].map((s) {
+            return (logoToUse != null && logoToUse.isNotEmpty)
+                ? s.copyWith(logo: logoToUse)
+                : s;
+          }).toList();
           _serverUrls = _serverItems.map((a) => a.url).toList();
           _currentServerIndex = 0;
         }
@@ -2228,7 +2224,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       if (!playerState.playing || _isAppInBackground) {
         _stallSeconds = 0;
         _stallPorRotura = false;
-        _stallPorRotura = false;
+    _stallPorRotura = false;
         _noMovementSeconds = 0;
         _noVideoSeconds = 0;
         if (mounted && _isBuffering) {
@@ -4277,6 +4273,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     );
   }
 
+
+
   void _showSpeedSelection() {
     if (_player == null) return;
 
@@ -6214,8 +6212,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     if (_currentServerIndex < 0 || _currentServerIndex >= total) {
       return '$n/$total (índice fuera de rango)';
     }
-    final host =
-        Uri.tryParse(_serverItems[_currentServerIndex].url)?.host ?? '';
+    final host = Uri.tryParse(_serverItems[_currentServerIndex].url)?.host ?? '';
     return host.isEmpty ? '$n/$total $nombre' : '$n/$total $nombre · $host';
   }
 
