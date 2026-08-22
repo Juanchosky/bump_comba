@@ -161,7 +161,21 @@ class CatalogSnapshotService {
 
       if (res.statusCode == HttpStatus.ok && res.bodyBytes.isNotEmpty) {
         final cuerpo = utf8.decode(res.bodyBytes, allowMalformed: true);
-        onBytes(res.bodyBytes.length);
+
+        // ── Bytes que viajaron, no bytes descomprimidos ────────────────────
+        //
+        // `bodyBytes` ya viene descomprimido: el cliente HTTP pide gzip solo y
+        // lo deshace antes de entregarlo. Reportar su longitud hacía que el log
+        // dijera "4.414.227 bytes" cuando por el cable habían ido 958.075
+        // (verificado: content-encoding gzip, content-length 958075). Un log
+        // que se equivoca por 4,6x manda a buscar problemas donde no los hay, y
+        // este número además alimenta la barra de progreso de la descarga.
+        //
+        // `content-length` es el tamaño real transferido, comprimido o no.
+        final enElCable =
+            int.tryParse(res.headers[HttpHeaders.contentLengthHeader] ?? '') ??
+            res.bodyBytes.length;
+        onBytes(enElCable);
         // El archivo se guarda ANTES que el ETag: si el guardado falla, el
         // ETag viejo sigue vigente y la próxima vez se vuelve a bajar entero.
         // Al revés quedaría un ETag apuntando a un archivo que no existe.
@@ -171,7 +185,8 @@ class CatalogSnapshotService {
           await prefs.setString('$_prefsEtagPrefix$nombre', etag);
         }
         debugPrint(
-          'CatalogSnapshot: $nombre bajado (${res.bodyBytes.length} bytes)',
+          'CatalogSnapshot: $nombre bajado ($enElCable bytes en el cable, '
+          '${res.bodyBytes.length} descomprimidos)',
         );
         return cuerpo;
       }

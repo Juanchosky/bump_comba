@@ -157,8 +157,17 @@ class _HostProfile {
     return true;
   }
 
+  /// Veces SEGUIDAS que este host respondio 200 a una peticion con Range.
+  ///
+  /// Es lo unico que demuestra "no sirve rangos". Va aparte de
+  /// `consecutiveFailures` a proposito: ese contador lo suben tambien los
+  /// cortes de conexion, que no prueban nada sobre el soporte de Range.
+  /// No se persiste: cada arranque empieza limpio.
+  int rangeIgnorados = 0;
+
   void noteSuccess(int parallel, double speedMbps) {
     consecutiveFailures = 0;
+    rangeIgnorados = 0;
     turboHelpful = true;
     lastEvaluation = DateTime.now(); // Registrar fecha de éxito
 
@@ -188,19 +197,51 @@ class _HostProfile {
   /// desactivaba Turbo para ese host —para TODAS las demás películas— durante
   /// un mes. Ahora un corte baja el paralelismo, que sí ayuda cuando el origen
   /// va justo, pero nunca llega a hostil.
-  void noteFailure({bool porRotura = false}) {
+  void noteFailure({bool porRotura = false, bool rangeIgnorado = false}) {
     consecutiveFailures++;
     lastEvaluation = DateTime.now();
+
+    // ── Hostil SOLO por rangos ignorados, y solo si se repite ──────────────
+    //
+    // Antes era `consecutiveFailures >= 10 && !porRotura`, y ahi estaba el
+    // problema: `consecutiveFailures` lo suben TAMBIEN los cortes de conexion.
+    // En una pelicula grande sobre una conexion justa se llega a 10 sin
+    // esfuerzo, y entonces UN solo 200 suelto —de esos que un proxy devuelve
+    // en un hueco de cache— bastaba para marcar el host como hostil.
+    //
+    // Y hostil no es una nota al pie: se guarda en disco y dura 30 dias,
+    // desactivando Turbo para TODO el contenido de ese host durante un mes.
+    // Comprobado el 2026-08-22 contra 217.216.80.212: el host devuelve 206 con
+    // Content-Range correcto tanto desde el byte 0 como desde mitad de archivo
+    // —soporta rangos perfectamente— y aun asi la app lo habia marcado
+    // "Hostil (Sin Rangos)". A partir de ahi la reproduccion queda degradada
+    // sin motivo, que es justo lo que se reporto como "empeoro".
+    //
+    // Ahora hace falta que ignore el Range 3 veces SEGUIDAS, y un 206
+    // cualquiera pone el contador a cero (ver `noteRangeOk`).
+    if (rangeIgnorado) {
+      rangeIgnorados++;
+      if (rangeIgnorados >= 3) {
+        isHostile = true;
+        debugPrint(
+          'TurboProxy [$host]: perfil marcado como Hostil (Sin Rangos) '
+          'tras $rangeIgnorados respuestas 200 seguidas a peticiones con Range',
+        );
+      }
+    }
+
     if (consecutiveFailures >= 3 && maxWorkingParallel > 2) {
       maxWorkingParallel = 2;
       debugPrint('TurboProxy [$host]: perfil restringido a máx 2 conexiones');
     } else if (consecutiveFailures >= 6 && maxWorkingParallel > 1) {
       maxWorkingParallel = 1;
       debugPrint('TurboProxy [$host]: perfil restringido a máx 1 conexión');
-    } else if (consecutiveFailures >= 10 && !porRotura) {
-      isHostile = true;
-      debugPrint('TurboProxy [$host]: perfil marcado como Hostil (Sin Rangos)');
     }
+  }
+
+  /// El host respondio 206: la racha de rangos ignorados se corta.
+  void noteRangeOk() {
+    rangeIgnorados = 0;
   }
 
   void noteSessionEnd({required bool turboWasUsed}) {
@@ -268,7 +309,13 @@ class TurboProxy {
   /// Versión de la limpieza de perfiles ya guardados. Subirla vuelve a
   /// ejecutar la limpieza una vez en cada instalación. Ver `_loadHostProfiles`.
   static const String _prefsCleanupKey = 'turbo_proxy_profiles_cleanup';
-  static const int _prefsCleanupVersion = 2;
+  /// Se sube cada vez que hay que rehabilitar perfiles mal sancionados.
+  ///
+  /// v3 (2026-08-22): la marca hostil se ponia con 10 fallos consecutivos de
+  /// cualquier tipo mas un 200 suelto, asi que hosts que SI sirven rangos
+  /// quedaron marcados "Sin Rangos" y con Turbo apagado 30 dias. Arreglado en
+  /// `noteFailure`, pero la marca ya escrita en disco hay que borrarla.
+  static const int _prefsCleanupVersion = 3;
 
   /// Bytes mínimos que una pierna de fallback tiene que entregar para contar
   /// como progreso y perdonar los reintentos acumulados. Por debajo de esto la
@@ -931,6 +978,8 @@ class TurboProxy {
 
         if (rs.statusCode == HttpStatus.partialContent) {
           session.supportsRange = true;
+          // Sirvio el rango: lo anterior no era un host sin soporte de Range.
+          session.profile.noteRangeOk();
           final cr = rs.headers.value(HttpHeaders.contentRangeHeader);
           if (cr != null) {
             final slash = cr.lastIndexOf('/');
@@ -945,7 +994,7 @@ class TurboProxy {
           if (isFirstLeg && explicitEnd == null) legging = true;
         } else if (rs.statusCode == HttpStatus.ok) {
           if (rangeHeader != null) {
-            session.profile.noteFailure();
+            session.profile.noteFailure(rangeIgnorado: true);
             _markProfilesDirty();
           }
           session.supportsRange = false;
@@ -1704,10 +1753,11 @@ class _Session {
     updateMetrics();
   }
 
-  /// [porRotura] se propaga al perfil del host: ver `_HostProfile.noteFailure`.
-  void noteFailure({bool porRotura = false}) {
+  /// [porRotura] y [rangeIgnorado] se propagan al perfil del host: ver
+  /// `_HostProfile.noteFailure`.
+  void noteFailure({bool porRotura = false, bool rangeIgnorado = false}) {
     parallelFailures++;
-    profile.noteFailure(porRotura: porRotura);
+    profile.noteFailure(porRotura: porRotura, rangeIgnorado: rangeIgnorado);
     proxy._markProfilesDirty();
 
     if (parallelFailures >= 3 && activeParallel > 2) {
