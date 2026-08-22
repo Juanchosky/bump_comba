@@ -2203,17 +2203,60 @@ class M3UService extends ChangeNotifier {
       }
     }
 
-    // ── Paso 4: Distribuir huérfanos uniformemente en toda la lista ──
+    // ── Paso 4: Distribuir huérfanos ENTRE LOS DE SU MISMO TIPO ────────
+    //
+    // Un huérfano es un item propio cuya categoría no existe en el catálogo del
+    // proveedor (p. ej. "Romántico", que el panel no tiene). Antes se repartían
+    // por posición en la lista GLOBAL, a partir del 20%, y eso los mandaba
+    // siempre al frente de las series:
+    //
+    //   la lista global es [25.648 películas ... 3.219 series]
+    //   el 20% de 28.867 cae en la posición ~5.773  ->  zona de PELÍCULAS
+    //
+    // Una serie propia insertada ahí queda ANTES de la primera serie real del
+    // panel. Y como la fila "Todas las Series" filtra por isSeries conservando
+    // el orden, las tres series propias salían primero, empujando al catálogo
+    // del proveedor detrás. Se veía como "lo propio siempre de primero".
+    //
+    // Ahora cada grupo se reparte solo entre items de su mismo tipo, así que
+    // una serie propia cae entre series y una película propia entre películas,
+    // y en ambos casos después del primer 20% de ESE bloque.
     if (unmappedCategoryCustom.isNotEmpty) {
-      final int totalLen = result.length;
-      final double orphanStep = totalLen / (unmappedCategoryCustom.length + 1);
-      // Insertar empezando como mínimo después del 20% de la lista
-      final int orphanMinStart = (totalLen * 0.2).round().clamp(1, totalLen);
+      for (final bool esSerie in [false, true]) {
+        final grupo =
+            unmappedCategoryCustom.where((c) => c.isSeries == esSerie).toList();
+        if (grupo.isEmpty) continue;
 
-      for (int i = 0; i < unmappedCategoryCustom.length; i++) {
-        int pos = orphanMinStart + (orphanStep * (i + 1)).round();
-        pos = pos.clamp(1, result.length); // nunca en posición 0
-        result.insert(pos, unmappedCategoryCustom[i]);
+        // Posiciones actuales de los items del mismo tipo. Se recalculan por
+        // grupo porque el grupo anterior ya movió índices.
+        final indices = <int>[];
+        for (int i = 0; i < result.length; i++) {
+          if (result[i].isSeries == esSerie) indices.add(i);
+        }
+
+        // Sin items de ese tipo (o demasiado pocos para repartir): al final,
+        // que es preferible a colarlos al principio.
+        if (indices.length < 3) {
+          result.addAll(grupo);
+          continue;
+        }
+
+        final int minStart = (indices.length * 0.2).round().clamp(
+          1,
+          indices.length - 1,
+        );
+        final double step = (indices.length - minStart) / (grupo.length + 1);
+
+        int offset = 0;
+        for (int i = 0; i < grupo.length; i++) {
+          final int slot = (minStart + step * (i + 1)).round().clamp(
+            0,
+            indices.length - 1,
+          );
+          final int pos = (indices[slot] + 1 + offset).clamp(1, result.length);
+          result.insert(pos, grupo[i]);
+          offset++;
+        }
       }
     }
 

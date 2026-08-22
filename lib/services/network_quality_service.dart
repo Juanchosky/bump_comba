@@ -170,16 +170,28 @@ class NetworkQualityService {
 
     double bandwidth;
     int latency;
+    // De donde salio el numero de esta muestra. El valor puede venir de una
+    // medida real del reproductor o de una estimacion a partir de la latencia,
+    // y el log no lo distinguia: se leia "0.30 Mbps" como si se hubiera medido
+    // el ancho de banda, cuando lo que se midio fue un handshake TCP.
+    //
+    // El 2026-08-22 eso mando a buscar el problema en el VPS y en el proxy
+    // durante un buen rato; la estimacion resulto correcta (0.30 estimado vs
+    // 0.34 real en el test de velocidad), pero saber que era una estimacion
+    // habria acortado el camino.
+    String origen;
 
     if (streamUrl != null && streamUrl.startsWith('http')) {
       // Medir directamente contra el servidor IPTV
       final result = await _measureAgainstStream(streamUrl);
       bandwidth = result.$1;
       latency = result.$2;
+      origen = 'estimado por latencia';
     } else {
       // Fallback: solo tipo de conexión (sin medición activa para no gastar datos)
       bandwidth = _inferBandwidthFromConnectionType(results);
       latency = 100;
+      origen = 'inferido del tipo de red';
     }
 
     // Si el player reportó throughput real recientemente, esa es LA medida:
@@ -187,6 +199,7 @@ class NetworkQualityService {
     final realAt = _lastRealMbpsAt;
     if (realAt != null && DateTime.now().difference(realAt).inSeconds < 30) {
       bandwidth = _lastRealMbps!;
+      origen = 'medido por el reproductor';
     }
 
     // Actualizar historial
@@ -215,7 +228,7 @@ class NetworkQualityService {
       _lastLoggedQuality = quality.value;
       debugPrint(
         'NetworkQuality: ${quality.value.name} | '
-        '${smoothBandwidth.toStringAsFixed(2)} Mbps | ${latency}ms | '
+        '${smoothBandwidth.toStringAsFixed(2)} Mbps ($origen) | ${latency}ms | '
         'Mobile: ${isMobileData.value}',
       );
     }
