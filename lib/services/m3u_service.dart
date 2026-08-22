@@ -14,6 +14,7 @@ import '../services/premium_service.dart';
 import '../services/dynamic_scraper_service.dart';
 import '../services/turbo_proxy.dart';
 import '../services/xtream_service.dart';
+import '../services/catalog_snapshot_service.dart';
 import '../utils/security_utils.dart';
 import '../models/m3u_item.dart';
 import '../models/download_progress.dart';
@@ -1714,6 +1715,33 @@ class M3UService extends ChangeNotifier {
         debugPrint('Error parsing server_info: $e');
       }
 
+      // ── Camino rapido: catalogo pre-horneado del VPS ────────────────
+      //
+      // Se intenta ANTES de pedirle nada al panel. Medido el 2026-08-22: el
+      // panel tarda 21.3 s y manda 22.48 MB; el snapshot son 1.06 MB (VOD +
+      // series) servidos en 2.8 ms desde el disco del VPS, y un 304 de 0 bytes
+      // cuando el catalogo no cambio.
+      //
+      // El login de arriba NO se puede saltar aunque el catalogo venga del VPS:
+      // de ahi sale el host real (server_info.url) con el que se arman las URLs
+      // de reproduccion, y ademas es lo que valida las credenciales del usuario.
+      // Pero es una peticion chica, no las seis del catalogo.
+      //
+      // Si devuelve null por lo que sea —VPS caido, ETag raro, formato que esta
+      // version no entiende— se sigue de largo al camino de siempre. Ese
+      // fallback no es opcional: sin el, un VPS caido dejaria la app muerta en
+      // vez de simplemente lenta.
+      final desdeSnapshot = await CatalogSnapshotService().fetchItems(
+        host: effectiveHost,
+        user: user,
+        pass: pass,
+        onProgress: onProgress,
+      );
+      if (desdeSnapshot != null && desdeSnapshot.isNotEmpty) {
+        _marcarFavoritos(desdeSnapshot);
+        return desdeSnapshot;
+      }
+
       int vodBytes = 0;
       int seriesBytes = 0;
 
@@ -1797,24 +1825,32 @@ class M3UService extends ChangeNotifier {
 
       final allItems = results.expand((x) => x!).toList();
 
-      // EFFICIENCY: Pre-index existing favorites for O(1) lookup
-      final existingFavUrls = _favoriteItems.map((f) => f.url).toSet();
-
-      for (var item in allItems) {
-        final key = '${item.name}_${item.url}';
-        if (_favorites.contains(key)) {
-          item.isFavorite = true;
-          if (!existingFavUrls.contains(item.url)) {
-            _favoriteItems.add(item);
-            existingFavUrls.add(item.url);
-          }
-        }
-      }
+      _marcarFavoritos(allItems);
 
       return allItems;
     } catch (e) {
       debugPrint('Error fetching Xtream items: $e');
       return [];
+    }
+  }
+
+  /// Marca como favoritos los items que ya estaban guardados.
+  ///
+  /// Lo comparten el camino del snapshot y el del panel: son la misma lista de
+  /// M3UItem y tienen que quedar igual por los dos lados.
+  void _marcarFavoritos(List<M3UItem> items) {
+    // EFFICIENCY: Pre-index existing favorites for O(1) lookup
+    final existingFavUrls = _favoriteItems.map((f) => f.url).toSet();
+
+    for (var item in items) {
+      final key = '${item.name}_${item.url}';
+      if (_favorites.contains(key)) {
+        item.isFavorite = true;
+        if (!existingFavUrls.contains(item.url)) {
+          _favoriteItems.add(item);
+          existingFavUrls.add(item.url);
+        }
+      }
     }
   }
 
@@ -4878,59 +4914,92 @@ bool _isSmartTitleMatch(String raw1, String raw2) {
 
 /// SMART-SEARCH: Normalize text for search — removes accents, articles,
 /// special chars, extra spaces. Used for both query and indexed item names.
+// ── Regex de _normalizeForSearch, compiladas UNA vez ────────────────────────
+//
+// Estaban construidas con RegExp(...) dentro de la funcion, que corre una vez
+// por item: con 23.500 items del catalogo son ~490.000 construcciones por
+// arranque. Medido sobre los 20.302 nombres reales del catalogo: 1422 ms con
+// las regex dentro, 1053 ms con ellas izadas (x1.4) en escritorio; en un
+// telefono de gama media eso son varios segundos.
+final RegExp _reFranquiciaCualquiera = RegExp(
+  r'\b(juego de tronos|lobezno|aguja dinamica|gloton|origenes|origen'
+  r'|vengadores|rapidos y furiosos|rapido y furioso|rapidos & furiosos'
+  r'|guerra de las galaxias|el senor de los anillos|senor de los anillos'
+  r'|el hombre arana|hombre arana|piratas del caribe|mi villano favorito'
+  r'|los increibles|increibles|el caballero de la noche|el caballero oscuro'
+  r'|el hombre de acero|intensa mente|intensamente|una aventura congelada'
+  r'|zootropolis|vaiana)\b',
+);
+final RegExp _reJuegoTronos = RegExp(r'\bjuego de tronos\b');
+final RegExp _reLobezno = RegExp(r'\blobezno\b|\baguja dinamica\b|\bgloton\b');
+final RegExp _reOrigenes = RegExp(r'\borigenes\b|\borigen\b');
+final RegExp _reVengadores = RegExp(r'\bvengadores\b');
+final RegExp _reRapidos = RegExp(
+  r'\brapidos y furiosos\b|\brapido y furioso\b|\brapidos & furiosos\b',
+);
+final RegExp _reGuerraGalaxias = RegExp(r'\bguerra de las galaxias\b');
+final RegExp _reSenorAnillos = RegExp(
+  r'\bel senor de los anillos\b|\bsenor de los anillos\b',
+);
+final RegExp _reHombreArana = RegExp(r'\bel hombre arana\b|\bhombre arana\b');
+final RegExp _rePiratas = RegExp(r'\bpiratas del caribe\b');
+final RegExp _reVillanoFavorito = RegExp(r'\bmi villano favorito\b');
+final RegExp _reIncreibles = RegExp(r'\blos increibles\b|\bincreibles\b');
+final RegExp _reCaballeroNoche = RegExp(
+  r'\bel caballero de la noche\b|\bel caballero oscuro\b',
+);
+final RegExp _reHombreAcero = RegExp(r'\bel hombre de acero\b');
+final RegExp _reIntensamente = RegExp(r'\bintensa mente\b|\bintensamente\b');
+final RegExp _reCongelada = RegExp(r'\buna aventura congelada\b');
+final RegExp _reZootropolis = RegExp(r'\bzootropolis\b');
+final RegExp _reVaiana = RegExp(r'\bvaiana\b');
+final RegExp _reArticulos = RegExp(
+  r'\b(the|el|la|los|las|un|una|unos|unas|a|an)\b',
+);
+final RegExp _reParentesis = RegExp(r'[\(\[].*?[\)\]]');
+final RegExp _reNoAlfanum = RegExp(r'[^a-z0-9\s]');
+final RegExp _reEspacios = RegExp(r'\s+');
+
 String _normalizeForSearch(String input) {
   String n = _removeAccents(input.toLowerCase().trim());
 
   // Franchise & title translations so searching in Spanish or English matches both
-  n = n.replaceAll(RegExp(r'\bjuego de tronos\b'), 'game of thrones');
-  n = n.replaceAll(
-    RegExp(r'\blobezno\b|\baguja dinamica\b|\bgloton\b'),
-    'wolverine',
-  );
-  n = n.replaceAll(RegExp(r'\borigenes\b|\borigen\b'), 'origins');
-  n = n.replaceAll(RegExp(r'\bvengadores\b'), 'avengers');
-  n = n.replaceAll(
-    RegExp(
-      r'\brapidos y furiosos\b|\brapido y furioso\b|\brapidos & furiosos\b',
-    ),
-    'fast and furious',
-  );
-  n = n.replaceAll(RegExp(r'\bguerra de las galaxias\b'), 'star wars');
-  n = n.replaceAll(
-    RegExp(r'\bel senor de los anillos\b|\bsenor de los anillos\b'),
-    'lord of the rings',
-  );
-  n = n.replaceAll(
-    RegExp(r'\bel hombre arana\b|\bhombre arana\b'),
-    'spiderman',
-  );
-  n = n.replaceAll(
-    RegExp(r'\bpiratas del caribe\b'),
-    'pirates of the caribbean',
-  );
-  n = n.replaceAll(RegExp(r'\bmi villano favorito\b'), 'despicable me');
-  n = n.replaceAll(RegExp(r'\blos increibles\b|\bincreibles\b'), 'incredibles');
-  n = n.replaceAll(
-    RegExp(r'\bel caballero de la noche\b|\bel caballero oscuro\b'),
-    'dark knight',
-  );
-  n = n.replaceAll(RegExp(r'\bel hombre de acero\b'), 'man of steel');
-  n = n.replaceAll(RegExp(r'\bintensa mente\b|\bintensamente\b'), 'inside out');
-  n = n.replaceAll(RegExp(r'\buna aventura congelada\b'), 'frozen');
-  n = n.replaceAll(RegExp(r'\bzootropolis\b'), 'zootopia');
-  n = n.replaceAll(RegExp(r'\bvaiana\b'), 'moana');
+  //
+  // Las 17 sustituciones de abajo son frases fijas que casi ningun titulo del
+  // catalogo contiene. Antes se ejecutaban las 17 sobre TODOS los items: 17
+  // recorridos completos de la cadena para no cambiar nada en el 99% de los
+  // casos. Este unico test agrupa las mismas frases, asi que si no hay ninguna
+  // se saltan las 17 de golpe. El resultado es identico por construccion: si
+  // este regex no encuentra nada, ninguna de las sustituciones habria tocado
+  // la cadena.
+  if (_reFranquiciaCualquiera.hasMatch(n)) {
+    n = n.replaceAll(_reJuegoTronos, 'game of thrones');
+    n = n.replaceAll(_reLobezno, 'wolverine');
+    n = n.replaceAll(_reOrigenes, 'origins');
+    n = n.replaceAll(_reVengadores, 'avengers');
+    n = n.replaceAll(_reRapidos, 'fast and furious');
+    n = n.replaceAll(_reGuerraGalaxias, 'star wars');
+    n = n.replaceAll(_reSenorAnillos, 'lord of the rings');
+    n = n.replaceAll(_reHombreArana, 'spiderman');
+    n = n.replaceAll(_rePiratas, 'pirates of the caribbean');
+    n = n.replaceAll(_reVillanoFavorito, 'despicable me');
+    n = n.replaceAll(_reIncreibles, 'incredibles');
+    n = n.replaceAll(_reCaballeroNoche, 'dark knight');
+    n = n.replaceAll(_reHombreAcero, 'man of steel');
+    n = n.replaceAll(_reIntensamente, 'inside out');
+    n = n.replaceAll(_reCongelada, 'frozen');
+    n = n.replaceAll(_reZootropolis, 'zootopia');
+    n = n.replaceAll(_reVaiana, 'moana');
+  }
 
   // Remove articles in Spanish and English
-  n = n.replaceAll(
-    RegExp(r'\b(the|el|la|los|las|un|una|unos|unas|a|an)\b'),
-    ' ',
-  );
+  n = n.replaceAll(_reArticulos, ' ');
   // Remove content in parentheses and brackets (quality tags, years, etc.)
-  n = n.replaceAll(RegExp(r'[\(\[].*?[\)\]]'), ' ');
+  n = n.replaceAll(_reParentesis, ' ');
   // Remove special characters except alphanumeric and spaces
-  n = n.replaceAll(RegExp(r'[^a-z0-9\s]'), ' ');
+  n = n.replaceAll(_reNoAlfanum, ' ');
   // Collapse multiple spaces
-  n = n.replaceAll(RegExp(r'\s+'), ' ').trim();
+  n = n.replaceAll(_reEspacios, ' ').trim();
   return n;
 }
 
