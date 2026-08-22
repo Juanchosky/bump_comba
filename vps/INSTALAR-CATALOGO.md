@@ -73,9 +73,17 @@ real. Corré el script otra vez, seguido:
 ```
 
 Tiene que decir `sin cambios ... ETag intacto` en las tres listas. Si dice
-`ACTUALIZADO` dos veces seguidas sin que haya entrado contenido nuevo, algo
-está metiendo variación en el archivo y hay que arreglarlo antes de seguir —
-si no, cada usuario redescarga 1.21 MB **cada hora** en vez de una vez al día.
+`ACTUALIZADO` dos veces seguidas sin que haya entrado contenido nuevo, cada
+usuario redescargaría 1.21 MB **cada hora** en vez de una vez al día.
+
+Mirá el número de items de las dos corridas:
+
+- **Mismo número de items pero dice `ACTUALIZADO` las dos veces** → el panel te
+  está devolviendo el mismo catálogo en distinto orden. El script respeta el
+  orden del panel a propósito (ver abajo), así que ahí hay que ordenar por
+  `added` descendente en `catalogo.sh`. Avisame y lo cambio.
+- **Distinto número de items** → entró contenido nuevo entre las dos corridas.
+  Es normal, probá otra vez.
 
 ## 5. Publicarlo en nginx
 
@@ -168,6 +176,41 @@ redescargar los canales.
 Los campos vacíos se omiten. En `series.json`, `i` es el `series_id` y no hay
 `e` ni `d`.
 
-Ordenado por `i` y con las claves ordenadas: mismo catálogo ⇒ mismos bytes.
 `v` es la versión del formato, para que la app pueda rechazar un archivo de un
 formato que no entiende.
+
+## Los duplicados no siempre son duplicados
+
+En Xtream un mismo `stream_id` aparece **una vez por cada categoría** en la que
+el proveedor lo puso: son registros distintos, con el mismo id y distinto
+`category_id`. El camino contra el panel no deduplica nada, así que esos
+títulos salen en las dos (o tres) categorías donde el proveedor los listó.
+
+Por eso el script deduplica por **(id, categoría)** y no por id a secas.
+Descarta únicamente el registro repetido de verdad —mismo título, misma
+categoría, dos veces— que la app mostraría duplicado.
+
+Deduplicar solo por id borraba el título de su segunda categoría en adelante.
+El log lo canta:
+
+```
+series: aviso — 22 registros repetidos descartados (mismo id Y misma categoria)
+```
+
+Si ese número es alto, mirálo: con la regla vieja eran contenidos que
+desaparecían de una categoría.
+
+## El orden de los items no se toca
+
+Los items van **en el mismo orden en que los manda el panel**, y eso no es un
+descuido: la app pinta cada categoría en el orden del archivo, igual que hace
+con la respuesta del panel. Si aquí se reordena, el usuario ve otro orden que
+antes.
+
+Ya pasó una vez: una versión de este script ordenaba por `stream_id`
+ascendente. Como el id más bajo es el contenido más viejo, los estrenos
+quedaban al final de cada categoría y había que bajar hasta el fondo para
+verlos — daba toda la impresión de que faltaba contenido.
+
+El precio es que la estabilidad del ETag depende de que el panel devuelva el
+catálogo en un orden estable. Lo hace, y el paso 4 lo comprueba.

@@ -114,16 +114,34 @@ campos_logo = ('cover', 'stream_icon') if tipo == 'series' else ('stream_icon', 
 
 items = []
 vistos = set()
+descartados_dup = 0
 for x in crudos:
     if not isinstance(x, dict):
         continue
     ident = x.get(campo_id)
     if ident is None:
         continue
+    cid = x.get('category_id')
     ident = str(ident)
-    if ident in vistos:
+
+    # ── La clave de duplicado es (id, categoria), NO solo el id ─────────────
+    #
+    # En Xtream un mismo stream_id aparece UNA VEZ POR CADA CATEGORIA en la
+    # que el proveedor lo puso: son registros distintos con el mismo id y
+    # distinto category_id. El camino contra el panel no deduplica nada, asi
+    # que esos titulos salen en las dos categorias, que es lo que el usuario
+    # ve y espera.
+    #
+    # Deduplicar solo por id los borraba de la segunda categoria y de la
+    # tercera. Con (id, categoria) se descarta unicamente el registro repetido
+    # de verdad —mismo titulo, misma categoria, dos veces seguidas— que si es
+    # un defecto visible y que la app mostraria duplicado.
+    cat_para_clave = '' if cid is None else str(cid)
+    clave_dup = (ident, cat_para_clave)
+    if clave_dup in vistos:
+        descartados_dup += 1
         continue
-    vistos.add(ident)
+    vistos.add(clave_dup)
 
     # Claves cortas: el nombre del campo se repite en CADA uno de los ~25.000
     # registros, asi que 'container_extension' vs 'e' pesa de verdad. Los
@@ -135,7 +153,6 @@ for x in crudos:
         if ext:
             fila['e'] = str(ext)
 
-    cid = x.get('category_id')
     if cid is not None:
         fila['c'] = str(cid)
 
@@ -152,16 +169,25 @@ for x in crudos:
 
     items.append(fila)
 
-# Orden estable por id numerico cuando se puede. Sin esto el panel podria
-# devolver el mismo catalogo en otro orden y el archivo cambiaria sin que haya
-# contenido nuevo, invalidando el ETag para todos los usuarios.
-def clave(f):
-    try:
-        return (0, int(f['i']), '')
-    except (ValueError, TypeError):
-        return (1, 0, f['i'])
-
-items.sort(key=clave)
+# ── NO SE ORDENA: se respeta el orden que manda el panel ────────────────────
+#
+# Antes esto ordenaba por stream_id ascendente "para que el archivo fuera
+# determinista". Eso rompio el orden de TODAS las categorias: id mas bajo =
+# contenido mas viejo, asi que los estrenos quedaban al final y habia que
+# hacer scroll hasta abajo para verlos. Parecia que faltaba contenido.
+#
+# La app pinta cada categoria en el orden en que los items vienen en el
+# archivo, y el camino contra el panel usa el orden del array tal cual. Para
+# que los dos caminos se vean IGUAL, aqui no se toca el orden.
+#
+# Que pasa con el ETag: ahora el archivo es identico entre corridas solo si el
+# panel devuelve el catalogo en el mismo orden. En la practica lo hace (la
+# consulta del panel es estable), y el paso 4 de INSTALAR-CATALOGO.md lo
+# comprueba: dos corridas seguidas tienen que decir "sin cambios". Si algun dia
+# dijera "ACTUALIZADO" dos veces con el MISMO numero de items, es que el panel
+# reordena, y entonces habria que ordenar por `added` descendente (nuevo
+# primero) en vez de recuperar el orden crudo. Correccion primero, ancho de
+# banda despues.
 
 salida = {'v': 1, 'categorias': categorias, 'items': items}
 
@@ -181,6 +207,12 @@ with open(archivo_salida, 'w', encoding='utf-8', newline='') as f:
     json.dump(salida, f, ensure_ascii=False, sort_keys=True,
               separators=(',', ':'))
 
+# La cuenta de duplicados va al log: si algun dia el panel empieza a repetir
+# ids, se vera aqui en vez de manifestarse como "falta contenido".
+if descartados_dup:
+    sys.stderr.write(
+        '%d registros repetidos descartados (mismo id Y misma categoria)'
+        % descartados_dup)
 sys.stdout.write(str(len(items)))
 FIN_PY
 
@@ -229,6 +261,9 @@ generar() {
   if ! n_items=$(python3 "$PODADOR" "$f_items" "$f_cats" "$tipo" "$f_out" 2>"$f_err"); then
     log "  $nombre: ERROR al podar ($(cat "$f_err" 2>/dev/null)) — se conserva lo publicado"
     return 1
+  fi
+  if [ -s "$f_err" ]; then
+    log "  $nombre: aviso — $(cat "$f_err")"
   fi
   case "$n_items" in
     ''|*[!0-9]*) n_items=0 ;;
