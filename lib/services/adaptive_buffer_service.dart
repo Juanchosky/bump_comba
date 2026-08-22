@@ -292,16 +292,41 @@ class AdaptiveBufferService {
         quality == NetworkQuality.fair ||
         quality == NetworkQuality.offline;
 
+    // ── El tope de RAM tambien vale en vivo ────────────────────────
+    //
+    // La ruta VOD de arriba respeta `lowMemoryLimit` y baja el techo a 64 MB,
+    // pero esta ruta fijaba 128 MB + 32 MB a TODOS los equipos, gama baja
+    // incluida. O sea: en TV en vivo un telefono de poca RAM recibia el doble
+    // de lo que la propia app considera seguro para el, y ahi es donde el
+    // recolector de basura ahoga al hilo de UI.
+    //
+    // Solo se recorta el techo de LECTURA HACIA DELANTE, y solo hasta 96 MB,
+    // que es el valor ya medido en dispositivo. Los objetivos en TIEMPO
+    // (cache-secs, readahead) no se tocan: mpv se detiene en el limite que se
+    // alcance primero, y en un canal tipico de 4 Mbps 96 MB son ~190 s de
+    // colchon, muy por encima del readahead de 40-60 s. El recorte solo muerde
+    // en canales de bitrate muy alto, que son justo los que reventaban la RAM.
+    //
+    // `demuxer-max-back-bytes` NO se recorta. Ya se midio que bajarlo a 16 MB
+    // hace que cambiar de idioma o activar subtitulos obligue a mpv a repedir
+    // por red los bytes de la posicion actual (ya descartados), con parada y
+    // vaciado del decodificador. 32 MB se quedan como estaban.
+    final bool lowMem = PerformanceService().lowMemoryLimit;
+
     debugPrint(
       'AdaptiveBuffer: Applying LIVE-resilient profile '
-      '(${quality.name}${weak ? ' → colchón ampliado' : ''})',
+      '(${quality.name}${weak ? ' → colchón ampliado' : ''}'
+      '${lowMem ? ' → techo de RAM gama baja' : ''})',
     );
 
     try {
       // ── Buffer: piso alto SIEMPRE; más colchón de tiempo si la red es débil ──
       await mpv.setProperty('cache', 'yes');
       await mpv.setProperty('cache-secs', weak ? '240' : '180');
-      await mpv.setProperty('demuxer-max-bytes', '134217728'); // 128 MB fijo
+      await mpv.setProperty(
+        'demuxer-max-bytes',
+        lowMem ? '100663296' : '134217728', // 96 MB gama baja / 128 MB resto
+      );
       await mpv.setProperty('demuxer-max-back-bytes', '33554432'); // 32 MB
       // Colchón de tiempo GRANDE en red débil para absorber el jitter (NO 5-10s).
       await mpv.setProperty('demuxer-readahead-secs', weak ? '60' : '40');

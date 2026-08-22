@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'premium_service.dart';
@@ -73,8 +74,39 @@ class WatchProgressService with ChangeNotifier {
   static const double _maxProgressPercentage =
       95.0; // Consider completed if > 95%
 
+  /// Cada cuanto, COMO MUCHO, se escribe el historial a disco.
+  ///
+  /// El temporizador del reproductor llama a `saveProgress` cada 5 s. Antes
+  /// cada una de esas llamadas hacia, en el hilo de UI y con el video
+  /// corriendo: `jsonEncode` del historial ENTERO + XOR byte a byte + base64 +
+  /// `SharedPreferences.setString` (que en Android reescribe el XML completo).
+  /// Con un historial de meses eso es un pico de trabajo cada 5 segundos que
+  /// crece sin parar, y encaja con que la app empezara a congelarse "de un
+  /// momento a otro" despues de tiempo de uso.
+  ///
+  /// Ahora `saveProgress` solo toca el mapa en memoria (instantaneo) y el
+  /// volcado a disco va a este ritmo. No se pierde progreso al salir porque
+  /// `flush(force: true)` se llama al pausar, al mandar la app a segundo plano
+  /// y al cerrar el reproductor.
+  static const Duration _minFlushInterval = Duration(seconds: 30);
+
+  /// Techo de entradas del historial.
+  ///
+  /// El mapa crece rapido porque se guarda UNA entrada por cada URL
+  /// alternativa del contenido, no una por pelicula. Sin techo, el JSON que se
+  /// codifica en cada volcado crece para siempre. 3000 entradas son de sobra
+  /// incluso para un usuario intensivo (la vista de historial libre muestra
+  /// 20); al pasarse se descartan las MAS ANTIGUAS por `timestamp`.
+  static const int _maxEntries = 3000;
+
   SharedPreferences? _prefs;
   Map<String, dynamic>? _cachedAllProgress;
+
+  /// Hay cambios en memoria que todavia no estan en disco.
+  bool _dirty = false;
+  DateTime? _lastFlushAt;
+  Timer? _flushTimer;
+  Future<void>? _flushInFlight;
 
   /// Initialize the service
   Future<void> init() async {
@@ -164,10 +196,99 @@ class WatchProgressService with ChangeNotifier {
       }
     }
 
-    final jsonStr = jsonEncode(allProgress);
-    await _prefs!.setString(_progressKey, SecurityUtils.obfuscate(jsonStr));
+    _dirty = true;
+    _scheduleFlush();
     notifyListeners();
     return true;
+  }
+
+  /// Programa un volcado a disco respetando `_minFlushInterval`.
+  void _scheduleFlush() {
+    if (!_dirty || _flushTimer != null) return;
+    final last = _lastFlushAt;
+    final pendiente =
+        last == null
+            ? Duration.zero
+            : _minFlushInterval - DateTime.now().difference(last);
+    if (pendiente <= Duration.zero) {
+      unawaited(flush());
+      return;
+    }
+    _flushTimer = Timer(pendiente, () {
+      _flushTimer = null;
+      unawaited(flush());
+    });
+  }
+
+  /// Escribe el historial a disco si hay algo pendiente.
+  ///
+  /// [force] ignora el intervalo minimo. Usalo en los momentos en que el
+  /// proceso puede morir sin aviso: pausa, app a segundo plano, cierre del
+  /// reproductor. Fuera de esos casos deja que el throttle haga su trabajo.
+  Future<void> flush({bool force = false}) async {
+    if (!_dirty) return;
+    if (!force) {
+      final last = _lastFlushAt;
+      if (last != null &&
+          DateTime.now().difference(last) < _minFlushInterval) {
+        _scheduleFlush();
+        return;
+      }
+    }
+    // Si ya hay una escritura en curso, esperarla en vez de lanzar otra en
+    // paralelo sobre la misma clave.
+    final enCurso = _flushInFlight;
+    if (enCurso != null) {
+      await enCurso;
+      if (!_dirty) return;
+    }
+    final futuro = _persist();
+    _flushInFlight = futuro;
+    try {
+      await futuro;
+    } finally {
+      if (identical(_flushInFlight, futuro)) _flushInFlight = null;
+    }
+  }
+
+  Future<void> _persist() async {
+    final mapa = _cachedAllProgress;
+    if (mapa == null) {
+      _dirty = false;
+      return;
+    }
+    _flushTimer?.cancel();
+    _flushTimer = null;
+    _dirty = false;
+    _lastFlushAt = DateTime.now();
+    try {
+      _podarSiHaceFalta(mapa);
+      await _ensureInitialized();
+      final jsonStr = jsonEncode(mapa);
+      await _prefs!.setString(_progressKey, SecurityUtils.obfuscate(jsonStr));
+    } catch (e) {
+      // Si falla la escritura, los datos siguen en memoria: se marca sucio
+      // otra vez para reintentar en el siguiente ciclo en vez de perderlos.
+      _dirty = true;
+      debugPrint('WatchProgressService: fallo al guardar historial: $e');
+    }
+  }
+
+  /// Descarta las entradas mas antiguas si el mapa supera `_maxEntries`.
+  void _podarSiHaceFalta(Map<String, dynamic> mapa) {
+    if (mapa.length <= _maxEntries) return;
+    final entradas =
+        mapa.entries.toList()..sort((a, b) {
+          final tA = (a.value is Map ? a.value['timestamp'] as int? : null) ?? 0;
+          final tB = (b.value is Map ? b.value['timestamp'] as int? : null) ?? 0;
+          return tB.compareTo(tA); // mas reciente primero
+        });
+    for (final e in entradas.skip(_maxEntries)) {
+      mapa.remove(e.key);
+    }
+    debugPrint(
+      'WatchProgressService: historial podado a $_maxEntries entradas',
+    );
   }
 
   /// Get watch progress for a video URL
@@ -198,8 +319,8 @@ class WatchProgressService with ChangeNotifier {
 
     final allProgress = await _getAllProgress();
     allProgress.remove(videoUrl);
-    final jsonStr = jsonEncode(allProgress);
-    await _prefs!.setString(_progressKey, SecurityUtils.obfuscate(jsonStr));
+    _dirty = true;
+    await flush(force: true);
     notifyListeners();
   }
 
@@ -299,6 +420,11 @@ class WatchProgressService with ChangeNotifier {
   /// Clear all watch progress
   Future<void> clearAllProgress() async {
     await _ensureInitialized();
+    // Cancelar cualquier volcado pendiente: si no, el mapa viejo todavia en
+    // vuelo podria reescribirse encima de lo que acabamos de borrar.
+    _flushTimer?.cancel();
+    _flushTimer = null;
+    _dirty = false;
     _cachedAllProgress = {};
     await _prefs!.remove(_progressKey);
     notifyListeners();

@@ -654,6 +654,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _seekFeedbackTimer?.cancel();
     _countdownTimer?.cancel();
     _progressSaveTimer?.cancel();
+    // El historial ahora se acumula en memoria y baja a disco con throttle
+    // (ver WatchProgressService._minFlushInterval). Al cerrar el reproductor
+    // hay que forzar el volcado o se perderia lo ultimo visto.
+    unawaited(_watchProgressService.flush(force: true));
     _noticeTimer?.cancel();
     _diagTimer?.cancel();
     _turboWatchdog?.cancel();
@@ -721,6 +725,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         _isAppInBackground = true;
         _player?.pause();
       }
+      // Segundo plano: a partir de aqui el sistema puede matar el proceso sin
+      // avisar, asi que el historial baja a disco ya, sin esperar al throttle.
+      unawaited(_watchProgressService.flush(force: true));
     } else if (state == AppLifecycleState.resumed) {
       _isAppInBackground = false;
     }
