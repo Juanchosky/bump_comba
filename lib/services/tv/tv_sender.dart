@@ -99,6 +99,7 @@ class TvSender {
     int? season,
     int? episode,
     bool isFromDB = false,
+    List<Map<String, String>>? subtitles,
   }) {
     _send(TvProto.cmdLoad, {
       'url': url,
@@ -110,6 +111,12 @@ class TvSender {
       if (season != null) 'season': season,
       if (episode != null) 'episode': episode,
       if (isFromDB) 'isFromDB': true,
+      // Subtitulos EXTERNOS (VTT/SRT con URL propia), que es como vienen los
+      // del contenido de la base de datos. No estan dentro del archivo de
+      // video, asi que el TV no puede descubrirlos solo: si no viajan aqui, el
+      // menu de subtitulos del televisor sale vacio aunque en el telefono se
+      // vean perfectamente.
+      if (subtitles != null && subtitles.isNotEmpty) 'subtitles': subtitles,
     });
   }
 

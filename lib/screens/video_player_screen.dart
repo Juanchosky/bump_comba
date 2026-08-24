@@ -1557,6 +1557,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           startPosition: finalStartPosition,
           headers: _buildHeaders(currentUrl),
           isFromDB: _currentItem.sourceName == 'Supabase',
+          subtitles: _subtitulosParaTv(),
         );
       }
 
@@ -2008,11 +2009,30 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           startPosition: pos.inSeconds.toDouble(),
           headers: _buildHeaders(currentUrl),
           isFromDB: _currentItem.sourceName == 'Supabase',
+          subtitles: _subtitulosParaTv(),
         );
       } else {
         _handleVideoCompletion();
       }
     }
+  }
+
+  /// Subtitulos externos del contenido actual, en el formato que viaja al TV.
+  ///
+  /// Los del contenido de la base de datos NO estan dentro del archivo de
+  /// video: son ficheros VTT/SRT aparte que el scraper descubre y que aqui se
+  /// registran en MPV con `SubtitleTrack.uri`. El televisor no puede
+  /// descubrirlos por su cuenta —solo ve las pistas incrustadas—, asi que hay
+  /// que mandarselos en el LOAD o su menu de subtitulos sale vacio.
+  List<Map<String, String>> _subtitulosParaTv() {
+    return [
+      for (final s in _scrapedSubtitles)
+        {
+          'url': s.url,
+          'label': s.label,
+          if (s.language != null) 'language': s.language!,
+        },
+    ];
   }
 
   void _handleVideoCompletion() async {

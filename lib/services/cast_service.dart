@@ -80,6 +80,7 @@ class CastService {
   int? _tvLastSeason;
   int? _tvLastEpisode;
   bool _tvLastIsFromDB = false;
+  List<Map<String, String>>? _tvLastSubtitles;
 
   /// Durante una reconexión: esperamos el primer STATUS para decidir si
   /// readjuntarnos o recargar. Guarda la posición esperada.
@@ -674,6 +675,7 @@ class CastService {
     int? season,
     int? episode,
     bool isFromDB = false,
+    List<Map<String, String>>? subtitles,
   }) async {
     // ── Backend MiApp TV: enviamos la URL ORIGINAL (media_kit reproduce
     // MKV/AC3 directamente) con sus headers, sin conversión HLS. ──
@@ -694,6 +696,7 @@ class CastService {
       _tvLastSeason = season;
       _tvLastEpisode = episode;
       _tvLastIsFromDB = isFromDB;
+      _tvLastSubtitles = subtitles;
       _tvReattaching = false; // es una carga explícita del usuario
       _tvSender?.load(
         url: url,
@@ -705,6 +708,7 @@ class CastService {
         season: season,
         episode: episode,
         isFromDB: isFromDB,
+        subtitles: subtitles,
       );
       return;
     }
@@ -1126,6 +1130,9 @@ class CastService {
       season: _tvLastSeason,
       episode: _tvLastEpisode,
       isFromDB: _tvLastIsFromDB,
+      // Tambien al reconectar: si no, tras una reconexion el TV se queda sin
+      // subtitulos aunque los tuviera antes.
+      subtitles: _tvLastSubtitles,
     );
   }
 

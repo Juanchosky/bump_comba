@@ -272,6 +272,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     }
     final position = _asDouble(msg['position']) ?? 0.0;
     final headers = _asStringMap(msg['headers']);
+    final subtitulosExternos = _asSubtitleList(msg['subtitles']);
     _mediaTitle = msg['title']?.toString() ?? '';
     final thumb = msg['thumbnailUrl']?.toString();
     _mediaThumb = (thumb == null || thumb.isEmpty) ? null : thumb;
@@ -312,6 +313,44 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
       } catch (_) {}
 
       await _player.open(Media(url, httpHeaders: headers), play: true);
+
+      // ── Subtitulos EXTERNOS del contenido de la base de datos ────────────
+      //
+      // `_pushTracks()` publica `_player.state.tracks.subtitle`, que solo trae
+      // las pistas INCRUSTADAS en el archivo. Los subtitulos de la BD son
+      // ficheros VTT/SRT con URL propia, asi que el televisor no podia
+      // descubrirlos: el menu de subtitulos salia vacio aunque en el telefono
+      // se vieran bien.
+      //
+      // Registrarlos con `SubtitleTrack.uri` los mete en la lista de pistas de
+      // MPV (sub-add), y a partir de ahi `_pushTracks()` los publica y
+      // `cmdSetSubtitle` puede seleccionarlos por id como a cualquier otra.
+      if (subtitulosExternos.isNotEmpty) {
+        for (final sub in subtitulosExternos) {
+          try {
+            await _player.setSubtitleTrack(
+              SubtitleTrack.uri(
+                sub['url']!,
+                title: sub['label'],
+                language: sub['language'],
+              ),
+            );
+          } catch (e) {
+            debugPrint('TvReceiver: no se pudo añadir subtitulo externo: $e');
+          }
+        }
+        // Registrar con `setSubtitleTrack` tambien SELECCIONA, asi que sin esto
+        // el televisor arrancaria con el ultimo subtitulo de la lista puesto
+        // sin que nadie lo pidiera. Quedan disponibles en el menu, apagados.
+        try {
+          await _player.setSubtitleTrack(SubtitleTrack.no());
+        } catch (_) {}
+        debugPrint(
+          'TvReceiver: ${subtitulosExternos.length} subtitulo(s) externo(s) '
+          'registrados',
+        );
+      }
+
       if (position > 0) {
         unawaited(
           _seekWhenReady(Duration(milliseconds: (position * 1000).round())),
@@ -615,6 +654,23 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     if (v is num) return v.toDouble();
     if (v is String) return double.tryParse(v);
     return null;
+  }
+
+  /// Lista de subtitulos externos del LOAD. Descarta las entradas sin URL.
+  List<Map<String, String>> _asSubtitleList(dynamic v) {
+    if (v is! List) return const [];
+    final out = <Map<String, String>>[];
+    for (final e in v) {
+      if (e is! Map) continue;
+      final url = e['url']?.toString();
+      if (url == null || url.isEmpty) continue;
+      out.add({
+        'url': url,
+        'label': e['label']?.toString() ?? 'Subtítulo',
+        if (e['language'] != null) 'language': e['language'].toString(),
+      });
+    }
+    return out;
   }
 
   Map<String, String>? _asStringMap(dynamic v) {
