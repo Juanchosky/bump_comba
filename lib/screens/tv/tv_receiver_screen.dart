@@ -104,6 +104,11 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
   // Posición/duración para pintar el overlay (actualizadas por streams).
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
+
+  /// Hasta donde hay datos descargados por delante. Es la pista mas opaca de
+  /// la barra, estilo YouTube: le dice al usuario hasta donde puede adelantar
+  /// sin que el contenido se pare a cargar.
+  Duration _buffered = Duration.zero;
   bool _playing = false;
 
   // Vista previa de la línea de tiempo: el seek real se aplica con debounce.
@@ -286,6 +291,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
         // llegue el primer frame del contenido NUEVO, no del anterior.
         _primerFrameListo = false;
         _posAnterior = null;
+        _buffered = Duration.zero;
       });
     }
     try {
@@ -464,6 +470,15 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     _subs.add(
       _player.stream.duration.listen((d) {
         _duration = d;
+      }),
+    );
+    _subs.add(
+      _player.stream.buffer.listen((b) {
+        _buffered = b;
+        // Se repinta solo con los controles a la vista: sin esto, la barra se
+        // quedaria congelada mientras el usuario tiene el video en pausa
+        // mirando cuanto lleva cargado, que es justo cuando mas se mira.
+        if (_controlsVisible && mounted) setState(() {});
       }),
     );
     _subs.add(
@@ -960,6 +975,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
               _TvControlsOverlay(
                 position: _previewing ? _previewPos : _position,
                 duration: _duration,
+                buffered: _buffered,
                 playing: _playing,
                 focusArea: _focusArea,
                 previewing: _previewing,
@@ -1282,6 +1298,7 @@ class _WaitingScreenState extends State<_WaitingScreen>
 class _TvControlsOverlay extends StatelessWidget {
   final Duration position;
   final Duration duration;
+  final Duration buffered;
   final bool playing;
   final int focusArea;
   final bool previewing;
@@ -1291,6 +1308,7 @@ class _TvControlsOverlay extends StatelessWidget {
   const _TvControlsOverlay({
     required this.position,
     required this.duration,
+    required this.buffered,
     required this.playing,
     required this.focusArea,
     required this.previewing,
@@ -1342,6 +1360,18 @@ class _TvControlsOverlay extends StatelessWidget {
         duration.inMilliseconds > 0
             ? (position.inMilliseconds / duration.inMilliseconds).clamp(
               0.0,
+              1.0,
+            )
+            : 0.0;
+
+    // Fraccion cargada. `buffer` de MPV es la posicion ABSOLUTA hasta donde
+    // hay datos, no una duracion, asi que se divide igual que la posicion.
+    // Nunca por detras de lo ya reproducido: si el bufer se vacia, la pista
+    // secundaria se esconde bajo la principal en vez de dibujarse al reves.
+    final double buffered0a1 =
+        duration.inMilliseconds > 0
+            ? (buffered.inMilliseconds / duration.inMilliseconds).clamp(
+              progress,
               1.0,
             )
             : 0.0;
@@ -1425,6 +1455,25 @@ class _TvControlsOverlay extends StatelessWidget {
                                               color: Colors.white24,
                                               borderRadius:
                                                   BorderRadius.circular(4),
+                                            ),
+                                          ),
+                                          // Pista de bufer: por DEBAJO de la
+                                          // reproducida, para que esta la
+                                          // tape. Mas opaca que la pista
+                                          // vacia (white24) y mas tenue que
+                                          // el acento, igual que YouTube.
+                                          FractionallySizedBox(
+                                            alignment: Alignment.centerLeft,
+                                            widthFactor: buffered0a1,
+                                            child: Container(
+                                              height: barHeight,
+                                              decoration: BoxDecoration(
+                                                color: Colors.white.withValues(
+                                                  alpha: 0.45,
+                                                ),
+                                                borderRadius:
+                                                    BorderRadius.circular(4),
+                                              ),
                                             ),
                                           ),
                                           FractionallySizedBox(

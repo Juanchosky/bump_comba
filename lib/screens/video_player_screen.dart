@@ -5995,6 +5995,19 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                         alpha:
                                                                             0.24,
                                                                       ),
+                                                              // Pista de bufer
+                                                              // (estilo
+                                                              // YouTube): mas
+                                                              // opaca que lo no
+                                                              // cargado, mas
+                                                              // tenue que lo ya
+                                                              // reproducido.
+                                                              secondaryActiveTrackColor:
+                                                                  Colors.white
+                                                                      .withValues(
+                                                                        alpha:
+                                                                            0.45,
+                                                                      ),
                                                               thumbColor:
                                                                   Colors.white,
                                                               thumbShape:
@@ -6017,6 +6030,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                       ? max
                                                                       : 1,
                                                               value: value,
+                                                              secondaryTrackValue:
+                                                                  _bufferedSliderValue(
+                                                                    isCasting:
+                                                                        isCasting,
+                                                                    value: value,
+                                                                    max:
+                                                                        max > 0
+                                                                            ? max
+                                                                            : 1,
+                                                                  ),
                                                               onChangeStart: (
                                                                 newValue,
                                                               ) {
