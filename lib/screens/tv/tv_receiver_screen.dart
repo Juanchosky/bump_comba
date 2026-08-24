@@ -75,6 +75,11 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
   /// quedaba en negro sin ninguna señal de que estuviera cargando.
   bool _primerFrameListo = false;
 
+  /// Posicion de la muestra anterior de `_pushStatus`, para detectar avance
+  /// real. `null` justo despues de un LOAD: la primera muestra del contenido
+  /// nuevo solo sirve de referencia, no se compara con la del anterior.
+  Duration? _posAnterior;
+
   void _onRectCambio() {
     final r = _videoController.rect.value;
     final listo = r != null && r.width > 0 && r.height > 0;
@@ -279,6 +284,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
         // Cada LOAD empieza sin imagen: el spinner se mantiene hasta que
         // llegue el primer frame del contenido NUEVO, no del anterior.
         _primerFrameListo = false;
+        _posAnterior = null;
       });
     }
     try {
@@ -510,6 +516,40 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
       final buffering = _player.state.buffering;
       final pos = _player.state.position;
       final dur = _player.state.duration;
+
+      // ── Red de seguridad del overlay de carga ──────────────────────────
+      //
+      // `_primerFrameListo` se pone a false en CADA LOAD y solo lo levanta el
+      // listener de `_videoController.rect`. El problema es que ese rect es un
+      // ValueNotifier y media_kit no lo toca cuando el contenido nuevo tiene la
+      // MISMA resolucion que el anterior — sale antes de tiempo:
+      //
+      //   final isSame = width == rect.value?.width.toInt() && ...
+      //   if (isZero || isSame) return;      // ni asigna ni notifica
+      //
+      // Y `rect` tampoco se resetea entre medias. Asi que al recargar la misma
+      // pelicula —lo que pasa justo cuando Xtream se para y el telefono reenvia
+      // el LOAD— el listener no se dispara nunca y la bandera se queda en false
+      // PARA SIEMPRE: la caratula, el titulo y el spinner se quedan clavados
+      // encima mientras el video se reproduce detras.
+      //
+      // Aqui se cierra por otro lado: si la posicion AVANZA entre dos muestras
+      // con el reproductor reproduciendo y sin buffering, hay imagen en
+      // pantalla, se haya disparado el listener o no. Solo puede QUITAR el
+      // overlay, nunca mantenerlo mas tiempo.
+      if (_hasMedia && !_primerFrameListo && playing && !buffering) {
+        final anterior = _posAnterior;
+        final r = _videoController.rect.value;
+        if (anterior != null &&
+            pos > anterior &&
+            r != null &&
+            r.width > 0 &&
+            r.height > 0 &&
+            mounted) {
+          setState(() => _primerFrameListo = true);
+        }
+      }
+      _posAnterior = pos;
 
       String state;
       if (!_hasMedia && dur == Duration.zero) {

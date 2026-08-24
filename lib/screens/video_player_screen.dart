@@ -190,6 +190,25 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   // Muestreo de la velocidad REAL de descarga (cache-speed de MPV) cada 5s.
   int _throughputSampleTick = 0;
   int _stallSeconds = 0;
+
+  /// Episodios de stall recientes: (cuando termino, cuantos segundos duro).
+  ///
+  /// `_stallSeconds` cuenta segundos SEGUIDOS y se pone a cero en cuanto el
+  /// buffer se recupera, aunque sea por un instante. Eso deja fuera al peor
+  /// patron para el usuario: 6s parado, 3s reproduciendo, 6s parado, 3s
+  /// reproduciendo... Ningun episodio llega al umbral, asi que nunca se salta
+  /// de servidor, mientras el contenido es inmirable. Con esta ventana se mira
+  /// el ACUMULADO, no la racha.
+  final List<({DateTime fin, int segundos})> _episodiosStall = [];
+
+  /// Ventana y presupuesto de la regla de arriba.
+  ///
+  /// 20s parado dentro de 90s son ~4 cortes de 5s en minuto y medio: a esas
+  /// alturas el servidor ya se demostro malo y no hay nada que ganar
+  /// esperandolo. Por debajo de eso puede ser un bache y conviene aguantar,
+  /// porque cambiar de servidor tambien cuesta una recarga.
+  static const Duration _ventanaStall = Duration(seconds: 90);
+  static const int _presupuestoStallSegundos = 20;
   /// Se decide al inicio de cada episodio de stall: true si la causa fue una
   /// rotura del pipe del proxy local (reaccionar rapido) en vez de lentitud.
   bool _stallPorRotura = false;
@@ -1007,6 +1026,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
       setState(() {
         _isVideoLoading = true;
+        // Contenido nuevo, presupuesto de cortes nuevo: los stalls de la
+        // pelicula anterior no pueden condenar al servidor de esta.
+        _episodiosStall.clear();
         _autoPlayCancelled = false;
         _nextEpisodePrewarmStarted = false;
         _midRollAdShown = false;
@@ -2417,6 +2439,19 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         if (_stallSeconds > 5) {
           debugPrint('Buffer recuperado tras $_stallSeconds s.');
         }
+
+        // ── Registro del episodio que acaba de terminar ────────────────────
+        //
+        // Se ignoran los cortes de 1s (ruido normal) y los que siguen a un
+        // seek, que son buffering esperado y no culpa del servidor.
+        final segundosDesdeSeek =
+            _lastSeekTime != null
+                ? DateTime.now().difference(_lastSeekTime!).inSeconds
+                : 999;
+        if (_stallSeconds >= 2 && segundosDesdeSeek >= 8) {
+          _episodiosStall.add((fin: DateTime.now(), segundos: _stallSeconds));
+        }
+
         _stallSeconds = 0;
         _stallPorRotura = false;
 
@@ -2435,6 +2470,41 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         // pauso a proposito— no hay absolutamente nada que esperar.
         if (_noMovementSeconds == 0) {
           showingSpinner = false;
+        }
+      }
+
+      // ── Servidor malo por acumulacion, no por una racha larga ──────────
+      //
+      // El umbral de `_stallSeconds` solo ve rachas seguidas. Este mira cuanto
+      // tiempo estuvo parado el contenido en el ultimo minuto y medio. Es el
+      // caso que se reporto como "carga, se para, demora, otra vez, pero no se
+      // cambia aunque se vea que esta mal".
+      //
+      // Solo actua si hay a donde ir: sin alternativa, cambiar de servidor no
+      // existe y recargar el mismo origen una y otra vez solo empeora las cosas.
+      final limiteVentana = DateTime.now().subtract(_ventanaStall);
+      _episodiosStall.removeWhere((e) => e.fin.isBefore(limiteVentana));
+      if (!_isLiveContent &&
+          !_isVideoLoading &&
+          !_isReloading &&
+          _currentServerIndex == 0 &&
+          _serverItems.length > 1 &&
+          _episodiosStall.length >= 2) {
+        final acumulado = _episodiosStall.fold<int>(
+          0,
+          (suma, e) => suma + e.segundos,
+        );
+        if (acumulado >= _presupuestoStallSegundos) {
+          debugPrint(
+            'Servidor inestable: ${acumulado}s parado en '
+            '${_episodiosStall.length} cortes dentro de '
+            '${_ventanaStall.inSeconds}s. Saltando al servidor BD...',
+          );
+          _episodiosStall.clear();
+          _stallSeconds = 0;
+          _saltarABDPorCongelamiento = true;
+          _reloadVideo();
+          return;
         }
       }
 
