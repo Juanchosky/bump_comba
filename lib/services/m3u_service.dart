@@ -14,6 +14,7 @@ import '../services/premium_service.dart';
 import '../services/dynamic_scraper_service.dart';
 import '../services/turbo_proxy.dart';
 import '../services/xtream_service.dart';
+import '../services/claves_derivadas_cache.dart';
 import '../services/catalog_snapshot_service.dart';
 import '../utils/security_utils.dart';
 import '../models/m3u_item.dart';
@@ -2016,8 +2017,9 @@ class M3UService extends ChangeNotifier {
     }
 
     for (final regItem in regularItems) {
-      final regNormKey = _normalizeTitleForMatching(regItem.name);
-      final regCanonKey = _canonicalTitleKey(regItem.name);
+      final regClaves = _clavesDe(regItem.name);
+      final regNormKey = regClaves[Clave.coincidencia];
+      final regCanonKey = regClaves[Clave.canonica];
       final regCanonNoSpace = regCanonKey.replaceAll(' ', '');
 
       // 1. Intentar match rápido O(1) por mapa directo o canónico
@@ -2357,10 +2359,20 @@ class M3UService extends ChangeNotifier {
       // congelaban la pantalla varios segundos. Ahora los hace el mismo isolate
       // que ya construía los índices — y como los items se envían una sola vez,
       // no se paga la serialización dos veces.
+      // Solo la RUTA cruza al isolate: el diccionario se lee y se escribe alli.
+      String? rutaClaves;
+      try {
+        rutaClaves = await ClavesDerivadasCache.ruta();
+      } catch (e) {
+        debugPrint('ClavesDerivadas: sin ruta ($e) — se calculará todo');
+      }
+      final tCarga = sw.elapsedMilliseconds;
+
       final result = await compute(_indexItemsInBackground, {
         'items': items,
         'customItems': customItems,
         'hasSagas': true, // Logic to include saga detection
+        'rutaClaves': rutaClaves,
       });
       final tIsolate = sw.elapsedMilliseconds;
 
@@ -2387,7 +2399,8 @@ class M3UService extends ChangeNotifier {
       }
 
       debugPrint(
-        'PERFTRACE _indexItems n=${_items.length} isolate=${tIsolate}ms '
+        'PERFTRACE _indexItems n=${_items.length} '
+        'cargaClaves=${tCarga}ms isolate=${tIsolate - tCarga}ms '
         'mainThreadWiring=${sw.elapsedMilliseconds - tIsolate}ms',
       );
 
@@ -4707,91 +4720,147 @@ String _normalizeTitleForMatching(String raw) {
 
 /// Clave canónica inteligente para matching entre títulos en distintos idiomas (Español / Inglés),
 /// con o sin artículos ("The", "El", "La"), números romanos, o diferentes formatos.
+// ── Regex de _canonicalTitleKey, compiladas UNA vez ─────────────────────────
+//
+// Eran 37 construidas DENTRO de la funcion, y la funcion corre una vez por cada
+// item del catalogo: con 28.000 titulos son mas de un millon de compilaciones
+// en cada arranque. Medido sobre los nombres reales: 1846 ms solo esta funcion,
+// contra 36 ms de `is4kTitle`, que hace un trabajo parecido pero ya tenia las
+// suyas izadas. Ahi estaba la mayor parte de la espera de "Estamos preparando
+// todo...".
+final RegExp _reCanon0 = RegExp(r'\(.*?\)');
+final RegExp _reCanon1 = RegExp(r'\[.*?\]');
+final RegExp _reCanon2 = RegExp(r'\b(19\d\d|20\d\d)\b');
+final RegExp _reCanon3 = RegExp(r'\b(4k|uhd|hd|fhd|sd|720p|1080p|2160p|60fps|hdr|hdr10|dv|dolby|multi|latino|castellano|sub|subtitulado|dual|cam|ts|tc|hd-ts|telesync|scr|opc?\s*\d+|opcion\s*\d+|opo\s*\d+|server\s*\d+|dual|lat|spa|esp|eng|vo|vose|h264|h265|x264|x265|web-dl|webrip|bluray|brrip|dvdrip|telesync|scr|full hd|movies|vod|extended|uncut|complete|edition|version|versión|coleccion|collection|saga|trilogia|pelicula|movie)\b',);
+final RegExp _reCanon4 = RegExp(r'\bviii\b');
+final RegExp _reCanon5 = RegExp(r'\bvii\b');
+final RegExp _reCanon6 = RegExp(r'\bvi\b');
+final RegExp _reCanon7 = RegExp(r'\biii\b');
+final RegExp _reCanon8 = RegExp(r'\bii\b');
+final RegExp _reCanon9 = RegExp(r'\biv\b');
+final RegExp _reCanon10 = RegExp(r'\bv\b');
+final RegExp _reCanon11 = RegExp(r'\bix\b');
+final RegExp _reCanon12 = RegExp(r'\bx\b');
+final RegExp _reCanon13 = RegExp(r'\blobezno\b|\baguja dinamica\b|\bgloton\b');
+final RegExp _reCanon14 = RegExp(r'\borigenes\b|\borigen\b');
+final RegExp _reCanon15 = RegExp(r'\bvengadores\b');
+final RegExp _reCanon16 = RegExp(r'\brapidos y furiosos\b|\brapido y furioso\b|\brapidos & furiosos\b',);
+final RegExp _reCanon17 = RegExp(r'\bguerra de las galaxias\b');
+final RegExp _reCanon18 = RegExp(r'\bel senor de los anillos\b|\bsenor de los anillos\b');
+final RegExp _reCanon19 = RegExp(r'\bjuego de tronos\b');
+final RegExp _reCanon20 = RegExp(r'\bel hombre arana\b|\bhombre arana\b');
+final RegExp _reCanon21 = RegExp(r'\bpiratas del caribe\b');
+final RegExp _reCanon22 = RegExp(r'\bmi villano favorito\b');
+final RegExp _reCanon23 = RegExp(r'\blos increibles\b|\bincreibles\b');
+final RegExp _reCanon24 = RegExp(r'\bestacion 19\b');
+final RegExp _reCanon25 = RegExp(r'\banatomia de grey\b');
+final RegExp _reCanon26 = RegExp(r'\blos simpson\b|\blos simpsons\b');
+final RegExp _reCanon27 = RegExp(r'\bla casa de papel\b|\bcasa de papel\b');
+final RegExp _reCanon28 = RegExp(r'\bel caballero de la noche\b|\bel caballero oscuro\b');
+final RegExp _reCanon29 = RegExp(r'\bel hombre de acero\b');
+final RegExp _reCanon30 = RegExp(r'\bintensa mente\b|\bintensamente\b');
+final RegExp _reCanon31 = RegExp(r'\buna aventura congelada\b');
+final RegExp _reCanon32 = RegExp(r'\bzootropolis\b');
+final RegExp _reCanon33 = RegExp(r'\bvaiana\b');
+final RegExp _reCanon34 = RegExp(r'[^a-z0-9\s]');
+final RegExp _reCanon35 = RegExp(r'^\s*(the|el|la|los|las|les|un|una|unos|unas)\s+');
+final RegExp _reCanon36 = RegExp(r'\s+');
+
+/// Guardas de una sola pasada para los bloques 3 y 4 de _canonicalTitleKey.
+///
+/// Entre romanos y franquicias son 29 de las 37 sustituciones, y son frases
+/// fijas que casi ningun titulo del catalogo contiene: se recorria la cadena 29
+/// veces para no cambiar nada. Estas dos uniones se generaron a partir de las
+/// MISMAS constantes de arriba, asi que el resultado es identico por
+/// construccion: si la union no encuentra nada, ninguna de sus partes lo haria.
+final RegExp _reCanonAlgunRomano = RegExp(r'\bviii\b|\bvii\b|\bvi\b|\biii\b|\bii\b|\biv\b|\bv\b|\bix\b|\bx\b');
+final RegExp _reCanonAlgunaFranquicia = RegExp(r'\blobezno\b|\baguja dinamica\b|\bgloton\b|\borigenes\b|\borigen\b|\bvengadores\b|\brapidos y furiosos\b|\brapido y furioso\b|\brapidos & furiosos\b|\bguerra de las galaxias\b|\bel senor de los anillos\b|\bsenor de los anillos\b|\bjuego de tronos\b|\bel hombre arana\b|\bhombre arana\b|\bpiratas del caribe\b|\bmi villano favorito\b|\blos increibles\b|\bincreibles\b|\bestacion 19\b|\banatomia de grey\b|\blos simpson\b|\blos simpsons\b|\bla casa de papel\b|\bcasa de papel\b|\bel caballero de la noche\b|\bel caballero oscuro\b|\bel hombre de acero\b|\bintensa mente\b|\bintensamente\b|\buna aventura congelada\b|\bzootropolis\b|\bvaiana\b');
+
 String _canonicalTitleKey(String raw) {
   // Reparar mojibake de servidores Xtream antes de generar clave canónica
   String n = _removeAccents(NormalizationUtils.fixMojibake(raw).toLowerCase());
 
   // 1. Quitar corchetes, paréntesis y años
-  n = n.replaceAll(RegExp(r'\(.*?\)'), ' ');
-  n = n.replaceAll(RegExp(r'\[.*?\]'), ' ');
-  n = n.replaceAll(RegExp(r'\b(19\d\d|20\d\d)\b'), ' ');
+  n = n.replaceAll(_reCanon0, ' ');
+  n = n.replaceAll(_reCanon1, ' ');
+  n = n.replaceAll(_reCanon2, ' ');
 
   // 2. Quitar etiquetas técnicas de calidad, idioma y formato
   n = n.replaceAll(
-    RegExp(
-      r'\b(4k|uhd|hd|fhd|sd|720p|1080p|2160p|60fps|hdr|hdr10|dv|dolby|multi|latino|castellano|sub|subtitulado|dual|cam|ts|tc|hd-ts|telesync|scr|opc?\s*\d+|opcion\s*\d+|opo\s*\d+|server\s*\d+|dual|lat|spa|esp|eng|vo|vose|h264|h265|x264|x265|web-dl|webrip|bluray|brrip|dvdrip|telesync|scr|full hd|movies|vod|extended|uncut|complete|edition|version|versión|coleccion|collection|saga|trilogia|pelicula|movie)\b',
-    ),
+    _reCanon3,
     ' ',
   );
 
   // 3. Normalizar números romanos comunes (II -> 2, III -> 3, IV -> 4, V -> 5, VI -> 6, VII -> 7, VIII -> 8, IX -> 9, X -> 10)
-  n = n.replaceAll(RegExp(r'\bviii\b'), '8');
-  n = n.replaceAll(RegExp(r'\bvii\b'), '7');
-  n = n.replaceAll(RegExp(r'\bvi\b'), '6');
-  n = n.replaceAll(RegExp(r'\biii\b'), '3');
-  n = n.replaceAll(RegExp(r'\bii\b'), '2');
-  n = n.replaceAll(RegExp(r'\biv\b'), '4');
-  n = n.replaceAll(RegExp(r'\bv\b'), '5');
-  n = n.replaceAll(RegExp(r'\bix\b'), '9');
-  n = n.replaceAll(RegExp(r'\bx\b'), '10');
+  if (_reCanonAlgunRomano.hasMatch(n)) {
+    n = n.replaceAll(_reCanon4, '8');
+    n = n.replaceAll(_reCanon5, '7');
+    n = n.replaceAll(_reCanon6, '6');
+    n = n.replaceAll(_reCanon7, '3');
+    n = n.replaceAll(_reCanon8, '2');
+    n = n.replaceAll(_reCanon9, '4');
+    n = n.replaceAll(_reCanon10, '5');
+    n = n.replaceAll(_reCanon11, '9');
+    n = n.replaceAll(_reCanon12, '10');
+  }
 
   // 4. Mapeo de equivalencias de franquicias / nombres en español vs inglés
-  n = n.replaceAll(
-    RegExp(r'\blobezno\b|\baguja dinamica\b|\bgloton\b'),
-    'wolverine',
-  );
-  n = n.replaceAll(RegExp(r'\borigenes\b|\borigen\b'), 'origins');
-  n = n.replaceAll(RegExp(r'\bvengadores\b'), 'avengers');
-  n = n.replaceAll(
-    RegExp(
-      r'\brapidos y furiosos\b|\brapido y furioso\b|\brapidos & furiosos\b',
-    ),
-    'fast and furious',
-  );
-  n = n.replaceAll(RegExp(r'\bguerra de las galaxias\b'), 'star wars');
-  n = n.replaceAll(
-    RegExp(r'\bel senor de los anillos\b|\bsenor de los anillos\b'),
-    'lord of the rings',
-  );
-  n = n.replaceAll(RegExp(r'\bjuego de tronos\b'), 'game of thrones');
-  n = n.replaceAll(
-    RegExp(r'\bel hombre arana\b|\bhombre arana\b'),
-    'spiderman',
-  );
-  n = n.replaceAll(
-    RegExp(r'\bpiratas del caribe\b'),
-    'pirates of the caribbean',
-  );
-  n = n.replaceAll(RegExp(r'\bmi villano favorito\b'), 'despicable me');
-  n = n.replaceAll(RegExp(r'\blos increibles\b|\bincreibles\b'), 'incredibles');
-  n = n.replaceAll(RegExp(r'\bestacion 19\b'), 'station 19');
-  n = n.replaceAll(RegExp(r'\banatomia de grey\b'), 'greys anatomy');
-  n = n.replaceAll(RegExp(r'\blos simpson\b|\blos simpsons\b'), 'simpsons');
-  n = n.replaceAll(
-    RegExp(r'\bla casa de papel\b|\bcasa de papel\b'),
-    'money heist',
-  );
-  n = n.replaceAll(
-    RegExp(r'\bel caballero de la noche\b|\bel caballero oscuro\b'),
-    'dark knight',
-  );
-  n = n.replaceAll(RegExp(r'\bel hombre de acero\b'), 'man of steel');
-  n = n.replaceAll(RegExp(r'\bintensa mente\b|\bintensamente\b'), 'inside out');
-  n = n.replaceAll(RegExp(r'\buna aventura congelada\b'), 'frozen');
-  n = n.replaceAll(RegExp(r'\bzootropolis\b'), 'zootopia');
-  n = n.replaceAll(RegExp(r'\bvaiana\b'), 'moana');
+  if (_reCanonAlgunaFranquicia.hasMatch(n)) {
+    n = n.replaceAll(
+      _reCanon13,
+      'wolverine',
+    );
+    n = n.replaceAll(_reCanon14, 'origins');
+    n = n.replaceAll(_reCanon15, 'avengers');
+    n = n.replaceAll(
+      _reCanon16,
+      'fast and furious',
+    );
+    n = n.replaceAll(_reCanon17, 'star wars');
+    n = n.replaceAll(
+      _reCanon18,
+      'lord of the rings',
+    );
+    n = n.replaceAll(_reCanon19, 'game of thrones');
+    n = n.replaceAll(
+      _reCanon20,
+      'spiderman',
+    );
+    n = n.replaceAll(
+      _reCanon21,
+      'pirates of the caribbean',
+    );
+    n = n.replaceAll(_reCanon22, 'despicable me');
+    n = n.replaceAll(_reCanon23, 'incredibles');
+    n = n.replaceAll(_reCanon24, 'station 19');
+    n = n.replaceAll(_reCanon25, 'greys anatomy');
+    n = n.replaceAll(_reCanon26, 'simpsons');
+    n = n.replaceAll(
+      _reCanon27,
+      'money heist',
+    );
+    n = n.replaceAll(
+      _reCanon28,
+      'dark knight',
+    );
+    n = n.replaceAll(_reCanon29, 'man of steel');
+    n = n.replaceAll(_reCanon30, 'inside out');
+    n = n.replaceAll(_reCanon31, 'frozen');
+    n = n.replaceAll(_reCanon32, 'zootopia');
+    n = n.replaceAll(_reCanon33, 'moana');
+  }
 
   // 5. Eliminar caracteres especiales (conservar letras, números y espacios)
-  n = n.replaceAll(RegExp(r'[^a-z0-9\s]'), ' ');
+  n = n.replaceAll(_reCanon34, ' ');
 
   // 6. Quitar artículos comunes al inicio
   n = n.replaceAll(
-    RegExp(r'^\s*(the|el|la|los|las|les|un|una|unos|unas)\s+'),
+    _reCanon35,
     '',
   );
 
   // 7. Normalizar espacios múltiples
-  return n.replaceAll(RegExp(r'\s+'), ' ').trim();
+  return n.replaceAll(_reCanon36, ' ').trim();
 }
 
 /// Extrae los números significativos de un título (ej: "2", "3", "9" para secuelas/partes)
@@ -4999,6 +5068,34 @@ final RegExp _reArticulos = RegExp(
 final RegExp _reParentesis = RegExp(r'[\(\[].*?[\)\]]');
 final RegExp _reNoAlfanum = RegExp(r'[^a-z0-9\s]');
 final RegExp _reEspacios = RegExp(r'\s+');
+
+// ── Memoria de claves derivadas, VIVA SOLO DENTRO DEL ISOLATE ──────────────
+//
+// `compute` crea un isolate nuevo por llamada, asi que estas variables nacen
+// vacias en cada indexado y no se comparten con el hilo de UI. Se rellenan con
+// lo que venga de disco y se devuelven los titulos NUEVOS para que el llamador
+// los persista.
+Map<String, List<String>> _memoClaves = {};
+final Map<String, List<String>> _memoNuevas = {};
+
+/// Las cuatro claves de [nombre], calculandolas solo si no se conocian.
+///
+/// Este es todo el ahorro: con el catalogo estable, en el segundo arranque
+/// ningun titulo entra por la rama del calculo.
+List<String> _clavesDe(String nombre) {
+  final ya = _memoClaves[nombre];
+  if (ya != null && ya.length == Clave.cuantas) return ya;
+
+  final calculadas = <String>[
+    _normalizeTitleForMatching(nombre),
+    _canonicalTitleKey(nombre),
+    NormalizationUtils.normalizeSeriesName(nombre),
+    _normalizeForSearch(nombre),
+  ];
+  _memoClaves[nombre] = calculadas;
+  _memoNuevas[nombre] = calculadas;
+  return calculadas;
+}
 
 String _normalizeForSearch(String input) {
   String n = _removeAccents(input.toLowerCase().trim());
@@ -5211,10 +5308,40 @@ Map<String, List<M3UItem>> _fuzzyMergeGroups(
     wordSets[k] = k.split(' ').toSet();
   }
 
+  // ── Indice invertido palabra -> claves que la contienen ───────────────────
+  //
+  // Antes esto comparaba TODOS los pares: con 2.638 claves candidatas son
+  // 3.478.203 comparaciones, 3.781 ms medidos sobre el catalogo real. Y la
+  // inmensa mayoria no podian fusionarse de ninguna manera.
+  //
+  // Los dos criterios de fusion de abajo —que un conjunto de palabras este
+  // contenido en el otro, o que el Jaccard llegue a 0.6— exigen AL MENOS UNA
+  // palabra en comun: sin interseccion, `every` da falso en ambos sentidos y el
+  // Jaccard es 0. Asi que saltarse los pares que no comparten ninguna palabra
+  // no puede cambiar ni una fusion; solo evita preguntarlo.
+  final porPalabra = <String, List<int>>{};
+  for (int i = 0; i < candidateKeys.length; i++) {
+    for (final w in wordSets[candidateKeys[i]]!) {
+      porPalabra.putIfAbsent(w, () => []).add(i);
+    }
+  }
+
   for (int i = 0; i < candidateKeys.length; i++) {
     final ka = candidateKeys[i];
     if (mergeMap.containsKey(ka)) continue;
-    for (int j = i + 1; j < candidateKeys.length; j++) {
+
+    // Se recorren en orden ascendente para conservar EXACTAMENTE el mismo
+    // orden de fusion que el doble bucle original: `mergeMap` depende del
+    // orden, porque una clave ya fusionada se salta.
+    final candidatos = <int>{};
+    for (final w in wordSets[ka]!) {
+      for (final j in porPalabra[w]!) {
+        if (j > i) candidatos.add(j);
+      }
+    }
+    final ordenados = candidatos.toList()..sort();
+
+    for (final j in ordenados) {
       final kb = candidateKeys[j];
       if (mergeMap.containsKey(kb)) continue;
       final wordsA = wordSets[ka]!;
@@ -5313,6 +5440,19 @@ void _addSagaCategories(
 
 @pragma('vm:entry-point')
 Map<String, dynamic> _indexItemsInBackground(Map<String, dynamic> input) {
+  final swIso = Stopwatch()..start();
+
+  // El diccionario se lee AQUI DENTRO, no se recibe por parametro: pasarlo por
+  // el `compute` obligaba a copiar ~84.000 cadenas entre isolates y costaba mas
+  // de lo que ahorraba. Ver la nota de `cargarDeRuta`.
+  final String? rutaClaves = input['rutaClaves'] as String?;
+  _memoClaves =
+      rutaClaves == null
+          ? <String, List<String>>{}
+          : ClavesDerivadasCache.cargarDeRuta(rutaClaves);
+  _memoNuevas.clear();
+  final tClaves = swIso.elapsedMilliseconds;
+
   final List<M3UItem> rawItems = List<M3UItem>.from(input['items']);
   final List<M3UItem> customItems = List<M3UItem>.from(
     input['customItems'] ?? const <M3UItem>[],
@@ -5326,6 +5466,7 @@ Map<String, dynamic> _indexItemsInBackground(Map<String, dynamic> input) {
       customItems.isEmpty
           ? rawItems
           : M3UService._interleaveCustomContent(rawItems, customItems);
+  final tCruce = swIso.elapsedMilliseconds;
 
   final List<M3UItem> items = _filterOut4kItems(merged);
   final bool hasSagas = input['hasSagas'] ?? true;
@@ -5377,15 +5518,15 @@ Map<String, dynamic> _indexItemsInBackground(Map<String, dynamic> input) {
     if (!item.isLive) {
       if (item.isSeries) {
         series.add(item);
-        seriesNameIndex[NormalizationUtils.normalizeSeriesName(item.name)] =
-            item;
+        seriesNameIndex[_clavesDe(item.name)[Clave.serie]] = item;
       } else {
         movies.add(item);
-        movieNameIndex[NormalizationUtils.normalizeSeriesName(item.name)] =
-            item;
+        movieNameIndex[_clavesDe(item.name)[Clave.serie]] = item;
       }
     }
   }
+
+  final tBucle = swIso.elapsedMilliseconds;
 
   catSet.removeWhere((c) => _is4kTitle(c));
   final sortedCats = _sortCategoriesByPriority(catSet);
@@ -5393,6 +5534,7 @@ Map<String, dynamic> _indexItemsInBackground(Map<String, dynamic> input) {
   if (hasSagas) {
     _addSagaCategories(movies, catIndex, sortedCats);
   }
+  final tSagas = swIso.elapsedMilliseconds;
 
   // PERF: estos dos cálculos vivían en el hilo de UI (_indexItems). Son O(n)
   // con regex por item, así que se hacen aquí y se devuelven ya resueltos.
@@ -5405,12 +5547,33 @@ Map<String, dynamic> _indexItemsInBackground(Map<String, dynamic> input) {
   );
   for (int i = 0; i < items.length; i++) {
     if (items[i].isLive) continue;
-    final normalized = _normalizeForSearch(items[i].name);
+    final normalized = _clavesDe(items[i].name)[Clave.busqueda];
     searchNames[i] = normalized;
     searchWords[i] = normalized.split(' ').where((w) => w.isNotEmpty).toList();
   }
 
+  final tBusqueda = swIso.elapsedMilliseconds;
+
   final latestItems = _calculateLatestItems(items).take(50).toList();
+  final tRecientes = swIso.elapsedMilliseconds;
+
+  // Se guarda AQUI, con el isolate ya terminado de calcular: asi tampoco vuelve
+  // nada por la frontera. Solo si hubo titulos nuevos.
+  final tAntesGuardar = swIso.elapsedMilliseconds;
+  if (rutaClaves != null && _memoNuevas.isNotEmpty) {
+    ClavesDerivadasCache.guardarEnRuta(rutaClaves, _memoClaves);
+  }
+
+  debugPrint(
+    'PERFTRACE indexado: leerClaves=${tClaves}ms '
+    'cruce=${tCruce - tClaves}ms '
+    'bucleIndices=${tBucle - tCruce}ms '
+    'sagas=${tSagas - tBucle}ms '
+    'busqueda=${tBusqueda - tSagas}ms '
+    'recientes=${tRecientes - tBusqueda}ms '
+    'guardarClaves=${swIso.elapsedMilliseconds - tAntesGuardar}ms '
+    '(${_memoNuevas.length} títulos nuevos de ${_memoClaves.length})',
+  );
 
   return {
     'items': items,
