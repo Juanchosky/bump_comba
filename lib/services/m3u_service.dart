@@ -1978,7 +1978,7 @@ class M3UService extends ChangeNotifier {
   // INTELLIGENT CUSTOM CONTENT INTERLEAVING
   // ===========================================================================
 
-  /// Vincula items de la base de datos (custom_content) como alternativas V2 (Más rápida)
+  /// Vincula items de la base de datos (custom_content) como alternativas BD (Más rápida)
   /// a items coincidentes de Xtream en lugar de crear tarjetas duplicadas.
   static (List<M3UItem>, List<M3UItem>) _linkCustomContentAlternatives(
     List<M3UItem> regularItems,
@@ -2066,7 +2066,7 @@ class M3UService extends ChangeNotifier {
         matchedCustomItems.add(matchedCustom);
 
         final labeledCustom = matchedCustom.copyWith(
-          sourceName: 'V2 (Más rápida)',
+          sourceName: 'BD (Más rápida)',
         );
 
         List<M3UItem> updatedEpisodes = regItem.episodes;
@@ -2113,7 +2113,7 @@ class M3UService extends ChangeNotifier {
 
     final swI = Stopwatch()..start();
 
-    // ── Paso 0: Emparejar alternativas de custom_content (BD V2) ──
+    // ── Paso 0: Emparejar alternativas de custom_content (BD) ──
     final (linkedRegular, orphanCustom) = _linkCustomContentAlternatives(
       regularItems,
       customItems,
@@ -2524,10 +2524,7 @@ class M3UService extends ChangeNotifier {
     // Link alternatives from custom DB series if available
     if (episodes.isNotEmpty && item.alternatives.isNotEmpty) {
       final customSeriesAlt = item.alternatives.firstWhere(
-        (a) =>
-            a.episodes.isNotEmpty ||
-            a.sourceName?.contains('V2') == true ||
-            a.sourceName == 'Supabase',
+        (a) => a.episodes.isNotEmpty || a.esDeLaBD,
         orElse: () => M3UItem(name: '', url: '', category: ''),
       );
 
@@ -2622,7 +2619,7 @@ class M3UService extends ChangeNotifier {
 
       if (matchedEp != null) {
         final labeledCustomEp = matchedEp.copyWith(
-          sourceName: 'V2 (Más rápida)',
+          sourceName: 'BD (Más rápida)',
         );
         final existingAlts = List<M3UItem>.from(ep.alternatives);
         if (!existingAlts.any((a) => a.url == labeledCustomEp.url)) {

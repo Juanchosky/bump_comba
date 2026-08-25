@@ -1414,38 +1414,69 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                     widget.item.alternatives.isNotEmpty ||
                     _allEpisodes.any((ep) => ep.alternatives.isNotEmpty);
                 final bool isFromDB =
-                    widget.item.sourceName == 'Supabase' ||
-                    widget.item.sourceName?.contains('V2') == true ||
-                    _allEpisodes.any(
-                      (ep) =>
-                          ep.sourceName == 'Supabase' ||
-                          ep.sourceName?.contains('V2') == true,
-                    );
+                    widget.item.esDeLaBD ||
+                    _allEpisodes.any((ep) => ep.esDeLaBD);
 
                 final String? serverBadgeText =
-                    hasAlternatives ? 'V1+' : (isFromDB ? 'V2' : null);
+                    hasAlternatives ? 'V1+' : (isFromDB ? 'BD' : null);
 
-                if (serverBadgeText == null) return const SizedBox.shrink();
+                // ── Distintivo ENG ────────────────────────────────────────
+                //
+                // Avisa ANTES de darle al play de que ese contenido esta en
+                // ingles, para que nadie se lleve la sorpresa a mitad de
+                // pelicula cuando el cambio automatico de servidor lo lleve a
+                // la version de la BD.
+                //
+                // La marca sale de la categoria que se pone al subir el
+                // contenido ("Estrenos 2026 | Eng"). Se mira el item, sus
+                // alternativas y los episodios: da igual donde este la version
+                // inglesa, lo que importa es que el usuario pueda acabar en
+                // ella.
+                final bool hayIngles =
+                    (widget.item.esDeLaBD && widget.item.esAudioIngles) ||
+                    widget.item.alternatives.any(
+                      (a) => a.esDeLaBD && a.esAudioIngles,
+                    ) ||
+                    _allEpisodes.any(
+                      (ep) =>
+                          (ep.esDeLaBD && ep.esAudioIngles) ||
+                          ep.alternatives.any(
+                            (a) => a.esDeLaBD && a.esAudioIngles,
+                          ),
+                    );
+
+                if (serverBadgeText == null && !hayIngles) {
+                  return const SizedBox.shrink();
+                }
+
+                Widget distintivo(String texto) => Container(
+                  margin: const EdgeInsets.only(right: 6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 4,
+                    vertical: 1,
+                  ),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Colors.white38, width: 0.8),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                  child: Text(
+                    texto,
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                );
 
                 return Padding(
-                  padding: const EdgeInsets.only(right: 12),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 4,
-                      vertical: 1,
-                    ),
-                    decoration: BoxDecoration(
-                      border: Border.all(color: Colors.white38, width: 0.8),
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                    child: Text(
-                      serverBadgeText,
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
+                  padding: const EdgeInsets.only(right: 6),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (serverBadgeText != null) distintivo(serverBadgeText),
+                      if (hayIngles) distintivo('ENG'),
+                    ],
                   ),
                 );
               },

@@ -26,6 +26,43 @@ class M3UItem {
   bool get isSeries => _isSeries ?? episodes.isNotEmpty;
   bool get hasAlternatives => alternatives.isNotEmpty;
 
+  /// ¿Este item viene de la base de datos propia (Supabase)?
+  ///
+  /// Se aceptan TRES etiquetas a proposito:
+  ///  · 'Supabase'          — como nace el item propio.
+  ///  · 'BD (Más rápida)'   — como queda al engancharse a un titulo de Xtream.
+  ///  · 'V2 (...)'          — el nombre anterior de lo mismo.
+  ///
+  /// La etiqueta vieja hay que seguir reconociendola porque `sourceName` se
+  /// guarda en la cache binaria (ver BipbSerializer): tras actualizar la app,
+  /// los catalogos ya cacheados siguen trayendo 'V2' hasta que la cache se
+  /// renueve. Sin esta tolerancia, esos usuarios se quedarian sin el distintivo
+  /// y sin las alternativas hasta la siguiente recarga completa.
+  bool get esDeLaBD {
+    final f = sourceName;
+    if (f == null) return false;
+    return f == 'Supabase' || f.contains('BD') || f.contains('V2');
+  }
+
+  /// ¿El audio de este item esta en ingles?
+  ///
+  /// Se deduce de la categoria, que es donde se marca al subir el contenido:
+  /// "Estrenos 2026 | Eng". Se compara por TOKENS separados por | / -, nunca
+  /// con `contains('eng')` a secas: hay titulos y categorias donde "eng" cae
+  /// dentro de otra palabra —"Venganza" es el ejemplo obvio— y marcarian como
+  /// ingles contenido que esta en espanol.
+  bool get esAudioIngles {
+    // El guion va al final para que sea un guion literal y no un rango.
+    final partes = category.toLowerCase().split(RegExp(r'[|/-]'));
+    for (final p in partes) {
+      final t = p.trim();
+      if (t == 'eng' || t == 'english' || t == 'ingles' || t == 'inglés') {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /// Normalized identity used to deduplicate the same title that may be stored
   /// under different URLs (e.g. played from distinct sources or with a refreshed
   /// token). For series we key by the series name so all episodes collapse into
