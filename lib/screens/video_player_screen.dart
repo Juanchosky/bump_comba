@@ -207,6 +207,23 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// alturas el servidor ya se demostro malo y no hay nada que ganar
   /// esperandolo. Por debajo de eso puede ser un bache y conviene aguantar,
   /// porque cambiar de servidor tambien cuesta una recarga.
+  /// Segundos de congelamiento seguidos antes de saltar al servidor alternativo.
+  ///
+  /// Estuvo en 8, calculado como "5s de `cache-pause-wait` + margen". El margen
+  /// resulto corto: en uso real Xtream tarda a menudo MAS de 8s en volver, asi
+  /// que se cambiaba de servidor a uno que ya iba a recuperarse solo. Cada
+  /// salto innecesario cuesta una recarga completa del reproductor, y si el
+  /// alternativo esta en otro idioma ademas se le pregunta al usuario.
+  ///
+  /// 15s deja volver a la mayoria de esas recuperaciones lentas. No sube mas
+  /// porque el corte por acumulacion (`_presupuestoStallSegundos`) ya cubre el
+  /// caso feo —parones cortos repetidos— y porque a partir de ~20s mirando un
+  /// spinner el usuario ya abandona.
+  ///
+  /// NO aplica a roturas de tuberia: esas se recortan a 6s despues de este
+  /// valor, porque una conexion muerta no se recupera esperando.
+  static const int _umbralSaltoAlternativo = 15;
+
   static const Duration _ventanaStall = Duration(seconds: 90);
   static const int _presupuestoStallSegundos = 20;
   /// Se decide al inicio de cada episodio de stall: true si la causa fue una
@@ -344,7 +361,22 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   ///
   /// La posicion del TV llega por STATUS cada 500 ms, asi que a 8s hay 16
   /// muestras: resolucion de sobra para distinguir parado de lento.
-  static const int _castStallThresholdSeconds = 8;
+  /// Estuvo en 15, se bajo a 8 el 2026-08-18 porque se veia el televisor
+  /// cargando mas de 8s con el otro servidor disponible y sin que pasara nada.
+  /// Vuelve a 15 el 2026-08-24 por el motivo contrario, ya medido en uso real:
+  /// Xtream tarda a menudo MAS de 8s en volver, asi que a 8 se cambiaba de
+  /// servidor a uno que iba a recuperarse solo — y en el televisor cada salto
+  /// cuesta una recarga completa del receptor.
+  ///
+  /// Lo que hace viable subirlo es el corte por ACUMULACION de mas abajo: la
+  /// queja de 2026-08-18 ("carga mucho y no pasa nada") era en realidad de
+  /// parones repetidos, que el contador de racha nunca sumaba y que ahora si se
+  /// detectan. Sin ese respaldo, subir esto solo seria volver al problema viejo.
+  static const int _castStallThresholdSeconds = 15;
+
+  /// Mismo criterio que en el telefono, aplicado al televisor: cortes cortos
+  /// pero repetidos. Ver `_episodiosStall`.
+  final List<({DateTime fin, int segundos})> _episodiosStallCast = [];
 
   // Visual Notice system
   String? _noticeMessage;
@@ -481,15 +513,50 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       if (pos == _lastCastMonitoredPosition) {
         _castNoMovementSeconds++;
       } else {
+        // El TV volvio a avanzar: se cierra el episodio y se anota. Los cortes
+        // de 1s son ruido normal del bufer y no cuentan.
+        if (_castNoMovementSeconds >= 2) {
+          _episodiosStallCast.add((
+            fin: DateTime.now(),
+            segundos: _castNoMovementSeconds,
+          ));
+        }
         _castNoMovementSeconds = 0;
       }
       _lastCastMonitoredPosition = pos;
 
       if (_castNoMovementSeconds >= _castStallThresholdSeconds) {
         _castNoMovementSeconds = 0;
+        _episodiosStallCast.clear();
         _triggerCastFailover(
           'Sin avance en el TV por $_castStallThresholdSeconds s',
         );
+        return;
+      }
+
+      // ── Servidor malo por acumulacion ─────────────────────────────────────
+      //
+      // Igual que en el telefono: `_castNoMovementSeconds` cuenta segundos
+      // SEGUIDOS y se pone a cero en cuanto el TV avanza un poco. Con eso, el
+      // patron de 6s parado / 3s reproduciendo repetido no alcanzaba ningun
+      // umbral y el televisor se quedaba inmirable sin que nadie cambiara nada.
+      final limite = DateTime.now().subtract(_ventanaStall);
+      _episodiosStallCast.removeWhere((e) => e.fin.isBefore(limite));
+      if (_episodiosStallCast.length >= 2) {
+        final acumulado = _episodiosStallCast.fold<int>(
+          0,
+          (suma, e) => suma + e.segundos,
+        );
+        if (acumulado >= _presupuestoStallSegundos) {
+          // El numero de cortes se lee ANTES de vaciar la lista.
+          final cortes = _episodiosStallCast.length;
+          _episodiosStallCast.clear();
+          _castNoMovementSeconds = 0;
+          _triggerCastFailover(
+            'TV inestable: ${acumulado}s parado en $cortes cortes',
+          );
+          return;
+        }
       }
     });
   }
@@ -498,6 +565,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _castStallMonitorTimer?.cancel();
     _castStallMonitorTimer = null;
     _castNoMovementSeconds = 0;
+    // Sin esto, los cortes del contenido anterior seguirian contando contra el
+    // siguiente y podrian provocarle un cambio de servidor inmerecido.
+    _episodiosStallCast.clear();
   }
 
   Future<void> _triggerCastFailover(String reason) async {
@@ -511,6 +581,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
     _castFailoverInProgress = true;
     _lastCastFailoverAt = DateTime.now();
+    // Servidor nuevo, presupuesto nuevo.
+    _episodiosStallCast.clear();
+    _castNoMovementSeconds = 0;
     debugPrint('CastFailover: $reason. Cambiando de servidor...');
     if (mounted) {
       _showAppSnackBar('');
@@ -1457,12 +1530,35 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           }
         }
 
+        // ── Arrancar audio y video JUNTOS tras una recarga ──────────────
+        //
+        // `open(play: true)` empieza a sonar en cuanto el demuxer tiene datos,
+        // pero el decodificador de video todavia esta levantando la textura.
+        // En Android el cambio de servidor SIEMPRE usa el camino pesado (Player
+        // nuevo, ver `canUseFastPath`), asi que ese hueco se nota: el usuario
+        // ve el spinner con el audio ya sonando por detras y el video aparece
+        // unos segundos despues. En los SoC MediaTek ese retraso llega a varios
+        // segundos (ver la nota del watchdog de pantalla negra).
+        //
+        // Solo se aplica a RECARGAS: en el arranque normal el usuario acaba de
+        // pulsar play y cualquier demora se percibe como lentitud. En una
+        // recarga ya esta esperando, asi que unificar el arranque no le cuesta
+        // tiempo percibido y quita el desajuste.
+        final bool esperarPrimerFrame =
+            isLocalReload && shouldPlayLocally && !_isLiveContent;
+
         await _player!.open(
           Media(playbackUrl, httpHeaders: headers, start: startFrom),
-          play: shouldPlayLocally,
+          play: shouldPlayLocally && !esperarPrimerFrame,
         );
 
         if (!mounted || _player == null) return;
+
+        if (esperarPrimerFrame) {
+          await _esperarPrimerFrame();
+          if (!mounted || _player == null) return;
+          await _player!.play();
+        }
 
         // Watchdog de auto-recuperación
         if (_turboActive) {
@@ -2320,6 +2416,41 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     );
   }
 
+  /// Espera a que el decodificador entregue el primer frame a la textura.
+  ///
+  /// La senal es el `rect` del VideoController: queda en null hasta que la capa
+  /// nativa renderiza de verdad (el mismo criterio que usa el watchdog de
+  /// pantalla negra; `state.width/height` NO sirve, porque MPV los rellena
+  /// desde los metadatos aunque no haya imagen).
+  ///
+  /// El tope existe porque hay casos donde ese frame no llega nunca —pista de
+  /// video rota, contenido solo de audio—. Ahi se sigue adelante y suena, que
+  /// es el comportamiento de antes: este arreglo puede mejorar el arranque,
+  /// nunca dejar al usuario en silencio esperando algo que no va a pasar.
+  static const Duration _topeEsperaPrimerFrame = Duration(seconds: 6);
+
+  Future<void> _esperarPrimerFrame() async {
+    final inicio = DateTime.now();
+    while (mounted && _player != null) {
+      final r = _videoControllerNotifier.value?.rect.value;
+      if (r != null && r.width > 0 && r.height > 0) {
+        debugPrint(
+          'Primer frame listo en '
+          '${DateTime.now().difference(inicio).inMilliseconds}ms',
+        );
+        return;
+      }
+      if (DateTime.now().difference(inicio) >= _topeEsperaPrimerFrame) {
+        debugPrint(
+          'Primer frame no llegó en ${_topeEsperaPrimerFrame.inSeconds}s: '
+          'se reanuda igual',
+        );
+        return;
+      }
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+  }
+
   /// Contador de auto-avances de episodio: cada 2 mostramos un anuncio.
   int _autoAdvanceCount = 0;
 
@@ -2548,9 +2679,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         // _stallPorRotura). Consultarla en cada segundo hacía que una única
         // rotura encadenara recargas hasta que el reproductor abandonaba el
         // servidor.
-        if (_stallPorRotura) {
-          threshold = threshold < 6 ? threshold : 6;
-        }
 
         // ── Salto rápido de Xtream a la Base de Datos ───────────────────────
         // Si el contenido de Xtream YA habia arrancado (currentPos > 0) y hay
@@ -2580,7 +2708,22 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             _currentServerIndex == 0 &&
             _serverItems.length > 1 &&
             currentPos > Duration.zero) {
-          threshold = 8;
+          threshold = _umbralSaltoAlternativo;
+        }
+
+        // ── El recorte por ROTURA va AL FINAL, y no es negociable ───────────
+        //
+        // Cuando el proxy local avisa de que la tuberia hacia el reproductor se
+        // rompio, esa conexion esta muerta: no vuelve sola por mucho que se
+        // espere. Aqui esperar no es paciencia, es tiempo tirado.
+        //
+        // Antes este recorte estaba ANTES del bloque de arriba, asi que la
+        // asignacion del salto lo PISABA: con alternativa disponible —el caso
+        // normal en este camino— una rotura esperaba 8s en vez de 6, y con el
+        // umbral subido a 15 habrian sido 15 segundos mirando una conexion
+        // muerta. Poniendolo al final, ningun ajuste posterior puede anularlo.
+        if (_stallPorRotura && threshold > 6) {
+          threshold = 6;
         }
 
         if (_stallSeconds >= threshold && !_isVideoLoading) {
