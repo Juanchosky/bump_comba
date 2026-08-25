@@ -1116,6 +1116,53 @@ class CastService {
     });
   }
 
+  Completer<bool>? _preguntaPendiente;
+
+  /// Muestra una pregunta EN LA PANTALLA DEL TELEVISOR y espera la respuesta.
+  ///
+  /// Devuelve lo que eligio el usuario con el mando, o [porDefecto] si el TV no
+  /// contesta a tiempo (se cayo la conexion, receptor viejo sin soporte...).
+  /// Nunca se queda colgado: el contenido esta parado esperando esta decision.
+  Future<bool> preguntarEnTv({
+    required String titulo,
+    required String detalle,
+    required String textoSi,
+    required String textoNo,
+    int segundos = 20,
+    bool porDefecto = true,
+  }) async {
+    if (!isTvBackend || _tvSender == null) return porDefecto;
+
+    // Una pregunta a la vez: si quedaba otra viva, se cierra con el defecto.
+    _preguntaPendiente?.complete(porDefecto);
+    final completer = Completer<bool>();
+    _preguntaPendiente = completer;
+
+    _tvSender!.ask(
+      titulo: titulo,
+      detalle: detalle,
+      textoSi: textoSi,
+      textoNo: textoNo,
+      segundos: segundos,
+    );
+
+    // Margen sobre la cuenta atras del TV: el que manda el reloj es el
+    // televisor, esto es solo la red por si su respuesta no llega.
+    return completer.future
+        .timeout(
+          Duration(seconds: segundos + 5),
+          onTimeout: () {
+            debugPrint('CastService: el TV no respondió a la pregunta');
+            return porDefecto;
+          },
+        )
+        .whenComplete(() {
+          if (identical(_preguntaPendiente, completer)) {
+            _preguntaPendiente = null;
+          }
+        });
+  }
+
   /// Reenvía la última media al TV (usado si el TV ya no la está reproduciendo).
   void _resendLastTvMedia() {
     final url = _tvLastUrl;
@@ -1178,6 +1225,11 @@ class CastService {
         break;
       case TvProto.evtAudioTracks:
         castAudioTracks.value = _asMapList(event['tracks']);
+        break;
+      case TvProto.evtAskResult:
+        final acepta = event['acepta'] == true;
+        final p = _preguntaPendiente;
+        if (p != null && !p.isCompleted) p.complete(acepta);
         break;
       case TvProto.evtSubtitleTracks:
         castSubtitleTracks.value = _asMapList(event['tracks']);

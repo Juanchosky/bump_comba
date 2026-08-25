@@ -2228,22 +2228,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   /// ¿Saltar a [destino] cambiaria el audio a ingles Y conviene preguntar?
   ///
-  /// TRANSMITIENDO AL TV NUNCA SE PREGUNTA. El dialogo sale en el telefono y se
-  /// espera dentro de `_reloadVideo`, que corre con `_isReloading` en true: si
-  /// el usuario dejo el telefono en la mesa —que es lo normal viendo en el
-  /// televisor— la respuesta no llega nunca y el TV se queda congelado
-  /// esperandola. Ahi es preferible el comportamiento de siempre: cambiar de
-  /// servidor en silencio y que el contenido siga.
-  ///
-  /// El monitor de stall del propio TV (`_triggerCastFailover`) no pasa por
-  /// aqui: llama a `_initializePlayer` directamente, asi que ese camino ya
-  /// estaba intacto. Esta guarda cubre el otro, el de `_reloadVideo`.
-  bool _elCambioTraeIngles(M3UItem destino) {
-    if (CastService().isCasting.value) return false;
-    return destino.esDeLaBD &&
-        destino.esAudioIngles &&
-        !_currentItem.esAudioIngles;
-  }
+  /// Transmitiendo, la pregunta sale EN LA PANTALLA DEL TELEVISOR y se contesta
+  /// con el mando (ver `_confirmarCambioAIngles`). Antes aqui se devolvia false
+  /// para no preguntar: el dialogo salia en el telefono, que viendo en el TV
+  /// suele estar en la mesa, asi que la respuesta no llegaba nunca y el
+  /// televisor se quedaba congelado. Preguntar donde mira el usuario resuelve
+  /// las dos cosas.
+  bool _elCambioTraeIngles(M3UItem destino) =>
+      destino.esDeLaBD && destino.esAudioIngles && !_currentItem.esAudioIngles;
 
   /// Pregunta al usuario. `true` = seguir en ingles, `false` = esperar.
   Future<bool> _confirmarCambioAIngles() async {
@@ -2253,15 +2245,31 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         DateTime.now().difference(rechazo) < _reintentoPreguntaIdioma) {
       return false;
     }
-    // Segunda red por si algun dia se llama desde otro camino: transmitiendo
-    // se sigue adelante sin preguntar, nunca se bloquea el televisor.
-    if (CastService().isCasting.value) return true;
     if (_preguntandoIdioma || !mounted) return false;
     _preguntandoIdioma = true;
 
     bool elegido = false;
     try {
-      await _mostrarHojaCambioIdioma((v) => elegido = v);
+      if (CastService().isCasting.value) {
+        // ── Transmitiendo: la pregunta va al televisor ───────────────────
+        //
+        // Por defecto SI: si el TV no contesta —se corto la conexion, o el
+        // receptor es de una version anterior sin soporte para preguntas— se
+        // continua en ingles. Preferible a dejar el televisor congelado
+        // esperando una respuesta que no va a llegar.
+        elegido = await CastService().preguntarEnTv(
+          titulo: 'Problemas con la versión en español',
+          detalle:
+              'El servidor en español no está respondiendo. Hay otra versión '
+              'disponible, pero su audio está en inglés.',
+          textoSi: 'Continuar en inglés',
+          textoNo: 'Seguir esperando',
+          segundos: 20,
+          porDefecto: true,
+        );
+      } else {
+        await _mostrarHojaCambioIdioma((v) => elegido = v);
+      }
     } finally {
       _preguntandoIdioma = false;
     }
@@ -2427,7 +2435,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// video rota, contenido solo de audio—. Ahi se sigue adelante y suena, que
   /// es el comportamiento de antes: este arreglo puede mejorar el arranque,
   /// nunca dejar al usuario en silencio esperando algo que no va a pasar.
-  static const Duration _topeEsperaPrimerFrame = Duration(seconds: 6);
+  ///
+  /// POR QUE 4s Y NO MAS: el failover de carga inicial dispara a los 10s y su
+  /// condicion es `_isVideoLoading || !st.playing`, y durante esta espera las
+  /// DOS son ciertas. O sea que este tope se come parte de ese presupuesto de
+  /// 10s, que ademas comparte con el resto del arranque (esperar el bufer,
+  /// primer frame confirmado...). Con 4s queda margen de sobra para que el
+  /// arranque termine antes de los 10s; con 6 u 8 se corria el riesgo de
+  /// provocar un cambio de servidor causado por nuestra propia pausa, que seria
+  /// bastante peor que el desajuste que esto viene a arreglar.
+  static const Duration _topeEsperaPrimerFrame = Duration(seconds: 4);
 
   Future<void> _esperarPrimerFrame() async {
     final inicio = DateTime.now();
@@ -2443,7 +2460,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       if (DateTime.now().difference(inicio) >= _topeEsperaPrimerFrame) {
         debugPrint(
           'Primer frame no llegó en ${_topeEsperaPrimerFrame.inSeconds}s: '
-          'se reanuda igual',
+          'se reanuda igual (audio primero, como antes)',
         );
         return;
       }

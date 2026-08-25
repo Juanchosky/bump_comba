@@ -80,10 +80,31 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
   /// nuevo solo sirve de referencia, no se compara con la del anterior.
   Duration? _posAnterior;
 
+  // ── Pregunta en pantalla (cmdAsk) ────────────────────────────────────────
+  //
+  // El telefono pide mostrar una decision al usuario. Se responde con el mando,
+  // que es donde esta el usuario cuando transmite.
+  Map<String, String>? _pregunta;
+  bool _preguntaSiEnfocado = true;
+  Timer? _preguntaTimer;
+  int _preguntaSegundos = 0;
+
   void _onRectCambio() {
     final r = _videoController.rect.value;
     final listo = r != null && r.width > 0 && r.height > 0;
     if (listo && !_primerFrameListo && mounted) {
+      // MEDICION: cuanto tardo la imagen nueva desde que llego el LOAD.
+      //
+      // Ojo al interpretarlo: este listener SOLO se dispara cuando cambia la
+      // resolucion respecto al contenido anterior (media_kit sale antes si son
+      // iguales, ver la nota larga en _pushStatus). Asi que este numero
+      // aparece a veces, no siempre, y cuando aparece es el bueno: el retraso
+      // real del decodificador en entregar la textura en este televisor.
+      debugPrint(
+        'TvReceiver: MEDIDA primer frame real a los '
+        '${DateTime.now().difference(_lastLoadAt).inMilliseconds}ms '
+        '(${r.width.toInt()}x${r.height.toInt()})',
+      );
       setState(() => _primerFrameListo = true);
     }
   }
@@ -262,6 +283,9 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
           break;
         case TvProto.cmdGetTracks:
           _pushTracks();
+          break;
+        case TvProto.cmdAsk:
+          _mostrarPregunta(msg);
           break;
       }
     } catch (e) {
@@ -594,12 +618,29 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
       if (_hasMedia && !_primerFrameListo && playing && !buffering) {
         final anterior = _posAnterior;
         final r = _videoController.rect.value;
+        final desdeLoad = DateTime.now().difference(_lastLoadAt);
+
+        // El minimo de 2s no es un capricho. Este VideoController se reutiliza
+        // entre contenidos, asi que `rect` conserva el valor del ANTERIOR y
+        // siempre parece valido: sin el minimo, el overlay se quitaba en cuanto
+        // el audio empezaba a avanzar, dejando un instante de pantalla negra
+        // sin imagen y sin spinner. Con 2s la caratula cubre el arranque del
+        // decodificador, que es para lo que esta.
+        //
+        // Sigue siendo una RED: solo puede quitar el overlay, y el camino bueno
+        // (el listener de rect) lo quita antes cuando puede.
         if (anterior != null &&
             pos > anterior &&
+            desdeLoad >= const Duration(seconds: 2) &&
             r != null &&
             r.width > 0 &&
             r.height > 0 &&
             mounted) {
+          debugPrint(
+            'TvReceiver: MEDIDA overlay quitado por avance de posicion a los '
+            '${desdeLoad.inMilliseconds}ms (el listener de rect no se disparo: '
+            'misma resolucion que el contenido anterior)',
+          );
           setState(() => _primerFrameListo = true);
         }
       }
@@ -720,6 +761,50 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     });
   }
 
+  void _mostrarPregunta(Map<String, dynamic> msg) {
+    _preguntaTimer?.cancel();
+    final segundos = (msg['segundos'] as num?)?.toInt() ?? 20;
+    if (!mounted) return;
+    setState(() {
+      _pregunta = {
+        'titulo': msg['titulo']?.toString() ?? '',
+        'detalle': msg['detalle']?.toString() ?? '',
+        'textoSi': msg['textoSi']?.toString() ?? 'Continuar',
+        'textoNo': msg['textoNo']?.toString() ?? 'Esperar',
+      };
+      // Arranca en "no" (la opcion conservadora): si el usuario aporrea OK sin
+      // leer, no se le cambia el idioma sin querer.
+      _preguntaSiEnfocado = false;
+      _preguntaSegundos = segundos;
+    });
+    // Que la pregunta reciba las teclas aunque el overlay estuviera oculto.
+    _focusNode.requestFocus();
+
+    _preguntaTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted || _pregunta == null) {
+        t.cancel();
+        return;
+      }
+      setState(() => _preguntaSegundos--);
+      if (_preguntaSegundos <= 0) {
+        // Se acabo el tiempo: se responde igual. Quien pregunta no puede
+        // quedarse esperando indefinidamente — el contenido esta parado.
+        _responderPregunta(true, porTiempo: true);
+      }
+    });
+  }
+
+  void _responderPregunta(bool acepta, {bool porTiempo = false}) {
+    _preguntaTimer?.cancel();
+    _preguntaTimer = null;
+    if (mounted) setState(() => _pregunta = null);
+    _service.sendEvent(TvProto.evtAskResult, {'acepta': acepta});
+    debugPrint(
+      'TvReceiver: respuesta a la pregunta: $acepta'
+      '${porTiempo ? ' (por tiempo agotado)' : ''}',
+    );
+  }
+
   Future<void> _togglePlay() async {
     if (_player.state.playing) {
       await _player.pause();
@@ -772,9 +857,37 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
     }
-    if (!_hasMedia) return KeyEventResult.ignored;
     final key = event.logicalKey;
     final bool held = event is KeyRepeatEvent;
+
+    // ── La pregunta se lleva TODAS las teclas mientras esta en pantalla ─────
+    //
+    // Va antes que nada, incluso que el `_hasMedia`: si el usuario pudiera
+    // seguir moviendo la linea de tiempo o pausando por detras, la pregunta
+    // seria una molestia flotando encima en vez de una decision.
+    if (_pregunta != null) {
+      if (key == LogicalKeyboardKey.arrowLeft ||
+          key == LogicalKeyboardKey.arrowRight) {
+        setState(() => _preguntaSiEnfocado = !_preguntaSiEnfocado);
+        return KeyEventResult.handled;
+      }
+      if (key == LogicalKeyboardKey.select ||
+          key == LogicalKeyboardKey.enter ||
+          key == LogicalKeyboardKey.gameButtonA) {
+        _responderPregunta(_preguntaSiEnfocado);
+        return KeyEventResult.handled;
+      }
+      if (key == LogicalKeyboardKey.escape ||
+          key == LogicalKeyboardKey.goBack) {
+        // Atras = la opcion conservadora, nunca el cambio de idioma.
+        _responderPregunta(false);
+        return KeyEventResult.handled;
+      }
+      // El resto se traga: nada de pausar ni buscar por detras.
+      return KeyEventResult.handled;
+    }
+
+    if (!_hasMedia) return KeyEventResult.ignored;
 
     // ── Teclas multimedia: actúan directo (y muestran el overlay) ──
     if (key == LogicalKeyboardKey.mediaPlayPause) {
@@ -874,6 +987,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     _hideControlsTimer?.cancel();
     _seekDebounce?.cancel();
     _focusNode.dispose();
+    _preguntaTimer?.cancel();
     _videoController.rect.removeListener(_onRectCambio);
     _service.hasClient.removeListener(_onClientChanged);
     for (final s in _subs) {
@@ -971,7 +1085,21 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
                   ),
                 ),
               ),
-            if (_hasMedia && _controlsVisible)
+            // Pregunta en pantalla: por ENCIMA de todo lo demas, con su propio
+            // velo, para que se lea sobre cualquier fotograma.
+            if (_pregunta != null)
+              Positioned.fill(
+                child: _TvPregunta(
+                  titulo: _pregunta!['titulo']!,
+                  detalle: _pregunta!['detalle']!,
+                  textoSi: _pregunta!['textoSi']!,
+                  textoNo: _pregunta!['textoNo']!,
+                  siEnfocado: _preguntaSiEnfocado,
+                  segundos: _preguntaSegundos,
+                ),
+              ),
+
+            if (_hasMedia && _controlsVisible && _pregunta == null)
               _TvControlsOverlay(
                 position: _previewing ? _previewPos : _position,
                 duration: _duration,
@@ -1689,6 +1817,116 @@ class _AppLoadingAnimationState extends State<_AppLoadingAnimation>
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Pregunta a pantalla completa en el televisor, contestable con el mando.
+///
+/// Tamanos pensados para verse desde el sofa: el titulo a 34 y los botones a
+/// 22, muy por encima de lo que se usaria en un telefono. El foco se marca con
+/// relleno solido y borde, no solo con color, porque a tres metros un cambio de
+/// tono no se distingue.
+class _TvPregunta extends StatelessWidget {
+  final String titulo;
+  final String detalle;
+  final String textoSi;
+  final String textoNo;
+  final bool siEnfocado;
+  final int segundos;
+
+  const _TvPregunta({
+    required this.titulo,
+    required this.detalle,
+    required this.textoSi,
+    required this.textoNo,
+    required this.siEnfocado,
+    required this.segundos,
+  });
+
+  Widget _boton(String texto, bool enfocado) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 140),
+      padding: const EdgeInsets.symmetric(horizontal: 34, vertical: 16),
+      decoration: BoxDecoration(
+        color: enfocado ? Colors.white : Colors.white.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: enfocado ? Colors.white : Colors.white24,
+          width: 2,
+        ),
+      ),
+      child: Text(
+        texto,
+        style: TextStyle(
+          color: enfocado ? Colors.black : Colors.white,
+          fontSize: 22,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: Colors.black.withValues(alpha: 0.82),
+      alignment: Alignment.center,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 80),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                color: Colors.amber.withValues(alpha: 0.14),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.language,
+                color: Colors.amber,
+                size: 40,
+              ),
+            ),
+            const SizedBox(height: 22),
+            Text(
+              titulo,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 34,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              detalle,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 19,
+                height: 1.4,
+              ),
+            ),
+            const SizedBox(height: 34),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _boton(textoNo, !siEnfocado),
+                const SizedBox(width: 20),
+                _boton(textoSi, siEnfocado),
+              ],
+            ),
+            const SizedBox(height: 26),
+            Text(
+              'Usa ← → para elegir y OK para confirmar  ·  '
+              'continúa solo en ${segundos}s',
+              style: const TextStyle(color: Colors.white38, fontSize: 15),
+            ),
+          ],
+        ),
       ),
     );
   }

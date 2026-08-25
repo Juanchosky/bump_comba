@@ -132,6 +132,21 @@ class TvSender {
       _send(TvProto.cmdPing, {'t': DateTime.now().millisecondsSinceEpoch});
   void getTracks() => _send(TvProto.cmdGetTracks);
 
+  /// Manda una pregunta a la pantalla del televisor.
+  void ask({
+    required String titulo,
+    required String detalle,
+    required String textoSi,
+    required String textoNo,
+    required int segundos,
+  }) => _send(TvProto.cmdAsk, {
+    'titulo': titulo,
+    'detalle': detalle,
+    'textoSi': textoSi,
+    'textoNo': textoNo,
+    'segundos': segundos,
+  });
+
   /// Cierra la conexión intencionalmente (no dispara [onClosed]).
   Future<void> close() async {
     _closedByUs = true;

@@ -58,6 +58,15 @@ class TvProto {
   /// Keepalive del socket. Payload: t (timestamp ms).
   static const String cmdPing = 'PING';
 
+  /// Pide al TV que muestre una pregunta al usuario y espere su respuesta con
+  /// el control remoto. Payload: titulo, detalle, textoSi, textoNo, segundos.
+  ///
+  /// Existe porque hay decisiones que no se pueden tomar en silencio —cambiar
+  /// el audio a otro idioma a mitad de pelicula— y el usuario que transmite
+  /// esta mirando el TELEVISOR, no el telefono. Preguntarle en el telefono
+  /// significaba preguntar donde nadie mira.
+  static const String cmdAsk = 'ASK';
+
   /// Solicita al TV que reenvíe AHORA las pistas de audio/subtítulos
   /// disponibles (se usa al abrir el menú de selección en el teléfono, por si
   /// el push inicial llegó antes de que el demuxer parseara las pistas).
@@ -87,6 +96,13 @@ class TvProto {
 
   /// La reproducción llegó al final.
   static const String evtEnded = 'ENDED';
+
+  /// Respuesta del usuario a un [cmdAsk]. Payload: acepta (bool).
+  ///
+  /// Se envia SIEMPRE: si el usuario elige, con lo que eligio; si se agota el
+  /// tiempo, con la opcion por defecto. Quien pregunta nunca se queda esperando
+  /// indefinidamente.
+  static const String evtAskResult = 'ASK_RESULT';
 
   /// Respuesta al PING. Payload: t (echo del timestamp).
   static const String evtPong = 'PONG';
