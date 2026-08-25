@@ -191,6 +191,18 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   int _throughputSampleTick = 0;
   int _stallSeconds = 0;
 
+  /// El reproductor estuvo pausado (o en segundo plano) y aun no se ha
+  /// registrado la reanudacion.
+  bool _estabaPausado = false;
+
+  /// Cuando se reanudo la reproduccion tras una pausa.
+  ///
+  /// Durante una pausa larga el bufer se consume, las conexiones ociosas se
+  /// cierran y al volver hay que rehacer el camino hasta el servidor. Ese
+  /// primer corte es el precio de la pausa, no una prueba de que el origen sea
+  /// malo, asi que no puede contar para condenarlo.
+  DateTime? _lastResumeTime;
+
   /// Episodios de stall recientes: (cuando termino, cuantos segundos duro).
   ///
   /// `_stallSeconds` cuenta segundos SEGUIDOS y se pone a cero en cuanto el
@@ -378,6 +390,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// pero repetidos. Ver `_episodiosStall`.
   final List<({DateTime fin, int segundos})> _episodiosStallCast = [];
 
+  /// El televisor estaba pausado y aun no se registro la reanudacion.
+  bool _estabaPausadoCast = false;
+
+  /// Cuando se reanudo en el televisor. Mismo motivo que `_lastResumeTime`:
+  /// el primer corte tras una pausa es el bufer rehaciendose, no el servidor.
+  DateTime? _lastCastResumeTime;
+
   // Visual Notice system
   String? _noticeMessage;
   Timer? _noticeTimer;
@@ -501,7 +520,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       if (!isPlaying) {
         _castNoMovementSeconds = 0;
         _lastCastMonitoredPosition = pos;
+        _estabaPausadoCast = true;
         return;
+      }
+
+      // Primera vuelta tras reanudar en el TV.
+      if (_estabaPausadoCast) {
+        _estabaPausadoCast = false;
+        _lastCastResumeTime = DateTime.now();
+        debugPrint('TV: reproducción reanudada tras una pausa');
       }
 
       // Aún no arrancó de verdad: eso lo cubre el failover inicial de 10s.
@@ -515,7 +542,26 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       } else {
         // El TV volvio a avanzar: se cierra el episodio y se anota. Los cortes
         // de 1s son ruido normal del bufer y no cuentan.
-        if (_castNoMovementSeconds >= 2) {
+        //
+        // Mismas dos guardas que en el telefono, y por el mismo motivo: un
+        // corte que EMPIEZA justo despues de un salto o de reanudar es el
+        // bufer rehaciendose, no una prueba de que el servidor sea malo.
+        // Medido desde el INICIO del corte (restando su duracion), porque
+        // medirlo desde el final deja pasar justo los cortes largos, que son
+        // los que mas pesan en el acumulado.
+        final inicioDelCorte = DateTime.now().subtract(
+          Duration(seconds: _castNoMovementSeconds),
+        );
+        final trasSalto =
+            _lastSeekTime != null
+                ? inicioDelCorte.difference(_lastSeekTime!).inSeconds
+                : 999;
+        final trasPausa =
+            _lastCastResumeTime != null
+                ? inicioDelCorte.difference(_lastCastResumeTime!).inSeconds
+                : 999;
+
+        if (_castNoMovementSeconds >= 2 && trasSalto >= 8 && trasPausa >= 15) {
           _episodiosStallCast.add((
             fin: DateTime.now(),
             segundos: _castNoMovementSeconds,
@@ -2637,13 +2683,22 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       if (!playerState.playing || _isAppInBackground) {
         _stallSeconds = 0;
         _stallPorRotura = false;
-    _stallPorRotura = false;
         _noMovementSeconds = 0;
         _noVideoSeconds = 0;
+        // Se anota que ESTUVO parado. Al volver, el primer corte es el bufer
+        // rellenandose, no el servidor portandose mal (ver `_lastResumeTime`).
+        _estabaPausado = true;
         if (mounted && _isBuffering) {
           setState(() => _isBuffering = false);
         }
         return;
+      }
+
+      // Primera vuelta tras reanudar: se marca el instante.
+      if (_estabaPausado) {
+        _estabaPausado = false;
+        _lastResumeTime = DateTime.now();
+        debugPrint('Reproducción reanudada tras una pausa');
       }
 
       // ── Detección de stall y congelamiento silencioso ─────────────
@@ -2838,13 +2893,41 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
         // ── Registro del episodio que acaba de terminar ────────────────────
         //
-        // Se ignoran los cortes de 1s (ruido normal) y los que siguen a un
-        // seek, que son buffering esperado y no culpa del servidor.
-        final segundosDesdeSeek =
+        // Se ignoran los cortes de 1s (ruido normal) y los que EMPEZARON justo
+        // despues de un seek, que son buffering esperado y no culpa del
+        // servidor.
+        //
+        // OJO CON MEDIRLO DESDE EL FINAL: al principio esto comparaba
+        // `_lastSeekTime` contra AHORA, o sea contra el final del corte. Un
+        // salto atras deja el bufer vacio y tarda su rato en rellenarse, asi
+        // que ese corte dura mas de 8s y, al terminar, el seek ya "no era
+        // reciente" y se contaba como inestabilidad del servidor.
+        //
+        // Visto en un log real (2026-08-24): un salto de 615s hacia atras
+        // produjo dos cortes de 12s, se sumaron 24s y la app cambio de servidor
+        // culpando al proveedor de algo que habia hecho el usuario.
+        //
+        // Restando `_stallSeconds` se obtiene CUANDO EMPEZO el corte, que es lo
+        // que hay que comparar con el seek.
+        final inicioDelCorte = DateTime.now().subtract(
+          Duration(seconds: _stallSeconds),
+        );
+        final segundosEntreSeekYCorte =
             _lastSeekTime != null
-                ? DateTime.now().difference(_lastSeekTime!).inSeconds
+                ? inicioDelCorte.difference(_lastSeekTime!).inSeconds
                 : 999;
-        if (_stallSeconds >= 2 && segundosDesdeSeek >= 8) {
+
+        // Lo mismo para las PAUSAS, y con mas margen: tras una pausa larga el
+        // bufer esta vacio y las conexiones ociosas ya se cerraron, asi que
+        // rehacer el camino y volver a llenar tarda mas que un simple salto.
+        final segundosEntrePausaYCorte =
+            _lastResumeTime != null
+                ? inicioDelCorte.difference(_lastResumeTime!).inSeconds
+                : 999;
+
+        if (_stallSeconds >= 2 &&
+            segundosEntreSeekYCorte >= 8 &&
+            segundosEntrePausaYCorte >= 15) {
           _episodiosStall.add((fin: DateTime.now(), segundos: _stallSeconds));
         }
 

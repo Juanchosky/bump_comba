@@ -1798,7 +1798,15 @@ class _Session {
         debugPrint(
           'TurboProxy [${profile.host}]: histéresis — velocidad holgada (${speedMbps.toStringAsFixed(1)} Mbps), bajando a $activeParallel conexiones',
         );
-      } else if (highSpeedStreak >= 15 && activeParallel == 1) {
+      } else if (highSpeedStreak >= 15 &&
+          activeParallel == 1 &&
+          mode != _ProxyMode.passthrough) {
+        // El `mode !=` y el reseteo de la racha no son cosmeticos: sin ellos
+        // esta rama se volvia a cumplir en CADA trozo descargado —la racha
+        // seguia por encima de 15 y el paralelismo en 1— y repetia el mismo
+        // mensaje una y otra vez. En un log real salio diez veces seguidas,
+        // tapando lo que de verdad importaba.
+        highSpeedStreak = 0;
         mode = _ProxyMode.passthrough;
         debugPrint(
           'TurboProxy [${profile.host}]: histéresis — retorno a Passthrough (velocidad óptima en 1 conexión)',
