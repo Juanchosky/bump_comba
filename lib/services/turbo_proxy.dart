@@ -768,9 +768,42 @@ class TurboProxy {
 
       _sessions[id] = session;
 
+      // ── Expulsion de sesiones viejas, sin matar las que estan vivas ──────
+      //
+      // Antes esto cerraba a la fuerza la sesion MAS ANTIGUA por orden de
+      // creacion, sin mirar si estaba sirviendo. Cada recarga o cambio de
+      // servidor crea una sesion nueva, asi que en una pelicula larga con
+      // varios tropiezos se llegaba a la quinta y se le arrancaba el
+      // `HttpClient` por debajo a la que estaba REPRODUCIENDO.
+      //
+      // En el log se veia asi, a mitad de pelicula:
+      //   pipeline.next fallo: chunk 572 fallo: Bad state: Client is closed
+      // y a continuacion los 3 reintentos fallando al instante contra el mismo
+      // cliente cerrado, terminando en "origen no responde tras reintentos" y
+      // penalizando el perfil del host. O sea: se culpaba al servidor de un
+      // fallo nuestro, y esa penalizacion baja el paralelismo para todo lo
+      // demas.
+      //
+      // Ahora solo se expulsan sesiones con cero peticiones en curso. Si las
+      // cuatro estan ocupadas no se cierra ninguna: es preferible que el mapa
+      // crezca un poco de mas —son objetos pequenos y se limpian en cuanto
+      // queden libres— antes que cortar un stream que el usuario esta viendo.
       if (_sessions.length > 4) {
-        final oldest = _sessions.keys.first;
-        _sessions.remove(oldest)?.client.close(force: true);
+        String? aExpulsar;
+        for (final e in _sessions.entries) {
+          if (e.key != id && e.value.sirviendoAhora == 0) {
+            aExpulsar = e.key;
+            break;
+          }
+        }
+        if (aExpulsar != null) {
+          _sessions.remove(aExpulsar)?.client.close(force: true);
+        } else {
+          debugPrint(
+            'TurboProxy: ${_sessions.length} sesiones, todas en uso — '
+            'no se expulsa ninguna',
+          );
+        }
       }
 
       final local = 'http://127.0.0.1:${_server!.port}/t/$id';
@@ -799,7 +832,12 @@ class TurboProxy {
         await req.response.close();
         return;
       }
-      await _serve(req, session);
+      session.sirviendoAhora++;
+      try {
+        await _serve(req, session);
+      } finally {
+        session.sirviendoAhora--;
+      }
     } catch (e) {
       debugPrint('TurboProxy: error sirviendo petición: $e');
       try {
@@ -1221,6 +1259,8 @@ class TurboProxy {
               'TurboProxy: Iniciando fallback Passthrough mid-stream desde offset $currentOffset',
             );
             int fallbackRetries = 0;
+            // Ver `esClienteCerrado`: separa un fallo NUESTRO de uno del servidor.
+            bool clienteCerradoLocal = false;
             while (!closed &&
                 currentOffset < session.length &&
                 fallbackRetries < 3) {
@@ -1307,6 +1347,16 @@ class TurboProxy {
                   throw HttpException('status ${rs.statusCode}');
                 }
               } catch (err) {
+                if (esClienteCerrado(err)) {
+                  // Ver `esClienteCerrado`: reintentar es inútil y culpar al
+                  // host, injusto. Se abandona el fallback en el acto.
+                  debugPrint(
+                    'TurboProxy: cliente local cerrado — se abandona el '
+                    'fallback sin penalizar al host',
+                  );
+                  clienteCerradoLocal = true;
+                  break;
+                }
                 fallbackRetries++;
                 // FIX: antes este catch no llamaba a session.noteFailure(),
                 // así que el _HostProfile nunca se enteraba de que el
@@ -1334,6 +1384,7 @@ class TurboProxy {
             // prueba que el host no sirva rangos, así que esto acelera el
             // recorte de paralelismo pero nunca marca el perfil como hostil.
             if (!closed &&
+                !clienteCerradoLocal &&
                 fallbackRetries >= 3 &&
                 currentOffset < session.length) {
               for (var i = 0; i < 3; i++) {
@@ -1598,6 +1649,12 @@ class _Session {
 
   Uri? _effectiveUri;
   bool supportsRange = false;
+
+  /// Peticiones del reproductor que se estan sirviendo AHORA con esta sesion.
+  ///
+  /// Existe para que la expulsion por limite de sesiones no le arranque el
+  /// `HttpClient` por debajo a un stream vivo (ver la nota en `_wrap`).
+  int sirviendoAhora = 0;
   int length = -1;
   double? durationSeconds;
   String? contentType;
@@ -1793,6 +1850,16 @@ class _Session {
       !profile.shouldDisableTurbo;
 }
 
+/// ¿El fallo es que NUESTRO cliente HTTP ya estaba cerrado?
+///
+/// Se manifiesta como `Bad state: Client is closed` y no dice absolutamente
+/// nada sobre el servidor: es un fallo local. Distinguirlo importa por dos
+/// motivos: reintentar contra un cliente cerrado falla al instante y quema los
+/// tres intentos para nada, y penalizar el perfil del host por esto le baja el
+/// paralelismo a TODO el contenido de ese servidor por un bug nuestro.
+bool esClienteCerrado(Object e) =>
+    e is StateError && e.message.contains('Client is closed');
+
 class _TurboPipeline {
   final _Session session;
   final int startOffset;
@@ -1930,6 +1997,9 @@ class _TurboPipeline {
         }
       } catch (err) {
         lastErr = err;
+        // Cliente cerrado por debajo: no es del servidor. Se sale ya, sin
+        // gastar los reintentos ni penalizar al host por un fallo nuestro.
+        if (esClienteCerrado(err)) break;
         if (attempt == 3) {
           // Fallo de red bajando un trozo: es rotura, no prueba de que el host
           // no sirva rangos. Marcar hostil desde aquí desactivaba Turbo 30 días

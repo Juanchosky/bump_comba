@@ -1055,6 +1055,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           }).toList();
           _serverUrls = _serverItems.map((a) => a.url).toList();
           _currentServerIndex = 0;
+
+          // Contenido NUEVO (la url no estaba en la lista actual): la decision
+          // sobre el idioma se olvida. Es por titulo, no de por vida — pero
+          // dentro del mismo titulo no se vuelve a preguntar aunque el servidor
+          // se caiga diez veces.
+          _ingleAceptado = false;
+          _ingleRechazadoEn = null;
         }
 
         // Automatic 10-second failover: if Xtream (server 0) takes > 10s to start playing,
@@ -2104,6 +2111,215 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     return bufferedMs.clamp(value, max);
   }
 
+  // ── Aviso de cambio de idioma al saltar de servidor ──────────────────────
+  //
+  // El servidor alternativo puede tener SOLO audio en ingles (se marca al subir
+  // el contenido con "| Eng" en la categoria). Cambiar en silencio a mitad de
+  // pelicula deja al usuario perdido, asi que se le pregunta.
+  //
+  // El estado vive por TITULO, no por recarga: si ya eligio, no se le vuelve a
+  // preguntar aunque el servidor se caiga otra vez.
+  bool _ingleAceptado = false;
+  DateTime? _ingleRechazadoEn;
+  bool _preguntandoIdioma = false;
+
+  /// Cuanto se respeta un "prefiero esperar" antes de volver a ofrecerlo.
+  ///
+  /// Sin esto, con el detector de congelamiento a 8s el usuario recibiria el
+  /// mismo dialogo cada pocos segundos, que es exactamente arruinarle la
+  /// experiencia en vez de mejorarla.
+  static const Duration _reintentoPreguntaIdioma = Duration(minutes: 3);
+
+  /// ¿Saltar a [destino] cambiaria el audio a ingles Y conviene preguntar?
+  ///
+  /// TRANSMITIENDO AL TV NUNCA SE PREGUNTA. El dialogo sale en el telefono y se
+  /// espera dentro de `_reloadVideo`, que corre con `_isReloading` en true: si
+  /// el usuario dejo el telefono en la mesa —que es lo normal viendo en el
+  /// televisor— la respuesta no llega nunca y el TV se queda congelado
+  /// esperandola. Ahi es preferible el comportamiento de siempre: cambiar de
+  /// servidor en silencio y que el contenido siga.
+  ///
+  /// El monitor de stall del propio TV (`_triggerCastFailover`) no pasa por
+  /// aqui: llama a `_initializePlayer` directamente, asi que ese camino ya
+  /// estaba intacto. Esta guarda cubre el otro, el de `_reloadVideo`.
+  bool _elCambioTraeIngles(M3UItem destino) {
+    if (CastService().isCasting.value) return false;
+    return destino.esDeLaBD &&
+        destino.esAudioIngles &&
+        !_currentItem.esAudioIngles;
+  }
+
+  /// Pregunta al usuario. `true` = seguir en ingles, `false` = esperar.
+  Future<bool> _confirmarCambioAIngles() async {
+    if (_ingleAceptado) return true;
+    final rechazo = _ingleRechazadoEn;
+    if (rechazo != null &&
+        DateTime.now().difference(rechazo) < _reintentoPreguntaIdioma) {
+      return false;
+    }
+    // Segunda red por si algun dia se llama desde otro camino: transmitiendo
+    // se sigue adelante sin preguntar, nunca se bloquea el televisor.
+    if (CastService().isCasting.value) return true;
+    if (_preguntandoIdioma || !mounted) return false;
+    _preguntandoIdioma = true;
+
+    bool elegido = false;
+    try {
+      await _mostrarHojaCambioIdioma((v) => elegido = v);
+    } finally {
+      _preguntandoIdioma = false;
+    }
+
+    if (elegido) {
+      _ingleAceptado = true;
+    } else {
+      _ingleRechazadoEn = DateTime.now();
+    }
+    return elegido;
+  }
+
+  Future<void> _mostrarHojaCambioIdioma(void Function(bool) alElegir) {
+    Widget boton({
+      required String texto,
+      required String detalle,
+      required IconData icono,
+      required bool destacado,
+      required VoidCallback onTap,
+    }) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+        child: Material(
+          color: destacado ? Colors.white : Colors.white.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(12),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              child: Row(
+                children: [
+                  Icon(
+                    icono,
+                    size: 20,
+                    color: destacado ? Colors.black87 : Colors.white70,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          texto,
+                          style: TextStyle(
+                            color: destacado ? Colors.black : Colors.white,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          detalle,
+                          style: TextStyle(
+                            color:
+                                destacado
+                                    ? Colors.black.withValues(alpha: 0.6)
+                                    : Colors.white54,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return _showVisualBottomSheet(
+      builder:
+          (ctx) => Material(
+            color: const Color.fromARGB(255, 27, 27, 27),
+            borderRadius:
+                _isLandscape
+                    ? BorderRadius.circular(24)
+                    : const BorderRadius.vertical(top: Radius.circular(20)),
+            clipBehavior: Clip.antiAlias,
+            child: Container(
+              width: _isLandscape ? 420 : double.infinity,
+              margin: _isLandscape ? const EdgeInsets.all(24) : EdgeInsets.zero,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const SizedBox(height: 18),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.amber.withValues(alpha: 0.12),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.language,
+                      color: Colors.amber,
+                      size: 26,
+                    ),
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(24, 14, 24, 6),
+                    child: Text(
+                      'Problemas con la versión en español',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 17,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(24, 0, 24, 18),
+                    child: Text(
+                      'El servidor en español no está respondiendo. Hay otra '
+                      'versión disponible, pero su audio está en inglés.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white60,
+                        fontSize: 13,
+                        height: 1.35,
+                      ),
+                    ),
+                  ),
+                  boton(
+                    texto: 'Continuar en inglés',
+                    detalle: 'Sigue desde donde ibas, sin esperar',
+                    icono: Icons.play_arrow_rounded,
+                    destacado: true,
+                    onTap: () {
+                      alElegir(true);
+                      Navigator.of(ctx).pop();
+                    },
+                  ),
+                  boton(
+                    texto: 'Seguir esperando en español',
+                    detalle: 'Se reintenta el servidor original',
+                    icono: Icons.hourglass_bottom_rounded,
+                    destacado: false,
+                    onTap: () {
+                      alElegir(false);
+                      Navigator.of(ctx).pop();
+                    },
+                  ),
+                  SizedBox(height: 8 + MediaQuery.of(ctx).padding.bottom),
+                ],
+              ),
+            ),
+          ),
+    );
+  }
+
   /// Contador de auto-avances de episodio: cada 2 mostramos un anuncio.
   int _autoAdvanceCount = 0;
 
@@ -2762,9 +2978,24 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         // uno que sabemos disponible no lo es. Si NO hay alternativa
         // (_serverItems.length == 1) no se toca nada: sigue el reintento normal
         // en Xtream, que es lo correcto cuando no hay a donde ir.
-        if (_currentServerIndex == 0 &&
+        // ── ¿Se puede saltar al alternativo? ────────────────────────────
+        //
+        // Se calcula ANTES de la cadena porque puede depender de una respuesta
+        // del usuario: si el salto le cambia el audio al ingles, se le
+        // pregunta. Si prefiere esperar, `puedeSaltar` queda en false y cae al
+        // reintento normal del servidor actual, sin cambiarle el idioma a
+        // mitad de pelicula.
+        bool puedeSaltar =
+            _currentServerIndex == 0 &&
             _serverItems.length > 1 &&
-            (saltarABDPorCongelamiento || _retryCount >= 1)) {
+            (saltarABDPorCongelamiento || _retryCount >= 1);
+
+        if (puedeSaltar && _elCambioTraeIngles(_serverItems[1])) {
+          puedeSaltar = await _confirmarCambioAIngles();
+          if (!mounted) return;
+        }
+
+        if (puedeSaltar) {
           _retryCount = 0;
           _currentServerIndex = 1;
           final targetItem = _serverItems[1];
@@ -7501,10 +7732,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
   }
 
-  void _showVisualBottomSheet({
+  /// Devuelve un Future para poder ESPERAR la eleccion del usuario. Los
+  /// llamadores que solo muestran algo pueden seguir ignorandolo.
+  Future<void> _showVisualBottomSheet({
     required Widget Function(BuildContext) builder,
   }) {
-    showGeneralDialog(
+    return showGeneralDialog(
       context: context,
       barrierDismissible: true,
       barrierLabel: 'VisualBottomSheet',
