@@ -104,11 +104,24 @@ class NetworkQualityService {
   }
 
   /// El player reporta la velocidad real de descarga del stream (Mbps).
-  /// Solo debe llamarse con descarga activa (>0): con el buffer lleno MPV
-  /// deja de descargar y esa lectura no significa red mala.
-  void reportStreamThroughput(double mbps) {
-    if (mbps <= 0) return;
-    _lastRealMbps = mbps;
+  ///
+  /// [hayHambre] distingue los DOS ceros opuestos, que antes se trataban
+  /// igual y por eso se descartaban los dos:
+  ///
+  ///  - cero con el bufer lleno  -> MPV dejo de descargar porque no necesita
+  ///    nada. No dice nada de la red. Se ignora, como antes.
+  ///  - cero con el bufer al borde -> necesitamos datos y NO estan llegando.
+  ///    Es la peor noticia posible sobre la red, y era justo la que se tiraba
+  ///    a la basura.
+  ///
+  /// Descartar los dos por igual dejaba al clasificador viendo solo lecturas
+  /// buenas: cuando la red se caia de verdad no llegaba ninguna muestra, la
+  /// ultima buena envejecia mas de 30s y `_measure` caia al fallback de
+  /// "inferido del tipo de red" — 3.00 Mbps porque hay WiFi. En el log se leia
+  /// `NetworkQuality: good` con el bufer agonizando.
+  void reportStreamThroughput(double mbps, {bool hayHambre = false}) {
+    if (mbps <= 0 && !hayHambre) return;
+    _lastRealMbps = mbps < 0 ? 0 : mbps;
     _lastRealMbpsAt = DateTime.now();
   }
 
@@ -197,13 +210,21 @@ class NetworkQualityService {
     // Si el player reportó throughput real recientemente, esa es LA medida:
     // la estimación por latencia solo se usa como fallback.
     final realAt = _lastRealMbpsAt;
-    if (realAt != null && DateTime.now().difference(realAt).inSeconds < 30) {
+    final bool medidoPorReproductor =
+        realAt != null && DateTime.now().difference(realAt).inSeconds < 30;
+    if (medidoPorReproductor) {
       bandwidth = _lastRealMbps!;
       origen = 'medido por el reproductor';
     }
 
-    // Actualizar historial
-    if (bandwidth > 0) {
+    // Actualizar historial.
+    //
+    // La medida del reproductor entra SIEMPRE, aunque sea 0: si llego hasta
+    // aqui es porque el reproductor confirmo que tenia hambre (ver
+    // `reportStreamThroughput`), y un 0 con hambre es un dato, no un hueco.
+    // El `> 0` de las otras dos fuentes se mantiene: ahi un 0 significa que
+    // la medicion fallo, que no es lo mismo que medir cero.
+    if (bandwidth > 0 || medidoPorReproductor) {
       _bandwidthHistory.add(bandwidth);
       if (_bandwidthHistory.length > _historySize) {
         _bandwidthHistory.removeAt(0);

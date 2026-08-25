@@ -357,6 +357,12 @@ class TurboProxy {
   /// mucho tiempo, o la IP/CDN pudo cambiar).
   static const Duration _preconnectTtl = Duration(minutes: 4);
 
+  /// Sin entregar un byte durante este tiempo, una sesion que dice estar
+  /// sirviendo se considera colgada y se puede cerrar. 45s es holgado: el
+  /// timeout mas largo del pipeline son 6s por trozo, asi que una sesion sana
+  /// nunca llega aqui ni con la peor red.
+  static const Duration tiempoMuerta = Duration(seconds: 45);
+
   HttpServer? _server;
   final Map<String, _Session> _sessions = {};
   final Map<String, _HostProfile> _hostProfiles = {};
@@ -690,6 +696,29 @@ class TurboProxy {
   /// Descarta una conexión precalentada que no llegó a usarse (p. ej. el
   /// usuario salió de la pantalla de detalles sin reproducir). Llamar esto
   /// en el `dispose()` de la pantalla de detalles evita conexiones colgadas.
+  /// Cierra la sesion que estaba sirviendo [urlLocal] (la `http://127.0.0.1:
+  /// PUERTO/t/ID` que devolvio [wrap]).
+  ///
+  /// Lo llama el reproductor cuando destruye el player que la estaba usando.
+  /// La expulsion por `tiempoMuerta` ya limpia las sesiones colgadas sola,
+  /// pero tarda 45s en darse cuenta y solo mira al crear una sesion nueva.
+  /// Avisar explicitamente al soltar el player las cierra en el acto, que es
+  /// lo que evita que una recarga arrastre la descarga de la anterior
+  /// compitiendo por el ancho de banda con la que la reemplaza.
+  ///
+  /// Es seguro: la sesion que se cierra es la del player que YA se destruyo,
+  /// nunca la del stream vivo.
+  void cerrarSesion(String? urlLocal) {
+    if (urlLocal == null || !isTurboUrl(urlLocal)) return;
+    final segments = Uri.parse(urlLocal).pathSegments;
+    if (segments.length != 2 || segments[0] != 't') return;
+    final muerta = _sessions.remove(segments[1]);
+    if (muerta == null) return;
+    debugPrint('TurboProxy: sesion ${segments[1]} cerrada por el reproductor');
+    muerta.cerradaAdrede = true;
+    muerta.client.close(force: true);
+  }
+
   void cancelPreconnect(String url) {
     _preconnected.remove(url)?.client.close(force: false);
   }
@@ -788,17 +817,42 @@ class TurboProxy {
       // cuatro estan ocupadas no se cierra ninguna: es preferible que el mapa
       // crezca un poco de mas —son objetos pequenos y se limpian en cuanto
       // queden libres— antes que cortar un stream que el usuario esta viendo.
+      //
+      // AMPLIACION (2026-08-25): "cero peticiones en curso" no alcanzaba. Un
+      // `_serve` puede quedarse colgado esperando al origen despues de que el
+      // reproductor ya se fue —el socket local muere, pero el `await` contra
+      // el origen no— y entonces `sirviendoAhora` no vuelve a bajar nunca. El
+      // log de la recarga a los 4554s lo mostraba: 10 sesiones, todas "en
+      // uso", cero expulsables. Esas descargas zombis siguen tirando del
+      // ancho de banda del telefono y del puerto del VPS mientras el usuario
+      // ve el spinner, asi que empeoran justo el corte que las creo.
+      //
+      // Ahora tambien se cierran las que llevan `tiempoMuerta` sin entregar un
+      // byte (ver `_Session.estaColgada`), y se limpian TODAS las expulsables
+      // de una pasada en vez de una sola: si se acumularon seis, sacar una por
+      // recarga nunca alcanza a vaciar el mapa.
       if (_sessions.length > 4) {
-        String? aExpulsar;
+        final aExpulsar = <String>[];
         for (final e in _sessions.entries) {
-          if (e.key != id && e.value.sirviendoAhora == 0) {
-            aExpulsar = e.key;
-            break;
+          if (e.key == id) continue;
+          if (e.value.sirviendoAhora == 0 || e.value.estaColgada) {
+            aExpulsar.add(e.key);
           }
         }
-        if (aExpulsar != null) {
-          _sessions.remove(aExpulsar)?.client.close(force: true);
-        } else {
+        for (final k in aExpulsar) {
+          final muerta = _sessions.remove(k);
+          if (muerta == null) continue;
+          if (muerta.sirviendoAhora > 0) {
+            debugPrint(
+              'TurboProxy: cerrando sesion colgada $k '
+              '(${muerta.sirviendoAhora} peticiones sin avanzar desde hace '
+              '${DateTime.now().difference(muerta.ultimaActividad).inSeconds}s)',
+            );
+          }
+          muerta.cerradaAdrede = true;
+          muerta.client.close(force: true);
+        }
+        if (aExpulsar.isEmpty) {
           debugPrint(
             'TurboProxy: ${_sessions.length} sesiones, todas en uso — '
             'no se expulsa ninguna',
@@ -1162,6 +1216,7 @@ class TurboProxy {
             }
 
             _noteBytes(chunk.length);
+            session.tocar();
             tracker.add(chunk.length);
 
             final elapsedTotal =
@@ -1334,6 +1389,7 @@ class TurboProxy {
                     // Los flush que quedan son los de los limites de pierna, que si
                     // se esperan y nunca coinciden con un add().
                     session.proxy._noteBytes(chunk.length);
+                    session.tocar();
                   }
                   if (currentOffset - offsetAlEmpezar >= _kMinProgresoPierna) {
                     fallbackRetries = 0;
@@ -1490,6 +1546,13 @@ class TurboProxy {
         try {
           data = await pipeline.next();
         } catch (e) {
+          if (session.cerradaAdrede) {
+            // La cerramos nosotros: no hay nada que recuperar ni a quien
+            // culpar. Salir en silencio en vez de arrancar el fallback de
+            // emergencia y gastar tres reintentos con backoff.
+            closed = true;
+            break;
+          }
           debugPrint(
             'TurboProxy: pipeline.next falló: $e -> Conmutando a Passthrough de emergencia',
           );
@@ -1515,6 +1578,7 @@ class TurboProxy {
         );
         int fallbackRetries = 0;
         while (!closed &&
+            !session.cerradaAdrede &&
             currentOffset < session.length &&
             fallbackRetries < 3) {
           final useRange =
@@ -1586,6 +1650,7 @@ class TurboProxy {
                 // Los flush que quedan son los de los limites de pierna, que si
                 // se esperan y nunca coinciden con un add().
                 session.proxy._noteBytes(chunk.length);
+                session.tocar();
               }
               if (currentOffset - offsetAlEmpezar >= _kMinProgresoPierna) {
                 fallbackRetries = 0;
@@ -1616,7 +1681,10 @@ class TurboProxy {
         // Igual que en el camino passthrough: si se agotaron los reintentos y
         // no se terminó el archivo, penalizar fuerte para bajar el
         // paralelismo antes. Sigue sin marcar hostil (ver `porRotura`).
-        if (!closed && fallbackRetries >= 3 && currentOffset < session.length) {
+        if (!closed &&
+            !session.cerradaAdrede &&
+            fallbackRetries >= 3 &&
+            currentOffset < session.length) {
           for (var i = 0; i < 3; i++) {
             session.noteFailure(porRotura: true);
           }
@@ -1655,6 +1723,36 @@ class _Session {
   /// Existe para que la expulsion por limite de sesiones no le arranque el
   /// `HttpClient` por debajo a un stream vivo (ver la nota en `_wrap`).
   int sirviendoAhora = 0;
+
+  /// Ultimo momento en que esta sesion entrego bytes de verdad al reproductor.
+  ///
+  /// `sirviendoAhora` solo dice que hay un `_serve` en curso, NO que ese
+  /// `_serve` este avanzando. Si se queda colgado esperando al origen (que es
+  /// lo que pasa cuando el reproductor se destruye a mitad de descarga: el
+  /// socket local muere pero el `await` contra el origen sigue vivo), el
+  /// contador nunca vuelve a cero y la sesion queda marcada "en uso" para
+  /// siempre. Ese era el `10 sesiones, todas en uso — no se expulsa ninguna`
+  /// del log: diez descargas zombis peleando por el ancho de banda del
+  /// telefono y por el puerto del VPS contra la reproduccion real.
+  DateTime ultimaActividad = DateTime.now();
+
+  void tocar() => ultimaActividad = DateTime.now();
+
+  /// La cerramos NOSOTROS a proposito (el reproductor la solto, o se expulso
+  /// por colgada). Todo lo que falle despues es consecuencia de eso, no del
+  /// origen: `Bad state: Client is closed` en el pipeline, en el fallback de
+  /// emergencia, en todos lados.
+  ///
+  /// Sin esta bandera esos fallos se le cargaban al perfil del host — hasta
+  /// siete `noteFailure` seguidos por un solo cierre nuestro — y ese perfil
+  /// baja el paralelismo para TODAS las sesiones futuras contra ese host. O
+  /// sea: cerrar limpio una sesion muerta empeoraba la reconexion siguiente.
+  bool cerradaAdrede = false;
+
+  /// Colgada: dice estar sirviendo pero no entrega un byte desde hace rato.
+  bool get estaColgada =>
+      sirviendoAhora > 0 &&
+      DateTime.now().difference(ultimaActividad) > TurboProxy.tiempoMuerta;
   int length = -1;
   double? durationSeconds;
   String? contentType;
@@ -1821,6 +1919,9 @@ class _Session {
   /// [porRotura] y [rangeIgnorado] se propagan al perfil del host: ver
   /// `_HostProfile.noteFailure`.
   void noteFailure({bool porRotura = false, bool rangeIgnorado = false}) {
+    // Cierre nuestro: el origen no hizo nada mal. Se filtra aqui, en el unico
+    // punto por el que pasan los diez sitios que reportan fallo.
+    if (cerradaAdrede) return;
     parallelFailures++;
     profile.noteFailure(porRotura: porRotura, rangeIgnorado: rangeIgnorado);
     proxy._markProfilesDirty();
@@ -1988,6 +2089,7 @@ class _TurboPipeline {
           builder.add(part);
           got += part.length;
           session.proxy._noteBytes(part.length);
+          session.tocar();
           if (_cancelled) throw const HttpException('cancelado');
         }
 

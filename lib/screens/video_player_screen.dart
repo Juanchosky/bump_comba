@@ -88,6 +88,25 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       _userAgents[_userAgentIndex % _userAgents.length];
 
   Player? _player;
+
+  // Player que se abre MIENTRAS el usuario free mira el anuncio, para que el
+  // buffer ya este creciendo cuando el anuncio termine. Ver
+  // `_startAdTimePrewarm`. Solo se publica aqui cuando su `open()` ya volvio,
+  // asi que quien lo consuma sabe que el demuxer ya esta trabajando.
+  /// URL local (`http://127.0.0.1:PUERTO/t/ID`) que TurboProxy esta sirviendo
+  /// para el player actual. Se necesita para poder cerrar ESA sesion —y solo
+  /// esa— cuando el player se destruye; si no, cada recarga o cambio de
+  /// servidor deja una descarga zombi tirando del ancho de banda contra la
+  /// reproduccion que la reemplaza.
+  String? _turboPlaybackUrl;
+
+  Player? _adPrewarmPlayer;
+  bool _adPrewarmStarted = false;
+
+  /// El player precalentado que vamos a usar: el que llego desde la pantalla
+  /// de detalle o, si no hubo, el que se abrio durante el anuncio.
+  Player? get _incomingPrewarmedPlayer =>
+      widget.prewarmedPlayer ?? _adPrewarmPlayer;
   // Notifier para forzar reconstrucción del Video widget sin pantalla negra
   final ValueNotifier<VideoController?> _videoControllerNotifier =
       ValueNotifier<VideoController?>(null);
@@ -238,9 +257,76 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   static const Duration _ventanaStall = Duration(seconds: 90);
   static const int _presupuestoStallSegundos = 20;
+
+  // ── Vigilancia del margen de bufer (ver `_vigilarMargenDeBuffer`) ───────
+  //
+  // El margen es `buffer - position`: cuantos segundos de pelicula hay ya
+  // descargados por delante de donde va la reproduccion. Es la unica señal
+  // que dice si estamos GANANDO o PERDIENDO, y se desangra despacio y
+  // legible antes de cada corte:
+  //
+  //   pos=4712 buf=4725 -> 13s      pos=4734 buf=4740 ->  6s
+  //   pos=4718 buf=4729 -> 11s      pos=4739 buf=4741 ->  2s
+  //   pos=4726 buf=4734 ->  8s      pos=4742 buf=4742 ->  0s  -> stall
+  //
+  // Treinta segundos de aviso que hasta ahora no miraba nadie: la reaccion
+  // llegaba con el stall ya consumado, o sea con el usuario mirando un
+  // congelamiento. Y el clasificador de red no ayuda porque estima por
+  // LATENCIA, y la latencia no dice si el caudal alcanza: en ese log marcaba
+  // `good` con 2.0 Mbps mientras el stream pedia 8.
+  //
+  // LA SEÑAL ES "BAJO Y SOSTENIDO", NO "CAYENDO".
+  //
+  // El primer intento contaba segundos consecutivos de CAIDA. No sirvio: en
+  // el log del 2026-08-25 17:20 el margen ya venia agonizando y oscilaba en
+  // vez de caer limpio —4, 3, 2, 3, 2, 1, 2, 1, 0— asi que nunca junto diez
+  // caidas seguidas y el watchdog no disparo ni una vez. Salto el camino
+  // viejo, por acumulacion de stalls, con 26 segundos ya congelados encima.
+  //
+  // Un margen que sube y baja alrededor de 2 segundos no esta "estable": esta
+  // al borde permanente. Lo que importa no es la direccion sino el nivel. Con
+  // `cache-secs=120` y `readahead=90` un VOD sano vive con decenas de
+  // segundos de colchon; sostener menos de 12 durante diez segundos seguidos
+  // solo pasa cuando el caudal no alcanza para el bitrate del archivo.
+  static const int _margenCritico = 12; // segundos de colchon
+  static const int _margenBajoMinimo = 10; // ...sostenidos durante esto
+  static const Duration _reposoSaltoPorMargen = Duration(minutes: 3);
+
+  /// Gracia tras un seek o una reanudacion: ahi el bufer se rellena desde
+  /// cero y un margen corto es normal, no una señal de nada.
+  static const int _graciaMargenSegundos = 15;
+
+  /// Cuantas lecturas seguidas de margen bajo hacen falta para actuar.
+  ///
+  /// NO es fijo a proposito. Con 12s de colchon podemos darnos el lujo de
+  /// confirmar durante 10 segundos antes de hacer algo tan caro como cambiar
+  /// de servidor. Con 3 segundos de colchon esperar 10 es absurdo: el margen
+  /// llega a cero mucho antes que el contador al umbral.
+  ///
+  /// Se vio en el log del 2026-08-25 17:48: el vigilante disparo con 1 SOLO
+  /// segundo de colchon, y como el cambio de servidor tarda ~3s en dar el
+  /// primer frame, el corte se vio igual (breve, pero se vio). El salto era
+  /// correcto; llego tarde por esperar una confirmacion pensada para un caso
+  /// mas holgado.
+  static int _confirmacionesNecesarias(int margen) {
+    if (margen <= 3) return 3; // agonizando: casi sin margen para el cambio
+    if (margen <= 6) return 5;
+    return _margenBajoMinimo;
+  }
+
+  /// Gracia al ARRANCAR, mas larga: llenar el colchon desde cero lleva su
+  /// tiempo y no queremos saltar de servidor a los 25 segundos de peli por
+  /// una cuesta de arranque. El failover de 10s ya cubre el arranque muerto.
+  static const int _graciaArranqueSegundos = 30;
+
+  int _margenBajoSegundos = 0;
+  DateTime? _ultimoSaltoPorMargen;
+  bool _pausaLargaAplicada = false;
+
   /// Se decide al inicio de cada episodio de stall: true si la causa fue una
   /// rotura del pipe del proxy local (reaccionar rapido) en vez de lentitud.
   bool _stallPorRotura = false;
+
   /// true SOLO cuando el salto a la BD lo pide el detector de congelamiento.
   ///
   /// Antes esto se deducia de `_retryCount >= 1`, pero _reloadVideo() se llama
@@ -361,6 +447,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool _castFailoverInProgress = false;
   DateTime? _lastCastFailoverAt;
   static const Duration _castFailoverCooldown = Duration(seconds: 15);
+
   /// Segundos sin avance en el TV antes de saltar al servidor alternativo.
   ///
   /// Estaba en 15 y se notaba: el usuario veia el televisor cargando mas de 8
@@ -809,6 +896,23 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
     AdService.isAdInProgress.removeListener(_handleAdStateChange);
 
+    TurboProxy.instance.cerrarSesion(_turboPlaybackUrl);
+    _turboPlaybackUrl = null;
+
+    // Prewarm del anuncio que nunca llego a consumirse (el usuario cancelo, o
+    // el anuncio termino antes de que `open()` volviera). Si se consumio, el
+    // campo ya es null y el dueno es `_player`.
+    final adPrewarm = _adPrewarmPlayer;
+    _adPrewarmPlayer = null;
+    if (adPrewarm != null) {
+      try {
+        final mpv = adPrewarm.platform as dynamic;
+        mpv?.setProperty('vid', 'no');
+        mpv?.setProperty('vo', 'null');
+      } catch (_) {}
+      unawaited(_safeDisposePlayer(adPrewarm));
+    }
+
     final pToStop = _player;
     _player = null; // Detach immediately so no more Dart code touches it
 
@@ -909,7 +1013,103 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     await _initializePlayer(_currentItem, startFrom: startFrom);
   }
 
+  // ── Prebuffer durante el anuncio (usuarios free) ────────────────────────
+  //
+  // El rewarded dura 15-30 segundos en los que antes no pasaba NADA: el
+  // player se creaba recien cuando el anuncio terminaba, y el usuario veia el
+  // spinner justo despues de haber esperado el anuncio. Aqui abrimos el media
+  // en pausa mientras el anuncio esta en pantalla, de forma que al terminar ya
+  // haya decenas de segundos de buffer y la reproduccion arranque entera.
+  //
+  // No aplica a premium: para ellos `showRewardedAdWithConfirmation` llama al
+  // callback de inmediato, no hay ventana que aprovechar y crear un segundo
+  // Player solo gastaria memoria (ver el prebuffer de `cache-pause-initial`,
+  // que es su equivalente).
+  void _startAdTimePrewarm() {
+    if (_adPrewarmStarted) return;
+    if (widget.prewarmedPlayer != null) return; // ya vino uno del detalle
+    if (PremiumService().isPremium) return;
+    if (!AdService().isSupported) return; // sin anuncio no hay ventana
+    if (!PerformanceService().allowVideoPrewarm) return;
+    // iOS: el player precalentado se abre sin textura adjunta y el video
+    // quedaria en negro (misma razon que en ContentDetailScreen).
+    if (defaultTargetPlatform == TargetPlatform.iOS) return;
+    if (CastService().isCasting.value) return;
+
+    final url = widget.item.url;
+    if (!url.startsWith('http://') && !url.startsWith('https://')) return;
+    // Los enlaces de scraping son paginas web, no streams: no hay nada que
+    // precalentar hasta que el scraper resuelva la URL real.
+    if (DynamicScraperService().isSupported(url)) return;
+
+    final low = url.toLowerCase();
+    final esVivo =
+        low.contains('/live/') ||
+        low.contains('type=live') ||
+        (low.endsWith('.m3u8') && !low.contains('/vod/'));
+    // En vivo no se puede acumular buffer por adelantado sin quedarse atras de
+    // la emision, y ademas gasta puerto del VPS para nada.
+    if (esVivo) return;
+
+    _adPrewarmStarted = true;
+
+    unawaited(() async {
+      Player? player;
+      try {
+        final lowPerf = PerformanceService().isLowPerformance;
+        player = Player(
+          configuration: PlayerConfiguration(
+            bufferSize: lowPerf ? 64 * 1024 * 1024 : 128 * 1024 * 1024,
+            title: 'Bump Comba Ad Prewarm',
+            logLevel: MPVLogLevel.error,
+            libass: false,
+          ),
+        );
+
+        final mpv = player.platform as dynamic;
+        if (mpv != null) {
+          // -- CRITICAL SILENCING -- (mismo patron que el resto de prewarms)
+          mpv.setProperty('terminal', 'no');
+          mpv.setProperty('msg-level', 'all=no');
+          await mpv.setProperty('user-agent', _currentUserAgent);
+          await mpv.setProperty('cache', 'yes');
+          await mpv.setProperty('pause', 'yes');
+          // OJO: nada de `vid=no` aqui. Con el video deseleccionado mpv no
+          // demuxa la pista de video, que es justo lo unico que queremos que
+          // baje durante el anuncio. En pausa no se decodifica ni suena nada,
+          // asi que no compite con el reproductor del anuncio.
+          await mpv.setProperty(
+            'demuxer-readahead-secs',
+            lowPerf ? '45' : '90',
+          );
+          await mpv.setProperty('cache-secs', lowPerf ? '60' : '120');
+        }
+
+        final headers = _buildHeaders(url);
+        unawaited(TurboProxy.instance.preconnect(url, headers: headers));
+
+        await player.open(Media(url, httpHeaders: headers), play: false);
+
+        if (!mounted) {
+          await _safeDisposePlayer(player);
+          return;
+        }
+        // Publicamos SOLO cuando open() volvio: si el anuncio termina antes,
+        // el flujo normal sigue su camino y esto se descarta en dispose().
+        _adPrewarmPlayer = player;
+        debugPrint('AdTimePrewarm: buffer arrancado durante el anuncio');
+      } catch (e) {
+        debugPrint('AdTimePrewarm: fallo al precalentar: $e');
+        _adPrewarmPlayer = null;
+        await _safeDisposePlayer(player);
+      }
+    }());
+  }
+
   Future<void> _startPlaybackFlow() async {
+    // Que el video vaya bajando mientras corre el anuncio.
+    _startAdTimePrewarm();
+
     AdService().showRewardedAdWithConfirmation(
       context,
       quarterTurns: _isLandscape ? 1 : 0,
@@ -970,6 +1170,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   Future<void> _cleanupPlayer() async {
     _networkQuality.setActiveStreamUrl(null);
+    // El player que se va deja de necesitar su sesion de TurboProxy. Sin esto
+    // la descarga sigue viva contra el origen aunque nadie la lea.
+    TurboProxy.instance.cerrarSesion(_turboPlaybackUrl);
+    _turboPlaybackUrl = null;
     for (final s in _streamSubscriptions) {
       s.cancel();
     }
@@ -1033,6 +1237,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   String _videoKey = '';
+
+  /// Solo para premium y solo en VOD: ver la nota de `cache-pause-initial`.
+  bool get _usaPrebufferPremium =>
+      PremiumService().isPremium &&
+      !_isLiveContent &&
+      !CastService().isCasting.value;
+
   Future<void> _initializePlayer(
     M3UItem item, {
     Duration? startFrom,
@@ -1114,21 +1325,23 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
     try {
       final bool isIOSPlatform = defaultTargetPlatform == TargetPlatform.iOS;
+      final incomingPrewarm = _incomingPrewarmedPlayer;
       final isPrewarmed =
           !isLocalReload &&
           (!isIOSPlatform &&
-              widget.prewarmedPlayer != null &&
-              widget.prewarmedPlayer!.platform != null &&
+              incomingPrewarm != null &&
+              incomingPrewarm.platform != null &&
               _retryCount == 0);
 
       // Si llegó un player precalentado en iOS (no debería, pero por seguridad),
       // lo liberamos para que no quede consumiendo recursos en segundo plano.
       if (isIOSPlatform &&
-          widget.prewarmedPlayer != null &&
+          incomingPrewarm != null &&
           _retryCount == 0 &&
           !isLocalReload) {
         try {
-          final pw = widget.prewarmedPlayer!;
+          final pw = incomingPrewarm;
+          _adPrewarmPlayer = null;
           final mpv = pw.platform as dynamic;
           mpv?.setProperty('vid', 'no');
           mpv?.setProperty('vo', 'null');
@@ -1148,6 +1361,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         // Contenido nuevo, presupuesto de cortes nuevo: los stalls de la
         // pelicula anterior no pueden condenar al servidor de esta.
         _episodiosStall.clear();
+        _margenBajoSegundos = 0;
+        _ultimoSaltoPorMargen = null;
+        _pausaLargaAplicada = false;
         _autoPlayCancelled = false;
         _nextEpisodePrewarmStarted = false;
         _midRollAdShown = false;
@@ -1167,11 +1383,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           _currentServerIndex = existingIdx;
         } else {
           final logoToUse = _primaryLogo ?? item.logo;
-          _serverItems = [item, ...item.alternatives].map((s) {
-            return (logoToUse != null && logoToUse.isNotEmpty)
-                ? s.copyWith(logo: logoToUse)
-                : s;
-          }).toList();
+          _serverItems =
+              [item, ...item.alternatives].map((s) {
+                return (logoToUse != null && logoToUse.isNotEmpty)
+                    ? s.copyWith(logo: logoToUse)
+                    : s;
+              }).toList();
           _serverUrls = _serverItems.map((a) => a.url).toList();
           _currentServerIndex = 0;
 
@@ -1237,7 +1454,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
       Player currentPlayer;
       if (isPrewarmed) {
-        currentPlayer = widget.prewarmedPlayer!;
+        currentPlayer = incomingPrewarm;
+        // A partir de aqui el dueno es `_player`: soltamos la referencia del
+        // prewarm para que `dispose()` no lo libere dos veces.
+        _adPrewarmPlayer = null;
       } else {
         currentPlayer = Player(
           configuration: PlayerConfiguration(
@@ -1385,7 +1605,27 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               'cache-pause-wait',
               _isLiveContent ? '2' : (lowPerf ? '4' : '5'),
             ),
-            mpv.setProperty('cache-pause-initial', 'no'),
+            // ── PREBUFFER DE ARRANQUE (premium) ──────────────────────
+            //
+            // `cache-pause-initial=yes` hace que MPV NO empiece a reproducir
+            // hasta tener `cache-pause-wait` segundos de contenido en el
+            // buffer. Es el equivalente premium del anuncio: el free tiene
+            // 15-30s de anuncio durante los cuales el video va bajando (ver
+            // `_startAdTimePrewarm`); el premium no tiene ninguna ventana, asi
+            // que si arranca al primer byte se queda sin datos a los pocos
+            // segundos y ese es el corte que mas se nota — justo despues de
+            // darle a play, cuando parece que "no funciona".
+            //
+            // Cuesta unos segundos UNA vez, con un aviso en pantalla, en vez
+            // de microcortes durante toda la pelicula. Si venimos de un player
+            // precalentado el buffer ya esta lleno y no cuesta nada.
+            //
+            // En vivo NO: ahi acumular buffer por adelantado te deja atras de
+            // la emision, y el `cache-pause-wait` ya es de 2s.
+            mpv.setProperty(
+              'cache-pause-initial',
+              _usaPrebufferPremium ? 'yes' : 'no',
+            ),
             mpv.setProperty(
               'stream-buffer-size',
               _isLiveContent ? '4194304' : (lowPerf ? '8388608' : '16777216'),
@@ -1528,6 +1768,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         }
       });
 
+      if (_usaPrebufferPremium && !isPrewarmed) {}
+
       final resolvedUrl = _resolveStreamUrl(currentUrl);
 
       // Informar al monitor de red qué servidor estamos usando
@@ -1569,6 +1811,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 .timeout(const Duration(seconds: 7));
             if (turbo != null) {
               playbackUrl = turbo;
+              _turboPlaybackUrl = turbo;
               _turboActive = true;
             }
           } catch (_) {
@@ -1616,6 +1859,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 'TurboProxy watchdog: sin avance en 8s → reabriendo con URL directa',
               );
               _turboActive = false;
+              // Reabrimos directo: la sesion de Turbo que no avanzaba ya no la
+              // lee nadie, pero seguiria descargando contra el origen.
+              TurboProxy.instance.cerrarSesion(_turboPlaybackUrl);
+              _turboPlaybackUrl = null;
               try {
                 await _player!.open(
                   Media(resolvedUrl, httpHeaders: headers, start: startFrom),
@@ -2339,7 +2586,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       return Padding(
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
         child: Material(
-          color: destacado ? Colors.white : Colors.white.withValues(alpha: 0.08),
+          color:
+              destacado ? Colors.white : Colors.white.withValues(alpha: 0.08),
           borderRadius: BorderRadius.circular(12),
           child: InkWell(
             borderRadius: BorderRadius.circular(12),
@@ -2610,15 +2858,46 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
   }
 
-  /// Lee la velocidad real de descarga del stream (cache-speed de MPV, en
-  /// bytes/s) y la reporta al monitor de red. Solo cuando hay descarga activa:
-  /// con el buffer lleno MPV deja de descargar y cache-speed cae a 0, lo que
-  /// NO significa red mala.
+  /// Mide la velocidad REAL de bajada del stream y se la pasa al clasificador
+  /// de red.
+  ///
+  /// EL BUG QUE ARREGLA: esto leia `cache-speed` de MPV y nada mas. Pero con
+  /// TurboProxy activo MPV no descarga de internet — descarga de
+  /// `http://127.0.0.1:PUERTO/t/N`. `cache-speed` mide ese traspaso local,
+  /// que no tiene ninguna relacion con la red: da numeros absurdos cuando
+  /// TurboProxy tiene datos en mano y cero cuando esta seco. Quien habla con
+  /// el origen de verdad es TurboProxy, y su `sampleMbps()` es el unico dato
+  /// que mide la red. (El indicador de velocidad de la UI ya hacia esta
+  /// distincion en `_startSpeedPolling`; el clasificador de red no.)
   Future<void> _sampleRealThroughput() async {
-    final bytesPerSec = await _leerCacheSpeedBytes();
-    if (bytesPerSec <= 0) return;
-    final mbps = bytesPerSec * 8 / 1000000;
-    _networkQuality.reportStreamThroughput(mbps);
+    double mbps;
+    if (_turboActive) {
+      mbps = TurboProxy().sampleMbps();
+    } else {
+      final bytesPerSec = await _leerCacheSpeedBytes();
+      mbps = bytesPerSec * 8 / 1000000;
+    }
+
+    if (mbps > 0) {
+      _networkQuality.reportStreamThroughput(mbps);
+      return;
+    }
+
+    // Cero. Solo es noticia si ADEMAS estamos con el bufer al borde: ahi el
+    // cero significa "necesito datos y no llegan". Con el bufer sano, un cero
+    // solo significa que no hacia falta descargar. Ver la nota larga en
+    // `reportStreamThroughput`.
+    //
+    // Casteando no se reporta: quien descarga es el televisor, y el bufer del
+    // player local (que como mucho lleva el audio) no dice nada de la red que
+    // importa.
+    if (CastService().isCasting.value) return;
+    final st = _player?.state;
+    if (st == null || !st.playing) return;
+    final margen = st.buffer.inSeconds - st.position.inSeconds;
+    if (margen >= 0 && margen <= _margenCritico) {
+      _networkQuality.reportStreamThroughput(0, hayHambre: true);
+    }
   }
 
   /// Lee `cache-speed` de MPV (bytes/s) SIEMPRE con techo de tiempo.
@@ -2643,6 +2922,147 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     } catch (_) {
       return 0.0;
     }
+  }
+
+  /// Vigila el margen de bufer y actua ANTES del corte, no despues.
+  ///
+  /// Devuelve `true` si disparo una recarga (el que llama debe salir del tick).
+  ///
+  /// POR QUE NO SE DEGRADA EL PERFIL AQUI: la reaccion natural seria bajar a
+  /// `AdaptiveBufferConfig` de calidad `fair`, pero mirando lo que hace ese
+  /// perfil —cache-secs 120->90, readahead 90->30— se ve que ACHICA el bufer.
+  /// Cuando el problema es que el caudal no alcanza para el bitrate del
+  /// archivo, tener menos bufer no aporta un solo bit mas por segundo: solo
+  /// acorta el aviso. Y en un .mkv directo no hay escalera de calidades a la
+  /// que bajarse, asi que tampoco se puede pedir menos bitrate.
+  ///
+  /// Lo unico que si consigue mas caudal es OTRO ORIGEN. Y lo que hace que el
+  /// cambio no se note es hacerlo mientras QUEDA bufer: saltando con 12s de
+  /// margen, esos 12s de video siguen reproduciendose mientras la conexion
+  /// nueva arranca (la recarga tarda ~3s). Con margen 0 —que es cuando salta
+  /// hoy, tras 15s de stall— el usuario ya vio el congelamiento entero.
+  bool _vigilarMargenDeBuffer({
+    required Duration buffer,
+    required Duration posicion,
+    required bool bufferandoAhora,
+  }) {
+    // En vivo el margen es corto POR DISENO (no se puede acumular sin quedarse
+    // atras de la emision), asi que caeria en el umbral todo el rato.
+    if (_isLiveContent) return false;
+    // Casteando descarga el receptor, no nosotros: el bufer local no mide nada.
+    if (CastService().isCasting.value) return false;
+    if (_isVideoLoading || _isReloading) return false;
+
+    // Ya parados. NO se reinicia el conteo: quedarse sin datos es la version
+    // PEOR de lo que estamos vigilando, no una recuperacion. Reiniciar aqui
+    // hacia que un stream que alterna "apenas reproduce" con microcortes
+    // —justo el enfermo— borrara la cuenta cada pocos segundos y no llegara
+    // nunca al umbral. Se congela el contador y se sale; lo unico que lo baja
+    // a cero es que el margen vuelva a estar sano (rama de abajo).
+    if (bufferandoAhora) return false;
+
+    // Ventanas donde un margen corto es NORMAL y no significa nada:
+    // el arranque, un seek reciente y una reanudacion reciente. En las tres el
+    // bufer se esta llenando desde cero.
+    final ahora = DateTime.now();
+    bool enGracia(DateTime? desde) =>
+        desde != null &&
+        ahora.difference(desde).inSeconds < _graciaMargenSegundos;
+
+    if (posicion.inSeconds < _graciaArranqueSegundos ||
+        enGracia(_lastSeekTime) ||
+        enGracia(_lastResumeTime)) {
+      _margenBajoSegundos = 0;
+      return false;
+    }
+
+    final margen = buffer.inSeconds - posicion.inSeconds;
+
+    // Negativo justo despues de un seek: el demuxer todavia no alcanzo a la
+    // posicion nueva. No es un margen malo, es que no hay margen medible.
+    if (margen < 0) {
+      _margenBajoSegundos = 0;
+      return false;
+    }
+
+    if (margen <= _margenCritico) {
+      _margenBajoSegundos++;
+      // Traza cada 5 lecturas: sin esto, cuando el vigilante NO actua no hay
+      // forma de saber desde el log si es que no conto, si no habia servidor
+      // alternativo o si ni siquiera se llamo. Se paga con una linea cada 5s
+      // y solo mientras el margen esta bajo.
+      if (_margenBajoSegundos % 3 == 0) {
+        debugPrint(
+          'Margen vigilado: ${margen}s de colchon — '
+          '$_margenBajoSegundos/${_confirmacionesNecesarias(margen)} para actuar '
+          '(servidores=${_serverItems.length}, actual=$_currentServerIndex)',
+        );
+      }
+    } else {
+      _margenBajoSegundos = 0;
+    }
+
+    if (_margenBajoSegundos < _confirmacionesNecesarias(margen)) return false;
+
+    final enReposo =
+        _ultimoSaltoPorMargen != null &&
+        ahora.difference(_ultimoSaltoPorMargen!) < _reposoSaltoPorMargen;
+
+    // ── El salto anticipado tiene que ser SILENCIOSO ────────────────────
+    //
+    // Si el servidor alternativo trae audio en ingles, `_reloadVideo` le
+    // pregunta al usuario antes de saltar. Esa pregunta tiene todo el sentido
+    // cuando el video ya esta congelado: estas eligiendo entre ingles o seguir
+    // esperando delante de una pantalla parada.
+    //
+    // Pero este salto ocurre con la pelicula REPRODUCIENDOSE — es su razon de
+    // ser. Ahi la hoja aparece encima de una escena que se ve bien, diciendo
+    // "el servidor en español no esta respondiendo" cuando si responde, solo
+    // que lento. Reportado el 2026-08-25 como "sale el mensaje aunque el video
+    // este reproduciendo": era esto, y lo introduje yo con el vigilante.
+    //
+    // Un aviso que interrumpe algo que funciona es peor que el corte que
+    // intenta evitar. Si el salto no puede ser silencioso, no se hace: se cae
+    // a la rama de abajo y, si el corte igual llega, el camino reactivo de
+    // siempre preguntara entonces — con la pantalla ya parada, que es cuando
+    // la pregunta se gana el derecho a interrumpir.
+    final saltoSeriaSilencioso =
+        _serverItems.length > 1 &&
+        (!_elCambioTraeIngles(_serverItems[1]) || _ingleAceptado);
+
+    if (!enReposo &&
+        saltoSeriaSilencioso &&
+        _currentServerIndex == 0 &&
+        _serverItems.length > 1) {
+      debugPrint(
+        'Margen de bufer al borde: ${margen}s de colchon sostenidos durante '
+        '${_margenBajoSegundos}s. Saltando al servidor BD ANTES del corte...',
+      );
+      _ultimoSaltoPorMargen = ahora;
+      _margenBajoSegundos = 0;
+      _stallSeconds = 0;
+      _saltarABDPorCongelamiento = true;
+      _reloadVideo();
+      return true;
+    }
+
+    // Sin alternativa (o recien saltamos): no hay de donde sacar mas caudal y
+    // el corte va a llegar igual. Lo unico que queda es que sea UN corte
+    // largo en vez de la metralleta de microcortes — que es peor de ver.
+    // Subiendo `cache-pause-wait`, cuando MPV se quede sin datos junta mas
+    // antes de reanudar en lugar de arrancar y volver a pararse.
+    if (!_pausaLargaAplicada) {
+      _pausaLargaAplicada = true;
+      final mpv = _player?.platform as dynamic;
+      try {
+        mpv?.setProperty('cache-pause-wait', '10');
+        debugPrint(
+          'Margen de bufer critico (${margen}s) y sin servidor alternativo: '
+          'cache-pause-wait a 10s para agrupar el corte en uno solo.',
+        );
+      } catch (_) {}
+    }
+    return false;
   }
 
   void _startStallMonitor() {
@@ -2699,6 +3119,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         _estabaPausado = false;
         _lastResumeTime = DateTime.now();
         debugPrint('Reproducción reanudada tras una pausa');
+      }
+
+      // Actuar ANTES del corte si el bufer se esta desangrando.
+      if (_vigilarMargenDeBuffer(
+        buffer: playerState.buffer,
+        posicion: currentPos,
+        bufferandoAhora: playerState.buffering,
+      )) {
+        return;
       }
 
       // ── Detección de stall y congelamiento silencioso ─────────────
@@ -3347,16 +3776,30 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
   }
 
+  /// Host del VPS propio. Solo a el se le manda la cabecera de tier: al
+  /// proveedor no le importa y no hay por que contarle nada de nuestros
+  /// usuarios.
+  static const String _vpsHost = '217.216.80.212';
+
   Map<String, String> _buildHeaders(String currentUrl) {
     // Extraer dominio base para el Referer
     String referer = '';
+    String host = '';
     try {
       final uri = Uri.parse(currentUrl);
+      host = uri.host;
       referer = '${uri.scheme}://${uri.host}/';
     } catch (_) {}
 
     return {
       'User-Agent': _currentUserAgent,
+      // Carril de ancho de banda en el VPS (ver vps/nginx-cache-vod.conf).
+      // El puerto del VPS es el techo real de la app: cuando se satura, el
+      // proveedor corta las peticiones y eso son los cortes de reproduccion.
+      // Con esto los premium tienen su propio carril y no compiten con la
+      // rafaga de precarga de los free.
+      if (host == _vpsHost)
+        'X-Bump-Tier': PremiumService().isPremium ? 'p' : 'f',
       'Accept': '*/*',
       'Accept-Encoding':
           'gzip, deflate', // sin 'br' — algunos proxies M3U fallan con brotli
@@ -4843,8 +5286,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           ),
     );
   }
-
-
 
   void _showSpeedSelection() {
     if (_player == null) return;
@@ -6508,7 +6949,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                   _bufferedSliderValue(
                                                                     isCasting:
                                                                         isCasting,
-                                                                    value: value,
+                                                                    value:
+                                                                        value,
                                                                     max:
                                                                         max > 0
                                                                             ? max
@@ -6806,7 +7248,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     if (_currentServerIndex < 0 || _currentServerIndex >= total) {
       return '$n/$total (índice fuera de rango)';
     }
-    final host = Uri.tryParse(_serverItems[_currentServerIndex].url)?.host ?? '';
+    final host =
+        Uri.tryParse(_serverItems[_currentServerIndex].url)?.host ?? '';
     return host.isEmpty ? '$n/$total $nombre' : '$n/$total $nombre · $host';
   }
 
