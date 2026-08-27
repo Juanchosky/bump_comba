@@ -2965,7 +2965,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           'reconnect_at_eof=1,'
           'reconnect_delay_max=1,'
           'reconnect_on_network_error=1,'
-          'reconnect_on_http_error=4xx,5xx,'
+          'reconnect_on_http_error=%7%4xx,5xx,'
           'timeout=3000000,'
           'rw_timeout=3000000,'
           'tcp_nodelay=1,'
@@ -2996,7 +2996,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             'reconnect_at_eof=1,'
             'reconnect_delay_max=1,'
             'reconnect_on_network_error=1,'
-            'reconnect_on_http_error=4xx,5xx,'
+            'reconnect_on_http_error=%7%4xx,5xx,'
             'timeout=3000000,'
             'rw_timeout=3000000,'
             'live_start_index=-3,' // 3 segmentos atrás = ~18-30 s de colchón

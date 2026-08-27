@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
@@ -34,10 +35,14 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
   // sobre una Surface; forzar vo=gpu hace ABORTAR a libmpv en Android.
   // Buffer moderado (24-32MB) para TVs con ~1GB de RAM.
   late final Player _player = Player(
-    configuration: const PlayerConfiguration(
+    configuration: PlayerConfiguration(
       title: 'Bump Comba TV',
       bufferSize: 32 * 1024 * 1024, // 32 MB — moderado para TVs de gama baja
-      logLevel: MPVLogLevel.error,
+      // En debug subimos a `info` para que MPV diga POR QUE se queda en
+      // buffering: el spinner eterno del televisor no deja rastro en el log de
+      // Flutter, solo `buffering=true @0s` y silencio. En release se queda en
+      // `error` para no gastar CPU del TV escribiendo lineas.
+      logLevel: kDebugMode ? MPVLogLevel.info : MPVLogLevel.error,
       // libass en FALSE a propósito: el widget Video de media_kit solo
       // renderiza subtítulos con su SubtitleView Flutter cuando libass está
       // apagado. Con libass, MPV intenta dibujarlos nativamente sobre la
@@ -164,15 +169,15 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
       final mpv = _player.platform as dynamic;
       if (mpv == null) return;
 
-      final futures = <Future<dynamic>>[
-        mpv.setProperty('vd-lavc-threads', '0'),
-        mpv.setProperty('vd-lavc-fast', 'yes'),
-        mpv.setProperty('vd-lavc-skiploopfilter', 'all'),
-        mpv.setProperty('video-sync', 'audio'),
-        mpv.setProperty('framedrop', 'decoder+vo'),
-        mpv.setProperty('deband', 'no'),
-        mpv.setProperty('dither-depth', 'no'),
-        mpv.setProperty('cache', 'yes'),
+      final opciones = <String, String>{
+        'vd-lavc-threads': '0',
+        'vd-lavc-fast': 'yes',
+        'vd-lavc-skiploopfilter': 'all',
+        'video-sync': 'audio',
+        'framedrop': 'decoder+vo',
+        'deband': 'no',
+        'dither-depth': 'no',
+        'cache': 'yes',
         // ── Reparto del búfer entre "adelante" y "atrás" ───────────────────
         //
         // Estaba en 128 MB adelante / 16 MB atras, con 300s de lectura
@@ -191,27 +196,45 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
         // ~1 GB de RAM. Solo se reparte distinto: 48 MB atras son ~64s, de
         // sobra para cualquier cambio de pista, y bajar el readahead evita que
         // la cabeza se aleje tanto de la posicion de reproduccion.
-        mpv.setProperty('cache-secs', '120'),
-        mpv.setProperty('demuxer-max-bytes', '100663296'),
-        mpv.setProperty('demuxer-max-back-bytes', '50331648'),
-        mpv.setProperty('demuxer-readahead-secs', '90'),
-        mpv.setProperty('cache-pause-initial', 'yes'),
-        mpv.setProperty('cache-pause-wait', '4'),
-        mpv.setProperty('cache-pause', 'yes'),
-        mpv.setProperty('hls-bitrate', 'min'),
-        mpv.setProperty('stream-buffer-size', '8388608'),
-        mpv.setProperty('network-timeout', '35'),
-        mpv.setProperty('http-reconnect', 'yes'),
-        mpv.setProperty('http-reconnect-sleep', '0.5'),
-        mpv.setProperty(
-          'stream-lavf-o',
-          'reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,reconnect_delay_max=2,reconnect_on_network_error=1,reconnect_on_http_error=5xx,429',
-        ),
-        mpv.setProperty('http-pipelining', 'yes'),
-        mpv.setProperty('tls-verify', 'no'),
-        mpv.setProperty('force-seekable', 'yes'),
-      ];
-      await Future.wait(futures);
+        'cache-secs': '120',
+        'demuxer-max-bytes': '100663296',
+        'demuxer-max-back-bytes': '50331648',
+        'demuxer-readahead-secs': '90',
+        'cache-pause-initial': 'yes',
+        'cache-pause-wait': '4',
+        'cache-pause': 'yes',
+        'hls-bitrate': 'min',
+        'stream-buffer-size': '8388608',
+        'network-timeout': '35',
+        'http-reconnect': 'yes',
+        'http-reconnect-sleep': '0.5',
+        // stream-lavf-o es una lista clave=valor separada por comas, asi que
+        // una coma DENTRO de un valor rompe el parseo: MPV leia "429" como
+        // una clave suelta y tiraba "Expected '=' and a value", dejando toda
+        // la opcion sin aplicar (sin reconexion de ffmpeg en la TV). El prefijo
+        // %N% le dice a MPV cuantos caracteres ocupa el valor literal.
+        'stream-lavf-o':
+            'reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,'
+            'reconnect_delay_max=2,reconnect_on_network_error=1,'
+            'reconnect_on_http_error=%7%5xx,429',
+        'http-pipelining': 'yes',
+        'tls-verify': 'no',
+        'force-seekable': 'yes',
+      };
+
+      // Una a una, no con Future.wait. Antes iban todas juntas y el fallo de
+      // UNA sola abortaba el await de las demas sin decir cual era: por eso el
+      // "Expected '=' and a value" de stream-lavf-o aparecia como un error
+      // suelto del player, sin nombre de propiedad. Asi cada opcion que este
+      // MPV no reconozca (varias `http-*` son en realidad AVOptions de ffmpeg,
+      // no propiedades de MPV) queda registrada por su nombre.
+      for (final e in opciones.entries) {
+        try {
+          await mpv.setProperty(e.key, e.value);
+        } catch (err) {
+          debugPrint('TvReceiver: MPV rechazo ${e.key}=${e.value} -> $err');
+        }
+      }
     } catch (e) {
       debugPrint('TvReceiver: error configurando MPV: $e');
     }
@@ -557,6 +580,19 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
         debugPrint('TvReceiver: error del player: $e');
       }),
     );
+    // Log interno de MPV (solo debug, ver `logLevel` en PlayerConfiguration).
+    //
+    // El spinner eterno del televisor no deja rastro por ningun otro sitio: el
+    // stream de `error` calla, `buffering` se queda en true y la posicion no
+    // avanza, asi que el log de Flutter no dice si el problema es la conexion,
+    // el demuxer o el decodificador. Esto lo saca de MPV directamente.
+    if (kDebugMode) {
+      _subs.add(
+        _player.stream.log.listen((l) {
+          debugPrint('TvReceiver: mpv[${l.prefix}/${l.level}] ${l.text}');
+        }),
+      );
+    }
   }
 
   // ─────────────────────────── Empuje de estado ─────────────────────────────

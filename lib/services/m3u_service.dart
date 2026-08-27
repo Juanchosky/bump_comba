@@ -145,6 +145,24 @@ class M3UService extends ChangeNotifier {
   static const String _favoriteItemsJsonKey = 'm3u_favorite_items_json';
   static const Duration _cacheDuration = Duration(hours: 12);
 
+  /// TTL propio para `custom_content` (la BD de Supabase). SEPARADO del de
+  /// arriba a proposito: `_cacheDuration` tambien gobierna el catalogo de
+  /// Xtream, que se sirve desde el VPS con trafico ilimitado y no cuesta nada
+  /// refrescar seguido.
+  ///
+  /// `custom_content` si cuesta: son 21.012 filas / 7,17 MB que salen por la
+  /// egress de Supabase, y con 500-600 usuarios diarios y un TTL de 12 h la
+  /// organizacion cerro el ciclo en 5.959 MB sobre una cuota de 5 GB (119%),
+  /// con periodo de gracia hasta el 24/09/2026 y `402` despues.
+  ///
+  /// 48 h corta las descargas ~4x. El contenido nuevo sigue apareciendo antes
+  /// para quien refresque a mano (`forceRefresh: true`), asi que el costo es
+  /// que un usuario pasivo puede tardar hasta dos dias en ver un estreno.
+  ///
+  /// Es un parche para frenar la sangria: el arreglo de fondo es servir esta
+  /// tabla desde el VPS como ya se hace con `/catalogo/vod.json`.
+  static const Duration _customCacheDuration = Duration(hours: 48);
+
   // ── Singleton ────────────────────────────────────────────────────────────
   static final M3UService _instance = M3UService._internal();
   factory M3UService() => _instance;
@@ -752,6 +770,15 @@ class M3UService extends ChangeNotifier {
       if (raw != null && raw != 'false') {
         TurboProxy.configureMaxParallel(raw);
       }
+      // Techo aparte para el contenido que el VPS sirve desde su propia cache:
+      // ahi las piernas no le cuestan conexiones al proveedor. Ver la nota en
+      // `TurboProxy.maxParallelEnCache`.
+      final rawCache = await fetchRemoteConfiguration(
+        'turbo_max_parallel_cache',
+      );
+      if (rawCache != null && rawCache != 'false') {
+        TurboProxy.configureMaxParallelEnCache(rawCache);
+      }
     } catch (e) {
       debugPrint('Error loading turbo_max_parallel: $e');
     }
@@ -1000,7 +1027,7 @@ class M3UService extends ChangeNotifier {
       final cacheTimestamp = _prefs?.getInt(_customCacheTimestampKey);
       if (cacheTimestamp != null &&
           DateTime.now().millisecondsSinceEpoch - cacheTimestamp <
-              _cacheDuration.inMilliseconds) {
+              _customCacheDuration.inMilliseconds) {
         try {
           final file = await _getCustomCacheFile();
           if (await file.exists()) {

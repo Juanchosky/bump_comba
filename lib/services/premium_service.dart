@@ -60,7 +60,7 @@ class PremiumService {
   Stream<bool> get premiumStream => _premiumStatusController.stream;
 
   /// Get current premium status (cached, fast access)
-  bool get isPremium => kDebugMode ? true : _isPremium;
+  bool get isPremium => kDebugMode ? false : _isPremium;
 
   bool get hasActiveSubscription => isPremium;
 

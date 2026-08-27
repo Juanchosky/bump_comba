@@ -352,6 +352,35 @@ class TurboProxy {
     debugPrint('TurboProxy: maxParallel = $maxParallel (config remota)');
   }
 
+  /// Techo de piernas cuando el VPS sirve el contenido desde su PROPIA cache.
+  ///
+  /// `maxParallel` es bajo (1-2) para no agotar la linea Xtream, que tiene 3
+  /// conexiones compartidas entre todos los usuarios. Esa cuenta es correcta
+  /// cuando las piernas terminan pidiendole bytes al proveedor.
+  ///
+  /// Pero cuando nginx responde `X-Cache: HIT` los bytes salen del disco del
+  /// VPS y NO se abre ni una conexion al proveedor. Ahi el paralelismo es
+  /// gratis para la linea, y es justo lo que hace falta: el VPS esta en España
+  /// y los usuarios en America, con 100-150 ms de RTT. Una sola conexion TCP a
+  /// esa distancia queda limitada por la ventana de congestion mucho antes que
+  /// por el ancho de banda — se midio el puerto del VPS al 11% (23 de 200
+  /// Mbit/s) mientras el telefono recibia 3-4 Mbps con el bufer muriendose.
+  /// Ese es el patron de sierra de los logs: 0.0 -> 7.9 -> 0.3 Mbps.
+  ///
+  /// Varias conexiones en paralelo son el remedio clasico para eso, y aqui se
+  /// pueden usar SIN arriesgar la linea del proveedor porque solo se activan
+  /// cuando el contenido ya esta en el VPS.
+  static int maxParallelEnCache = 4;
+
+  static void configureMaxParallelEnCache(String? raw) {
+    final parsed = int.tryParse((raw ?? '').trim());
+    if (parsed == null) return;
+    maxParallelEnCache = parsed.clamp(1, _parallelCeiling);
+    debugPrint(
+      'TurboProxy: maxParallelEnCache = $maxParallelEnCache (config remota)',
+    );
+  }
+
   /// Tiempo máximo que se conserva una conexión precalentada sin usar antes
   /// de considerarla obsoleta (el usuario pudo quedarse mirando el detalle
   /// mucho tiempo, o la IP/CDN pudo cambiar).
@@ -1068,6 +1097,8 @@ class TurboProxy {
 
         final rs = await rq.close().timeout(const Duration(seconds: 10));
 
+        session.anotarCache(rs.headers);
+
         if (rs.statusCode == HttpStatus.partialContent) {
           session.supportsRange = true;
           // Sirvio el rango: lo anterior no era un host sin soporte de Range.
@@ -1749,6 +1780,32 @@ class _Session {
   /// sea: cerrar limpio una sesion muerta empeoraba la reconexion siguiente.
   bool cerradaAdrede = false;
 
+  /// El VPS respondio `X-Cache: HIT`: estos bytes salen de su disco y no le
+  /// cuestan una conexion al proveedor. Habilita el techo de paralelismo alto
+  /// (ver `TurboProxy.maxParallelEnCache`).
+  bool servidoDesdeCache = false;
+
+  /// Techo de piernas que aplica a ESTA sesion, segun de donde salgan los
+  /// bytes. Un MISS se queda con el techo conservador.
+  int get techoParalelo =>
+      servidoDesdeCache
+          ? math.max(TurboProxy.maxParallel, TurboProxy.maxParallelEnCache)
+          : TurboProxy.maxParallel;
+
+  /// Lee `X-Cache` de una respuesta del origen. Solo sube el techo; nunca lo
+  /// baja, porque una peticion suelta puede dar MISS mientras el resto del
+  /// archivo sigue en cache y no queremos perder el paralelismo por eso.
+  void anotarCache(HttpHeaders cabeceras) {
+    if (servidoDesdeCache) return;
+    final v = cabeceras.value('x-cache')?.trim().toUpperCase();
+    if (v == null || !v.startsWith('HIT')) return;
+    servidoDesdeCache = true;
+    debugPrint(
+      'TurboProxy [${profile.host}]: X-Cache HIT — el VPS sirve de disco, '
+      'techo de piernas sube a $techoParalelo',
+    );
+  }
+
   /// Colgada: dice estar sirviendo pero no entrega un byte desde hace rato.
   bool get estaColgada =>
       sirviendoAhora > 0 &&
@@ -1871,7 +1928,7 @@ class _Session {
 
     // El presupuesto de conexiones nunca puede superar el global: es el que
     // protege el tope de la línea Xtream compartida entre todos los usuarios.
-    final budget = math.min(TurboProxy.maxParallel, profile.maxWorkingParallel);
+    final budget = math.min(techoParalelo, profile.maxWorkingParallel);
     if (speedMbps < targetBitrateMbps * 1.2 &&
         activeParallel < budget &&
         parallelFailures == 0) {
@@ -2067,6 +2124,8 @@ class _TurboPipeline {
           await rs.drain<void>().catchError((_) {});
           throw HttpException('status ${rs.statusCode} (esperaba 206)');
         }
+
+        session.anotarCache(rs.headers);
 
         // Verificar alineación del Content-Range: protege contra servidores
         // que responden con un rango diferente al solicitado.
