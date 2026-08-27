@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../services/tv/tv_protocol.dart';
 import '../services/tv/tv_sender.dart';
 import '../services/tv/tv_platform.dart';
+import 'turbo_proxy.dart';
 
 /// Servicio singleton para descubrir y controlar dispositivos Chromecast.
 ///
@@ -81,6 +82,7 @@ class CastService {
   int? _tvLastEpisode;
   bool _tvLastIsFromDB = false;
   List<Map<String, String>>? _tvLastSubtitles;
+  bool _tvLastIsLive = false;
 
   /// Durante una reconexión: esperamos el primer STATUS para decidir si
   /// readjuntarnos o recargar. Guarda la posición esperada.
@@ -676,9 +678,10 @@ class CastService {
     int? episode,
     bool isFromDB = false,
     List<Map<String, String>>? subtitles,
+    bool isLive = false,
   }) async {
-    // ── Backend MiApp TV: enviamos la URL ORIGINAL (media_kit reproduce
-    // MKV/AC3 directamente) con sus headers, sin conversión HLS. ──
+    // ── Backend MiApp TV: media_kit reproduce MKV/AC3 directamente, asi que
+    // no hay conversión HLS. El VOD va por TurboProxy (ver _enviarLoadAlTv). ──
     if (isTvBackend) {
       castPosition.value = Duration.zero;
       castDuration.value = Duration.zero;
@@ -697,19 +700,9 @@ class CastService {
       _tvLastEpisode = episode;
       _tvLastIsFromDB = isFromDB;
       _tvLastSubtitles = subtitles;
+      _tvLastIsLive = isLive;
       _tvReattaching = false; // es una carga explícita del usuario
-      _tvSender?.load(
-        url: url,
-        title: title,
-        position: startPosition,
-        headers: headers,
-        thumbnailUrl: thumbnailUrl,
-        seriesName: seriesName,
-        season: season,
-        episode: episode,
-        isFromDB: isFromDB,
-        subtitles: subtitles,
-      );
+      unawaited(_enviarLoadAlTv(startPosition));
       return;
     }
 
@@ -1165,12 +1158,57 @@ class CastService {
 
   /// Reenvía la última media al TV (usado si el TV ya no la está reproduciendo).
   void _resendLastTvMedia() {
-    final url = _tvLastUrl;
-    if (url == null) return;
+    if (_tvLastUrl == null) return;
+    // Se vuelve a envolver desde cero en vez de reutilizar la URL de turbo
+    // anterior: tras una reconexion esa sesion puede haber caducado o haber
+    // sido expulsada del mapa, y el TV pediria a un /t/<id> que ya no existe.
+    unawaited(_enviarLoadAlTv(_tvExpectedPosition.inSeconds.toDouble()));
+  }
+
+  /// Envia el LOAD al TV, enrutando el VOD por TurboProxy cuando se puede.
+  ///
+  /// POR QUE: el proveedor trunca cada respuesta HTTP en ~104 KB, asi que una
+  /// pelicula de 2,3 GB son mas de 22.000 reconexiones. El telefono no lo nota
+  /// porque reproduce a traves de TurboProxy, que descarga en paralelo; el
+  /// televisor pedia la URL original y se comia las reconexiones de una en una,
+  /// en serie: imagen congelada, el audio siguiendo con su propio bufer, y el
+  /// video acelerando despues para alcanzarlo.
+  ///
+  /// Aqui el telefono hace de relé: TurboProxy ya escucha en la LAN, asi que al
+  /// TV se le manda `http://<ip-del-telefono>:<puerto>/t/<id>`.
+  ///
+  /// EN VIVO NO: ahi no hay un archivo con longitud conocida que trocear en
+  /// rangos, que es de lo que vive el turbo.
+  ///
+  /// Todo el camino es un extra opcional: si falta la IP, si el wrap falla o si
+  /// tarda mas de 7s, se envia la URL original y el TV reproduce como antes.
+  Future<void> _enviarLoadAlTv(double startPosition) async {
+    final original = _tvLastUrl;
+    if (original == null) return;
+
+    String url = original;
+    if (!_tvLastIsLive) {
+      try {
+        final ip = await _ipLocalHaciaTv();
+        if (ip != null) {
+          final local = await TurboProxy()
+              .wrap(original, _tvLastHeaders)
+              .timeout(const Duration(seconds: 7));
+          final lan = local == null ? null : TurboProxy().paraLan(local, ip);
+          if (lan != null) {
+            url = lan;
+            debugPrint('CastService: TV enrutado por TurboProxy -> $lan');
+          }
+        }
+      } catch (e) {
+        debugPrint('CastService: TurboProxy para el TV fallo ($e) — URL directa');
+      }
+    }
+
     _tvSender?.load(
       url: url,
       title: _tvLastTitle ?? '',
-      position: _tvExpectedPosition.inSeconds.toDouble(),
+      position: startPosition,
       headers: _tvLastHeaders,
       thumbnailUrl: _tvLastThumb,
       seriesName: _tvLastSeriesName,
@@ -1181,6 +1219,38 @@ class CastService {
       // subtitulos aunque los tuviera antes.
       subtitles: _tvLastSubtitles,
     );
+  }
+
+  /// IP de ESTE telefono en la misma red que el televisor.
+  ///
+  /// Se elige la interfaz que comparte los tres primeros octetos con el TV en
+  /// vez de "la primera IPv4 que no sea loopback": un telefono con datos
+  /// moviles, VPN o hotspot activo tiene varias, y solo la del Wi-Fi comun
+  /// sirve para que el TV nos alcance.
+  Future<String?> _ipLocalHaciaTv() async {
+    final hostTv = _connectedDevice?.host;
+    if (hostTv == null) return null;
+    final corte = hostTv.lastIndexOf('.');
+    if (corte <= 0) return null;
+    final prefijo = hostTv.substring(0, corte + 1);
+    try {
+      final interfaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+        includeLoopback: false,
+      );
+      for (final i in interfaces) {
+        for (final a in i.addresses) {
+          if (a.address.startsWith(prefijo)) return a.address;
+        }
+      }
+      debugPrint(
+        'CastService: ninguna interfaz en la red del TV ($prefijo*) — '
+        'el TV reproducira con la URL directa',
+      );
+    } catch (e) {
+      debugPrint('CastService: no se pudo listar interfaces: $e');
+    }
+    return null;
   }
 
   /// Traduce un evento del TV a los ValueNotifier compartidos.
@@ -1218,6 +1288,17 @@ class CastService {
 
         castPlayerState.value = state;
         castPlaying.value = event['playing'] == true;
+
+        // Pista activa segun el TV. Manda el receptor, no lo que este telefono
+        // creyera haber seleccionado: el usuario puede haberla cambiado con el
+        // mando, y en ese caso el selector del movil tiene que seguirle.
+        final aId = event['activeAudioId']?.toString();
+        if (aId != null && aId.isNotEmpty) castActiveAudioId.value = aId;
+        final sId = event['activeSubtitleId']?.toString();
+        if (sId != null && sId.isNotEmpty) {
+          castActiveSubtitleId.value =
+              sId == TvProto.subtitleOff ? null : sId;
+        }
         break;
       case TvProto.evtLoaded:
         final dur = _asDuration(event['duration']);

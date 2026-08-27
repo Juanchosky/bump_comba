@@ -246,14 +246,25 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// salto innecesario cuesta una recarga completa del reproductor, y si el
   /// alternativo esta en otro idioma ademas se le pregunta al usuario.
   ///
-  /// 15s deja volver a la mayoria de esas recuperaciones lentas. No sube mas
-  /// porque el corte por acumulacion (`_presupuestoStallSegundos`) ya cubre el
-  /// caso feo —parones cortos repetidos— y porque a partir de ~20s mirando un
-  /// spinner el usuario ya abandona.
+  /// 15s dejaba volver a la mayoria de esas recuperaciones lentas, pero se
+  /// percibia como demasiada espera: quince segundos de spinner con la BD
+  /// disponible al lado es tiempo que el usuario ya no regala.
+  ///
+  /// **9s desde 2026-08-26, por decision de producto.** Es un punto intermedio
+  /// deliberado: sigue por encima de los 8s que en 2026-08-24 se midieron como
+  /// demasiado agresivos, y mantiene margen sobre el `cache-pause-wait` de 5s
+  /// del VOD, o sea que una recuperacion sana del bufer (5s + margen) todavia
+  /// termina antes de que esto salte.
+  ///
+  /// Lo que hay que vigilar es justo lo que motivo la subida a 15: si vuelven
+  /// los saltos a la BD con un Xtream que se iba a recuperar solo, el sintoma
+  /// es una recarga completa del reproductor sin motivo aparente. El respaldo
+  /// sigue siendo el corte por acumulacion (`_presupuestoStallSegundos`), que
+  /// cubre el caso de parones cortos repetidos.
   ///
   /// NO aplica a roturas de tuberia: esas se recortan a 6s despues de este
   /// valor, porque una conexion muerta no se recupera esperando.
-  static const int _umbralSaltoAlternativo = 15;
+  static const int _umbralSaltoAlternativo = 9;
 
   static const Duration _ventanaStall = Duration(seconds: 90);
   static const int _presupuestoStallSegundos = 20;
@@ -467,11 +478,22 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// servidor a uno que iba a recuperarse solo — y en el televisor cada salto
   /// cuesta una recarga completa del receptor.
   ///
-  /// Lo que hace viable subirlo es el corte por ACUMULACION de mas abajo: la
+  /// Lo que hizo viable subirlo es el corte por ACUMULACION de mas abajo: la
   /// queja de 2026-08-18 ("carga mucho y no pasa nada") era en realidad de
   /// parones repetidos, que el contador de racha nunca sumaba y que ahora si se
-  /// detectan. Sin ese respaldo, subir esto solo seria volver al problema viejo.
-  static const int _castStallThresholdSeconds = 15;
+  /// detectan. Ese respaldo sigue en pie.
+  ///
+  /// **9s desde 2026-08-26, por decision de producto**, en paralelo con el
+  /// `_umbralSaltoAlternativo` del telefono para que las dos pantallas se
+  /// comporten igual. Sigue dejando margen sobre el `cache-pause-wait` de 4s
+  /// del receptor: una recarga de bufer sana termina bastante antes, asi que
+  /// no se pelean.
+  ///
+  /// A 500 ms por STATUS, 9s son 18 muestras: resolucion de sobra para
+  /// distinguir parado de lento. Aqui cada salto cuesta mas que en el telefono
+  /// —una recarga completa del receptor—, asi que si aparecen cambios de
+  /// servidor injustificados, este es el primer numero que hay que revisar.
+  static const int _castStallThresholdSeconds = 9;
 
   /// Mismo criterio que en el telefono, aplicado al televisor: cortes cortos
   /// pero repetidos. Ver `_episodiosStall`.
@@ -1034,7 +1056,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // iOS: el player precalentado se abre sin textura adjunta y el video
     // quedaria en negro (misma razon que en ContentDetailScreen).
     if (defaultTargetPlatform == TargetPlatform.iOS) return;
-    if (CastService().isCasting.value) return;
+    final bool transmitiendo = CastService().isCasting.value;
 
     final url = widget.item.url;
     if (!url.startsWith('http://') && !url.startsWith('https://')) return;
@@ -1050,6 +1072,24 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // En vivo no se puede acumular buffer por adelantado sin quedarse atras de
     // la emision, y ademas gasta puerto del VPS para nada.
     if (esVivo) return;
+
+    // ── Transmitiendo: precalentar la CONEXION, no un player local ────────
+    //
+    // Antes se salia aqui sin hacer nada, y el resultado se veia en el log del
+    // telefono: `TurboProxy: sesion creada ... (preconnect=false)`. Los 15-30s
+    // del anuncio eran tiempo muerto para el televisor, que arrancaba en frio
+    // justo cuando el anuncio terminaba.
+    //
+    // Levantar el player de precalentamiento NO sirve estando en cast (el video
+    // lo pinta el televisor, no este telefono, y abrir un segundo MPV compite
+    // por red y CPU). Pero `preconnect` si: deja la conexion al origen abierta
+    // y el perfil del host aprendido, y `wrap()` la reutiliza al mandar el LOAD.
+    if (transmitiendo) {
+      _adPrewarmStarted = true;
+      unawaited(TurboProxy.instance.preconnect(url, headers: _buildHeaders(url)));
+      debugPrint('AdTimePrewarm: cast — preconectando origen durante el anuncio');
+      return;
+    }
 
     _adPrewarmStarted = true;
 
@@ -1954,6 +1994,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           headers: _buildHeaders(currentUrl),
           isFromDB: _currentItem.sourceName == 'Supabase',
           subtitles: _subtitulosParaTv(),
+          // Decide si el TV puede ir por TurboProxy: el turbo trocea un archivo
+          // de longitud conocida en rangos, y en vivo no hay tal archivo.
+          isLive: _isLiveContent,
         );
       }
 
@@ -2406,6 +2449,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           headers: _buildHeaders(currentUrl),
           isFromDB: _currentItem.sourceName == 'Supabase',
           subtitles: _subtitulosParaTv(),
+          // Decide si el TV puede ir por TurboProxy: el turbo trocea un archivo
+          // de longitud conocida en rangos, y en vivo no hay tal archivo.
+          isLive: _isLiveContent,
         );
       } else {
         _handleVideoCompletion();

@@ -233,7 +233,7 @@ Duration _adaptiveTimeout() {
     case NetworkQuality.offline:
       return const Duration(seconds: 2);
   }
-} 
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // VALIDATING IMAGE FILE SERVICE

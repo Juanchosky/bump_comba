@@ -451,7 +451,30 @@ class TurboProxy {
   int get currentParallel => _activeConnections;
   double get currentTotalMB => _totalBytesDownloaded / (1024 * 1024);
 
-  bool isTurboUrl(String url) => url.startsWith('http://127.0.0.1:');
+  /// Puerto efimero en el que escucha el proxy, o `null` si aun no arranco.
+  int? get puerto => _server?.port;
+
+  /// La misma URL de sesion pero apuntando a [ip] en vez de a 127.0.0.1, para
+  /// dar al TELEVISOR una direccion que si pueda alcanzar por la red local.
+  ///
+  /// Devuelve `null` si [urlLocal] no es una URL de este proxy.
+  String? paraLan(String urlLocal, String ip) {
+    final u = Uri.tryParse(urlLocal);
+    if (u == null || !isTurboUrl(urlLocal)) return null;
+    return u.replace(host: ip).toString();
+  }
+
+  /// Una URL servida por ESTE proxy, la pida el telefono por loopback o el
+  /// televisor por la IP de la LAN. Antes solo reconocia 127.0.0.1, asi que al
+  /// enrutar el TV la misma URL dejaba de identificarse como turbo y
+  /// `cerrarSesion`/`resolveOriginal` fallaban en silencio.
+  bool isTurboUrl(String url) {
+    final u = Uri.tryParse(url);
+    if (u == null || u.scheme != 'http') return false;
+    final p = _server?.port;
+    if (p == null || u.port != p) return false;
+    return u.pathSegments.length == 2 && u.pathSegments[0] == 't';
+  }
 
   String? originalFor(String url) {
     if (!isTurboUrl(url)) return null;
@@ -588,8 +611,16 @@ class TurboProxy {
   Future<void> _ensureServer() async {
     if (_server != null) return;
     await _loadHostProfiles();
+    // anyIPv4 y no loopbackIPv4: cuando se transmite al televisor, el TV tiene
+    // que poder pedirle los bytes a ESTE servidor. Con loopback solo era
+    // alcanzable desde el propio telefono.
+    //
+    // Sigue sin ser un proxy abierto util para nadie mas: cada sesion vive bajo
+    // un id aleatorio en /t/<id>, solo existe mientras dura la reproduccion, y
+    // el puerto es efimero (0 = el que asigne el sistema). Sin el id no se
+    // puede sacar nada del servidor.
     _server = await HttpServer.bind(
-      InternetAddress.loopbackIPv4,
+      InternetAddress.anyIPv4,
       0,
       shared: true,
     );

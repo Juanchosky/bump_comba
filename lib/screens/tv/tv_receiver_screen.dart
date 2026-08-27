@@ -89,6 +89,15 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
   //
   // El telefono pide mostrar una decision al usuario. Se responde con el mando,
   // que es donde esta el usuario cuando transmite.
+  // ── Menu de pistas (audio / subtitulos) con el mando ──────────────────────
+  //
+  // Hasta ahora las pistas solo se podian cambiar desde el telefono, aunque el
+  // receptor ya sabia hacerlo (`cmdSetAudio` / `cmdSetSubtitle`). Quien esta
+  // viendo la tele tiene el mando en la mano, no el movil.
+  bool _menuAbierto = false;
+  int _menuTab = 0; // 0 = audio, 1 = subtitulos
+  int _menuIdx = 0;
+
   Map<String, String>? _pregunta;
   bool _preguntaSiEnfocado = true;
   Timer? _preguntaTimer;
@@ -174,10 +183,24 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
         'vd-lavc-fast': 'yes',
         'vd-lavc-skiploopfilter': 'all',
         'video-sync': 'audio',
-        'framedrop': 'decoder+vo',
+        // 'vo' y no 'decoder+vo'. Con 'decoder' MPV descarta fotogramas ANTES
+        // de decodificarlos cuando va tarde, que es justo lo que amplifica el
+        // sintoma con este proveedor: se queda sin datos, el audio sigue con su
+        // propio bufer, y al llegar la rafaga siguiente el video corre a
+        // alcanzarlo tirando fotogramas -> el "aceleron" visible. El telefono
+        // ya llego a 'vo' peleando contra este mismo proveedor.
+        'framedrop': 'vo',
         'deband': 'no',
         'dither-depth': 'no',
         'cache': 'yes',
+        // media_kit trae 'cache-on-disk': 'yes' por defecto (ver la tabla de
+        // propiedades de NativePlayer). El telefono ya lo apaga a mano; el
+        // receptor no lo hacia, asi que MPV intentaba escribir los 96 MB de
+        // cache del demuxer en la flash del televisor. En un Chromecast HD sin
+        // espacio libre eso falla ("Failed to create file cache") despues de
+        // haber gastado el tiempo intentandolo, y el arranque se va a 8s o se
+        // queda colgado. En RAM no hay nada que crear.
+        'cache-on-disk': 'no',
         // ── Reparto del búfer entre "adelante" y "atrás" ───────────────────
         //
         // Estaba en 128 MB adelante / 16 MB atras, con 300s de lectura
@@ -220,6 +243,26 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
         'http-pipelining': 'yes',
         'tls-verify': 'no',
         'force-seekable': 'yes',
+        // ── Ajustes portados del reproductor del telefono ──────────────────
+        //
+        // Este proveedor TRUNCA cada respuesta HTTP en un tamano fijo (~104 KB
+        // medidos), asi que un archivo de 2,3 GB son ~22.000 reconexiones, cada
+        // una con su corte de paquete. El telefono ya tiene estos tres ajustes
+        // para sobrevivirlo; el receptor no los tenia.
+        //
+        // Ninguno aumenta el ancho de banda: los tamanos de bufer siguen igual
+        // porque subirlos satura el puerto del VPS y provoca que el proveedor
+        // corte las conexiones lentas.
+        //
+        // - demuxer-seekable-cache: deja recolocarse dentro del bufer ya
+        //   descargado en vez de repedir por red tras cada corte.
+        // - http-reconnect-timeout: acota cuanto puede quedarse colgada UNA
+        //   reconexion. Sin esto, una sola mala congela la imagen entera.
+        // - vd-lavc-o err_detect=ignore_err: que el decodificador tolere los
+        //   paquetes danados de cada frontera de truncado en vez de atascarse.
+        'demuxer-seekable-cache': 'yes',
+        'http-reconnect-timeout': '5',
+        'vd-lavc-o': 'err_detect=ignore_err,flags2=+fast',
       };
 
       // Una a una, no con Future.wait. Antes iban todas juntas y el fallo de
@@ -365,7 +408,25 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
         }
       } catch (_) {}
 
-      await _player.open(Media(url, httpHeaders: headers), play: true);
+      // `start:` y no abrir-en-0-y-saltar-despues.
+      //
+      // MPV abre DIRECTAMENTE en esa posicion, asi que la primera peticion al
+      // origen (o a TurboProxy) ya lleva el Range correcto. Abriendo en 0 y
+      // buscando luego, el demuxer se traga la cabecera, empieza a bajar desde
+      // el principio y solo entonces salta — y con una reanudacion a los 97
+      // minutos de un archivo de 2,3 GB eso es carisimo. Es lo que ya hace el
+      // reproductor del telefono.
+      //
+      // `_seekWhenReady` se queda como red por si la posicion real acaba lejos
+      // del objetivo, pero en el camino normal ya no tiene nada que corregir.
+      final inicio =
+          position > 0
+              ? Duration(milliseconds: (position * 1000).round())
+              : null;
+      await _player.open(
+        Media(url, httpHeaders: headers, start: inicio),
+        play: true,
+      );
 
       // ── Subtitulos EXTERNOS del contenido de la base de datos ────────────
       //
@@ -440,14 +501,53 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
   Future<void> _seekWhenReady(Duration target) async {
     final int loadStamp = _lastLoadAt.millisecondsSinceEpoch;
 
-    // Fase 1: esperar a que el demuxer conozca la duración (hasta ~15s).
-    for (int i = 0; i < 60; i++) {
+    // Fase 1: esperar a que el demuxer conozca la duración (hasta ~60s).
+    //
+    // Si se agota, se ABANDONA. Antes se seguia a la fase 2 igualmente y se
+    // gastaban los 6 intentos haciendo seek contra un archivo que MPV todavia
+    // no habia abierto: en el log salian los seis "error running command
+    // _command(seek, ...)" ANTES incluso de la linea de las pistas, y se comian
+    // 3s de arranque para nada. Sin duracion no hay nada a lo que saltar.
+    //
+    // Perder el seek no es grave: desde que el LOAD abre con `start:`, MPV ya
+    // arranca en la posicion pedida y esto es solo la red de seguridad.
+    // 60s de presupuesto, no 15. Abrir un archivo de 2,3 GB en una posicion
+    // avanzada a traves de TurboProxy tarda bastante mas que abrirlo en 0: en
+    // el log del televisor las pistas aparecieron DESPUES de agotarse los 15s
+    // viejos. Quien espera aqui no bloquea nada — la reproduccion ya arranco.
+    bool hayDuracion = false;
+    for (int i = 0; i < 240; i++) {
       if (!mounted) return;
       // Si llegó otro LOAD entretanto, abortamos este seek.
       if (_lastLoadAt.millisecondsSinceEpoch != loadStamp) return;
-      if (_player.state.duration > Duration.zero) break;
+      if (_player.state.duration > Duration.zero) {
+        hayDuracion = true;
+        break;
+      }
       await Future.delayed(const Duration(milliseconds: 250));
     }
+    if (!hayDuracion) {
+      debugPrint(
+        'TvReceiver: sin duracion tras 60s — abandonando el seek de arranque',
+      );
+      return;
+    }
+
+    // Con `start:` en el open, lo normal es llegar aqui ya en la posicion
+    // correcta y no tocar nada. Si es asi, fuera: cada seek de mas vacia el
+    // decodificador y se ve como un tiron.
+    if (_player.state.position >= target - const Duration(seconds: 5)) {
+      debugPrint(
+        'TvReceiver: el open con start: ya dejo la posicion en '
+        '${_player.state.position.inSeconds}s — no hace falta seek',
+      );
+      return;
+    }
+    debugPrint(
+      'TvReceiver: start: no cuajo (posicion '
+      '${_player.state.position.inSeconds}s, objetivo ${target.inSeconds}s) — '
+      'corrigiendo con seek',
+    );
 
     // Fase 2: seek + reintentos hasta quedar a menos de 5s del objetivo.
     for (int attempt = 0; attempt < 6; attempt++) {
@@ -644,7 +744,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
       // Y `rect` tampoco se resetea entre medias. Asi que al recargar la misma
       // pelicula —lo que pasa justo cuando Xtream se para y el telefono reenvia
       // el LOAD— el listener no se dispara nunca y la bandera se queda en false
-      // PARA SIEMPRE: la caratula, el titulo y el spinner se quedan clavados
+      // PARA SIEMPRE: el titulo y el spinner se quedan clavados
       // encima mientras el video se reproduce detras.
       //
       // Aqui se cierra por otro lado: si la posicion AVANZA entre dos muestras
@@ -693,12 +793,26 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
         state = TvProto.statePaused;
       }
 
+      // Que pista suena/se ve AHORA. Sin esto, cambiar el idioma con el mando
+      // dejaba al telefono marcando la pista vieja en su propio selector: dos
+      // pantallas diciendo cosas distintas sobre el mismo video.
+      String? audioActivo;
+      String? subActivo;
+      try {
+        final a = _player.state.track.audio.id;
+        if (a != 'auto' && a != 'no') audioActivo = a;
+        final b = _player.state.track.subtitle.id;
+        subActivo = (b == 'auto' || b == 'no') ? TvProto.subtitleOff : b;
+      } catch (_) {}
+
       _service.sendEvent(TvProto.evtStatus, {
         'state': state,
         'position': pos.inMilliseconds / 1000.0,
         'duration': dur.inMilliseconds / 1000.0,
         'playing': playing,
         'bufferPercent': _bufferPercent(),
+        if (audioActivo != null) 'activeAudioId': audioActivo,
+        if (subActivo != null) 'activeSubtitleId': subActivo,
       });
     } catch (e) {
       debugPrint('TvReceiver: error empujando STATUS: $e');
@@ -774,6 +888,99 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
       return out.isEmpty ? null : out;
     }
     return null;
+  }
+
+  // ───────────────────────── Menu de pistas ─────────────────────────────────
+
+  // Se filtran 'auto' y 'no' igual que en `_pushTracks`: son pseudo-pistas de
+  // MPV, no idiomas reales. El "desactivados" de subtitulos se pone aparte
+  // como primera entrada de la lista, para que siempre exista aunque el
+  // archivo no traiga ninguna pista.
+  List<AudioTrack> get _pistasAudio =>
+      _player.state.tracks.audio
+          .where((t) => t.id != 'auto' && t.id != 'no')
+          .toList();
+
+  List<SubtitleTrack> get _pistasSubs =>
+      _player.state.tracks.subtitle
+          .where((t) => t.id != 'auto' && t.id != 'no')
+          .toList();
+
+  /// Cuantas filas tiene la pestaña actual (subtitulos suma "Desactivados").
+  int get _menuLargo =>
+      _menuTab == 0 ? _pistasAudio.length : _pistasSubs.length + 1;
+
+  String _etiquetaPista(String? title, String? language, String id) {
+    final t = title?.trim();
+    if (t != null && t.isNotEmpty) return t;
+    final l = language?.trim();
+    if (l != null && l.isNotEmpty) return l;
+    return 'Pista $id';
+  }
+
+  /// Fila que corresponde a lo que suena/se ve ahora mismo.
+  int _indiceActual(int tab) {
+    try {
+      if (tab == 0) {
+        final actual = _player.state.track.audio.id;
+        final i = _pistasAudio.indexWhere((t) => t.id == actual);
+        return i < 0 ? 0 : i;
+      }
+      final actual = _player.state.track.subtitle.id;
+      if (actual == 'no' || actual == 'auto') return 0;
+      final i = _pistasSubs.indexWhere((t) => t.id == actual);
+      return i < 0 ? 0 : i + 1; // +1 por la fila "Desactivados"
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  void _abrirMenuPistas() {
+    // El overlay se auto-oculta a los 4s; con el menu abierto eso seria una
+    // trampa (desaparece mientras lees la lista). Se corta el temporizador y
+    // se vuelve a armar al cerrar.
+    _hideControlsTimer?.cancel();
+    if (!mounted) return;
+    setState(() {
+      _menuAbierto = true;
+      _menuTab = 0;
+      _menuIdx = _indiceActual(0);
+    });
+  }
+
+  void _cerrarMenuPistas() {
+    if (!mounted) return;
+    setState(() => _menuAbierto = false);
+    _showControls(); // re-arma el auto-ocultado
+  }
+
+  Future<void> _aplicarPistaSeleccionada() async {
+    try {
+      if (_menuTab == 0) {
+        final lista = _pistasAudio;
+        if (_menuIdx < 0 || _menuIdx >= lista.length) return;
+        await _player.setAudioTrack(lista[_menuIdx]);
+        debugPrint('TvReceiver: audio -> ${lista[_menuIdx].id}');
+      } else {
+        if (_menuIdx == 0) {
+          await _player.setSubtitleTrack(SubtitleTrack.no());
+          debugPrint('TvReceiver: subtitulos desactivados');
+        } else {
+          final lista = _pistasSubs;
+          final i = _menuIdx - 1;
+          if (i < 0 || i >= lista.length) return;
+          await _player.setSubtitleTrack(lista[i]);
+          debugPrint('TvReceiver: subtitulos -> ${lista[i].id}');
+        }
+      }
+    } catch (e) {
+      debugPrint('TvReceiver: no se pudo cambiar la pista: $e');
+    }
+    // El telefono tiene su propio selector: si no se le avisa, se queda
+    // marcando la pista vieja y las dos pantallas dicen cosas distintas.
+    _pushTracks();
+    _pushStatus();
+    if (mounted) setState(() {});
   }
 
   // ─────────────────────── Controles con control remoto ─────────────────────
@@ -925,6 +1132,58 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
 
     if (!_hasMedia) return KeyEventResult.ignored;
 
+    // ── El menu de pistas se lleva TODAS las teclas mientras esta abierto ───
+    //
+    // Va antes que las teclas multimedia a proposito: si el usuario esta
+    // eligiendo idioma, un rebobinado accidental del mando seria peor que
+    // ignorar la tecla.
+    if (_menuAbierto) {
+      final bool ok =
+          key == LogicalKeyboardKey.select ||
+          key == LogicalKeyboardKey.enter ||
+          key == LogicalKeyboardKey.gameButtonA;
+
+      if (key == LogicalKeyboardKey.escape ||
+          key == LogicalKeyboardKey.goBack) {
+        _cerrarMenuPistas();
+        return KeyEventResult.handled;
+      }
+      // Izquierda/derecha cambian de pestaña (Audio <-> Subtitulos) y colocan
+      // el cursor en lo que ya esta activo en la pestaña nueva, que es lo que
+      // el usuario espera ver marcado al llegar.
+      if (key == LogicalKeyboardKey.arrowLeft ||
+          key == LogicalKeyboardKey.arrowRight) {
+        setState(() {
+          _menuTab = _menuTab == 0 ? 1 : 0;
+          _menuIdx = _indiceActual(_menuTab);
+        });
+        return KeyEventResult.handled;
+      }
+      if (key == LogicalKeyboardKey.arrowUp) {
+        final n = _menuLargo;
+        // Arriba desde la primera fila CIERRA en vez de dar la vuelta: es la
+        // salida natural del menu con un mando, y ademas evita que un toque de
+        // mas te mande al final de una lista larga sin querer.
+        if (_menuIdx <= 0) {
+          _cerrarMenuPistas();
+        } else if (n > 0) {
+          setState(() => _menuIdx = _menuIdx - 1);
+        }
+        return KeyEventResult.handled;
+      }
+      if (key == LogicalKeyboardKey.arrowDown) {
+        final n = _menuLargo;
+        if (n > 0 && _menuIdx < n - 1) setState(() => _menuIdx = _menuIdx + 1);
+        return KeyEventResult.handled;
+      }
+      if (ok) {
+        unawaited(_aplicarPistaSeleccionada());
+        _cerrarMenuPistas();
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.handled;
+    }
+
     // ── Teclas multimedia: actúan directo (y muestran el overlay) ──
     if (key == LogicalKeyboardKey.mediaPlayPause) {
       _togglePlay();
@@ -1000,6 +1259,12 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
       _seekRelative(10);
       return KeyEventResult.handled;
     }
+    if (key == LogicalKeyboardKey.arrowUp) {
+      // Arriba = pistas. Abajo ya estaba cogido por la linea de tiempo, y
+      // izquierda/derecha por los saltos de 10s.
+      _abrirMenuPistas();
+      return KeyEventResult.handled;
+    }
     if (key == LogicalKeyboardKey.arrowDown) {
       setState(() {
         _focusArea = 1;
@@ -1071,34 +1336,6 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
                 )
                 : _WaitingScreen(deviceName: _deviceName),
 
-            // Fondo de carga: la carátula del contenido mientras no hay imagen.
-            //
-            // El arranque de una transmisión son unos 4 segundos en los que
-            // MPV abre el stream y todavía no hay ni un frame. Antes eso era
-            // negro absoluto. La carátula ya viaja en el mensaje LOAD, así que
-            // mostrarla no cuesta ni una petición extra de red y convierte una
-            // espera muerta en una pantalla que dice QUE se está cargando.
-            //
-            // Se apaga en cuanto llega el primer frame real, igual que el
-            // spinner, para no quedarse encima del vídeo.
-            if (_hasMedia && !_primerFrameListo && _mediaThumb != null)
-              Positioned.fill(
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    Image.network(
-                      _mediaThumb!,
-                      fit: BoxFit.cover,
-                      // Si la carátula falla no pasa nada: se queda el negro de
-                      // siempre y el spinner sigue haciendo su trabajo.
-                      errorBuilder: (_, _, _) => const SizedBox.shrink(),
-                    ),
-                    // Oscurecido para que el spinner y el título se lean encima.
-                    Container(color: Colors.black.withValues(alpha: 0.65)),
-                  ],
-                ),
-              ),
-
             // Spinner de carga idéntico al del reproductor del teléfono.
             // Se mantiene mientras haya buffering O mientras no haya llegado el
             // primer frame: sin lo segundo, el arranque de una transmisión era
@@ -1135,7 +1372,12 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
                 ),
               ),
 
-            if (_hasMedia && _controlsVisible && _pregunta == null)
+            // Con el menu de pistas abierto no se pinta: quedaria translucido
+            // por detras de la lista, compitiendo por la atencion.
+            if (_hasMedia &&
+                _controlsVisible &&
+                _pregunta == null &&
+                !_menuAbierto)
               _TvControlsOverlay(
                 position: _previewing ? _previewPos : _position,
                 duration: _duration,
@@ -1146,10 +1388,28 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
                 title: _mediaTitle,
                 thumbnailUrl: _mediaThumb,
               ),
+            if (_hasMedia && _menuAbierto && _pregunta == null)
+              _TvTrackMenu(
+                tab: _menuTab,
+                indice: _menuIdx,
+                audio: [
+                  for (final t in _pistasAudio)
+                    _etiquetaPista(t.title, t.language, t.id),
+                ],
+                subtitulos: [
+                  'Desactivados',
+                  for (final t in _pistasSubs)
+                    _etiquetaPista(t.title, t.language, t.id),
+                ],
+                audioActivo: _indiceActual(0),
+                subtituloActivo: _indiceActual(1),
+              ),
+
             // Botón de play SIEMPRE visible mientras esté en PAUSA (no depende
             // del overlay ni de su temporizador, para que no aparezca a veces
             // sí y a veces no). Al reanudar desaparece.
-            if (_hasMedia && !_playing && !_buffering)
+            // Con el menu abierto se esconde: taparia la lista justo en medio.
+            if (_hasMedia && !_playing && !_buffering && !_menuAbierto)
               Center(
                 child: _CtrlButton(
                   icon: Icons.play_arrow_rounded,
@@ -1962,6 +2222,174 @@ class _TvPregunta extends StatelessWidget {
               style: const TextStyle(color: Colors.white38, fontSize: 15),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+
+/// Menú de pistas del televisor: audio y subtítulos, navegable con el D-pad.
+///
+/// Dos pestañas en vez de dos menús separados porque con un mando cada nivel
+/// de navegación extra se paga caro: así izquierda/derecha cambia de lista y
+/// arriba/abajo recorre, sin submenús ni botón de "volver".
+///
+/// La pista activa lleva un check aunque el cursor esté en otra fila: sin eso,
+/// al entrar no hay forma de saber qué idioma está sonando ya.
+class _TvTrackMenu extends StatelessWidget {
+  final int tab;
+  final int indice;
+  final List<String> audio;
+  final List<String> subtitulos;
+  final int audioActivo;
+  final int subtituloActivo;
+
+  const _TvTrackMenu({
+    required this.tab,
+    required this.indice,
+    required this.audio,
+    required this.subtitulos,
+    required this.audioActivo,
+    required this.subtituloActivo,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final filas = tab == 0 ? audio : subtitulos;
+    final activo = tab == 0 ? audioActivo : subtituloActivo;
+
+    return Positioned.fill(
+      child: Container(
+        color: Colors.black.withValues(alpha: 0.82),
+        alignment: Alignment.center,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 620, maxHeight: 560),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  _Pestana(texto: 'Audio', activa: tab == 0),
+                  const SizedBox(width: 12),
+                  _Pestana(texto: 'Subtítulos', activa: tab == 1),
+                ],
+              ),
+              const SizedBox(height: 22),
+              Flexible(
+                child:
+                    filas.isEmpty
+                        ? const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 32),
+                          child: Text(
+                            'Este contenido no trae pistas alternativas.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Colors.white54,
+                              fontSize: 19,
+                            ),
+                          ),
+                        )
+                        : ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: filas.length,
+                          itemBuilder: (context, i) {
+                            final enfocada = i == indice;
+                            return Container(
+                              margin: const EdgeInsets.symmetric(
+                                horizontal: 24,
+                                vertical: 3,
+                              ),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 20,
+                                vertical: 14,
+                              ),
+                              decoration: BoxDecoration(
+                                color:
+                                    enfocada
+                                        ? Colors.white.withValues(alpha: 0.16)
+                                        : Colors.transparent,
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                  color:
+                                      enfocada
+                                          ? Colors.white
+                                          : Colors.transparent,
+                                  width: 2,
+                                ),
+                              ),
+                              child: Row(
+                                children: [
+                                  SizedBox(
+                                    width: 30,
+                                    child:
+                                        i == activo
+                                            ? const Icon(
+                                              Icons.check_rounded,
+                                              color: Color(0xFFE50914),
+                                              size: 22,
+                                            )
+                                            : null,
+                                  ),
+                                  Expanded(
+                                    child: Text(
+                                      filas[i],
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        color:
+                                            enfocada
+                                                ? Colors.white
+                                                : Colors.white70,
+                                        fontSize: 21,
+                                        fontWeight:
+                                            enfocada
+                                                ? FontWeight.w600
+                                                : FontWeight.w400,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+              ),
+              const SizedBox(height: 18),
+              const Text(
+                'Izquierda/derecha cambia de lista  -  OK selecciona  -  Atrás cierra',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white38, fontSize: 15),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _Pestana extends StatelessWidget {
+  final String texto;
+  final bool activa;
+  const _Pestana({required this.texto, required this.activa});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 10),
+      decoration: BoxDecoration(
+        color: activa ? const Color(0xFFE50914) : Colors.white10,
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Text(
+        texto,
+        style: TextStyle(
+          color: activa ? Colors.white : Colors.white54,
+          fontSize: 19,
+          fontWeight: activa ? FontWeight.w600 : FontWeight.w400,
         ),
       ),
     );
