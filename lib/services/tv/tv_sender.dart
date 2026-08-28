@@ -99,7 +99,6 @@ class TvSender {
     int? season,
     int? episode,
     bool isFromDB = false,
-    bool isLive = false,
     List<Map<String, String>>? subtitles,
   }) {
     _send(TvProto.cmdLoad, {
@@ -112,17 +111,11 @@ class TvSender {
       if (season != null) 'season': season,
       if (episode != null) 'episode': episode,
       if (isFromDB) 'isFromDB': true,
-      // El televisor NO puede deducirlo de la URL: le llega ya envuelta por
-      // TurboProxy o reescrita, sin el `/live/` ni el `.m3u8` originales. Sin
-      // este campo aplicaba el perfil de VOD (90s de readahead) a un HLS, y
-      // leer 90s por delante de una lista con pocos segmentos es chocar contra
-      // el final una y otra vez: cortes constantes y fin prematuro.
-      if (isLive) 'isLive': true,
       // Subtitulos EXTERNOS (VTT/SRT con URL propia), que es como vienen los
-      // del contenido de la base de datos. No estan dentro del archivo de
-      // video, asi que el TV no puede descubrirlos solo: si no viajan aqui, el
-      // menu de subtitulos del televisor sale vacio aunque en el telefono se
-      // vean perfectamente.
+      // del contenido de la base de datos. No estan dentro del archivo, asi que
+      // el TV no puede descubrirlos solo: `_handleLoad` los espera en este
+      // campo y los registra con `SubtitleTrack.uri`. Sin enviarlos, el menu de
+      // subtitulos del televisor sale vacio aunque en el telefono se vean.
       if (subtitles != null && subtitles.isNotEmpty) 'subtitles': subtitles,
     });
   }
@@ -138,21 +131,6 @@ class TvSender {
   void ping() =>
       _send(TvProto.cmdPing, {'t': DateTime.now().millisecondsSinceEpoch});
   void getTracks() => _send(TvProto.cmdGetTracks);
-
-  /// Manda una pregunta a la pantalla del televisor.
-  void ask({
-    required String titulo,
-    required String detalle,
-    required String textoSi,
-    required String textoNo,
-    required int segundos,
-  }) => _send(TvProto.cmdAsk, {
-    'titulo': titulo,
-    'detalle': detalle,
-    'textoSi': textoSi,
-    'textoNo': textoNo,
-    'segundos': segundos,
-  });
 
   /// Cierra la conexión intencionalmente (no dispara [onClosed]).
   Future<void> close() async {

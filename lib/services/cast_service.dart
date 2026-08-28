@@ -1109,8 +1109,6 @@ class CastService {
     });
   }
 
-  Completer<bool>? _preguntaPendiente;
-
   /// Muestra una pregunta EN LA PANTALLA DEL TELEVISOR y espera la respuesta.
   ///
   /// Devuelve lo que eligio el usuario con el mando, o [porDefecto] si el TV no
@@ -1126,34 +1124,23 @@ class CastService {
   }) async {
     if (!isTvBackend || _tvSender == null) return porDefecto;
 
-    // Una pregunta a la vez: si quedaba otra viva, se cierra con el defecto.
-    _preguntaPendiente?.complete(porDefecto);
-    final completer = Completer<bool>();
-    _preguntaPendiente = completer;
-
-    _tvSender!.ask(
-      titulo: titulo,
-      detalle: detalle,
-      textoSi: textoSi,
-      textoNo: textoNo,
-      segundos: segundos,
+    // El protocolo de preguntas al televisor NO existe ahora mismo: no hay
+    // `cmdAsk`, ni metodo en el sender, ni caso en el receptor. Quedo asi al
+    // revertir los cambios del TV.
+    //
+    // Antes este metodo creaba un Completer y se quedaba esperando una
+    // respuesta que nadie podia enviar, asi que SIEMPRE agotaba el timeout:
+    // `segundos + 5` = 25 segundos de congelacion con el televisor sin mostrar
+    // nada, y despues el valor por defecto igualmente. Se responde ya.
+    //
+    // Si algun dia vuelve la pregunta en pantalla hay que restaurar las cuatro
+    // piezas a la vez —constante, sender, caso en el receptor y evento de
+    // respuesta— y volver a esperar aqui el Completer.
+    debugPrint(
+      'CastService: pregunta "$titulo" no se puede mostrar en el TV '
+      '(protocolo ausente) — se responde $porDefecto sin esperar',
     );
-
-    // Margen sobre la cuenta atras del TV: el que manda el reloj es el
-    // televisor, esto es solo la red por si su respuesta no llega.
-    return completer.future
-        .timeout(
-          Duration(seconds: segundos + 5),
-          onTimeout: () {
-            debugPrint('CastService: el TV no respondió a la pregunta');
-            return porDefecto;
-          },
-        )
-        .whenComplete(() {
-          if (identical(_preguntaPendiente, completer)) {
-            _preguntaPendiente = null;
-          }
-        });
+    return porDefecto;
   }
 
   /// Reenvía la última media al TV (usado si el TV ya no la está reproduciendo).
@@ -1215,9 +1202,8 @@ class CastService {
       season: _tvLastSeason,
       episode: _tvLastEpisode,
       isFromDB: _tvLastIsFromDB,
-      isLive: _tvLastIsLive,
-      // Tambien al reconectar: si no, tras una reconexion el TV se queda sin
-      // subtitulos aunque los tuviera antes.
+      // Tambien al reenviar tras una reconexion: si no, el TV se queda sin
+      // subtitulos aunque los tuviera antes de perder la conexion.
       subtitles: _tvLastSubtitles,
     );
   }
@@ -1307,11 +1293,6 @@ class CastService {
         break;
       case TvProto.evtAudioTracks:
         castAudioTracks.value = _asMapList(event['tracks']);
-        break;
-      case TvProto.evtAskResult:
-        final acepta = event['acepta'] == true;
-        final p = _preguntaPendiente;
-        if (p != null && !p.isCompleted) p.complete(acepta);
         break;
       case TvProto.evtSubtitleTracks:
         castSubtitleTracks.value = _asMapList(event['tracks']);

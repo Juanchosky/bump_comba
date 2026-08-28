@@ -122,6 +122,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
       setState(() => _primerFrameListo = true);
     }
   }
+
   String _deviceName = 'Bump Comba TV';
 
   // Metadatos del contenido actual (llegan en el LOAD desde el teléfono).
@@ -360,9 +361,6 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
           break;
         case TvProto.cmdGetTracks:
           _pushTracks();
-          break;
-        case TvProto.cmdAsk:
-          _mostrarPregunta(msg);
           break;
       }
     } catch (e) {
@@ -1093,7 +1091,6 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     _preguntaTimer?.cancel();
     _preguntaTimer = null;
     if (mounted) setState(() => _pregunta = null);
-    _service.sendEvent(TvProto.evtAskResult, {'acepta': acepta});
     debugPrint(
       'TvReceiver: respuesta a la pregunta: $acepta'
       '${porTiempo ? ' (por tiempo agotado)' : ''}',
@@ -2232,11 +2229,7 @@ class _TvPregunta extends StatelessWidget {
                 color: Colors.amber.withValues(alpha: 0.14),
                 shape: BoxShape.circle,
               ),
-              child: const Icon(
-                Icons.language,
-                color: Colors.amber,
-                size: 40,
-              ),
+              child: const Icon(Icons.language, color: Colors.amber, size: 40),
             ),
             const SizedBox(height: 22),
             Text(
@@ -2279,7 +2272,6 @@ class _TvPregunta extends StatelessWidget {
     );
   }
 }
-
 
 /// Menú de pistas del televisor: audio y subtítulos, navegable con el D-pad.
 ///

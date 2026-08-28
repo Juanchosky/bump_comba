@@ -66,8 +66,8 @@ chmod +x /usr/local/bin/bd.sh
 Tenés que ver algo así:
 
 ```
-=== inicio (cambio detectado: '' -> '21012|2026-08-20T14:03:11') ===
-=== fin: ACTUALIZADO 21012 filas | 3900KB -> gz 420KB ===
+=== inicio (cambio detectado: '' -> '21044|2026-08-26T19:54:09.399652+00:00') ===
+=== fin: ACTUALIZADO 21044 filas | 5914KB -> gz 1303KB ===
 ```
 
 Si sale `SOSPECHOSO` o `ERROR`, pasámelo.
@@ -83,7 +83,7 @@ curl -s -o /dev/null -D - -H "Accept-Encoding: gzip" http://127.0.0.1/catalogo/b
 ```
 
 Tiene que dar `200`, `Content-Encoding: gzip` y un `ETag`. Anotá el ETag y
-comprobá que la segunda visita cuesta ~200 bytes en vez de 420 KB:
+comprobá que la segunda visita cuesta ~200 bytes en vez de 1,3 MB:
 
 ```bash
 ETAG=$(curl -sI -H "Accept-Encoding: gzip" http://127.0.0.1/catalogo/bd.json | grep -i etag | tr -d '\r' | cut -d' ' -f2); curl -s -o /dev/null -w "%{http_code} %{size_download} bytes\n" -H "If-None-Match: $ETAG" -H "Accept-Encoding: gzip" http://127.0.0.1/catalogo/bd.json
@@ -113,14 +113,21 @@ cuál es el `created_at` más reciente. Si los dos coinciden con la corrida
 anterior, termina sin bajar nada y sin escribir en el log.
 
 **Cuando entra o sale contenido**, el sondeo lo detecta y baja la tabla
-completa (~3,9 MB, ~420 KB comprimida).
+completa (~5,9 MB, ~1,3 MB comprimida).
 
-**Una vez al día**, a la hora de `FORZAR_HORA`, baja todo aunque el sondeo diga
-que no cambió nada. Es para recoger *ediciones* sobre filas que ya existían —
-cambiarle el título o la URL a algo ya subido no mueve ni el conteo ni la fecha
-más reciente, así que el sondeo solo no las vería.
+**Una vez al día**, en la primera corrida que caiga dentro de la hora de
+`FORZAR_HORA`, baja todo aunque el sondeo diga que no cambió nada. Es para
+recoger *ediciones* sobre filas que ya existían — cambiarle el título o la URL
+a algo ya subido no mueve ni el conteo ni la fecha más reciente, así que el
+sondeo solo no las vería.
 
-Coste total contra Supabase: unos **130 MB/mes** en el peor caso.
+Que sea **una por día y no una por corrida** importa: el cron entra cada 15
+minutos, así que sin el control de fecha se bajaría la tabla entera cuatro
+veces seguidas dentro de esa hora (4:00, 4:15, 4:30, 4:45). Serían ~708 MB/mes
+tirados en bajar cuatro veces lo mismo — el 14% de la cuota. La fecha del
+último forzado se guarda en `/var/lib/bd-forzado.fecha`.
+
+Coste total contra Supabase: unos **180 MB/mes** en el peor caso.
 
 ---
 

@@ -69,6 +69,8 @@ CONF=/etc/bd.conf
 : "${FORZAR_HORA:=4}"
 
 ESTADO=/var/lib/bd-volcado.estado
+# Fecha (YYYY-MM-DD) del ultimo volcado forzado. Ver la nota mas abajo.
+FORZADO=/var/lib/bd-forzado.fecha
 LOG=/var/log/bd.log
 log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 
@@ -114,9 +116,25 @@ huella="${filas}|${ultimo}"
 huella_previa=""
 [ -f "$ESTADO" ] && huella_previa=$(cat "$ESTADO" 2>/dev/null)
 
+# ── El volcado forzado tiene que ser UNO POR DIA, no uno por corrida ────────
+#
+# El cron entra cada 15 min, asi que comprobar solo la hora hacia que durante
+# toda la hora de FORZAR_HORA se bajara la tabla completa CUATRO veces (4:00,
+# 4:15, 4:30, 4:45). Son 4 x 5,9 MB = 23,6 MB/dia = ~708 MB/mes de egress
+# tirados: el 14% de la cuota entera de Supabase, gastado en bajar cuatro
+# veces lo mismo.
+#
+# Con la fecha del ultimo forzado en disco, se fuerza una sola vez por dia:
+# la primera corrida que caiga dentro de esa hora.
 hora_actual=$(date +%-H)
+hoy=$(date +%F)
+forzado_previo=""
+[ -f "$FORZADO" ] && forzado_previo=$(cat "$FORZADO" 2>/dev/null)
+
 forzar=0
-[ "$hora_actual" = "$FORZAR_HORA" ] && forzar=1
+if [ "$hora_actual" = "$FORZAR_HORA" ] && [ "$forzado_previo" != "$hoy" ]; then
+  forzar=1
+fi
 
 if [ "$huella" = "$huella_previa" ] && [ "$forzar" -eq 0 ] && [ -f "$SALIDA/${NOMBRE}.json" ]; then
   # Silencioso a proposito: esto corre cada 15 min y llenaria el log de ruido.
@@ -162,18 +180,27 @@ import json, sys
 entrada, salida = sys.argv[1], sys.argv[2]
 
 items = []
-with open(entrada, encoding='utf-8', errors='replace') as f:
-    for linea in f:
-        linea = linea.strip()
-        if not linea:
-            continue
-        try:
-            trozo = json.loads(linea)
-        except Exception as e:
-            sys.stderr.write('ERROR_PARSEO %s' % e)
-            sys.exit(2)
-        if isinstance(trozo, list):
-            items.extend(x for x in trozo if isinstance(x, dict))
+with open(entrada, 'r', encoding='utf-8', errors='replace') as f:
+    contenido = f.read()
+
+decoder = json.JSONDecoder(strict=False)
+idx = 0
+longitud = len(contenido)
+while idx < longitud:
+    while idx < longitud and contenido[idx].isspace():
+        idx += 1
+    if idx >= longitud:
+        break
+    try:
+        obj, end_idx = decoder.raw_decode(contenido, idx)
+        idx = end_idx
+        if isinstance(obj, list):
+            items.extend(x for x in obj if isinstance(x, dict))
+        elif isinstance(obj, dict):
+            items.append(obj)
+    except Exception as e:
+        sys.stderr.write('ERROR_PARSEO %s at idx %d' % (e, idx))
+        sys.exit(2)
 
 # Las filas sin id no le sirven a la app y romperian el enlace episodio->serie.
 items = [x for x in items if x.get('id') is not None]
@@ -263,6 +290,7 @@ hash_viejo=""
 
 if [ "$hash_nuevo" = "$hash_viejo" ]; then
   echo "$huella" > "$ESTADO"
+  [ "$forzar" -eq 1 ] && echo "$hoy" > "$FORZADO"
   log "  sin cambios ($n_items filas) — no se toca, ETag intacto"
   exit 0
 fi
@@ -282,6 +310,7 @@ chmod 644 "$SALIDA/${NOMBRE}.json" "$SALIDA/${NOMBRE}.json.gz"
 # El estado se guarda AL FINAL, solo si todo salio bien. Si algo fallo antes,
 # la huella vieja sobrevive y la proxima corrida vuelve a intentarlo.
 echo "$huella" > "$ESTADO"
+[ "$forzar" -eq 1 ] && echo "$hoy" > "$FORZADO"
 
 gz=$(stat -c %s "$SALIDA/${NOMBRE}.json.gz" 2>/dev/null || echo 0)
 plano=$(stat -c %s "$SALIDA/${NOMBRE}.json" 2>/dev/null || echo 0)
