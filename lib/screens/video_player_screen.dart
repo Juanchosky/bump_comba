@@ -900,9 +900,18 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     final isCastPlaying = CastService().castPlaying.value;
     final castPos = CastService().castPosition.value;
 
-    if (isCastPlaying || castPos.inMilliseconds > 300) {
-      _serverFailoverTimer?.cancel();
-    }
+    // AQUI NO SE CANCELA EL FAILOVER DE ARRANQUE.
+    //
+    // Habia un `if (isCastPlaying || castPos > 300ms) cancel()`, y era el
+    // motivo real de que el televisor se quedara en Xtream para siempre: esto
+    // corre con CADA status que llega del TV, y al reanudar una pelicula el
+    // primer status ya trae la posicion guardada (p.ej. 7217s) aunque el
+    // reproductor siga llenando el bufer. La condicion se cumplia al primer
+    // segundo y mataba el timer mucho antes de sus 9s.
+    //
+    // Ahora el timer se vigila solo: es periodico y se cancela el mismo en
+    // cuanto detecta avance REAL (estado PLAYING + la posicion moviendose).
+    // Un solo sitio decide, y decide con la prueba buena.
 
     if (_isDragging || _isSeeking || !_localAudioDuringCast) return;
 
@@ -1517,56 +1526,101 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             'Failover de arranque armado: ${_castStallThresholdSeconds}s para '
             'el servidor $_currentServerIndex de ${_serverItems.length}',
           );
-          _serverFailoverTimer = Timer(
-            Duration(seconds: _castStallThresholdSeconds),
-            () {
-              if (!mounted) return;
-              final bool isCasting = CastService().isCasting.value;
-              final bool isNotPlaying;
+          // ── COMO SE DECIDE QUE "NO ARRANCO" ─────────────────────────────
+          //
+          // Antes era una sola foto a los 9s: `!castPlaying || pos < 300ms`.
+          // Las dos mitades fallan al REANUDAR una pelicula:
+          //
+          //  - `pos < 300ms` asume que se empieza en cero. Al reanudar, el
+          //    televisor abre directamente en la posicion guardada y reporta
+          //    p.ej. 7217s mientras todavia esta llenando el bufer, asi que la
+          //    condicion no se cumple nunca.
+          //  - `castPlaying` es true durante el buffering: MPV se considera
+          //    "reproduciendo" en cuanto se le dijo que reprodujera.
+          //
+          // Con las dos fallando, el failover no disparaba y el televisor se
+          // quedaba en Xtream indefinidamente — el sintoma reportado.
+          //
+          // Ahora se muestrea CADA SEGUNDO y la unica prueba que se acepta es
+          // que la posicion AVANCE de verdad y ademas el estado sea PLAYING.
+          // No se pide que sea cero al principio: se compara contra la primera
+          // muestra, sea cual sea, asi que reanudar a las 2 horas funciona
+          // igual que empezar de cero.
+          int transcurrido = 0;
+          Duration? refPos; // primera posicion observada, la referencia
+          bool arranco = false;
 
-              if (isCasting) {
-                final isCastPlaying = CastService().castPlaying.value;
-                final castPos = CastService().castPosition.value;
-                isNotPlaying = !isCastPlaying || castPos.inMilliseconds < 300;
-              } else {
-                if (_player == null) return;
-                final st = _player!.state;
-                isNotPlaying =
-                    _isVideoLoading ||
-                    !st.playing ||
-                    st.position.inMilliseconds < 300;
+          _serverFailoverTimer = Timer.periodic(const Duration(seconds: 1), (
+            t,
+          ) {
+            if (!mounted) {
+              t.cancel();
+              return;
+            }
+            transcurrido++;
+
+            if (CastService().isCasting.value) {
+              final pos = CastService().castPosition.value;
+              final estado = CastService().castPlayerState.value;
+              refPos ??= pos;
+              // Las DOS cosas: estado PLAYING y posicion que se mueve. Solo
+              // con una de ellas se colaban los casos de arriba.
+              if (estado == 'PLAYING' &&
+                  pos > refPos! + const Duration(milliseconds: 500)) {
+                arranco = true;
               }
-
-              if (!isNotPlaying) return;
-
-              final int siguiente;
-              if (_currentServerIndex < _serverItems.length - 1) {
-                siguiente = _currentServerIndex + 1;
-              } else if (_puedeDarLaVuelta()) {
-                siguiente = 0;
-              } else {
-                debugPrint(
-                  'Failover de arranque: servidor $_currentServerIndex sin '
-                  'arrancar, pero la vuelta al primero esta en enfriamiento',
-                );
-                return;
+            } else {
+              final st = _player?.state;
+              if (st != null) {
+                refPos ??= st.position;
+                if (!_isVideoLoading &&
+                    st.playing &&
+                    st.position > refPos! + const Duration(milliseconds: 500)) {
+                  arranco = true;
+                }
               }
+            }
 
+            // Arranco de verdad: se desarma y no se vuelve a mirar.
+            if (arranco) {
+              t.cancel();
+              _serverFailoverTimer = null;
+              return;
+            }
+            if (transcurrido < _castStallThresholdSeconds) return;
+
+            t.cancel();
+            _serverFailoverTimer = null;
+
+            final bool isCasting = CastService().isCasting.value;
+            final int siguiente;
+            if (_currentServerIndex < _serverItems.length - 1) {
+              siguiente = _currentServerIndex + 1;
+            } else if (_puedeDarLaVuelta()) {
+              siguiente = 0;
+            } else {
               debugPrint(
-                'Failover de arranque (isCasting=$isCasting): el servidor '
-                '$_currentServerIndex no arranco en '
-                '${_castStallThresholdSeconds}s -> pasando al $siguiente',
+                'Failover de arranque: servidor $_currentServerIndex sin '
+                'arrancar, pero la vuelta al primero esta en enfriamiento',
               );
-              final currentPos =
-                  isCasting
-                      ? CastService().castPosition.value
-                      : (_player?.state.position ?? startFrom);
-              setState(() {
-                _currentServerIndex = siguiente;
-              });
-              _initializePlayer(_serverItems[siguiente], startFrom: currentPos);
-            },
-          );
+              return;
+            }
+
+            debugPrint(
+              'Failover de arranque (isCasting=$isCasting): el servidor '
+              '$_currentServerIndex no arranco en '
+              '${_castStallThresholdSeconds}s (posicion clavada en '
+              '${refPos?.inSeconds ?? -1}s) -> pasando al $siguiente',
+            );
+            final currentPos =
+                isCasting
+                    ? CastService().castPosition.value
+                    : (_player?.state.position ?? startFrom);
+            setState(() {
+              _currentServerIndex = siguiente;
+            });
+            _initializePlayer(_serverItems[siguiente], startFrom: currentPos);
+          });
         }
 
         // VALIDATION: If URL looks like a web page and scraper didn't catch it,
@@ -5851,8 +5905,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 // _initializePlayer detecta eso y:
                 //  - NO crea VideoController (libera buffers de video, igual
                 //    que hacía el mpv.setProperty('vid','no') manual de antes)
-                //  - arma el watchdog de 10s (_serverFailoverTimer) para
-                //    cambiar de servidor automático si el TV no arranca a tiempo
+                //  - arma el watchdog de arranque (_serverFailoverTimer,
+                //    _castStallThresholdSeconds) para cambiar de servidor
+                //    automático si el TV no arranca a tiempo
                 //  - al final llama castService.loadMedia(...) por nosotros
                 await _initializePlayer(
                   _currentItem,
