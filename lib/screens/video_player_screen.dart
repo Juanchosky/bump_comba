@@ -1503,7 +1503,20 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         // impide que esto se convierta en un bucle de recargas si NINGUNO
         // arranca).
         _serverFailoverTimer?.cancel();
+        if (_serverItems.length <= 1) {
+          // Sin alternativa no hay failover posible, y sin esta linea el
+          // sintoma es indistinguible de un fallo: el televisor se queda
+          // cargando y "no pasa nada a los 9s". Aqui queda dicho por que.
+          debugPrint(
+            'Failover de arranque NO armado: "${_currentItem.name}" no tiene '
+            'servidor alternativo (${_serverItems.length} en la lista)',
+          );
+        }
         if (_serverItems.length > 1) {
+          debugPrint(
+            'Failover de arranque armado: ${_castStallThresholdSeconds}s para '
+            'el servidor $_currentServerIndex de ${_serverItems.length}',
+          );
           _serverFailoverTimer = Timer(
             Duration(seconds: _castStallThresholdSeconds),
             () {
