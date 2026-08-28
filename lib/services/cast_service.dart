@@ -1215,6 +1215,7 @@ class CastService {
       season: _tvLastSeason,
       episode: _tvLastEpisode,
       isFromDB: _tvLastIsFromDB,
+      isLive: _tvLastIsLive,
       // Tambien al reconectar: si no, tras una reconexion el TV se queda sin
       // subtitulos aunque los tuviera antes.
       subtitles: _tvLastSubtitles,

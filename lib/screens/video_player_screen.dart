@@ -459,6 +459,35 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   DateTime? _lastCastFailoverAt;
   static const Duration _castFailoverCooldown = Duration(seconds: 15);
 
+  /// Cuando se dio la ultima VUELTA a la lista de servidores (volver al 0).
+  ///
+  /// El failover normal solo avanza y se planta en el ultimo servidor. Eso deja
+  /// un agujero: si el ultimo —la BD, el rapido— tambien falla, no hay a donde
+  /// ir y el reproductor se queda reintentando el mismo origen, o directamente
+  /// muestra error. Dar la vuelta a Xtream no es preferirlo, es que a esas
+  /// alturas es la unica alternativa que queda.
+  ///
+  /// Volver al 0 NO se hace cuando Xtream "se recupera": eso seria cambiar una
+  /// fuente rapida que funciona por una lenta, con una recarga completa
+  /// garantizada (19-30s en el televisor) a cambio de nada.
+  DateTime? _ultimaVueltaServidoresAt;
+
+  /// Sin esto, con los dos servidores caidos el reproductor giraria entre ellos
+  /// sin parar, recargando cada pocos segundos y sin dejar que ninguno llegue a
+  /// levantar. 90s es tiempo de sobra para que una vuelta completa se note.
+  static const Duration _minimoEntreVueltas = Duration(seconds: 90);
+
+  /// Devuelve true (y consume el permiso) si toca dar la vuelta al servidor 0.
+  bool _puedeDarLaVuelta() {
+    final ultima = _ultimaVueltaServidoresAt;
+    if (ultima != null &&
+        DateTime.now().difference(ultima) < _minimoEntreVueltas) {
+      return false;
+    }
+    _ultimaVueltaServidoresAt = DateTime.now();
+    return true;
+  }
+
   /// Segundos sin avance en el TV antes de saltar al servidor alternativo.
   ///
   /// Estaba en 15 y se notaba: el usuario veia el televisor cargando mas de 8
@@ -730,8 +759,22 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     final castService = CastService();
     if (!castService.isCasting.value) return;
     if (_serverItems.length < 2) return; // No hay servidor alterno
+
+    // Ultimo servidor: en vez de rendirse, se da la vuelta al 0 — pero solo si
+    // ha pasado el minimo. Ver `_ultimaVueltaServidoresAt`.
+    final int nextIndex;
     if (_currentServerIndex >= _serverItems.length - 1) {
-      return; // Ya en el último
+      if (!_puedeDarLaVuelta()) {
+        debugPrint(
+          'CastFailover: ultimo servidor agotado pero la vuelta esta en '
+          'enfriamiento — se sigue reintentando este',
+        );
+        return;
+      }
+      debugPrint('CastFailover: agotados los servidores, volviendo al primero');
+      nextIndex = 0;
+    } else {
+      nextIndex = _currentServerIndex + 1;
     }
 
     _castFailoverInProgress = true;
@@ -745,7 +788,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
 
     final currentPos = castService.castPosition.value;
-    final nextIndex = _currentServerIndex + 1;
     final nextItem = _serverItems[nextIndex];
 
     if (mounted) {
@@ -1431,6 +1473,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               }).toList();
           _serverUrls = _serverItems.map((a) => a.url).toList();
           _currentServerIndex = 0;
+          // Titulo nuevo, historial de vueltas limpio: el enfriamiento es para
+          // no girar en bucle dentro de una reproduccion, no para penalizar a
+          // la siguiente.
+          _ultimaVueltaServidoresAt = null;
 
           // Contenido NUEVO (la url no estaba en la lista actual): la decision
           // sobre el idioma se olvida. Es por titulo, no de por vida — pero
@@ -1440,42 +1486,74 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           _ingleRechazadoEn = null;
         }
 
-        // Automatic 10-second failover: if Xtream (server 0) takes > 10s to start playing,
-        // auto-switch to fast DB server (server 1) if available (handles both local & Cast playback).
+        // ── Failover de ARRANQUE: el servidor no llega a empezar ───────────
+        //
+        // Este camino cubre el caso "nunca arranco", que el monitor de stall NO
+        // ve: aquel hace `if (pos < 500ms) return`, asi que con la posicion
+        // clavada en 0 no cuenta ni un segundo. Por eso bajar el umbral de
+        // stall a 9s no arreglaba el televisor quedandose en el spinner — este
+        // timer tenia un 10 fijo aparte. Ahora comparte la constante, para que
+        // haya UN solo numero que gobierne "cuanto se espera antes de cambiar".
+        //
+        // Antes solo se armaba desde el servidor 0 y saltaba al 1 a pelo. Si la
+        // BD tampoco arrancaba no habia segundo intento y el televisor se
+        // quedaba cargando indefinidamente, que es justo lo que se veia. Ahora
+        // se arma en cualquier servidor y avanza al siguiente, dando la vuelta
+        // al 0 cuando se acaban (con el mismo enfriamiento de 90s, que ademas
+        // impide que esto se convierta en un bucle de recargas si NINGUNO
+        // arranca).
         _serverFailoverTimer?.cancel();
-        if (_currentServerIndex == 0 && _serverItems.length > 1) {
-          _serverFailoverTimer = Timer(const Duration(seconds: 10), () {
-            if (!mounted) return;
-            final bool isCasting = CastService().isCasting.value;
-            final bool isNotPlaying;
+        if (_serverItems.length > 1) {
+          _serverFailoverTimer = Timer(
+            Duration(seconds: _castStallThresholdSeconds),
+            () {
+              if (!mounted) return;
+              final bool isCasting = CastService().isCasting.value;
+              final bool isNotPlaying;
 
-            if (isCasting) {
-              final isCastPlaying = CastService().castPlaying.value;
-              final castPos = CastService().castPosition.value;
-              isNotPlaying = !isCastPlaying || castPos.inMilliseconds < 300;
-            } else {
-              if (_player == null) return;
-              final st = _player!.state;
-              isNotPlaying =
-                  _isVideoLoading ||
-                  !st.playing ||
-                  st.position.inMilliseconds < 300;
-            }
+              if (isCasting) {
+                final isCastPlaying = CastService().castPlaying.value;
+                final castPos = CastService().castPosition.value;
+                isNotPlaying = !isCastPlaying || castPos.inMilliseconds < 300;
+              } else {
+                if (_player == null) return;
+                final st = _player!.state;
+                isNotPlaying =
+                    _isVideoLoading ||
+                    !st.playing ||
+                    st.position.inMilliseconds < 300;
+              }
 
-            if (isNotPlaying) {
+              if (!isNotPlaying) return;
+
+              final int siguiente;
+              if (_currentServerIndex < _serverItems.length - 1) {
+                siguiente = _currentServerIndex + 1;
+              } else if (_puedeDarLaVuelta()) {
+                siguiente = 0;
+              } else {
+                debugPrint(
+                  'Failover de arranque: servidor $_currentServerIndex sin '
+                  'arrancar, pero la vuelta al primero esta en enfriamiento',
+                );
+                return;
+              }
+
               debugPrint(
-                'Xtream failover (isCasting=$isCasting): Server 1 took > 10s to load. Auto-switching to fast DB server (Server 2)...',
+                'Failover de arranque (isCasting=$isCasting): el servidor '
+                '$_currentServerIndex no arranco en '
+                '${_castStallThresholdSeconds}s -> pasando al $siguiente',
               );
               final currentPos =
                   isCasting
                       ? CastService().castPosition.value
                       : (_player?.state.position ?? startFrom);
               setState(() {
-                _currentServerIndex = 1;
+                _currentServerIndex = siguiente;
               });
-              _initializePlayer(_serverItems[1], startFrom: currentPos);
-            }
-          });
+              _initializePlayer(_serverItems[siguiente], startFrom: currentPos);
+            },
+          );
         }
 
         // VALIDATION: If URL looks like a web page and scraper didn't catch it,
@@ -3772,12 +3850,21 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               isLocalReload: true,
             );
           }
-        } else if (_currentServerIndex < _serverUrls.length - 1) {
+        } else if (_currentServerIndex < _serverUrls.length - 1 ||
+            (_serverUrls.length > 1 && _puedeDarLaVuelta())) {
           // Agotamos los reintentos baratos sobre este servidor: acá sí
           // cambia todo el contexto (headers, dominio, etc.), así que vale
           // la pena el camino pesado directamente.
+          //
+          // Si ya estabamos en el ultimo, `_puedeDarLaVuelta()` decide si se
+          // vuelve al 0. Antes esta rama no se cumplia y se caia al `else` de
+          // abajo, que pinta la pantalla de error: con la BD caida no se
+          // intentaba Xtream ni una vez, aunque estuviera disponible.
           _retryCount = 0;
-          _currentServerIndex++;
+          _currentServerIndex =
+              _currentServerIndex < _serverUrls.length - 1
+                  ? _currentServerIndex + 1
+                  : 0;
           debugPrint(
             'Primary server failed. Trying alternative server #$_currentServerIndex at ${currentPos.inSeconds}s',
           );

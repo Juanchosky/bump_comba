@@ -226,6 +226,17 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
         'cache-pause-initial': 'yes',
         'cache-pause-wait': '4',
         'cache-pause': 'yes',
+        // Sin esto MPV RECHAZA entradas de playlist que considera inseguras,
+        // y este proveedor sirve los titulos como playlist — el log del
+        // televisor lo dice en cada carga: "Reading plaintext playlist".
+        // El resultado era que la reproduccion terminaba antes de tiempo (un
+        // `completed` a los 64s de una pelicula entera), el telefono lo leia
+        // como fin prematuro y recargaba con otro archivo distinto.
+        //
+        // El reproductor del telefono ya lo tenia puesto, y sin condiciones;
+        // el receptor nunca lo recibio. Por eso el mismo titulo va bien en el
+        // movil y se corta en la tele.
+        'load-unsafe-playlists': 'yes',
         'hls-bitrate': 'min',
         'stream-buffer-size': '8388608',
         'network-timeout': '35',
@@ -372,6 +383,14 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     final thumb = msg['thumbnailUrl']?.toString();
     _mediaThumb = (thumb == null || thumb.isEmpty) ? null : thumb;
 
+    // Que URL llega EXACTAMENTE al televisor. Es el dato que separa las dos
+    // hipotesis del corte prematuro: si es un .m3u8 el problema es la lista de
+    // segmentos agotandose, y si es un archivo directo es el proveedor.
+    debugPrint(
+      'TvReceiver: LOAD url=$url pos=${position.toStringAsFixed(0)}s '
+      'live=${msg['isLive'] == true}',
+    );
+
     _lastLoadAt = DateTime.now();
     if (mounted) {
       setState(() {
@@ -386,9 +405,42 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     }
     try {
       final bool isFromDB = msg['isFromDB'] == true;
+      final bool isLive = msg['isLive'] == true;
       try {
         final mpv = _player.platform as dynamic;
         if (mpv != null) {
+          // ── DIRECTO / HLS ────────────────────────────────────────────────
+          //
+          // El perfil de arriba (`_configureMpv`) esta pensado para VOD: 90s de
+          // lectura adelantada y 120s de cache. Contra una lista HLS eso es
+          // contraproducente — solo hay unos pocos segmentos publicados, asi
+          // que MPV choca contra el final de la lista una y otra vez, y de ahi
+          // salian el `End of file` repetido, los cortes cada pocos segundos y
+          // el `completed` prematuro que hacia recargar al telefono.
+          //
+          // Son los mismos valores que el reproductor del telefono usa para
+          // directo, que es donde el mismo titulo se ve bien. Todos BAJAN
+          // respecto al perfil VOD, asi que no tocan el techo del VPS.
+          if (isLive) {
+            await mpv.setProperty('cache-secs', '60');
+            await mpv.setProperty('demuxer-readahead-secs', '20');
+            await mpv.setProperty('hls-bitrate', 'auto');
+            await mpv.setProperty('hls-forward-cache-secs', '30');
+            await mpv.setProperty('hls-back-cache-secs', '10');
+            // En directo no se puede acumular bufer por adelantado sin quedarse
+            // atras de la emision: se arranca en cuanto hay datos.
+            await mpv.setProperty('cache-pause-initial', 'no');
+            await mpv.setProperty('cache-pause-wait', '2');
+            await mpv.setProperty('demuxer-cache-wait', 'no');
+          } else {
+            // VOD: se restauran los valores del perfil de arranque, por si el
+            // contenido anterior era un directo y los dejo bajados.
+            await mpv.setProperty('cache-secs', '120');
+            await mpv.setProperty('demuxer-readahead-secs', '90');
+            await mpv.setProperty('cache-pause-initial', 'yes');
+            await mpv.setProperty('cache-pause-wait', '4');
+          }
+
           if (isFromDB) {
             // Contenido de la base de datos: máxima calidad HD, suavizado de bordes pixelados en luz lineal y deblocking por hardware
             await mpv.setProperty('hls-bitrate', 'max');

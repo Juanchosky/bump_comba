@@ -1019,6 +1019,44 @@ class M3UService extends ChangeNotifier {
   }
 
   /// Fetch personal content (movies/series) from Supabase.
+  /// URL del volcado de `custom_content` que genera `vps/bd.sh` y sirve nginx
+  /// desde `/var/www/catalogo/`. Mismo lugar y mismo mecanismo que
+  /// `/catalogo/vod.json`, asi que no hizo falta tocar la config de nginx.
+  static const String _urlVolcadoBd =
+      'http://217.216.80.212/catalogo/bd.json';
+
+  /// Baja el volcado de la BD desde el VPS. Devuelve lista vacia ante
+  /// cualquier problema, que el llamador interpreta como "usa Supabase".
+  Future<List<dynamic>> _fetchCustomContentDesdeVps() async {
+    try {
+      final res = await http
+          .get(
+            Uri.parse(_urlVolcadoBd),
+            // Sin esto Dart igual pide gzip y descomprime solo, pero dejarlo
+            // explicito documenta que el archivo servido es el .gz.
+            headers: const {'Accept-Encoding': 'gzip'},
+          )
+          .timeout(const Duration(seconds: 20));
+
+      if (res.statusCode != 200) {
+        debugPrint('custom_content: VPS respondio ${res.statusCode}');
+        return const [];
+      }
+
+      // `res.body` decodifica como UTF-8; el JSON trae titulos con acentos.
+      final decodificado = jsonDecode(utf8.decode(res.bodyBytes));
+      if (decodificado is! Map) return const [];
+      final items = decodificado['items'];
+      if (items is! List || items.isEmpty) return const [];
+
+      debugPrint('custom_content: ${items.length} filas desde el VPS');
+      return items;
+    } catch (e) {
+      debugPrint('custom_content: fallo el VPS ($e) — se usa Supabase');
+      return const [];
+    }
+  }
+
   Future<List<M3UItem>> fetchCustomContent({bool forceRefresh = false}) async {
     if (_supabase == null) return [];
 
@@ -1052,26 +1090,45 @@ class M3UService extends ChangeNotifier {
     }
 
     try {
-      final List<dynamic> list = [];
-      bool hasMore = true;
-      int from = 0;
-      const int batchSize = 1000;
+      // ── Primero el VPS, Supabase solo como respaldo ──────────────────────
+      //
+      // Bajar esta tabla de Supabase con 500-600 usuarios diarios cerro el
+      // ciclo de agosto de 2026 en 6,4 GB sobre una cuota de 5 GB. El VPS
+      // tiene trafico ilimitado y ya sirve el catalogo de Xtream igual, con
+      // gzip y ETag: si el volcado no cambio, la respuesta es un 304 de ~200
+      // bytes en vez de megabytes.
+      //
+      // El respaldo a Supabase se conserva a proposito y NO se quita: si el
+      // VPS se cae, o `bd.sh` deja de correr, o el archivo todavia no existe
+      // porque el volcado no se instalo, la app sigue funcionando igual que
+      // antes. El coste de ese respaldo es cero mientras el VPS responda.
+      List<dynamic> list = await _fetchCustomContentDesdeVps();
 
-      while (hasMore) {
-        final response = await _supabase!
-            .from('custom_content')
-            .select()
-            .eq('is_active', true)
-            .range(from, from + batchSize - 1);
+      if (list.isEmpty) {
+        list = <dynamic>[];
+        bool hasMore = true;
+        int from = 0;
+        const int batchSize = 1000;
 
-        final List<dynamic> batch = response as List;
-        list.addAll(batch);
+        while (hasMore) {
+          final response = await _supabase!
+              .from('custom_content')
+              .select()
+              .eq('is_active', true)
+              .range(from, from + batchSize - 1);
 
-        if (batch.length < batchSize) {
-          hasMore = false;
-        } else {
-          from += batchSize;
+          final List<dynamic> batch = response as List;
+          list.addAll(batch);
+
+          if (batch.length < batchSize) {
+            hasMore = false;
+          } else {
+            from += batchSize;
+          }
         }
+        debugPrint(
+          'custom_content: ${list.length} filas desde Supabase (respaldo)',
+        );
       }
 
       final Map<String, List<Map<String, dynamic>>> episodesMap = {};

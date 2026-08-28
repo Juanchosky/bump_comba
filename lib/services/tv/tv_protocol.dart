@@ -33,7 +33,7 @@ class TvProto {
   // ─────────────────────────── Comandos EMISOR → TV ──────────────────────────
 
   /// Cargar y reproducir un medio.
-  /// Payload: url, title, position (segundos), headers (Map), seriesName,
+  /// Payload: url, title, position (segundos), headers (Map), isLive, seriesName,
   /// season, episode.
   static const String cmdLoad = 'LOAD';
 
