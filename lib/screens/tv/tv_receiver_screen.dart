@@ -94,6 +94,17 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
   // Hasta ahora las pistas solo se podian cambiar desde el telefono, aunque el
   // receptor ya sabia hacerlo (`cmdSetAudio` / `cmdSetSubtitle`). Quien esta
   // viendo la tele tiene el mando en la mano, no el movil.
+  /// Momento del ultimo "atras". Con el se exige pulsarlo DOS veces seguidas
+  /// para salir: en un mando, el boton de atras esta pegado al de navegacion y
+  /// se roza sin querer — perder la pelicula por eso es de las cosas que mas
+  /// molestan, y ademas en el televisor volver a entrar cuesta bastante.
+  DateTime? _ultimoAtras;
+
+  /// Se esta mostrando el aviso de "pulsa atras otra vez para salir".
+  bool _avisoSalir = false;
+
+  Timer? _avisoSalirTimer;
+
   bool _menuAbierto = false;
   int _menuTab = 0; // 0 = audio, 1 = subtitulos
   int _menuIdx = 0;
@@ -764,9 +775,17 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
           final speedBytes = double.tryParse(raw?.toString() ?? '') ?? 0.0;
           final kbps = speedBytes / 1024;
           if (mounted && _downloadSpeedKbps != kbps) {
-            setState(() {
-              _downloadSpeedKbps = kbps;
-            });
+            // El valor se guarda SIEMPRE, para que al abrirse el overlay ya
+            // muestre el dato fresco. Pero solo se repinta si se esta VIENDO.
+            //
+            // Desde que la velocidad solo sale al cargar o con los controles a
+            // la vista, la mayor parte del tiempo esta oculta — y un setState
+            // por segundo reconstruyendo el arbol del reproductor para un texto
+            // invisible es de las cosas que se notan en un Chromecast HD.
+            _downloadSpeedKbps = kbps;
+            if (_buffering || !_primerFrameListo || _controlsVisible) {
+              setState(() {});
+            }
           }
         }
       } catch (_) {}
@@ -985,7 +1004,44 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     }
   }
 
-  void _abrirMenuPistas() {
+  /// Que hace el boton ATRAS, en orden de lo mas concreto a lo mas drastico.
+  ///
+  /// Devuelve true si se lo quedo. Solo cuando NADIE se lo queda se sale, y
+  /// aun asi hace falta pulsarlo dos veces seguidas.
+  bool _manejarAtras() {
+    // 1. Si hay un menu de pistas abierto, se cierra. Cerrar con atras es lo
+    //    que espera cualquiera; antes cerraba "arriba", que ademas servia para
+    //    moverse por la lista.
+    if (_menuAbierto) {
+      _cerrarMenuPistas();
+      return true;
+    }
+
+    // 2. Con los controles a la vista, atras los esconde.
+    if (_controlsVisible && _playing) {
+      _hideControlsTimer?.cancel();
+      if (mounted) setState(() => _controlsVisible = false);
+      return true;
+    }
+
+    // 3. Salir, pero pidiendolo dos veces.
+    final ahora = DateTime.now();
+    final previo = _ultimoAtras;
+    if (previo != null &&
+        ahora.difference(previo) < const Duration(seconds: 3)) {
+      return false; // segunda pulsacion a tiempo: que salga
+    }
+
+    _ultimoAtras = ahora;
+    _avisoSalirTimer?.cancel();
+    if (mounted) setState(() => _avisoSalir = true);
+    _avisoSalirTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) setState(() => _avisoSalir = false);
+    });
+    return true;
+  }
+
+  void _abrirMenuPistas(int pestana) {
     // El overlay se auto-oculta a los 4s; con el menu abierto eso seria una
     // trampa (desaparece mientras lees la lista). Se corta el temporizador y
     // se vuelve a armar al cerrar.
@@ -993,8 +1049,8 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     if (!mounted) return;
     setState(() {
       _menuAbierto = true;
-      _menuTab = 0;
-      _menuIdx = _indiceActual(0);
+      _menuTab = pestana;
+      _menuIdx = _indiceActual(pestana);
     });
   }
 
@@ -1050,12 +1106,21 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
         _showControls();
         return;
       }
+      // Con el foco en los iconos de subtitulos/audio tampoco se oculta: el
+      // usuario esta a media navegacion y se le desharia la pantalla debajo,
+      // dejandolo con el foco en algo que ya no ve. Mismo criterio que la
+      // pausa: si esta haciendo algo, el overlay se queda.
+      if (_focusArea >= 2 && _hasMedia) {
+        _showControls();
+        return;
+      }
       if (mounted) setState(() => _controlsVisible = false);
     });
   }
 
   void _mostrarPregunta(Map<String, dynamic> msg) {
     _preguntaTimer?.cancel();
+    _avisoSalirTimer?.cancel();
     final segundos = (msg['segundos'] as num?)?.toInt() ?? 20;
     if (!mounted) return;
     setState(() {
@@ -1179,6 +1244,15 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
       return KeyEventResult.handled;
     }
 
+    // ── ATRAS ────────────────────────────────────────────────────────────
+    //
+    // Va antes que nada (salvo la pregunta, que se trata arriba): cierra menu,
+    // esconde controles, y solo a la tercera —y pulsandolo dos veces— sale.
+    if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
+      if (_manejarAtras()) return KeyEventResult.handled;
+      return KeyEventResult.ignored; // que salga por el camino del sistema
+    }
+
     if (!_hasMedia) return KeyEventResult.ignored;
 
     // ── El menu de pistas se lleva TODAS las teclas mientras esta abierto ───
@@ -1192,11 +1266,6 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
           key == LogicalKeyboardKey.enter ||
           key == LogicalKeyboardKey.gameButtonA;
 
-      if (key == LogicalKeyboardKey.escape ||
-          key == LogicalKeyboardKey.goBack) {
-        _cerrarMenuPistas();
-        return KeyEventResult.handled;
-      }
       // Izquierda/derecha cambian de pestaña (Audio <-> Subtitulos) y colocan
       // el cursor en lo que ya esta activo en la pestaña nueva, que es lo que
       // el usuario espera ver marcado al llegar.
@@ -1209,15 +1278,10 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
         return KeyEventResult.handled;
       }
       if (key == LogicalKeyboardKey.arrowUp) {
-        final n = _menuLargo;
-        // Arriba desde la primera fila CIERRA en vez de dar la vuelta: es la
-        // salida natural del menu con un mando, y ademas evita que un toque de
-        // mas te mande al final de una lista larga sin querer.
-        if (_menuIdx <= 0) {
-          _cerrarMenuPistas();
-        } else if (n > 0) {
-          setState(() => _menuIdx = _menuIdx - 1);
-        }
+        // Arriba SOLO sube por la lista. Cerrar es cosa de "atras" y de nadie
+        // mas: antes arriba hacia las dos cosas segun donde estuviera el
+        // cursor, y eso se siente aleatorio con un mando en la mano.
+        if (_menuIdx > 0) setState(() => _menuIdx = _menuIdx - 1);
         return KeyEventResult.handled;
       }
       if (key == LogicalKeyboardKey.arrowDown) {
@@ -1290,9 +1354,42 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
         setState(() => _focusArea = 0);
         return KeyEventResult.handled;
       }
+      if (key == LogicalKeyboardKey.arrowDown) {
+        // Abajo lleva a los iconos de subtitulos y audio.
+        _commitPreviewSeek();
+        setState(() => _focusArea = 2);
+        return KeyEventResult.handled;
+      }
       if (select) {
         _commitPreviewSeek();
         setState(() => _focusArea = 0);
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.handled;
+    }
+
+    // ── Fila de iconos: subtitulos (2) y audio (3) ────────────────────────
+    //
+    // Sustituyen al atajo de "arriba dos veces" que habia antes para abrir las
+    // pistas. Un atajo invisible obliga a acordarse; un icono se ve, se enfoca
+    // y se pulsa, que es como funciona todo lo demas del mando.
+    if (_focusArea == 2 || _focusArea == 3) {
+      if (key == LogicalKeyboardKey.arrowLeft ||
+          key == LogicalKeyboardKey.arrowRight) {
+        setState(() => _focusArea = _focusArea == 2 ? 3 : 2);
+        return KeyEventResult.handled;
+      }
+      if (key == LogicalKeyboardKey.arrowUp) {
+        setState(() {
+          _focusArea = 1;
+          _previewing = true;
+          _previewPos = _position;
+        });
+        return KeyEventResult.handled;
+      }
+      if (select) {
+        // 2 = subtitulos -> pestaña 1;  3 = audio -> pestaña 0.
+        _abrirMenuPistas(_focusArea == 2 ? 1 : 0);
         return KeyEventResult.handled;
       }
       return KeyEventResult.handled;
@@ -1306,12 +1403,6 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     }
     if (key == LogicalKeyboardKey.arrowRight) {
       _seekRelative(10);
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.arrowUp) {
-      // Arriba = pistas. Abajo ya estaba cogido por la linea de tiempo, y
-      // izquierda/derecha por los saltos de 10s.
-      _abrirMenuPistas();
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.arrowDown) {
@@ -1350,123 +1441,179 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Focus(
-        focusNode: _focusNode,
-        autofocus: true,
-        onKeyEvent: _onKey,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            _hasMedia
-                ? Video(
-                  controller: _videoController,
-                  fit: BoxFit.contain,
-                  // Sin los controles integrados de media_kit: renderizan una
-                  // capa de gestos/overlay extra que no usamos (tenemos overlay
-                  // propio) y cuesta frames en TVs de gama baja.
-                  controls: NoVideoControls,
-                  // Subtítulos renderizados por Flutter (requiere libass:false
-                  // en el Player — ver arriba). Estilo legible a distancia de
-                  // sofá: grande, blanco, con sombra y fondo translúcido.
-                  subtitleViewConfiguration: const SubtitleViewConfiguration(
-                    style: TextStyle(
-                      height: 1.35,
-                      fontSize: 42.0,
-                      color: Colors.white,
-                      fontWeight: FontWeight.w500,
-                      backgroundColor: Color(0x99000000),
-                      shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+    // En Android TV el boton de atras del mando suele llegar como un POP del
+    // sistema, no como tecla, asi que hace falta interceptarlo aqui ademas de
+    // en `_onKey`. Con `canPop: false` no se sale nunca por las buenas: decide
+    // `_manejarAtras`, y si dice que toca salir, se sale a mano.
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (bool didPop, Object? _) {
+        if (didPop) return;
+        if (!_manejarAtras()) SystemNavigator.pop();
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: Focus(
+          focusNode: _focusNode,
+          autofocus: true,
+          onKeyEvent: _onKey,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              _hasMedia
+                  ? Video(
+                    controller: _videoController,
+                    fit: BoxFit.contain,
+                    // Sin los controles integrados de media_kit: renderizan una
+                    // capa de gestos/overlay extra que no usamos (tenemos overlay
+                    // propio) y cuesta frames en TVs de gama baja.
+                    controls: NoVideoControls,
+                    // Subtítulos renderizados por Flutter (requiere libass:false
+                    // en el Player — ver arriba). Estilo legible a distancia de
+                    // sofá: grande, blanco, con sombra y fondo translúcido.
+                    subtitleViewConfiguration: const SubtitleViewConfiguration(
+                      style: TextStyle(
+                        height: 1.35,
+                        fontSize: 42.0,
+                        color: Colors.white,
+                        fontWeight: FontWeight.w500,
+                        backgroundColor: Color(0x99000000),
+                        shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                      ),
+                      textAlign: TextAlign.center,
+                      padding: EdgeInsets.fromLTRB(48, 0, 48, 56),
                     ),
-                    textAlign: TextAlign.center,
-                    padding: EdgeInsets.fromLTRB(48, 0, 48, 56),
+                  )
+                  : _WaitingScreen(deviceName: _deviceName),
+
+              // Spinner de carga idéntico al del reproductor del teléfono.
+              // Se mantiene mientras haya buffering O mientras no haya llegado el
+              // primer frame: sin lo segundo, el arranque de una transmisión era
+              // pantalla negra sin ninguna indicación de que estuviera cargando.
+              if (_hasMedia && (_buffering || !_primerFrameListo))
+                const Center(
+                  child: _AppLoadingAnimation(size: 54, strokeWidth: 4),
+                ),
+              // Velocidad de descarga: solo cuando ACOMPAÑA a algo.
+              //
+              // La condicion era `_downloadSpeedKbps > 0 || _buffering`, y como
+              // durante la reproduccion la velocidad casi nunca es cero, el
+              // numerito se quedaba clavado en la esquina toda la pelicula.
+              //
+              // Ahora sale en los dos momentos en que aporta:
+              //  · mientras carga —acompañando al spinner, para que se vea que
+              //    algo esta pasando y no es un cuelgue—;
+              //  · y con el overlay de controles a la vista, junto a la barra y
+              //    el titulo, que es cuando el usuario esta mirando datos.
+              //
+              // El resto del tiempo la pantalla se queda limpia, que es de lo
+              // que se trata al ver algo en la tele.
+              if (_hasMedia &&
+                  (_buffering || !_primerFrameListo || _controlsVisible))
+                Positioned(
+                  top: 40,
+                  left: 48,
+                  child: Text(
+                    '${_downloadSpeedKbps.toStringAsFixed(0)} KB/s',
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 16.6,
+                      fontWeight: FontWeight.w400,
+                      shadows: [Shadow(color: Colors.black, blurRadius: 4)],
+                    ),
                   ),
-                )
-                : _WaitingScreen(deviceName: _deviceName),
-
-            // Spinner de carga idéntico al del reproductor del teléfono.
-            // Se mantiene mientras haya buffering O mientras no haya llegado el
-            // primer frame: sin lo segundo, el arranque de una transmisión era
-            // pantalla negra sin ninguna indicación de que estuviera cargando.
-            if (_hasMedia && (_buffering || !_primerFrameListo))
-              const Center(
-                child: _AppLoadingAnimation(size: 54, strokeWidth: 4),
-              ),
-            if (_hasMedia && (_downloadSpeedKbps > 0 || _buffering))
-              Positioned(
-                top: 40,
-                left: 48,
-                child: Text(
-                  '${_downloadSpeedKbps.toStringAsFixed(0)} KB/s',
-                  style: const TextStyle(
-                    color: Colors.white70,
-                    fontSize: 16.6,
-                    fontWeight: FontWeight.w400,
-                    shadows: [Shadow(color: Colors.black, blurRadius: 4)],
+                ),
+              // Pregunta en pantalla: por ENCIMA de todo lo demas, con su propio
+              // velo, para que se lea sobre cualquier fotograma.
+              if (_pregunta != null)
+                Positioned.fill(
+                  child: _TvPregunta(
+                    titulo: _pregunta!['titulo']!,
+                    detalle: _pregunta!['detalle']!,
+                    textoSi: _pregunta!['textoSi']!,
+                    textoNo: _pregunta!['textoNo']!,
+                    siEnfocado: _preguntaSiEnfocado,
+                    segundos: _preguntaSegundos,
                   ),
                 ),
-              ),
-            // Pregunta en pantalla: por ENCIMA de todo lo demas, con su propio
-            // velo, para que se lea sobre cualquier fotograma.
-            if (_pregunta != null)
-              Positioned.fill(
-                child: _TvPregunta(
-                  titulo: _pregunta!['titulo']!,
-                  detalle: _pregunta!['detalle']!,
-                  textoSi: _pregunta!['textoSi']!,
-                  textoNo: _pregunta!['textoNo']!,
-                  siEnfocado: _preguntaSiEnfocado,
-                  segundos: _preguntaSegundos,
-                ),
-              ),
 
-            // Con el menu de pistas abierto no se pinta: quedaria translucido
-            // por detras de la lista, compitiendo por la atencion.
-            if (_hasMedia &&
-                _controlsVisible &&
-                _pregunta == null &&
-                !_menuAbierto)
-              _TvControlsOverlay(
-                position: _previewing ? _previewPos : _position,
-                duration: _duration,
-                buffered: _buffered,
-                playing: _playing,
-                focusArea: _focusArea,
-                previewing: _previewing,
-                title: _mediaTitle,
-                thumbnailUrl: _mediaThumb,
-              ),
-            if (_hasMedia && _menuAbierto && _pregunta == null)
-              _TvTrackMenu(
-                tab: _menuTab,
-                indice: _menuIdx,
-                audio: [
-                  for (final t in _pistasAudio)
-                    _etiquetaPista(t.title, t.language, t.id),
-                ],
-                subtitulos: [
-                  'Desactivados',
-                  for (final t in _pistasSubs)
-                    _etiquetaPista(t.title, t.language, t.id),
-                ],
-                audioActivo: _indiceActual(0),
-                subtituloActivo: _indiceActual(1),
-              ),
-
-            // Botón de play SIEMPRE visible mientras esté en PAUSA (no depende
-            // del overlay ni de su temporizador, para que no aparezca a veces
-            // sí y a veces no). Al reanudar desaparece.
-            // Con el menu abierto se esconde: taparia la lista justo en medio.
-            if (_hasMedia && !_playing && !_buffering && !_menuAbierto)
-              Center(
-                child: _CtrlButton(
-                  icon: Icons.play_arrow_rounded,
-                  focused: _focusArea == 0,
-                  big: true,
+              // Con el menu de pistas abierto no se pinta: quedaria translucido
+              // por detras de la lista, compitiendo por la atencion.
+              if (_hasMedia &&
+                  _controlsVisible &&
+                  _pregunta == null &&
+                  !_menuAbierto)
+                _TvControlsOverlay(
+                  position: _previewing ? _previewPos : _position,
+                  duration: _duration,
+                  buffered: _buffered,
+                  playing: _playing,
+                  focusArea: _focusArea,
+                  previewing: _previewing,
+                  title: _mediaTitle,
+                  thumbnailUrl: _mediaThumb,
                 ),
-              ),
-          ],
+              if (_hasMedia && _menuAbierto && _pregunta == null)
+                _TvTrackMenu(
+                  tab: _menuTab,
+                  indice: _menuIdx,
+                  audio: [
+                    for (final t in _pistasAudio)
+                      _etiquetaPista(t.title, t.language, t.id),
+                  ],
+                  subtitulos: [
+                    'Desactivados',
+                    for (final t in _pistasSubs)
+                      _etiquetaPista(t.title, t.language, t.id),
+                  ],
+                  audioActivo: _indiceActual(0),
+                  subtituloActivo: _indiceActual(1),
+                ),
+
+              // Botón de play SIEMPRE visible mientras esté en PAUSA (no depende
+              // del overlay ni de su temporizador, para que no aparezca a veces
+              // sí y a veces no). Al reanudar desaparece.
+              // Con el menu abierto se esconde: taparia la lista justo en medio.
+              if (_hasMedia && !_playing && !_buffering && !_menuAbierto)
+                Center(
+                  child: _CtrlButton(
+                    icon: Icons.play_arrow_rounded,
+                    focused: _focusArea == 0,
+                    big: true,
+                  ),
+                ),
+
+              // Aviso de salida. Abajo del todo y discreto: es una confirmacion,
+              // no una alarma.
+              if (_avisoSalir)
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 64,
+                  child: Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 26,
+                        vertical: 14,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.85),
+                        borderRadius: BorderRadius.circular(30),
+                        border: Border.all(color: Colors.white24),
+                      ),
+                      child: const Text(
+                        'Pulsa atrás otra vez para salir',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -1894,115 +2041,134 @@ class _TvControlsOverlay extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          // Fila: tiempo actual · barra · duración total.
-                          Row(
-                            children: [
-                              Text(
-                                _fmt(position),
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 19,
-                                  fontWeight: FontWeight.w400,
+                          // La barra NO se pinta hasta saber la duracion.
+                          //
+                          // Mismo criterio que en el telefono: un `00:00 / 00:00` no se lee
+                          // como "cargando", se lee como "esto dura cero". Y aqui pasa aunque
+                          // el overlay solo salga al pulsar el mando: si pulsas mientras carga,
+                          // veias esa barra a ceros.
+                          //
+                          // Mientras tanto ya hay un spinner con los KB/s en el centro, que es
+                          // lo unico que Netflix muestra en este hueco.
+                          //
+                          // `maintainSize` reserva la altura para que el titulo de debajo no
+                          // pegue un salto cuando aparece la barra.
+                          Visibility(
+                            visible: duration > Duration.zero,
+                            maintainSize: true,
+                            maintainAnimation: true,
+                            maintainState: true,
+                            child: Row(
+                              children: [
+                                Text(
+                                  _fmt(position),
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 19,
+                                    fontWeight: FontWeight.w400,
+                                  ),
                                 ),
-                              ),
-                              const SizedBox(width: 18),
-                              Expanded(
-                                child: LayoutBuilder(
-                                  builder: (context, constraints) {
-                                    final barWidth = constraints.maxWidth;
-                                    final thumbX = barWidth * progress;
-                                    final barHeight =
-                                        timelineFocused ? 7.0 : 5.0;
-                                    final thumbSize =
-                                        timelineFocused ? 26.0 : 18.0;
-                                    return SizedBox(
-                                      height: 28,
-                                      child: Stack(
-                                        alignment: Alignment.centerLeft,
-                                        children: [
-                                          // Pista: mismo blanco translúcido
-                                          // que el botón sin foco (white24).
-                                          Container(
-                                            height: barHeight,
-                                            decoration: BoxDecoration(
-                                              color: Colors.white24,
-                                              borderRadius:
-                                                  BorderRadius.circular(4),
-                                            ),
-                                          ),
-                                          // Pista de bufer: por DEBAJO de la
-                                          // reproducida, para que esta la
-                                          // tape. Mas opaca que la pista
-                                          // vacia (white24) y mas tenue que
-                                          // el acento, igual que YouTube.
-                                          FractionallySizedBox(
-                                            alignment: Alignment.centerLeft,
-                                            widthFactor: buffered0a1,
-                                            child: Container(
+                                const SizedBox(width: 18),
+                                Expanded(
+                                  child: LayoutBuilder(
+                                    builder: (context, constraints) {
+                                      final barWidth = constraints.maxWidth;
+                                      final thumbX = barWidth * progress;
+                                      final barHeight =
+                                          timelineFocused ? 7.0 : 5.0;
+                                      final thumbSize =
+                                          timelineFocused ? 26.0 : 18.0;
+                                      return SizedBox(
+                                        height: 28,
+                                        child: Stack(
+                                          alignment: Alignment.centerLeft,
+                                          children: [
+                                            // Pista: mismo blanco translúcido
+                                            // que el botón sin foco (white24).
+                                            Container(
                                               height: barHeight,
                                               decoration: BoxDecoration(
-                                                color: Colors.white.withValues(
-                                                  alpha: 0.45,
-                                                ),
+                                                color: Colors.white24,
                                                 borderRadius:
                                                     BorderRadius.circular(4),
                                               ),
                                             ),
-                                          ),
-                                          FractionallySizedBox(
-                                            alignment: Alignment.centerLeft,
-                                            widthFactor: progress,
-                                            child: Container(
-                                              height: barHeight,
-                                              decoration: BoxDecoration(
-                                                color: accent,
-                                                borderRadius:
-                                                    BorderRadius.circular(4),
-                                              ),
-                                            ),
-                                          ),
-                                          Positioned(
-                                            left: (thumbX - thumbSize / 2)
-                                                .clamp(
-                                                  0.0,
-                                                  barWidth - thumbSize,
-                                                ),
-                                            child: Container(
-                                              width: thumbSize,
-                                              height: thumbSize,
-                                              // Mismo estilo glossy rojo que
-                                              // el botón de play.
-                                              decoration: const BoxDecoration(
-                                                shape: BoxShape.circle,
-                                                gradient: RadialGradient(
-                                                  center: Alignment(-0.4, -0.5),
-                                                  radius: 1.2,
-                                                  colors: [
-                                                    Color(0xFFFF6B5E),
-                                                    Color(0xFFE53935),
-                                                    Color(0xFFB71C1C),
-                                                  ],
-                                                  stops: [0.0, 0.55, 1.0],
+                                            // Pista de bufer: por DEBAJO de la
+                                            // reproducida, para que esta la
+                                            // tape. Mas opaca que la pista
+                                            // vacia (white24) y mas tenue que
+                                            // el acento, igual que YouTube.
+                                            FractionallySizedBox(
+                                              alignment: Alignment.centerLeft,
+                                              widthFactor: buffered0a1,
+                                              child: Container(
+                                                height: barHeight,
+                                                decoration: BoxDecoration(
+                                                  color: Colors.white
+                                                      .withValues(alpha: 0.45),
+                                                  borderRadius:
+                                                      BorderRadius.circular(4),
                                                 ),
                                               ),
                                             ),
-                                          ),
-                                        ],
-                                      ),
-                                    );
-                                  },
+                                            FractionallySizedBox(
+                                              alignment: Alignment.centerLeft,
+                                              widthFactor: progress,
+                                              child: Container(
+                                                height: barHeight,
+                                                decoration: BoxDecoration(
+                                                  color: accent,
+                                                  borderRadius:
+                                                      BorderRadius.circular(4),
+                                                ),
+                                              ),
+                                            ),
+                                            Positioned(
+                                              left: (thumbX - thumbSize / 2)
+                                                  .clamp(
+                                                    0.0,
+                                                    barWidth - thumbSize,
+                                                  ),
+                                              child: Container(
+                                                width: thumbSize,
+                                                height: thumbSize,
+                                                // Mismo estilo glossy rojo que
+                                                // el botón de play.
+                                                decoration: const BoxDecoration(
+                                                  shape: BoxShape.circle,
+                                                  gradient: RadialGradient(
+                                                    center: Alignment(
+                                                      -0.4,
+                                                      -0.5,
+                                                    ),
+                                                    radius: 1.2,
+                                                    colors: [
+                                                      Color(0xFFFF6B5E),
+                                                      Color(0xFFE53935),
+                                                      Color(0xFFB71C1C),
+                                                    ],
+                                                    stops: [0.0, 0.55, 1.0],
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                    },
+                                  ),
                                 ),
-                              ),
-                              const SizedBox(width: 18),
-                              Text(
-                                _fmt(duration),
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 19,
-                                  fontWeight: FontWeight.w400,
+                                const SizedBox(width: 18),
+                                Text(
+                                  _fmt(duration),
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 19,
+                                    fontWeight: FontWeight.w400,
+                                  ),
                                 ),
-                              ),
-                            ],
+                              ],
+                            ),
                           ),
                           const SizedBox(height: 14),
                           // Título del contenido, debajo de la barra (como la foto).
@@ -2017,12 +2183,89 @@ class _TvControlsOverlay extends StatelessWidget {
                                 fontWeight: FontWeight.w400,
                               ),
                             ),
+
+                          // ── Subtítulos y audio ──────────────────────────
+                          //
+                          // Antes se llegaba a las pistas pulsando ARRIBA dos
+                          // veces desde el botón de play: un atajo invisible,
+                          // que hay que saberse y que no se parece a nada más
+                          // del mando. Aquí son dos iconos que se ven, se
+                          // enfocan con abajo y se abren con OK, igual que
+                          // cualquier otro control.
+                          const SizedBox(height: 18),
+                          Row(
+                            children: [
+                              _IconoPista(
+                                icon: Icons.subtitles_outlined,
+                                etiqueta: 'Subtítulos',
+                                focused: focusArea == 2,
+                              ),
+                              const SizedBox(width: 16),
+                              _IconoPista(
+                                icon: Icons.multitrack_audio_rounded,
+                                etiqueta: 'Audio',
+                                focused: focusArea == 3,
+                              ),
+                            ],
+                          ),
                         ],
                       ),
                     ),
                   ],
                 ),
               ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Icono de la fila de pistas (subtítulos / audio) bajo la línea de tiempo.
+///
+/// Lleva la etiqueta al lado del icono a propósito: en un televisor se mira de
+/// lejos y un pictograma suelto obliga a adivinar. El foco se marca con relleno
+/// y borde blancos —el mismo lenguaje que el botón de play— porque en una tele
+/// el "dónde estoy" tiene que verse de un vistazo desde el sofá.
+class _IconoPista extends StatelessWidget {
+  final IconData icon;
+  final String etiqueta;
+  final bool focused;
+
+  const _IconoPista({
+    required this.icon,
+    required this.etiqueta,
+    required this.focused,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 140),
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+      decoration: BoxDecoration(
+        color:
+            focused
+                ? Colors.white.withValues(alpha: 0.18)
+                : Colors.white.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(
+          color: focused ? Colors.white : Colors.transparent,
+          width: 2,
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 22, color: focused ? Colors.white : Colors.white70),
+          const SizedBox(width: 10),
+          Text(
+            etiqueta,
+            style: TextStyle(
+              color: focused ? Colors.white : Colors.white70,
+              fontSize: 17,
+              fontWeight: focused ? FontWeight.w600 : FontWeight.w400,
             ),
           ),
         ],
