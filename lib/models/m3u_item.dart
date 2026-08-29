@@ -21,6 +21,19 @@ class M3UItem {
   final List<M3UItem> alternatives;
   final String? sourceName;
 
+  /// Otros titulos con los que este contenido puede engancharse a Xtream.
+  ///
+  /// Existe porque el match entre la BD y Xtream se hace por TEXTO, y una
+  /// traduccion no se parece a su original: "Captain America: The First
+  /// Avenger" y "Capitan America: El primer vengador" no comparten ni una
+  /// palabra. Ningun algoritmo de similitud puede unirlos, asi que la unica
+  /// salida es declarar los dos nombres.
+  ///
+  /// Se rellena desde la columna `title_aliases` de `custom_content`. Vacio
+  /// para todo lo que no venga de la BD, y entonces el match se comporta
+  /// exactamente igual que antes.
+  final List<String> titleAliases;
+
   final bool? _isSeries;
   bool? get explicitIsSeries => _isSeries;
   bool get isSeries => _isSeries ?? episodes.isNotEmpty;
@@ -93,7 +106,13 @@ class M3UItem {
     this.alternatives = const [],
     this.sourceName,
     this.duration,
-  })  : name = NormalizationUtils.fixMojibake(name),
+    List<String> titleAliases = const [],
+  })  : titleAliases = titleAliases.isEmpty
+            ? const []
+            : titleAliases
+                .map(NormalizationUtils.fixMojibake)
+                .toList(growable: false),
+        name = NormalizationUtils.fixMojibake(name),
         category = NormalizationUtils.fixMojibake(category),
         seriesName = seriesName != null
             ? NormalizationUtils.fixMojibake(seriesName)
@@ -115,6 +134,7 @@ class M3UItem {
     bool? isDynamic,
     List<M3UItem>? alternatives,
     String? sourceName,
+    List<String>? titleAliases,
   }) {
     return M3UItem(
       name: name ?? this.name,
@@ -131,6 +151,7 @@ class M3UItem {
       isDynamic: isDynamic ?? this.isDynamic,
       alternatives: alternatives ?? this.alternatives,
       sourceName: sourceName ?? this.sourceName,
+      titleAliases: titleAliases ?? this.titleAliases,
       duration: duration ?? duration,
     );
   }

@@ -1189,6 +1189,7 @@ class M3UService extends ChangeNotifier {
             isLive: false,
             isDynamic: isDynamic,
             sourceName: 'Supabase',
+            titleAliases: _parseTitleAliases(row['title_aliases']),
           ),
         );
       }
@@ -1254,6 +1255,7 @@ class M3UService extends ChangeNotifier {
             isLive: false,
             isDynamic: isDynamic,
             sourceName: 'Supabase',
+            titleAliases: _parseTitleAliases(row['title_aliases']),
           ),
         );
       }
@@ -2084,19 +2086,25 @@ class M3UService extends ChangeNotifier {
     final Map<String, List<M3UItem>> customByWord = {};
 
     for (final cItem in customItems) {
-      final normKey = _normalizeTitleForMatching(cItem.name);
-      if (normKey.isNotEmpty) {
-        customByNormTitle.putIfAbsent(normKey, () => []).add(cItem);
-      }
-      final canonKey = _canonicalTitleKey(cItem.name);
-      final canonNoSpace = canonKey.replaceAll(' ', '');
-      if (canonNoSpace.isNotEmpty) {
-        customByCanonTitle.putIfAbsent(canonNoSpace, () => []).add(cItem);
-      }
-      // Indizar por palabras significativas para filtrado por cubetas (bucket filtering)
-      final words = canonKey.split(' ').where((w) => w.length >= 3).toSet();
-      for (final w in words) {
-        customByWord.putIfAbsent(w, () => []).add(cItem);
+      // Se indexa el titulo Y sus alias. Es imprescindible: los candidatos se
+      // preseleccionan por palabras compartidas, asi que un titulo en ingles
+      // de Xtream nunca llegaria a compararse con una fila de la BD en
+      // espanol —no comparten ninguna palabra— por muchos alias que tuviera.
+      for (final titulo in _titulosDeMatch(cItem)) {
+        final normKey = _normalizeTitleForMatching(titulo);
+        if (normKey.isNotEmpty) {
+          customByNormTitle.putIfAbsent(normKey, () => []).add(cItem);
+        }
+        final canonKey = _canonicalTitleKey(titulo);
+        final canonNoSpace = canonKey.replaceAll(' ', '');
+        if (canonNoSpace.isNotEmpty) {
+          customByCanonTitle.putIfAbsent(canonNoSpace, () => []).add(cItem);
+        }
+        // Indizar por palabras significativas para filtrado por cubetas (bucket filtering)
+        final words = canonKey.split(' ').where((w) => w.length >= 3).toSet();
+        for (final w in words) {
+          customByWord.putIfAbsent(w, () => []).add(cItem);
+        }
       }
     }
 
@@ -2138,7 +2146,7 @@ class M3UService extends ChangeNotifier {
         for (final candidate in smartCandidates) {
           if (regItem.isSeries == candidate.isSeries &&
               regItem.isLive == candidate.isLive) {
-            if (_isSmartTitleMatch(regItem.name, candidate.name)) {
+            if (_coincideAlgunTitulo(regItem, candidate)) {
               matchedCustom = candidate;
               break;
             }
@@ -4644,7 +4652,7 @@ List<M3UItem> _groupAlternatives(List<M3UItem> flatItems) {
         final existingCandidate = map[candKey];
         if (existingCandidate != null &&
             existingCandidate.isSeries == item.isSeries &&
-            _isSmartTitleMatch(existingCandidate.name, item.name)) {
+            _coincideAlgunTitulo(existingCandidate, item)) {
           matchedKey = candKey;
           break;
         }
@@ -5672,4 +5680,76 @@ Map<String, dynamic> _indexItemsInBackground(Map<String, dynamic> input) {
     'movieNameIndex': movieNameIndex,
     'sortedCats': sortedCats,
   };
+}
+
+/// Titulos alternativos declarados en la columna `title_aliases`.
+///
+/// Se acepta a proposito mas de un formato para que la columna se pueda crear
+/// como resulte mas comodo sin tener que volver a tocar la app:
+///  · `text[]` o `jsonb`  -> llega como List
+///  · `text` con `A | B`  -> se parte por `|`, `;` o salto de linea
+///  · `text` con `["A"]`  -> se intenta como JSON antes de partir
+List<String> _parseTitleAliases(dynamic raw) {
+  if (raw == null) return const [];
+
+  final List<String> fuera = [];
+  void anadir(dynamic e) {
+    final t = e?.toString().trim();
+    if (t != null && t.isNotEmpty) fuera.add(t);
+  }
+
+  if (raw is List) {
+    for (final e in raw) {
+      anadir(e);
+    }
+    return fuera;
+  }
+
+  final texto = raw.toString().trim();
+  if (texto.isEmpty) return const [];
+
+  if (texto.startsWith('[')) {
+    try {
+      final decodificado = json.decode(texto);
+      if (decodificado is List) {
+        for (final e in decodificado) {
+          anadir(e);
+        }
+        return fuera;
+      }
+    } catch (_) {
+      // No era JSON: se sigue por el camino de texto separado.
+    }
+  }
+
+  for (final parte in texto.split(RegExp(r'[|;\n]'))) {
+    anadir(parte);
+  }
+  return fuera;
+}
+
+/// El titulo principal mas sus alias. Es lo que hay que comparar e indexar.
+List<String> _titulosDeMatch(M3UItem it) {
+  if (it.titleAliases.isEmpty) return [it.name];
+  return [it.name, ...it.titleAliases];
+}
+
+/// Punto de entrada para las pruebas de `_coincideAlgunTitulo`, que es privada
+/// de este archivo. Sin esto no hay forma de cubrir el match con alias, que es
+/// justo la parte con reglas suficientes para merecer una prueba.
+@visibleForTesting
+bool coincideAlgunTituloParaPruebas(M3UItem a, M3UItem b) =>
+    _coincideAlgunTitulo(a, b);
+
+/// `_isSmartTitleMatch` probando todas las combinaciones de titulo y alias.
+///
+/// Con los alias vacios —todo lo que no viene de la BD— hace exactamente una
+/// comparacion, igual que antes.
+bool _coincideAlgunTitulo(M3UItem a, M3UItem b) {
+  for (final t1 in _titulosDeMatch(a)) {
+    for (final t2 in _titulosDeMatch(b)) {
+      if (_isSmartTitleMatch(t1, t2)) return true;
+    }
+  }
+  return false;
 }

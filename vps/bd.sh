@@ -83,7 +83,7 @@ trap 'rm -rf "$TMP"' EXIT
 REST="${SUPABASE_URL%/}/rest/v1/custom_content"
 # Solo las columnas que la app parsea. `created_at` e `is_active` no se piden:
 # la primera no se usa y la segunda ya viene filtrada.
-COLUMNAS="id,title,video_url,thumbnail_url,type,parent_id,category,season,episode"
+COLUMNAS="id,title,title_aliases,video_url,thumbnail_url,type,parent_id,category,season,episode"
 
 api() {
   curl -s -m "$TIMEOUT" --compressed \
