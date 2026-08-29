@@ -139,6 +139,17 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     0.0,
   );
 
+  /// Pulso del mensaje de carga: sube uno por muestreo (300 ms).
+  ///
+  /// Existe porque `_downloadSpeedBytesPerSec` es un ValueNotifier y solo avisa
+  /// cuando el valor CAMBIA. Mientras se conecta, la velocidad es 0 muestreo
+  /// tras muestreo, asi que el texto no se repintaba nunca: se quedaba un
+  /// "Conectando al servidor..." fijo en pantalla. Un texto quieto sobre negro
+  /// es exactamente lo que hace pensar que la app se colgo.
+  ///
+  /// Con esto siempre hay algo moviendose, aunque el servidor no conteste.
+  final ValueNotifier<int> _pulsoCarga = ValueNotifier<int>(0);
+
   String _formatLoadingSpeed(double bytesPerSec) {
     final hasVideoFrame =
         (_player?.state.width ?? 0) > 0 ||
@@ -146,7 +157,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         _isBuffering;
     final prefix = hasVideoFrame ? 'Cargando video' : 'Conectando al servidor';
 
-    if (bytesPerSec <= 0) return '$prefix...';
+    final int pulso = _pulsoCarga.value;
+
+    // Sin datos todavia: puntos que avanzan. Es la unica pieza en pantalla que
+    // demuestra que el hilo sigue vivo cuando el servidor no manda nada.
+    if (bytesPerSec <= 0) {
+      final puntos = '.' * (1 + (pulso ~/ 2) % 3);
+      return '$prefix$puntos';
+    }
     final mbPerSec = bytesPerSec / (1024 * 1024);
     if (mbPerSec >= 0.1) {
       return '$prefix ${mbPerSec.toStringAsFixed(2).replaceAll('.', ',')} MB/s';
@@ -162,6 +180,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   void _startSpeedPolling() {
     if (_speedPollTimer?.isActive == true) return;
+    _pulsoCarga.value = 0;
     _speedPollTimer = Timer.periodic(const Duration(milliseconds: 300), (
       _,
     ) async {
@@ -183,6 +202,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       if (mounted && _downloadSpeedBytesPerSec.value != speed) {
         _downloadSpeedBytesPerSec.value = speed;
       }
+      // El pulso sube SIEMPRE, tenga o no velocidad que reportar. Es lo que
+      // mantiene vivo el mensaje mientras se conecta.
+      if (mounted) _pulsoCarga.value++;
     });
   }
 
@@ -404,6 +426,37 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool _isFastForwarding = false;
   int? _adCountdown;
   Timer? _serverFailoverTimer;
+
+  /// Corta el spinner infinito cuando el contenido no llega a arrancar.
+  ///
+  /// EL PROBLEMA QUE RESUELVE
+  /// El failover de arranque cambia de servidor a los
+  /// `_castStallThresholdSeconds`, pero solo si HAY otro al que ir. Un titulo
+  /// sin copia en la BD se quedaba girando para siempre: ni arrancaba, ni
+  /// cambiaba, ni fallaba. El usuario acababa matando la app sin saber si
+  /// habia pasado algo.
+  ///
+  /// COMO LO HARIA NETFLIX
+  /// Netflix no tiene un estado intermedio de "esto va lento": o esta cargando
+  /// —anillo girando, sin una palabra— o ha fallado, y entonces enseña un
+  /// error claro con algo que pulsar. Nunca narra la espera, porque narrarla no
+  /// le sirve de nada a quien espera: no dice cuanto falta ni que hacer.
+  ///
+  /// Asi que pasado el plazo no se avisa de nada: se declara el fallo y se
+  /// enseña la pantalla de error que ya existe, con "Reintentar" —que ademas
+  /// rota de servidor y reanuda por donde ibas— y la salida.
+  Timer? _watchdogArranque;
+
+  /// Cuanto se espera antes de darlo por fallido.
+  ///
+  /// Mas largo que el failover de arranque a proposito: cuando SI hay servidor
+  /// alternativo, queremos que actue el failover —que es una recuperacion de
+  /// verdad— y no esto, que es rendirse. El watchdog es la ultima red, para
+  /// cuando no hay a donde ir.
+  ///
+  /// Se rearma en cada intento, asi que cada servidor tiene su propio plazo
+  /// completo en vez de compartir un unico reloj.
+  static const Duration _plazoArranque = Duration(seconds: 20);
 
   int _currentServerIndex = 0;
   List<String> _serverUrls = [];
@@ -963,6 +1016,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _diagTimer?.cancel();
     _turboWatchdog?.cancel();
     _serverFailoverTimer?.cancel();
+    _watchdogArranque?.cancel();
     _castStallMonitorTimer?.cancel();
 
     for (final s in _streamSubscriptions) {
@@ -1007,6 +1061,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _videoControllerNotifier.dispose();
     _bufferedDuration.dispose();
     _downloadSpeedBytesPerSec.dispose();
+    _pulsoCarga.dispose();
     _noticeAnimController.dispose();
 
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
@@ -1521,6 +1576,23 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         // al 0 cuando se acaban (con el mismo enfriamiento de 90s, que ademas
         // impide que esto se convierta en un bucle de recargas si NINGUNO
         // arranca).
+        // Ultima red: si esto no arranca en `_plazoArranque`, se da por
+        // fallido. Se arma SIEMPRE, haya o no servidor alternativo — de hecho
+        // el caso que de verdad lo necesita es cuando NO lo hay, porque
+        // entonces el failover de abajo ni siquiera se arma.
+        _watchdogArranque?.cancel();
+        _watchdogArranque = Timer(_plazoArranque, () {
+          if (!mounted || _hasPlaybackStarted || _hasError) return;
+          // Transmitiendo manda el televisor: el player local puede estar
+          // parado a proposito y no significa que nada vaya mal.
+          if (CastService().isCasting.value) return;
+          debugPrint(
+            'Arranque: "${_currentItem.name}" no empezo en '
+            '${_plazoArranque.inSeconds}s — mostrando el error',
+          );
+          setState(() => _hasError = true);
+        });
+
         _serverFailoverTimer?.cancel();
         if (_serverItems.length <= 1) {
           // Sin alternativa no hay failover posible, y sin esta linea el
@@ -2308,6 +2380,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _streamSubscriptions.add(
       _player!.stream.playing.listen((playing) {
         if (playing && !_hasPlaybackStarted && mounted && !_isVideoLoading) {
+          // Arranco: la red de seguridad ya no hace falta.
+          _watchdogArranque?.cancel();
           setState(() => _hasPlaybackStarted = true);
         }
       }),
@@ -2477,6 +2551,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             !_isVideoLoading &&
             (position.inMilliseconds > 100 ||
                 (_player?.state.playing ?? false))) {
+          _watchdogArranque?.cancel();
           setState(() => _hasPlaybackStarted = true);
         }
         final rawDur = _player!.state.duration;
@@ -6487,10 +6562,19 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               // Texto de velocidad de descarga colocado exactamente debajo del spinner
               Positioned(
                 top: spinnerSize + (14.0 * scale),
-                child: ValueListenableBuilder<double>(
-                  valueListenable: _downloadSpeedBytesPerSec,
-                  builder: (context, bytesPerSec, _) {
-                    final text = _formatLoadingSpeed(bytesPerSec);
+                // AnimatedBuilder y no ValueListenableBuilder: hay que
+                // escuchar el pulso ADEMAS de la velocidad. Sin el, el mensaje
+                // se congelaba mientras la velocidad seguia clavada en 0, que
+                // es justo el rato en que parece que la app se colgo.
+                child: AnimatedBuilder(
+                  animation: Listenable.merge([
+                    _downloadSpeedBytesPerSec,
+                    _pulsoCarga,
+                  ]),
+                  builder: (context, _) {
+                    final text = _formatLoadingSpeed(
+                      _downloadSpeedBytesPerSec.value,
+                    );
                     return Container(
                       padding: EdgeInsets.symmetric(
                         horizontal: 15.5 * scale,
