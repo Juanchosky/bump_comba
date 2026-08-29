@@ -2260,7 +2260,20 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           _isVideoLoading = false;
           _isInitialLoad =
               false; // Ya arrancó — nunca más mostramos el mensaje de bienvenida
-          _hasPlaybackStarted = true;
+
+          // `_hasPlaybackStarted` NO se marca aqui.
+          //
+          // Este punto solo significa que el reproductor termino de montarse,
+          // no que se este viendo nada: el bucle de espera de primer frame de
+          // arriba puede agotarse sin exito, y transmitiendo ni siquiera se
+          // ejecuta. Marcarlo aqui hacia aparecer el boton de Cast con el video
+          // todavia parado, que es justo lo que no se quiere.
+          //
+          // Lo levantan las dos escuchas que son señales REALES de que hay
+          // reproduccion: `stream.playing` cuando MPV empieza de verdad, y
+          // `stream.position` en cuanto la posicion avanza. Entre las dos
+          // cubren tambien el caso del directo, donde la posicion puede no
+          // moverse pero el estado si pasa a reproduciendo.
         });
         _startHideControlsTimer();
       }
