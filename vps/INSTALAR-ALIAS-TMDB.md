@@ -119,15 +119,33 @@ curl -s https://TU_DOMINIO/catalogo/bd.json | grep -o 'title_aliases' | wc -l
 ## Cómo decide, y por qué es conservador
 
 **Un alias equivocado es peor que no tener alias**: haría que dos películas
-distintas se fusionaran en la app. Por eso el script prefiere quedarse corto:
+distintas se fusionaran en la app. Por eso el script prefiere quedarse corto.
 
-- Si el título trae año, el resultado de TMDB **tiene que coincidir** con él
-  (± 1). Si no, se prueba el siguiente resultado.
-- Sin año, se exige un parecido real entre los títulos, no dos palabras sueltas.
-- Ante la duda, la fila se queda sin alias.
+Para cada título prueba varias consultas, de la más fiel a la más simple (sin
+paréntesis, sin subtítulo tras el primer `:`), y para cada una acepta un
+resultado por dos vías, en este orden:
 
-Quedarse corto solo mantiene el comportamiento actual. Equivocarse rompe algo
-que hoy funciona.
+1. **Por año** (± 1). Es el desempate más fiable que existe entre remakes y
+   secuelas, así que si cuadra se acepta sin mirar más.
+2. **Por texto casi idéntico**, ignorando el año. Solo se llega aquí si ningún
+   candidato cuadró por año, y existe porque en la BD hay años sencillamente
+   equivocados — *Avengers: Endgame (2025)*, que es de 2019. Al exigir
+   prácticamente el mismo título, el riesgo se queda en nada.
+
+Y por encima de todo, una guarda que **no se salta nunca**: si los números no
+coinciden, no hay match. Sin ella, *«Reliquias de la Muerte 1»* se emparejaba
+con la *Parte 2*, y *Toy Story* con *Toy Story 2* — las comparaciones de texto
+trabajan con palabras de 3+ letras y tiraban los dígitos justo cuando eran la
+única diferencia.
+
+Ante la duda, la fila se queda sin alias. Quedarse corto solo mantiene el
+comportamiento actual; equivocarse rompe algo que hoy funciona.
+
+### Lo que sigue sin resolverse
+
+Erratas en el título de la BD. *«La casa **del** papel»* no la encuentra TMDB,
+y el script no adivina. Se arregla corrigiendo el título, o poniendo el alias a
+mano.
 
 ## Idempotencia
 

@@ -55,8 +55,29 @@ set -u
 
 CONF=/etc/alias-tmdb.conf
 [ -f "$CONF" ] || { echo "Falta $CONF"; exit 1; }
+
+# El ENTORNO manda sobre el fichero de configuracion.
+#
+# `. "$CONF"` son asignaciones planas (`MAX=400`), asi que pisaban cualquier
+# valor puesto delante en la linea de ordenes. El resultado es que el
+# `MAX=0 alias-tmdb.sh` que documenta la primera pasada se ignoraba EN SILENCIO
+# y la corrida se cortaba en 400 filas — con la agravante de que el resumen
+# final no distingue "termine el catalogo" de "llegue al tope".
+#
+# Se guarda lo que venga del entorno antes de leer el fichero y se vuelve a
+# poner despues.
+_ENV_MAX=${MAX-}
+_ENV_PAUSA=${PAUSA-}
+_ENV_REINTENTAR=${REINTENTAR_VACIOS-}
+_ENV_TIMEOUT=${TIMEOUT-}
+
 # shellcheck disable=SC1090
 . "$CONF"
+
+[ -n "$_ENV_MAX" ] && MAX=$_ENV_MAX
+[ -n "$_ENV_PAUSA" ] && PAUSA=$_ENV_PAUSA
+[ -n "$_ENV_REINTENTAR" ] && REINTENTAR_VACIOS=$_ENV_REINTENTAR
+[ -n "$_ENV_TIMEOUT" ] && TIMEOUT=$_ENV_TIMEOUT
 
 : "${SUPABASE_URL:?falta SUPABASE_URL en $CONF}"
 : "${SUPABASE_KEY:?falta SUPABASE_KEY en $CONF}"
@@ -166,11 +187,51 @@ RE_BASURA = re.compile(
 RE_ESPACIOS = re.compile(r'\s+')
 
 
+# Lo que va entre corchetes es SIEMPRE morralla del proveedor
+# ("[Audio Latino]", "[1080p]"). Se borra entero, contenido incluido: antes se
+# quitaban solo los corchetes y quedaba "Audio" ensuciando la busqueda.
+RE_CORCHETES = re.compile(r'\[[^\]]*\]')
+RE_PARENTESIS = re.compile(r'\([^\)]*\)')
+# "Season 1", "Temporada 2", "T3" — sobra al buscar la serie en TMDB.
+RE_TEMPORADA = re.compile(
+    r'\b(season|temporada|temp|t)\s*\d+\b', re.IGNORECASE
+)
+
+
 def limpiar(titulo):
-    t = RE_ANIO.sub(' ', titulo)
+    t = RE_CORCHETES.sub(' ', titulo)
+    t = RE_ANIO.sub(' ', t)
+    t = RE_TEMPORADA.sub(' ', t)
     t = RE_BASURA.sub(' ', t)
     t = t.replace('[', ' ').replace(']', ' ').replace('_', ' ')
     return RE_ESPACIOS.sub(' ', t).strip(' -–—:.')
+
+
+def variantes(titulo):
+    """Consultas a probar, de la mas fiel a la mas simple.
+
+    TMDB devuelve cero resultados cuando la consulta trae ruido de sobra
+    ("The Vampire Diaries: Love Sucks. Diarios de vampiros"). Recortar por el
+    primer `:` o `.` la salva, pero SOLO es seguro porque el candidato sigue
+    teniendo que pasar la validacion por ano: sin ella, "Star Trek: En la
+    oscuridad" recortado a "Star Trek" traeria la pelicula equivocada.
+    """
+    base = limpiar(titulo)
+    fuera = []
+
+    def anadir(v):
+        v = RE_ESPACIOS.sub(' ', v or '').strip(' -–—:.')
+        if len(v) >= 3 and v.lower() not in [x.lower() for x in fuera]:
+            fuera.append(v)
+
+    anadir(base)
+    # Sin parentesis: "Toy Story (Juguetes)" -> "Toy Story".
+    anadir(RE_PARENTESIS.sub(' ', base))
+    # Solo lo anterior al primer separador de subtitulo.
+    for sep in (':', ' - ', '.'):
+        if sep in base:
+            anadir(base.split(sep)[0])
+    return fuera
 
 
 def anio_de(titulo):
@@ -189,6 +250,25 @@ def plano(s):
     return RE_ESPACIOS.sub(' ', s).strip()
 
 
+def _palabras(s):
+    return set(w for w in plano(s).split() if len(w) >= 3)
+
+
+RE_NUM = re.compile(r'\b\d+\b')
+
+
+def _numeros(s):
+    """Los numeros del titulo, que son los que separan las secuelas.
+
+    Sin esto, "Harry Potter y las Reliquias de la Muerte 1" se emparejaba con
+    la "Parte 2", y "Toy Story" con "Toy Story 2": las comparaciones de texto
+    trabajan con palabras de 3+ letras y tiraban los digitos justo cuando eran
+    la unica diferencia. Un fallo asi es de los caros — fusiona dos peliculas
+    distintas en la app.
+    """
+    return set(RE_NUM.findall(plano(s)))
+
+
 def _bastante_parecido(a, b):
     """¿Son plausiblemente el mismo titulo?
 
@@ -198,10 +278,13 @@ def _bastante_parecido(a, b):
     pa, pb = plano(a), plano(b)
     if not pa or not pb:
         return False
+    # Numeros distintos = secuelas distintas. Va lo primero, antes incluso
+    # que la igualdad exacta, porque es un descarte, no un matiz.
+    if _numeros(a) != _numeros(b):
+        return False
     if pa == pb:
         return True
-    wa = set(w for w in pa.split() if len(w) >= 3)
-    wb = set(w for w in pb.split() if len(w) >= 3)
+    wa, wb = _palabras(a), _palabras(b)
     if not wa or not wb:
         return False
     comunes = wa & wb
@@ -211,23 +294,63 @@ def _bastante_parecido(a, b):
     return len(comunes) >= min(len(wa), len(wb)) * 0.8
 
 
+def _casi_igual(a, b):
+    """Practicamente el mismo texto: como mucho una palabra distinta por lado.
+
+    Es la unica via por la que se acepta un candidato IGNORANDO el ano, y por
+    eso es mucho mas dura que `_bastante_parecido`. Existe porque en la BD hay
+    anos sencillamente equivocados —"Avengers: Endgame (2025)", que es de
+    2019— y ahi el titulo es la evidencia buena, no la fecha.
+    """
+    pa, pb = plano(a), plano(b)
+    if not pa or not pb:
+        return False
+    # Numeros distintos = secuelas distintas. Va lo primero, antes incluso
+    # que la igualdad exacta, porque es un descarte, no un matiz.
+    if _numeros(a) != _numeros(b):
+        return False
+    if pa == pb:
+        return True
+    wa, wb = _palabras(a), _palabras(b)
+    if not wa or not wb:
+        return False
+    comunes = wa & wb
+    if not comunes:
+        return False
+    return len(wa - comunes) <= 1 and len(wb - comunes) <= 1
+
+
 def elegir(resultados, titulo_limpio, anio, clave_titulo, clave_fecha):
-    """El primer resultado de TMDB que se pueda dar por bueno con confianza."""
-    for r in resultados[:5]:
-        fecha = (r.get(clave_fecha) or '')[:4]
-        r_anio = int(fecha) if fecha.isdigit() else None
+    """El mejor resultado de TMDB que se pueda dar por bueno, o None.
 
-        if anio and r_anio:
-            # Con ano en ambos lados, manda el ano: es el desempate mas fiable
-            # que hay entre remakes y secuelas.
-            if abs(anio - r_anio) <= 1:
+    Dos pasadas, en este orden a proposito:
+
+      1. Por ANO. Es el desempate mas fiable que existe entre remakes y
+         secuelas, asi que si cuadra se acepta sin mirar mas.
+      2. Por TEXTO casi identico, ignorando el ano. Solo se llega aqui si
+         NINGUN candidato cuadro por ano, y sirve para las filas cuyo ano en la
+         BD esta mal. Al exigir practicamente el mismo titulo, el riesgo de
+         emparejar dos peliculas distintas se queda en nada.
+    """
+    candidatos = resultados[:5]
+
+    if anio:
+        for r in candidatos:
+            fecha = (r.get(clave_fecha) or '')[:4]
+            r_anio = int(fecha) if fecha.isdigit() else None
+            if r_anio and abs(anio - r_anio) <= 1:
                 return r
-            continue
 
-        # Sin ano hay que fiarse del texto, asi que se exige parecido de verdad
-        # con cualquiera de los dos nombres que da TMDB.
+    for r in candidatos:
         for cand in (r.get(clave_titulo), r.get('original_' + clave_titulo)):
-            if cand and _bastante_parecido(titulo_limpio, cand):
+            if not cand:
+                continue
+            # Sin ano en la BD basta con parecerse; con ano (y por tanto tras
+            # haber fallado la pasada 1) hay que ser casi identicos.
+            if anio:
+                if _casi_igual(titulo_limpio, cand):
+                    return r
+            elif _bastante_parecido(titulo_limpio, cand):
                 return r
     return None
 
@@ -243,25 +366,40 @@ def alias_de(fila):
     clave_titulo = 'name' if es_serie else 'title'
     clave_fecha = 'first_air_date' if es_serie else 'release_date'
 
-    limpio = limpiar(titulo)
     anio = anio_de(titulo)
-    if not limpio:
+    consultas = variantes(titulo)
+    if not consultas:
         return []
 
-    busqueda = {'query': limpio, 'language': 'es-ES'}
-    if anio:
-        busqueda['first_air_date_year' if es_serie else 'primary_release_year'] = anio
+    elegido = None
+    limpio = consultas[0]
+    for consulta in consultas:
+        resultados = []
 
-    datos = tmdb('/search/' + tipo, **busqueda)
-    resultados = (datos or {}).get('results') or []
+        # Acotando por ano primero: reduce muchisimo los falsos candidatos.
+        if anio:
+            p = {'query': consulta, 'language': 'es-ES'}
+            p['first_air_date_year' if es_serie else 'primary_release_year'] = anio
+            resultados = ((tmdb('/search/' + tipo, **p) or {}).get('results')) or []
 
-    # Reintento sin filtro de ano: TMDB a veces tiene la fecha de estreno de
-    # otro pais y el filtro deja la busqueda vacia.
-    if not resultados and anio:
-        datos = tmdb('/search/' + tipo, query=limpio, language='es-ES')
-        resultados = (datos or {}).get('results') or []
+        # Y sin acotar: TMDB a veces tiene la fecha de estreno de otro pais, y
+        # ademas hay filas con el ano mal en la BD. El filtrado de verdad lo
+        # hace `elegir`, no la busqueda.
+        if not resultados or anio:
+            sueltos = (
+                (tmdb('/search/' + tipo, query=consulta, language='es-ES') or {})
+                .get('results')
+            ) or []
+            vistos_id = {r.get('id') for r in resultados}
+            for r in sueltos:
+                if r.get('id') not in vistos_id:
+                    resultados.append(r)
 
-    elegido = elegir(resultados, limpio, anio, clave_titulo, clave_fecha)
+        elegido = elegir(resultados, consulta, anio, clave_titulo, clave_fecha)
+        if elegido:
+            limpio = consulta
+            break
+
     if not elegido:
         return []
 
@@ -373,6 +511,13 @@ print(
     'fin: %d con alias, %d sin resultado fiable, %d fallos'
     % (resueltas, vacias, fallos)
 )
+if MAX > 0 and len(pendientes) >= MAX:
+    # Sin este aviso, "400 procesadas" se lee como "catalogo terminado" cuando
+    # en realidad solo se llego al tope de la corrida.
+    print(
+        'AVISO: se alcanzo el tope de %d filas. QUEDAN MAS PENDIENTES: '
+        'volve a ejecutar, o usa MAX=0 para hacerlo todo de una vez.' % MAX
+    )
 PY
 
 log "=== fin ==="

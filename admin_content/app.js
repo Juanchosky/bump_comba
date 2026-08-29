@@ -750,7 +750,24 @@ async function saveContent(e) {
     };
 
     let result;
-    if (id) { result = await supabaseClient.from('custom_content').update(formData).eq('id', id); }
+    if (id) {
+        // Si cambia el TITULO, los alias que TMDB resolvio para el nombre viejo
+        // dejan de valer. Se ponen a NULL y `alias-tmdb.sh` los recalcula esa
+        // misma madrugada (busca justo las filas con la columna en NULL).
+        //
+        // Importa sobre todo al reaprovechar una fila para otra pelicula: con
+        // los alias antiguos dentro, la app engancharia el titulo equivocado en
+        // Xtream. Un alias erroneo es peor que no tener alias, que es el
+        // principio con el que esta escrito todo este sistema.
+        //
+        // No se tocan si el titulo no cambio: recalcular por gusto gastaria
+        // peticiones a TMDB y borraria cualquier alias puesto a mano.
+        const original = allContent.find(i => i.id === id);
+        if (original && original.title !== formData.title) {
+            formData.title_aliases = null;
+        }
+        result = await supabaseClient.from('custom_content').update(formData).eq('id', id);
+    }
     else { result = await supabaseClient.from('custom_content').insert([formData]); }
     if (result.error) { alert('Error al guardar: ' + result.error.message); return; }
 
