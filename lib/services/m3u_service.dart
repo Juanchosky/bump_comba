@@ -739,18 +739,47 @@ class M3UService extends ChangeNotifier {
   // REMOTE CONFIG / SUPABASE
   // ===========================================================================
 
-  Future<void> _updateRemoteConfig() async {
-    try {
-      final filtersData = await _supabase!
-          .from('m3u_filters')
-          .select('category, regex_pattern, priority')
-          .eq('is_active', true)
-          .order('priority', ascending: true);
+  /// La tabla `m3u_filters` no existe en este proyecto de Supabase.
+  ///
+  /// Los filtros remotos son OPCIONALES: sin ellos la app funciona igual, solo
+  /// que sin reglas de categoria servidas desde la BD. Pero la consulta fallaba
+  /// en cada llamada y dejaba un `PostgrestException` en el log que parecia un
+  /// error de verdad.
+  ///
+  /// Se recuerda solo durante ESTA sesion, a proposito: si algun dia se crea la
+  /// tabla, basta con reabrir la app para que se vuelva a intentar. Cachearlo en
+  /// disco obligaria a acordarse de invalidarlo.
+  static bool _tablaFiltrosAusente = false;
 
-      _filterRules =
-          (filtersData as List).map((e) => FilterRule.fromJson(e)).toList();
-    } catch (e) {
-      debugPrint('Error loading remote filters: $e');
+  Future<void> _updateRemoteConfig() async {
+    if (!_tablaFiltrosAusente) {
+      try {
+        final filtersData = await _supabase!
+            .from('m3u_filters')
+            .select('category, regex_pattern, priority')
+            .eq('is_active', true)
+            .order('priority', ascending: true);
+
+        _filterRules =
+            (filtersData as List).map((e) => FilterRule.fromJson(e)).toList();
+      } on PostgrestException catch (e) {
+        // 42P01 = undefined_table. Es una ausencia, no un fallo: se dice una
+        // vez, con lenguaje claro, y no se vuelve a preguntar en esta sesion.
+        if (e.code == '42P01') {
+          _tablaFiltrosAusente = true;
+          debugPrint(
+            'Filtros remotos: la tabla m3u_filters no existe en Supabase. '
+            'Son opcionales; se sigue sin ellos y no se vuelve a consultar '
+            'hasta el proximo arranque.',
+          );
+        } else {
+          // Cualquier otro fallo se trata como antes: se avisa y se reintenta
+          // en la siguiente llamada, porque puede ser pasajero.
+          debugPrint('Error loading remote filters: $e');
+        }
+      } catch (e) {
+        debugPrint('Error loading remote filters: $e');
+      }
     }
 
     // OJO: en su propio try. La consulta de arriba falla siempre si la tabla
@@ -1435,6 +1464,18 @@ class M3UService extends ChangeNotifier {
   ///
   /// Example:
   ///   final ok = await service.retryLoad(attempts: 3);
+  /// El ultimo intento fallo por CONFIGURACION, no por la red.
+  ///
+  /// "No se ha configurado ninguna URL M3U" no mejora esperando: da igual
+  /// reintentarlo tres veces con espera creciente, porque no hay nada que
+  /// descargar. Eran 6 segundos de arranque tirados en cada apertura de la app
+  /// para llegar al mismo sitio.
+  ///
+  /// Solo se marca en los fallos que son con seguridad permanentes. Todo lo
+  /// demas —timeouts, DNS, 5xx, respuestas a medias— sigue reintentandose
+  /// exactamente igual que antes, porque eso si se arregla solo.
+  bool _falloDeConfiguracion = false;
+
   Future<bool> retryLoad({
     int attempts = 3,
     Duration initialDelay = const Duration(seconds: 2),
@@ -1442,11 +1483,20 @@ class M3UService extends ChangeNotifier {
     void Function(DownloadProgress)? onProgress,
   }) async {
     for (int i = 0; i < attempts; i++) {
+      _falloDeConfiguracion = false;
       final ok = await loadM3UContent(
         forceRefresh: forceRefresh || i > 0,
         onProgress: onProgress,
       );
       if (ok) return true;
+
+      if (_falloDeConfiguracion) {
+        debugPrint(
+          'M3U: no se reintenta, es un problema de configuracion y no de red '
+          '($_lastError)',
+        );
+        return false;
+      }
 
       if (i < attempts - 1) {
         final delay = initialDelay * (1 << i); // 2s → 4s → 8s
@@ -1468,6 +1518,7 @@ class M3UService extends ChangeNotifier {
   ) async {
     if (_sources.isEmpty) {
       _lastError = 'No hay fuentes configuradas en el Modo Unificado.';
+      _falloDeConfiguracion = true;
       return false;
     }
 
@@ -1692,6 +1743,7 @@ class M3UService extends ChangeNotifier {
     final m3uUrl = await getM3UUrl();
     if (m3uUrl == null || m3uUrl.isEmpty) {
       _lastError = 'No se ha configurado ninguna URL M3U.';
+      _falloDeConfiguracion = true;
       return false;
     }
 
