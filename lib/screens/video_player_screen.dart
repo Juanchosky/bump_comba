@@ -4937,257 +4937,255 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
     _showVisualBottomSheet(
       builder:
-          (context) => Material(
-            color: const Color.fromARGB(255, 27, 27, 27),
-            borderRadius:
-                _isLandscape
-                    ? BorderRadius.circular(24)
-                    : const BorderRadius.vertical(top: Radius.circular(20)),
-            clipBehavior: Clip.antiAlias,
-            child: Container(
-              width: _isLandscape ? 400 : double.infinity,
-              margin: _isLandscape ? const EdgeInsets.all(24) : EdgeInsets.zero,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text(
-                          'Subtítulos',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
+          (context) => Container(
+            // Mismo molde que "Audio / Idioma" y "Capitulos": Container con
+            // BoxDecoration. Este era el unico que usaba Material, y por eso se
+            // veia distinto — le faltaba el borde tenue del modo horizontal.
+            width: _isLandscape ? 400 : double.infinity,
+            margin: _isLandscape ? const EdgeInsets.all(24) : EdgeInsets.zero,
+            decoration: BoxDecoration(
+              color: const Color.fromARGB(255, 27, 27, 27),
+              borderRadius:
+                  _isLandscape
+                      ? BorderRadius.circular(24)
+                      : const BorderRadius.vertical(top: Radius.circular(20)),
+              border:
+                  _isLandscape
+                      ? Border.all(color: Colors.white12, width: 1)
+                      : null,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 10, 8, 4),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Subtítulos',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
                         ),
-                        IconButton(
-                          onPressed: () => Navigator.pop(context),
-                          icon: const Icon(Icons.close, color: Colors.white70),
-                        ),
-                      ],
-                    ),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.pop(context),
+                        icon: const Icon(Icons.close, color: Colors.white70),
+                      ),
+                    ],
                   ),
-                  const Divider(color: Colors.white10, height: 1),
-                  Flexible(
-                    child: ListView(
-                      padding: EdgeInsets.zero,
-                      shrinkWrap: true,
-                      children: [
-                        // Opción: Desactivar subtítulos
-                        ListTile(
-                          leading: Icon(
-                            Icons.subtitles_off,
-                            color:
-                                !_subtitlesEnabled
-                                    ? Colors.red
-                                    : Colors.white70,
-                          ),
-                          title: Text(
-                            'Desactivado',
-                            style: TextStyle(
-                              color:
-                                  !_subtitlesEnabled
-                                      ? Colors.red
-                                      : Colors.white,
-                            ),
-                          ),
-                          trailing:
-                              !_subtitlesEnabled
-                                  ? const Icon(Icons.check, color: Colors.red)
-                                  : null,
-                          onTap: () async {
-                            Navigator.pop(context);
-                            if (_player == null) return;
-                            try {
-                              _player!.setSubtitleTrack(SubtitleTrack.no());
-                              final mpv = _player!.platform as dynamic;
-                              await mpv?.setProperty('sid', 'no');
-                              await mpv?.setProperty('sub-visibility', 'no');
-                            } catch (_) {}
-                            if (mounted) {
-                              setState(() {
-                                _subtitlesEnabled = false;
-                                _currentSubtitleText = [];
-                              });
-                            }
-                          },
+                ),
+                const Divider(color: Colors.white10, height: 1),
+                Flexible(
+                  child: ListView(
+                    padding: EdgeInsets.zero,
+                    shrinkWrap: true,
+                    children: [
+                      // Opción: Desactivar subtítulos
+                      ListTile(
+                        leading: Icon(
+                          Icons.subtitles_off,
+                          color:
+                              !_subtitlesEnabled ? Colors.red : Colors.white70,
                         ),
-                        if (tracks.isEmpty && _scrapedSubtitles.isEmpty)
-                          const Padding(
-                            padding: EdgeInsets.symmetric(
-                              horizontal: 20,
-                              vertical: 16,
+                        title: Text(
+                          'Desactivado',
+                          style: TextStyle(
+                            color:
+                                !_subtitlesEnabled ? Colors.red : Colors.white,
+                          ),
+                        ),
+                        trailing:
+                            !_subtitlesEnabled
+                                ? const Icon(Icons.check, color: Colors.red)
+                                : null,
+                        onTap: () async {
+                          Navigator.pop(context);
+                          if (_player == null) return;
+                          try {
+                            _player!.setSubtitleTrack(SubtitleTrack.no());
+                            final mpv = _player!.platform as dynamic;
+                            await mpv?.setProperty('sid', 'no');
+                            await mpv?.setProperty('sub-visibility', 'no');
+                          } catch (_) {}
+                          if (mounted) {
+                            setState(() {
+                              _subtitlesEnabled = false;
+                              _currentSubtitleText = [];
+                            });
+                          }
+                        },
+                      ),
+                      if (tracks.isEmpty && _scrapedSubtitles.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 16,
+                          ),
+                          child: Text(
+                            'No hay pistas de subtítulos disponibles en este contenido.',
+                            style: TextStyle(
+                              color: Colors.white54,
+                              fontSize: 13,
                             ),
-                            child: Text(
-                              'No hay pistas de subtítulos disponibles en este contenido.',
-                              style: TextStyle(
-                                color: Colors.white54,
-                                fontSize: 13,
-                              ),
-                            ),
-                          )
-                        else ...[
-                          ..._player!.state.tracks.subtitle
-                              .where((t) {
-                                if (t.id == 'no' || t.id == 'auto') {
-                                  return false;
-                                }
-                                if ((t.id == '0' || t.id == '1') &&
-                                    t.title == null &&
-                                    t.language == null) {
-                                  return false;
-                                }
-                                return true;
-                              })
-                              .map((track) {
-                                final label =
-                                    ScrapedSubtitle.cleanLanguageLabel(
-                                      track.title ?? '',
-                                      track.language,
-                                      track.id,
-                                    );
-                                final isDamaged = _damagedSubtitleTracks
-                                    .contains(track.id);
-                                final isSelected =
-                                    _subtitlesEnabled &&
-                                    _player!.state.track.subtitle == track;
-                                return ListTile(
-                                  enabled: !isDamaged,
-                                  leading: Icon(
-                                    isDamaged
-                                        ? Icons.subtitles_off
-                                        : Icons.subtitles,
-                                    color:
-                                        isDamaged
-                                            ? Colors.white70
-                                            : (isSelected
-                                                ? Colors.red
-                                                : Colors.white70),
-                                  ),
-                                  title: Row(
-                                    children: [
-                                      Flexible(
-                                        child: Text(
-                                          label,
-                                          style: TextStyle(
-                                            color:
-                                                isDamaged
-                                                    ? Colors.white24
-                                                    : (isSelected
-                                                        ? Colors.red
-                                                        : Colors.white),
+                          ),
+                        )
+                      else ...[
+                        ..._player!.state.tracks.subtitle
+                            .where((t) {
+                              if (t.id == 'no' || t.id == 'auto') {
+                                return false;
+                              }
+                              if ((t.id == '0' || t.id == '1') &&
+                                  t.title == null &&
+                                  t.language == null) {
+                                return false;
+                              }
+                              return true;
+                            })
+                            .map((track) {
+                              final label = ScrapedSubtitle.cleanLanguageLabel(
+                                track.title ?? '',
+                                track.language,
+                                track.id,
+                              );
+                              final isDamaged = _damagedSubtitleTracks.contains(
+                                track.id,
+                              );
+                              final isSelected =
+                                  _subtitlesEnabled &&
+                                  _player!.state.track.subtitle == track;
+                              return ListTile(
+                                enabled: !isDamaged,
+                                leading: Icon(
+                                  isDamaged
+                                      ? Icons.subtitles_off
+                                      : Icons.subtitles,
+                                  color:
+                                      isDamaged
+                                          ? Colors.white70
+                                          : (isSelected
+                                              ? Colors.red
+                                              : Colors.white70),
+                                ),
+                                title: Row(
+                                  children: [
+                                    Flexible(
+                                      child: Text(
+                                        label,
+                                        style: TextStyle(
+                                          color:
+                                              isDamaged
+                                                  ? Colors.white24
+                                                  : (isSelected
+                                                      ? Colors.red
+                                                      : Colors.white),
+                                        ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                    if (isDamaged) ...[
+                                      const SizedBox(width: 8),
+                                      const Text(
+                                        '(Not available)',
+                                        style: TextStyle(
+                                          color: Color.fromARGB(
+                                            157,
+                                            114,
+                                            114,
+                                            114,
                                           ),
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
+                                          fontSize: 12,
                                         ),
                                       ),
-                                      if (isDamaged) ...[
-                                        const SizedBox(width: 8),
-                                        const Text(
-                                          '(Not available)',
-                                          style: TextStyle(
-                                            color: Color.fromARGB(
-                                              157,
-                                              114,
-                                              114,
-                                              114,
-                                            ),
-                                            fontSize: 12,
-                                          ),
-                                        ),
-                                      ],
                                     ],
-                                  ),
-                                  trailing:
-                                      isSelected
-                                          ? const Icon(
-                                            Icons.check,
-                                            color: Colors.red,
-                                          )
-                                          : null,
-                                  onTap: () async {
-                                    Navigator.pop(context);
-                                    if (_player == null) return;
-                                    try {
-                                      _lastSelectedTrack = track;
-                                      _lastTrackChangeTime = DateTime.now();
-                                      _player!.setSubtitleTrack(track);
-                                      final mpv = _player!.platform as dynamic;
-                                      await mpv?.setProperty(
-                                        'sub-visibility',
-                                        'yes',
-                                      );
-                                    } catch (_) {}
-                                    if (mounted) {
-                                      setState(() => _subtitlesEnabled = true);
-                                    }
-                                  },
-                                );
-                              }),
-                          ...uniqueScrapedSubtitles.map((sub) {
-                            final label = sub.label;
-                            final isSelected =
-                                _subtitlesEnabled &&
-                                _player?.state.track.subtitle.title == label;
-                            return ListTile(
-                              leading: const Icon(
-                                Icons.subtitles,
-                                color: Colors.white70,
-                              ),
-                              title: Text(
-                                label,
-                                style: TextStyle(
-                                  color: isSelected ? Colors.red : Colors.white,
+                                  ],
                                 ),
+                                trailing:
+                                    isSelected
+                                        ? const Icon(
+                                          Icons.check,
+                                          color: Colors.red,
+                                        )
+                                        : null,
+                                onTap: () async {
+                                  Navigator.pop(context);
+                                  if (_player == null) return;
+                                  try {
+                                    _lastSelectedTrack = track;
+                                    _lastTrackChangeTime = DateTime.now();
+                                    _player!.setSubtitleTrack(track);
+                                    final mpv = _player!.platform as dynamic;
+                                    await mpv?.setProperty(
+                                      'sub-visibility',
+                                      'yes',
+                                    );
+                                  } catch (_) {}
+                                  if (mounted) {
+                                    setState(() => _subtitlesEnabled = true);
+                                  }
+                                },
+                              );
+                            }),
+                        ...uniqueScrapedSubtitles.map((sub) {
+                          final label = sub.label;
+                          final isSelected =
+                              _subtitlesEnabled &&
+                              _player?.state.track.subtitle.title == label;
+                          return ListTile(
+                            leading: const Icon(
+                              Icons.subtitles,
+                              color: Colors.white70,
+                            ),
+                            title: Text(
+                              label,
+                              style: TextStyle(
+                                color: isSelected ? Colors.red : Colors.white,
                               ),
-                              trailing:
-                                  isSelected
-                                      ? const Icon(
-                                        Icons.check,
-                                        color: Colors.red,
-                                      )
-                                      : null,
-                              onTap: () async {
-                                Navigator.pop(context);
-                                if (_player == null) return;
-                                try {
-                                  await _player!.setSubtitleTrack(
-                                    SubtitleTrack.uri(
-                                      sub.url,
-                                      title: sub.label,
-                                      language: sub.language,
-                                    ),
-                                  );
-                                  final mpv = _player!.platform as dynamic;
-                                  await mpv?.callMethod([
-                                    'sub-add',
+                            ),
+                            trailing:
+                                isSelected
+                                    ? const Icon(Icons.check, color: Colors.red)
+                                    : null,
+                            onTap: () async {
+                              Navigator.pop(context);
+                              if (_player == null) return;
+                              try {
+                                await _player!.setSubtitleTrack(
+                                  SubtitleTrack.uri(
                                     sub.url,
-                                    'select',
-                                    sub.label,
-                                    sub.language ?? 'es',
-                                  ]);
-                                  await mpv?.setProperty(
-                                    'sub-visibility',
-                                    'yes',
-                                  );
-                                } catch (e) {
-                                  debugPrint('Error setting scraped sub: $e');
-                                }
-                                if (mounted) {
-                                  setState(() => _subtitlesEnabled = true);
-                                }
-                              },
-                            );
-                          }),
-                        ],
+                                    title: sub.label,
+                                    language: sub.language,
+                                  ),
+                                );
+                                final mpv = _player!.platform as dynamic;
+                                await mpv?.callMethod([
+                                  'sub-add',
+                                  sub.url,
+                                  'select',
+                                  sub.label,
+                                  sub.language ?? 'es',
+                                ]);
+                                await mpv?.setProperty('sub-visibility', 'yes');
+                              } catch (e) {
+                                debugPrint('Error setting scraped sub: $e');
+                              }
+                              if (mounted) {
+                                setState(() => _subtitlesEnabled = true);
+                              }
+                            },
+                          );
+                        }),
                       ],
-                    ),
+                    ],
                   ),
-                ],
-              ),
+                ),
+                // Mismo respiro inferior que los otros dos dialogos.
+                const SizedBox(height: 16),
+              ],
             ),
           ),
     );
