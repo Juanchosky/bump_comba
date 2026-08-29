@@ -2086,10 +2086,22 @@ class M3UService extends ChangeNotifier {
     final Map<String, List<M3UItem>> customByWord = {};
 
     for (final cItem in customItems) {
-      // Se indexa el titulo Y sus alias. Es imprescindible: los candidatos se
-      // preseleccionan por palabras compartidas, asi que un titulo en ingles
-      // de Xtream nunca llegaria a compararse con una fila de la BD en
-      // espanol —no comparten ninguna palabra— por muchos alias que tuviera.
+      // ── DONDE ENTRAN LOS ALIAS, Y DONDE NO ──────────────────────────────
+      //
+      // Los alias se indexan en los DOS mapas O(1) —normalizado y canonico—,
+      // que es donde de verdad hacen falta: una consulta de tabla hash por
+      // titulo de Xtream, coste cero. Ahi es donde engancha "Captain America:
+      // The First Avenger" con la fila en espanol.
+      //
+      // En `customByWord` va SOLO el titulo principal, a proposito. Esa cubeta
+      // alimenta el bucle de comparacion difusa, que es cuadratico en la
+      // practica: meter ahi las palabras de 8 alias por fila multiplicaba los
+      // candidatos, y ademas cada candidato se acababa comparando contra su
+      // titulo principal —que no coincide— asi que era trabajo tirado.
+      //
+      // Medido en dispositivo: con los alias en las cubetas, el cruce de
+      // 28.448 items contra 563 de la BD tardaba 164 SEGUNDOS. La app se
+      // quedaba en "cargando contenido" varios minutos.
       for (final titulo in _titulosDeMatch(cItem)) {
         final normKey = _normalizeTitleForMatching(titulo);
         if (normKey.isNotEmpty) {
@@ -2100,11 +2112,14 @@ class M3UService extends ChangeNotifier {
         if (canonNoSpace.isNotEmpty) {
           customByCanonTitle.putIfAbsent(canonNoSpace, () => []).add(cItem);
         }
-        // Indizar por palabras significativas para filtrado por cubetas (bucket filtering)
-        final words = canonKey.split(' ').where((w) => w.length >= 3).toSet();
-        for (final w in words) {
-          customByWord.putIfAbsent(w, () => []).add(cItem);
-        }
+      }
+
+      // Cubetas de palabras: solo el titulo principal (ver arriba).
+      final canonPrincipal = _canonicalTitleKey(cItem.name);
+      final words =
+          canonPrincipal.split(' ').where((w) => w.length >= 3).toSet();
+      for (final w in words) {
+        customByWord.putIfAbsent(w, () => []).add(cItem);
       }
     }
 
@@ -2146,7 +2161,10 @@ class M3UService extends ChangeNotifier {
         for (final candidate in smartCandidates) {
           if (regItem.isSeries == candidate.isSeries &&
               regItem.isLive == candidate.isLive) {
-            if (_coincideAlgunTitulo(regItem, candidate)) {
+            // Solo el titulo principal: los alias ya se resolvieron arriba
+            // por los mapas O(1). Probarlos aqui multiplicaba por ~9 el coste
+            // del bucle mas caro del arranque, sin ganar practicamente nada.
+            if (_isSmartTitleMatch(regItem.name, candidate.name)) {
               matchedCustom = candidate;
               break;
             }
@@ -4652,7 +4670,7 @@ List<M3UItem> _groupAlternatives(List<M3UItem> flatItems) {
         final existingCandidate = map[candKey];
         if (existingCandidate != null &&
             existingCandidate.isSeries == item.isSeries &&
-            _coincideAlgunTitulo(existingCandidate, item)) {
+            _isSmartTitleMatch(existingCandidate.name, item.name)) {
           matchedKey = candKey;
           break;
         }
