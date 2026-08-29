@@ -184,7 +184,9 @@ class CastService {
               }
 
               final int port =
-                  service.port > 0 ? service.port : (isTv ? TvProto.port : _kCastPort);
+                  service.port > 0
+                      ? service.port
+                      : (isTv ? TvProto.port : _kCastPort);
 
               String friendlyName;
               if (isTv) {
@@ -627,9 +629,7 @@ class CastService {
         // El Chromecast emite FINISHED del episodio anterior antes de procesar
         // el nuevo LOAD, lo que causaría un bucle infinito de episodios.
         if (_isLoadingMedia) {
-          debugPrint(
-            'CastService: FINISHED suppressed (new LOAD in progress)',
-          );
+          debugPrint('CastService: FINISHED suppressed (new LOAD in progress)');
           return;
         }
         debugPrint('CastService: Playback finished');
@@ -932,8 +932,9 @@ class CastService {
   void seek(double positionSeconds) {
     if (isTvBackend) {
       _tvSender?.seek(positionSeconds);
-      castPosition.value =
-          Duration(milliseconds: (positionSeconds * 1000).toInt());
+      castPosition.value = Duration(
+        milliseconds: (positionSeconds * 1000).toInt(),
+      );
       return;
     }
     if (_session == null || _mediaSessionId == null) return;
@@ -1188,7 +1189,9 @@ class CastService {
           }
         }
       } catch (e) {
-        debugPrint('CastService: TurboProxy para el TV fallo ($e) — URL directa');
+        debugPrint(
+          'CastService: TurboProxy para el TV fallo ($e) — URL directa',
+        );
       }
     }
 
@@ -1251,10 +1254,12 @@ class CastService {
         // ── Reconexión: decidir si nos adjuntamos sin reenviar LOAD ──
         if (_tvReattaching) {
           _tvReattaching = false;
-          final stillPlaying = state == TvProto.statePlaying ||
+          final stillPlaying =
+              state == TvProto.statePlaying ||
               state == TvProto.statePaused ||
               state == TvProto.stateBuffering;
-          final near = pos != null &&
+          final near =
+              pos != null &&
               (pos - _tvExpectedPosition).abs() < const Duration(seconds: 30);
           if (stillPlaying && near) {
             // El TV sigue reproduciendo cerca de lo esperado: NO recargamos,
@@ -1283,8 +1288,7 @@ class CastService {
         if (aId != null && aId.isNotEmpty) castActiveAudioId.value = aId;
         final sId = event['activeSubtitleId']?.toString();
         if (sId != null && sId.isNotEmpty) {
-          castActiveSubtitleId.value =
-              sId == TvProto.subtitleOff ? null : sId;
+          castActiveSubtitleId.value = sId == TvProto.subtitleOff ? null : sId;
         }
         break;
       case TvProto.evtLoaded:

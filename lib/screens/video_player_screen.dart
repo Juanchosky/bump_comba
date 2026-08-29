@@ -117,6 +117,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   // Se pone en false al inicio de la primera reproduccion para que
   // el mensaje de bienvenida no aparezca en re-buffers ni recargas.
   bool _isInitialLoad = true;
+  // True cuando la reproducción del video ya arrancó en el teléfono.
+  bool _hasPlaybackStarted = false;
   bool _midRollAdShown = false;
   bool _midRollNoticeShown = false;
   late M3UItem _currentItem;
@@ -855,6 +857,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       );
     } else if (!_player!.state.playing) {
       _player!.play();
+      if (mounted) setState(() => _hasPlaybackStarted = true);
     }
   }
 
@@ -1052,6 +1055,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     if (!mounted) return;
     _retryCount = 0;
     _hasError = false;
+    _hasPlaybackStarted = false;
     _noVideoSeconds = 0;
     _blackScreenReloadDone = false;
     _diagTrackCodecs = '?';
@@ -1137,8 +1141,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // y el perfil del host aprendido, y `wrap()` la reutiliza al mandar el LOAD.
     if (transmitiendo) {
       _adPrewarmStarted = true;
-      unawaited(TurboProxy.instance.preconnect(url, headers: _buildHeaders(url)));
-      debugPrint('AdTimePrewarm: cast — preconectando origen durante el anuncio');
+      unawaited(
+        TurboProxy.instance.preconnect(url, headers: _buildHeaders(url)),
+      );
+      debugPrint(
+        'AdTimePrewarm: cast — preconectando origen durante el anuncio',
+      );
       return;
     }
 
@@ -1275,6 +1283,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
     final p = _player;
     _player = null;
+    _hasPlaybackStarted = false;
 
     // Liberar síncronamente el VideoController para desenganchar la textura
     _videoControllerNotifier.value = null;
@@ -1449,6 +1458,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
       setState(() {
         _isVideoLoading = true;
+        _hasPlaybackStarted = false;
         // Contenido nuevo, presupuesto de cortes nuevo: los stalls de la
         // pelicula anterior no pueden condenar al servidor de esta.
         _episodiosStall.clear();
@@ -2250,6 +2260,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           _isVideoLoading = false;
           _isInitialLoad =
               false; // Ya arrancó — nunca más mostramos el mensaje de bienvenida
+          _hasPlaybackStarted = true;
         });
         _startHideControlsTimer();
       }
@@ -2279,6 +2290,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
     _streamSubscriptions.clear();
     _progressSaveTimer?.cancel();
+
+    // Playing stream para marcar inicio de reproducción
+    _streamSubscriptions.add(
+      _player!.stream.playing.listen((playing) {
+        if (playing && !_hasPlaybackStarted && mounted && !_isVideoLoading) {
+          setState(() => _hasPlaybackStarted = true);
+        }
+      }),
+    );
 
     // Buffering stream to show/hide loading spinner
     // + Auto-recuperación: si el player sale de buffering exitosamente
@@ -2440,6 +2460,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _streamSubscriptions.add(
       _player!.stream.position.listen((position) {
         if (!mounted || _player == null) return;
+        if (!_hasPlaybackStarted &&
+            !_isVideoLoading &&
+            (position.inMilliseconds > 100 ||
+                (_player?.state.playing ?? false))) {
+          setState(() => _hasPlaybackStarted = true);
+        }
         final rawDur = _player!.state.duration;
         if (rawDur > Duration.zero) {
           _knownDuration = rawDur;
@@ -6864,10 +6890,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                     ],
                                   ),
                                 ),
-                                // Botón de Cast / Transmitir a TV
+                                // Botón de Cast / Transmitir a TV (solo cuando haya iniciado la reproducción en el teléfono o si ya está transmitiendo)
                                 ValueListenableBuilder<bool>(
                                   valueListenable: CastService().isCasting,
                                   builder: (context, casting, _) {
+                                    if (!casting &&
+                                        (_isVideoLoading ||
+                                            !_hasPlaybackStarted)) {
+                                      return const SizedBox.shrink();
+                                    }
                                     return IconButton(
                                       padding:
                                           _isLandscape
@@ -7784,25 +7815,31 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                   ),
                                 ),
                               ),
-                              // Cast
+                              // Cast (solo cuando haya iniciado la reproducción en el teléfono o si ya está transmitiendo)
                               ValueListenableBuilder<bool>(
                                 valueListenable: CastService().isCasting,
-                                builder:
-                                    (context, casting, _) => CupertinoButton(
-                                      padding: const EdgeInsets.all(8),
-                                      onPressed: _showCastSelection,
-                                      minimumSize: Size(0, 0),
-                                      child: Icon(
-                                        casting
-                                            ? CupertinoIcons.tv_fill
-                                            : CupertinoIcons.tv,
-                                        color:
-                                            casting
-                                                ? Colors.redAccent
-                                                : Colors.white,
-                                        size: 22 * scale,
-                                      ),
+                                builder: (context, casting, _) {
+                                  if (!casting &&
+                                      (_isVideoLoading ||
+                                          !_hasPlaybackStarted)) {
+                                    return const SizedBox.shrink();
+                                  }
+                                  return CupertinoButton(
+                                    padding: const EdgeInsets.all(8),
+                                    onPressed: _showCastSelection,
+                                    minimumSize: Size(0, 0),
+                                    child: Icon(
+                                      casting
+                                          ? CupertinoIcons.tv_fill
+                                          : CupertinoIcons.tv,
+                                      color:
+                                          casting
+                                              ? Colors.redAccent
+                                              : Colors.white,
+                                      size: 22 * scale,
                                     ),
+                                  );
+                                },
                               ),
                               // PiP
                               CupertinoButton(
