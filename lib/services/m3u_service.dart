@@ -2268,6 +2268,24 @@ class M3UService extends ChangeNotifier {
   /// Mezcla los items personalizados (Supabase custom_content) de forma
   /// inteligente entre los items regulares, en vez de ponerlos siempre al
   /// principio.
+  /// Punto de entrada para probar el reparto del contenido propio, que es
+  /// privado. Sin esto no hay forma de cubrir el orden, y el fallo que arregla
+  /// —lo de la BD saliendo siempre primero en "Todas las Series"— es
+  /// exactamente el tipo de cosa que vuelve sin un test que lo sujete.
+  @visibleForTesting
+  static List<M3UItem> repartirContenidoPropioParaPruebas(
+    List<M3UItem> regulares,
+    List<M3UItem> propios,
+  ) => _interleaveCustomContent(regulares, propios);
+
+  /// Clave de agrupacion para repartir el contenido propio: categoria + tipo.
+  ///
+  /// El separador es un caracter nulo a proposito: no puede aparecer dentro del
+  /// nombre de una categoria, asi que "Accion" + serie nunca colisiona con una
+  /// categoria que se llamara literalmente "Accion|true".
+  static String _claveCategoriaTipo(M3UItem it) =>
+      '${it.category}\u0000${it.isSeries}';
+
   static List<M3UItem> _interleaveCustomContent(
     List<M3UItem> regularItems,
     List<M3UItem> customItems,
@@ -2290,18 +2308,37 @@ class M3UService extends ChangeNotifier {
 
     if (orphanCustom.isEmpty) return linkedRegular;
 
-    // ── Paso 1: Agrupar custom items huérfanos por categoría ──
+    // ── Paso 1: Agrupar custom items huérfanos por categoría Y TIPO ──
+    //
+    // POR QUE TAMBIEN POR TIPO, y no solo por categoria:
+    //
+    // La lista global viene ordenada [~25.600 peliculas ... ~3.200 series]. Si
+    // una SERIE propia de categoria "Recomendados" se coloca junto a los items
+    // regulares de "Recomendados" sin mirar el tipo, acaba pegada a una
+    // PELICULA — que esta al principio de la lista. La fila "Todas las Series"
+    // filtra por `isSeries` conservando el orden, asi que esa serie propia sale
+    // ANTES que la primera serie real del proveedor: "lo de la BD siempre
+    // primero", que es justo lo que no se quiere.
+    //
+    // Es el mismo fallo que ya se arreglo en el Paso 4 para los huerfanos (ver
+    // su comentario). Alli se corrigio y aqui se quedo, asi que el sintoma
+    // sobrevivio en las categorias que SI existen en el catalogo del proveedor.
+    //
+    // Con la clave compuesta, una serie propia se reparte entre SERIES de su
+    // categoria y una pelicula propia entre PELICULAS. Y si no hay regulares de
+    // esa categoria Y tipo, cae como huerfana al Paso 4, que ya reparte por
+    // tipo correctamente.
     final Map<String, List<M3UItem>> customByCategory = {};
     for (final item in orphanCustom) {
-      customByCategory.putIfAbsent(item.category, () => []).add(item);
+      customByCategory.putIfAbsent(_claveCategoriaTipo(item), () => []).add(item);
     }
 
-    // ── Paso 2: Construir mapa de posiciones de items regulares por categoría ──
-    // Para cada categoría, guardamos los índices donde aparecen items regulares.
+    // ── Paso 2: Posiciones de los items regulares por categoría Y TIPO ──
     final Map<String, List<int>> regularIndicesByCategory = {};
     for (int i = 0; i < linkedRegular.length; i++) {
-      final cat = linkedRegular[i].category;
-      regularIndicesByCategory.putIfAbsent(cat, () => []).add(i);
+      regularIndicesByCategory
+          .putIfAbsent(_claveCategoriaTipo(linkedRegular[i]), () => [])
+          .add(i);
     }
 
     // ── Paso 3: Calcular inserciones por categoría ──
