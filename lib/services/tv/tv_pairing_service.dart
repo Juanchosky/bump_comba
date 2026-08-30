@@ -161,16 +161,37 @@ class TvPairingService {
       await M3UService().importarFuentes(fuentes);
     }
 
-    final ok = r['ok'] == true;
-    // Solo se olvida el token si el servidor dice que ya no vale. Un fallo de
-    // red nunca borra nada.
-    if (!ok) {
-      final motivo = r['motivo'] as String?;
-      if (motivo == 'token_desconocido' || motivo == 'revocado') {
-        await olvidarToken();
-      }
+    if (r['ok'] == true) return true;
+
+    final motivo = r['motivo'] as String?;
+
+    // NO TODO "ok: false" SIGNIFICA "no tienes derecho".
+    //
+    // El servidor devuelve lo mismo cuando no hay suscripcion que cuando no
+    // pudo PREGUNTARLE a RevenueCat. Tratarlos igual es lo que dejaba fuera a
+    // un usuario de pago porque la API de RevenueCat tuvo un mal minuto: se le
+    // cerraba el televisor y volvia a la pantalla de vincular.
+    //
+    // Solo estos tres son un NO de verdad; cualquier otra cosa es "no se pudo
+    // comprobar" y se conserva el acceso, que se revalida en el proximo
+    // arranque de todas formas.
+    const definitivos = {
+      'token_desconocido',
+      'revocado',
+      'sin_suscripcion_activa',
+    };
+    if (!definitivos.contains(motivo)) {
+      debugPrint('TvPairing: no se pudo comprobar ($motivo); se conserva');
+      return null;
     }
-    return ok;
+
+    // El token solo se borra si el aparato ya no existe o fue revocado. Que la
+    // suscripcion haya caducado no invalida el token: si el usuario vuelve a
+    // pagar, el televisor sigue vinculado.
+    if (motivo == 'token_desconocido' || motivo == 'revocado') {
+      await olvidarToken();
+    }
+    return false;
   }
 
   // ── Lado TELÉFONO ────────────────────────────────────────────────────────

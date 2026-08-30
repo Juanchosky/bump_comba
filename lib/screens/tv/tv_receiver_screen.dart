@@ -10,6 +10,8 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../services/tv/tv_protocol.dart';
 import '../../services/tv/tv_pairing_service.dart';
+import '../../services/tv/tv_mpv_config.dart';
+import 'tv_loading_animation.dart';
 import 'tv_catalog_screen.dart';
 import 'tv_pairing_screen.dart';
 import '../../services/tv/tv_receiver_service.dart';
@@ -159,20 +161,32 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
   bool? _tvVinculado;
 
   Future<void> _revisarVinculoTv() async {
-    // Basta con que HAYA token para pintar el catalogo. La validacion contra el
-    // servidor va aparte y en segundo plano: si se esperara su respuesta, un
-    // televisor sin red se quedaria en la pantalla de espera para siempre, y
-    // quien ya pago no tiene por que perder el acceso porque el wifi falle.
     final token = await TvPairingService.instance.tokenGuardado();
     if (!mounted) return;
-    setState(() => _tvVinculado = token != null);
-    if (token == null) return;
 
-    final valido = await TvPairingService.instance.validarToken();
-    // `null` = no se pudo preguntar. Solo un NO explicito cierra la puerta.
-    if (mounted && valido == false) {
+    if (token == null) {
       setState(() => _tvVinculado = false);
+      return;
     }
+
+    // SE VALIDA ANTES DE PINTAR EL CATALOGO, y el orden es el punto entero.
+    //
+    // Es `validarToken()` quien trae las fuentes del servidor y las guarda.
+    // Antes se pintaba el catalogo primero y se validaba despues: el catalogo
+    // arrancaba sin ninguna fuente configurada, y ese caso `M3UService` lo
+    // trata como error de CONFIGURACION —no de red— asi que no reintenta. Las
+    // fuentes llegaban un segundo mas tarde y ya daba igual: la pantalla se
+    // quedaba en "No se ha configurado ninguna URL M3U" para siempre.
+    //
+    // Esperar aqui cuesta una llamada de red antes de ver nada, y a cambio el
+    // catalogo arranca cuando ya tiene de donde tirar.
+    final valido = await TvPairingService.instance.validarToken();
+    if (!mounted) return;
+
+    // `null` = no se pudo preguntar. Se entra igual: las fuentes de la vez
+    // anterior siguen guardadas en disco, y quien ya pago no puede quedarse
+    // fuera porque el wifi falle. Solo un NO explicito cierra la puerta.
+    setState(() => _tvVinculado = valido != false);
   }
 
   // Posición/duración para pintar el overlay (actualizadas por streams).
@@ -210,129 +224,10 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     WakelockPlus.enable();
   }
 
-  Future<void> _configureMpv() async {
-    // Solo propiedades SEGURAS en Android (nunca vo=gpu / profile=fast).
-    // Optimizado para FLUIDEZ máxima en TVs de gama baja (Chromecast HD,
-    // TV boxes con ~1GB RAM y SoC débil).
-    try {
-      final mpv = _player.platform as dynamic;
-      if (mpv == null) return;
-
-      final opciones = <String, String>{
-        'vd-lavc-threads': '0',
-        'vd-lavc-fast': 'yes',
-        'vd-lavc-skiploopfilter': 'all',
-        'video-sync': 'audio',
-        // 'vo' y no 'decoder+vo'. Con 'decoder' MPV descarta fotogramas ANTES
-        // de decodificarlos cuando va tarde, que es justo lo que amplifica el
-        // sintoma con este proveedor: se queda sin datos, el audio sigue con su
-        // propio bufer, y al llegar la rafaga siguiente el video corre a
-        // alcanzarlo tirando fotogramas -> el "aceleron" visible. El telefono
-        // ya llego a 'vo' peleando contra este mismo proveedor.
-        'framedrop': 'vo',
-        'deband': 'no',
-        'dither-depth': 'no',
-        'cache': 'yes',
-        // media_kit trae 'cache-on-disk': 'yes' por defecto (ver la tabla de
-        // propiedades de NativePlayer). El telefono ya lo apaga a mano; el
-        // receptor no lo hacia, asi que MPV intentaba escribir los 96 MB de
-        // cache del demuxer en la flash del televisor. En un Chromecast HD sin
-        // espacio libre eso falla ("Failed to create file cache") despues de
-        // haber gastado el tiempo intentandolo, y el arranque se va a 8s o se
-        // queda colgado. En RAM no hay nada que crear.
-        'cache-on-disk': 'no',
-        // ── Reparto del búfer entre "adelante" y "atrás" ───────────────────
-        //
-        // Estaba en 128 MB adelante / 16 MB atras, con 300s de lectura
-        // adelantada. Esa proporcion 8:1 rompe el cambio de pista: al elegir
-        // otro idioma o activar subtitulos, MPV tiene que volver a demuxar la
-        // posicion ACTUAL para la pista nueva. Con 300s de readahead la cabeza
-        // del demuxer va lejisimos por delante, asi que los bytes de donde
-        // esta viendo el usuario caen en la parte de ATRAS del bufer — que solo
-        // guardaba 16 MB, unos 20 segundos a 6 Mbps. Ya estaban descartados.
-        //
-        // Sin esos bytes, MPV no puede servir el cambio desde memoria y vuelve
-        // a pedir por red: seek completo, decodificador vaciado y parón. Es lo
-        // que se ve al cambiar de idioma.
-        //
-        // El total sigue siendo 144 MB — importante, porque estos TV box tienen
-        // ~1 GB de RAM. Solo se reparte distinto: 48 MB atras son ~64s, de
-        // sobra para cualquier cambio de pista, y bajar el readahead evita que
-        // la cabeza se aleje tanto de la posicion de reproduccion.
-        'cache-secs': '120',
-        'demuxer-max-bytes': '100663296',
-        'demuxer-max-back-bytes': '50331648',
-        'demuxer-readahead-secs': '90',
-        'cache-pause-initial': 'yes',
-        'cache-pause-wait': '4',
-        'cache-pause': 'yes',
-        // Sin esto MPV RECHAZA entradas de playlist que considera inseguras,
-        // y este proveedor sirve los titulos como playlist — el log del
-        // televisor lo dice en cada carga: "Reading plaintext playlist".
-        // El resultado era que la reproduccion terminaba antes de tiempo (un
-        // `completed` a los 64s de una pelicula entera), el telefono lo leia
-        // como fin prematuro y recargaba con otro archivo distinto.
-        //
-        // El reproductor del telefono ya lo tenia puesto, y sin condiciones;
-        // el receptor nunca lo recibio. Por eso el mismo titulo va bien en el
-        // movil y se corta en la tele.
-        'load-unsafe-playlists': 'yes',
-        'hls-bitrate': 'min',
-        'stream-buffer-size': '8388608',
-        'network-timeout': '35',
-        'http-reconnect': 'yes',
-        'http-reconnect-sleep': '0.5',
-        // stream-lavf-o es una lista clave=valor separada por comas, asi que
-        // una coma DENTRO de un valor rompe el parseo: MPV leia "429" como
-        // una clave suelta y tiraba "Expected '=' and a value", dejando toda
-        // la opcion sin aplicar (sin reconexion de ffmpeg en la TV). El prefijo
-        // %N% le dice a MPV cuantos caracteres ocupa el valor literal.
-        'stream-lavf-o':
-            'reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,'
-            'reconnect_delay_max=2,reconnect_on_network_error=1,'
-            'reconnect_on_http_error=%7%5xx,429',
-        'http-pipelining': 'yes',
-        'tls-verify': 'no',
-        'force-seekable': 'yes',
-        // ── Ajustes portados del reproductor del telefono ──────────────────
-        //
-        // Este proveedor TRUNCA cada respuesta HTTP en un tamano fijo (~104 KB
-        // medidos), asi que un archivo de 2,3 GB son ~22.000 reconexiones, cada
-        // una con su corte de paquete. El telefono ya tiene estos tres ajustes
-        // para sobrevivirlo; el receptor no los tenia.
-        //
-        // Ninguno aumenta el ancho de banda: los tamanos de bufer siguen igual
-        // porque subirlos satura el puerto del VPS y provoca que el proveedor
-        // corte las conexiones lentas.
-        //
-        // - demuxer-seekable-cache: deja recolocarse dentro del bufer ya
-        //   descargado en vez de repedir por red tras cada corte.
-        // - http-reconnect-timeout: acota cuanto puede quedarse colgada UNA
-        //   reconexion. Sin esto, una sola mala congela la imagen entera.
-        // - vd-lavc-o err_detect=ignore_err: que el decodificador tolere los
-        //   paquetes danados de cada frontera de truncado en vez de atascarse.
-        'demuxer-seekable-cache': 'yes',
-        'http-reconnect-timeout': '5',
-        'vd-lavc-o': 'err_detect=ignore_err,flags2=+fast',
-      };
-
-      // Una a una, no con Future.wait. Antes iban todas juntas y el fallo de
-      // UNA sola abortaba el await de las demas sin decir cual era: por eso el
-      // "Expected '=' and a value" de stream-lavf-o aparecia como un error
-      // suelto del player, sin nombre de propiedad. Asi cada opcion que este
-      // MPV no reconozca (varias `http-*` son en realidad AVOptions de ffmpeg,
-      // no propiedades de MPV) queda registrada por su nombre.
-      for (final e in opciones.entries) {
-        try {
-          await mpv.setProperty(e.key, e.value);
-        } catch (err) {
-          debugPrint('TvReceiver: MPV rechazo ${e.key}=${e.value} -> $err');
-        }
-      }
-    } catch (e) {
-      debugPrint('TvReceiver: error configurando MPV: $e');
-    }
-  }
+  /// El perfil base vive en `TvMpvConfig`, compartido con el reproductor
+  /// autonomo del televisor: el mismo video tiene que ir igual de fino se abra
+  /// desde el catalogo o llegue transmitido.
+  Future<void> _configureMpv() => TvMpvConfig.aplicarBase(_player);
 
   Future<void> _startService() async {
     try {
@@ -1628,7 +1523,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
               // pantalla negra sin ninguna indicación de que estuviera cargando.
               if (_hasMedia && (_buffering || !_primerFrameListo))
                 const Center(
-                  child: _AppLoadingAnimation(size: 54, strokeWidth: 4),
+                  child: TvLoadingAnimation(size: 54, strokeWidth: 4),
                 ),
               // Velocidad de descarga: solo cuando ACOMPAÑA a algo.
               //
@@ -2592,75 +2487,6 @@ class _CtrlButton extends StatelessWidget {
 /// Spinner de carga — copia exacta del que usa el reproductor del teléfono
 /// (`_AppLoadingAnimation` en video_player_screen.dart), para que la carga en
 /// el TV se vea igual.
-class _AppLoadingAnimation extends StatefulWidget {
-  final double size;
-  final double strokeWidth;
-
-  const _AppLoadingAnimation({this.size = 60, this.strokeWidth = 4});
-
-  @override
-  State<_AppLoadingAnimation> createState() => _AppLoadingAnimationState();
-}
-
-class _AppLoadingAnimationState extends State<_AppLoadingAnimation>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1100),
-    )..repeat();
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return RotationTransition(
-      turns: _controller,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          Container(
-            width: widget.size,
-            height: widget.size,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(
-                color: Colors.red.withValues(alpha: 0.1),
-                width: widget.strokeWidth,
-              ),
-            ),
-          ),
-          SizedBox(
-            width: widget.size,
-            height: widget.size,
-            child: CircularProgressIndicator(
-              value: 0.3,
-              strokeWidth: widget.strokeWidth,
-              color: Colors.red,
-              strokeCap: StrokeCap.round,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// Pregunta a pantalla completa en el televisor, contestable con el mando.
-///
-/// Tamanos pensados para verse desde el sofa: el titulo a 34 y los botones a
-/// 22, muy por encima de lo que se usaria en un telefono. El foco se marca con
-/// relleno solido y borde, no solo con color, porque a tres metros un cambio de
-/// tono no se distingue.
 class _TvPregunta extends StatelessWidget {
   final String titulo;
   final String detalle;

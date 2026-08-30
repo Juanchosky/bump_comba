@@ -1,11 +1,17 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../models/m3u_item.dart';
+import '../../services/turbo_proxy.dart';
+import '../../services/tv/tv_mpv_config.dart';
+import '../../utils/cabeceras_stream.dart';
+import '../../utils/clasificacion_stream.dart';
+import 'tv_loading_animation.dart';
 import '../../services/watch_progress_service.dart';
 
 /// Reproductor del televisor en modo autónomo (sin teléfono).
@@ -28,12 +34,51 @@ class TvPlayerScreen extends StatefulWidget {
 }
 
 class _TvPlayerScreenState extends State<TvPlayerScreen> {
-  late final Player _player;
-  late final VideoController _controlador;
+  // EXACTAMENTE la misma configuracion que el receptor de transmisiones.
+  //
+  // `hwdec: 'mediacodec'` va AQUI, en la creacion, y no por `setProperty`:
+  // `AndroidVideoController.create()` aplica lo suyo DESPUES, y con 'auto-safe'
+  // este SoC (Amlogic) elige `mediacodec-copy` — una copia por CPU de cada
+  // fotograma 1080p, que son tirones.
+  //
+  // Creandolo tarde y sin esto, el log decia
+  // "h264_mediacodec: Both surface and native_window are NULL": el decodificador
+  // arrancaba sin superficie donde pintar y la pantalla se quedaba NEGRA con el
+  // audio corriendo por detras.
+  final Player _player = Player(
+    configuration: PlayerConfiguration(
+      title: 'Bump Comba TV',
+      bufferSize: 32 * 1024 * 1024, // 32 MB — moderado para TVs de gama baja
+      logLevel: kDebugMode ? MPVLogLevel.info : MPVLogLevel.error,
+      // libass apagado: el widget Video solo pinta subtitulos con su
+      // SubtitleView de Flutter cuando libass no esta. Con libass, MPV los
+      // dibuja sobre la Surface de Android y no se ven.
+      libass: false,
+    ),
+  );
+
+  late final VideoController _controlador = VideoController(
+    _player,
+    configuration: const VideoControllerConfiguration(
+      enableHardwareAcceleration: true,
+      hwdec: 'mediacodec',
+    ),
+  );
   final List<StreamSubscription> _subs = [];
 
   bool _reproduciendo = false;
   bool _buffering = true;
+
+  /// ¿Ha llegado ya el primer fotograma?
+  ///
+  /// Sin esto el spinner solo salia con `buffering`, y hay un hueco entre que
+  /// MPV deja de bufferear y aparece la imagen: ahi la pantalla se quedaba
+  /// NEGRA y sin nada, que es lo que hace pensar que se colgo.
+  bool _primerFrameListo = false;
+
+  /// Velocidad de descarga, para la esquina superior izquierda.
+  double _kbps = 0;
+  Timer? _sondeoVelocidad;
   Duration _posicion = Duration.zero;
   Duration _duracion = Duration.zero;
 
@@ -94,8 +139,15 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
   @override
   void initState() {
     super.initState();
-    _player = Player();
-    _controlador = VideoController(_player);
+    // EL MISMO PERFIL DE MPV QUE EL RECEPTOR.
+    //
+    // Faltaba, y era la diferencia entera: el mismo video se veia fino al
+    // transmitirlo desde el telefono y a tirones al abrirlo desde el catalogo,
+    // porque aqui el reproductor arrancaba con los valores por defecto de MPV.
+    // Ahora los dos comparten `TvMpvConfig` — framedrop=vo, cache en RAM, el
+    // reparto 96/48 MB del bufer... — que son decisiones ganadas peleando con
+    // este proveedor en este aparato.
+    unawaited(TvMpvConfig.aplicarBase(_player));
 
     _subs.addAll([
       _player.stream.playing.listen((v) {
@@ -131,6 +183,15 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
       }),
     );
 
+    // El primer fotograma: en cuanto el video tiene tamaño real, hay imagen.
+    _controlador.rect.addListener(() {
+      final r = _controlador.rect.value;
+      if (r != null && r.width > 0 && !_primerFrameListo && mounted) {
+        setState(() => _primerFrameListo = true);
+      }
+    });
+
+    _arrancarSondeoVelocidad();
     _arrancar();
     _mostrarControles();
   }
@@ -164,8 +225,52 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
   }
 
   Future<void> _abrir(Duration desde) async {
-    final url = _urls[_idxServidor];
-    await _player.open(Media(url, start: desde > Duration.zero ? desde : null));
+    final original = _urls[_idxServidor];
+    String url = original;
+
+    // ── TurboProxy, igual que en el telefono ────────────────────────────
+    //
+    // El proveedor corta cada respuesta HTTP en ~104 KB: una pelicula de 2,3 GB
+    // son mas de 22.000 reconexiones. Servidas de una en una se ven como
+    // parones, el audio adelantandose y el video corriendo despues para
+    // alcanzarlo — exactamente el sintoma que llevamos todo el dia persiguiendo.
+    //
+    // TurboProxy las pide en paralelo por rangos y se las entrega a MPV como un
+    // flujo continuo. Corre DENTRO de esta app, asi que en el televisor
+    // autonomo funciona igual que en el movil: no hace falta ningun telefono
+    // encendido.
+    //
+    // Todo el camino es opcional: si el envoltorio falla o tarda mas de 7s se
+    // usa la URL original y se reproduce como antes.
+    // Las MISMAS cabeceras que el telefono. Iban vacias, y esa era la
+    // diferencia entre arrancar en 10s y tardar 40 o 50: sin `X-Bump-Tier` la
+    // peticion cae en el carril lento del VPS, y sin `User-Agent` hay
+    // proveedores que estrangulan al cliente que no reconocen.
+    final cabeceras = cabecerasParaStream(original);
+
+    if (!esEnVivoPorUrl(original)) {
+      try {
+        final local = await TurboProxy()
+            .wrap(original, cabeceras)
+            .timeout(const Duration(seconds: 7));
+        if (local != null) {
+          url = local;
+          debugPrint('TvPlayer: enrutado por TurboProxy');
+        }
+      } catch (e) {
+        debugPrint('TvPlayer: TurboProxy fallo ($e) — URL directa');
+      }
+    }
+
+    await _player.open(
+      Media(
+        url,
+        // Si TurboProxy no entro, MPV pide directo y necesita las cabeceras el
+        // mismo. Con el envoltorio puesto no estorban: la URL ya es local.
+        httpHeaders: cabeceras,
+        start: desde > Duration.zero ? desde : null,
+      ),
+    );
   }
 
   // ── Guardar por donde va ─────────────────────────────────────────────────
@@ -267,6 +372,7 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
     }
     _ocultar?.cancel();
     _confirmarSalto?.cancel();
+    _sondeoVelocidad?.cancel();
     _vigilante?.cancel();
     _guardado?.cancel();
     // Un ultimo guardado al salir: sin el se pierden hasta 5 s, y salir es
@@ -274,6 +380,28 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
     _guardar();
     _player.dispose();
     super.dispose();
+  }
+
+  /// Los KB/s que MPV esta metiendo en su cache.
+  ///
+  /// Solo se repinta cuando se esta VIENDO —cargando o con los controles
+  /// abiertos—: un setState por segundo para un texto invisible se nota en un
+  /// Chromecast HD. Es el mismo criterio que el receptor.
+  void _arrancarSondeoVelocidad() {
+    _sondeoVelocidad = Timer.periodic(const Duration(seconds: 1), (_) async {
+      if (!mounted) return;
+      try {
+        final mpv = _player.platform as dynamic;
+        if (mpv == null) return;
+        final raw = await mpv.getProperty('cache-speed');
+        final kbps = (double.tryParse(raw?.toString() ?? '') ?? 0) / 1024;
+        if (!mounted || kbps == _kbps) return;
+        _kbps = kbps;
+        if (_buffering || !_primerFrameListo || _controlesVisibles) {
+          setState(() {});
+        }
+      } catch (_) {}
+    });
   }
 
   // ── Controles ────────────────────────────────────────────────────────────
@@ -574,12 +702,33 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
             children: [
               Video(controller: _controlador, controls: NoVideoControls),
 
-              if (_buffering)
+              // MISMO SPINNER Y MISMA CONDICION QUE EL RECEPTOR.
+              //
+              // Antes era el `CircularProgressIndicator` de Material y solo
+              // con `_buffering`. Entre que MPV deja de bufferear y llega la
+              // imagen hay un hueco, y ahi la pantalla se quedaba negra y
+              // vacia: parecia colgada. Con `!_primerFrameListo` el spinner
+              // cubre tambien ese tramo.
+              if (_buffering || !_primerFrameListo)
                 const Center(
-                  child: SizedBox(
-                    width: 52,
-                    height: 52,
-                    child: CircularProgressIndicator(strokeWidth: 4),
+                  child: TvLoadingAnimation(size: 54, strokeWidth: 4),
+                ),
+
+              // Velocidad de descarga, arriba a la izquierda. Sale cuando
+              // ACOMPAÑA a algo: mientras carga, o con los controles abiertos.
+              if (_buffering || !_primerFrameListo || _controlesVisibles)
+                Positioned(
+                  top: 40,
+                  left: 48,
+                  child: Text(
+                    '${_kbps.toStringAsFixed(0)} KB/s',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w500,
+                      backgroundColor: Color(0x99000000),
+                      shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                    ),
                   ),
                 ),
 
@@ -598,6 +747,7 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
               if (_controlesVisibles && !_menuAbierto)
                 _Controles(
                   titulo: widget.titulo,
+                  caratula: widget.item.logo,
                   posicion: _posicion,
                   duracion: _duracion,
                   progreso: progreso,
@@ -635,6 +785,7 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
 // ═══════════════════════════════════════════════════════════════════════════
 class _Controles extends StatelessWidget {
   final String titulo;
+  final String? caratula;
   final Duration posicion;
   final Duration duracion;
   final double progreso;
@@ -644,6 +795,7 @@ class _Controles extends StatelessWidget {
 
   const _Controles({
     required this.titulo,
+    required this.caratula,
     required this.posicion,
     required this.duracion,
     required this.progreso,
@@ -665,151 +817,169 @@ class _Controles extends StatelessWidget {
           stops: [0.0, 0.55],
         ),
       ),
-      padding: const EdgeInsets.fromLTRB(56, 0, 56, 44),
+      // Mismas medidas que el receptor: 40 a la izquierda, 48 a la derecha,
+      // 36 abajo. Si no coinciden, la misma pelicula se ve descolocada segun
+      // como la hayas abierto.
+      padding: const EdgeInsets.fromLTRB(40, 0, 48, 36),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.end,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Botón de play
-          Padding(
-            padding: const EdgeInsets.only(bottom: 26),
-            child: AnimatedOpacity(
-              duration: const Duration(milliseconds: 140),
-              opacity: foco == 0 ? 1.0 : 0.5,
-              child: Container(
-                width: 64,
-                height: 64,
-                decoration: const BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: RadialGradient(
-                    center: Alignment(-0.4, -0.5),
-                    radius: 1.2,
-                    colors: [
-                      Color(0xFFFF6B5E),
-                      Color(0xFFE53935),
-                      Color(0xFFB71C1C),
-                    ],
-                    stops: [0.0, 0.55, 1.0],
-                  ),
-                ),
-                child: Icon(
-                  reproduciendo
-                      ? Icons.pause_rounded
-                      : Icons.play_arrow_rounded,
-                  color: Colors.white,
-                  size: 34,
-                ),
-              ),
-            ),
-          ),
-
-          // Línea de tiempo
+          // SIN BOTON DE PLAY FLOTANTE.
+          //
+          // El receptor no lo tiene, y con razon: al transmitir se pausa desde
+          // el telefono, y aqui se pausa con OK sobre la linea de tiempo. Un
+          // circulo rojo en mitad de la pantalla tapa el video y no aporta nada
+          // que el mando no haga ya.
+          // ── Carátula a la izquierda, línea de tiempo y título a la
+          // derecha ── Es la disposición del receptor, y estaba sin replicar:
+          // al transmitir salía la carátula y al abrir desde el catálogo no,
+          // así que la misma película se veía de dos formas distintas.
           Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              Text(
-                fmt(posicion),
-                style: const TextStyle(color: Colors.white, fontSize: 17),
-              ),
-              const SizedBox(width: 18),
+              if (caratula != null && caratula!.isNotEmpty) ...[
+                Image.network(
+                  caratula!,
+                  width: 90,
+                  height: 130,
+                  fit: BoxFit.cover,
+                  // Si la carátula falla no se deja hueco: mejor sin ella que
+                  // con un rectángulo vacío.
+                  errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                ),
+                const SizedBox(width: 24),
+              ],
               Expanded(
-                child: LayoutBuilder(
-                  builder: (context, c) {
-                    const alto = 6.0;
-                    const tirador = 20.0;
-                    final x = c.maxWidth * progreso;
-                    return SizedBox(
-                      height: 28,
-                      child: Stack(
-                        alignment: Alignment.centerLeft,
-                        children: [
-                          Container(
-                            height: alto,
-                            decoration: BoxDecoration(
-                              color: Colors.white24,
-                              borderRadius: BorderRadius.circular(4),
-                            ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          fmt(posicion),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 17,
                           ),
-                          FractionallySizedBox(
-                            widthFactor: progreso,
-                            child: Container(
-                              height: alto,
-                              decoration: BoxDecoration(
-                                color:
-                                    enBarra
-                                        ? const Color(0xFFE50914)
-                                        : const Color(
-                                          0xFFE50914,
-                                        ).withValues(alpha: 0.6),
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                            ),
-                          ),
-                          Positioned(
-                            left: (x - tirador / 2).clamp(
-                              0.0,
-                              (c.maxWidth - tirador).clamp(
-                                0.0,
-                                double.infinity,
-                              ),
-                            ),
-                            child: AnimatedOpacity(
-                              duration: const Duration(milliseconds: 150),
-                              opacity: enBarra ? 1.0 : 0.5,
-                              child: Container(
-                                width: tirador,
-                                height: tirador,
-                                decoration: const BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  gradient: RadialGradient(
-                                    center: Alignment(-0.4, -0.5),
-                                    radius: 1.2,
-                                    colors: [
-                                      Color(0xFFFF6B5E),
-                                      Color(0xFFE53935),
-                                      Color(0xFFB71C1C),
-                                    ],
-                                    stops: [0.0, 0.55, 1.0],
-                                  ),
+                        ),
+                        const SizedBox(width: 18),
+                        Expanded(
+                          child: LayoutBuilder(
+                            builder: (context, c) {
+                              const alto = 6.0;
+                              const tirador = 20.0;
+                              final x = c.maxWidth * progreso;
+                              return SizedBox(
+                                height: 28,
+                                child: Stack(
+                                  alignment: Alignment.centerLeft,
+                                  children: [
+                                    Container(
+                                      height: alto,
+                                      decoration: BoxDecoration(
+                                        color: Colors.white24,
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                    ),
+                                    FractionallySizedBox(
+                                      widthFactor: progreso,
+                                      child: Container(
+                                        height: alto,
+                                        decoration: BoxDecoration(
+                                          color:
+                                              enBarra
+                                                  ? const Color(0xFFE50914)
+                                                  : const Color(
+                                                    0xFFE50914,
+                                                  ).withValues(alpha: 0.6),
+                                          borderRadius: BorderRadius.circular(
+                                            4,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                    Positioned(
+                                      left: (x - tirador / 2).clamp(
+                                        0.0,
+                                        (c.maxWidth - tirador).clamp(
+                                          0.0,
+                                          double.infinity,
+                                        ),
+                                      ),
+                                      child: AnimatedOpacity(
+                                        duration: const Duration(
+                                          milliseconds: 150,
+                                        ),
+                                        opacity: enBarra ? 1.0 : 0.5,
+                                        child: Container(
+                                          width: tirador,
+                                          height: tirador,
+                                          decoration: const BoxDecoration(
+                                            shape: BoxShape.circle,
+                                            gradient: RadialGradient(
+                                              center: Alignment(-0.4, -0.5),
+                                              radius: 1.2,
+                                              colors: [
+                                                Color(0xFFFF6B5E),
+                                                Color(0xFFE53935),
+                                                Color(0xFFB71C1C),
+                                              ],
+                                              stops: [0.0, 0.55, 1.0],
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                              ),
+                              );
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 18),
+                        Text(
+                          fmt(duracion),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 17,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+
+                    // Título a la izquierda, pistas a la derecha, en la misma línea.
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            titulo,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 19,
                             ),
                           ),
-                        ],
-                      ),
-                    );
-                  },
+                        ),
+                        const SizedBox(width: 28),
+                        _IconoPista(
+                          icon: Icons.subtitles_outlined,
+                          etiqueta: 'Subtítulos',
+                          focused: foco == 2,
+                        ),
+                        const SizedBox(width: 26),
+                        _IconoPista(
+                          icon: Icons.multitrack_audio_rounded,
+                          etiqueta: 'Audio',
+                          focused: foco == 3,
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
-              ),
-              const SizedBox(width: 18),
-              Text(
-                fmt(duracion),
-                style: const TextStyle(color: Colors.white, fontSize: 17),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-
-          // Título a la izquierda, pistas a la derecha, en la misma línea.
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  titulo,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: Colors.white, fontSize: 19),
-                ),
-              ),
-              const SizedBox(width: 28),
-              _IconoPista(
-                icon: Icons.subtitles_outlined,
-                etiqueta: 'Subtítulos',
-                focused: foco == 2,
-              ),
-              const SizedBox(width: 26),
-              _IconoPista(
-                icon: Icons.multitrack_audio_rounded,
-                etiqueta: 'Audio',
-                focused: foco == 3,
               ),
             ],
           ),

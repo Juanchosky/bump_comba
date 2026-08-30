@@ -1,4 +1,5 @@
 import 'dart:async';
+import '../utils/cabeceras_stream.dart';
 import 'dart:math' as math;
 import 'dart:ui';
 import 'package:flutter/cupertino.dart';
@@ -4272,37 +4273,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// usuarios.
   static const String _vpsHost = '217.216.80.212';
 
-  Map<String, String> _buildHeaders(String currentUrl) {
-    // Extraer dominio base para el Referer
-    String referer = '';
-    String host = '';
-    try {
-      final uri = Uri.parse(currentUrl);
-      host = uri.host;
-      referer = '${uri.scheme}://${uri.host}/';
-    } catch (_) {}
-
-    return {
-      'User-Agent': _currentUserAgent,
-      // Carril de ancho de banda en el VPS (ver vps/nginx-cache-vod.conf).
-      // El puerto del VPS es el techo real de la app: cuando se satura, el
-      // proveedor corta las peticiones y eso son los cortes de reproduccion.
-      // Con esto los premium tienen su propio carril y no compiten con la
-      // rafaga de precarga de los free.
-      if (host == _vpsHost)
-        'X-Bump-Tier': PremiumService().isPremium ? 'p' : 'f',
-      'Accept': '*/*',
-      'Accept-Encoding':
-          'gzip, deflate', // sin 'br' — algunos proxies M3U fallan con brotli
-      'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-      'Connection': 'keep-alive',
-      'Cache-Control': 'no-cache',
-      'Pragma': 'no-cache',
-      if (referer.isNotEmpty) 'Referer': referer,
-      'Origin': referer.isEmpty ? '' : referer.replaceAll(RegExp(r'/$'), ''),
-      'Icy-MetaData': '1',
-    }..removeWhere((k, v) => v.isEmpty);
-  }
+  /// Las cabeceras viven en `cabecerasParaStream`, compartidas con el
+  /// reproductor del televisor: el mismo titulo tiene que pedirse igual desde
+  /// los dos sitios. Aqui solo se aporta el User-Agent rotatorio.
+  Map<String, String> _buildHeaders(String currentUrl) =>
+      cabecerasParaStream(currentUrl, userAgent: _currentUserAgent);
 
   bool _isProbablyWebPage(String url) {
     final lowUrl = url.toLowerCase();

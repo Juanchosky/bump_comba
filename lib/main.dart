@@ -48,6 +48,9 @@ void main() {
       // retrasar el primer frame.
       if (await TvPlatform.isAndroidTv()) {
         GoogleFonts.config.allowRuntimeFetching = false;
+        // Antes de tocar nada: el indexado se salta el trabajo que el
+        // televisor no usa (sagas y buscador).
+        M3UService.modoTelevisor = true;
         // Las credenciales salen del .env igual que en el telefono. Si falla,
         // `M3UService` cae en los valores por defecto compilados y todo sigue
         // funcionando: por eso no se propaga el error.

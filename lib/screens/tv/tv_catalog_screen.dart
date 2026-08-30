@@ -31,6 +31,10 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   String? _error;
   List<({String titulo, List<M3UItem> items})> _filas = const [];
 
+  /// Lo que el usuario dejo a medias. Se cruza el historial con el catalogo
+  /// por URL: el historial guarda donde te quedaste, pero no la caratula.
+  List<M3UItem> _seguirViendo = const [];
+
   // Techos deliberados. Un proveedor puede traer cientos de categorías y miles
   // de títulos; pintarlos todos en un aparato de 1 GB de RAM es cómo se cuelga
   // un televisor. Nadie baja de la fila veinte con un mando, tampoco.
@@ -40,7 +44,162 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   @override
   void initState() {
     super.initState();
+    // El servicio avisa DOS veces: al publicar los items en crudo —antes de
+    // indexar— y al terminar. La primera llena la pantalla en segundos; la
+    // segunda añade las series agrupadas y el contenido propio.
+    _servicio.addListener(_alLlegarDatos);
     _cargar();
+  }
+
+  @override
+  void dispose() {
+    _servicio.removeListener(_alLlegarDatos);
+    super.dispose();
+  }
+
+  void _alLlegarDatos() {
+    if (!mounted) return;
+    // Solo se repinta si hay algo nuevo que enseñar. `notifyListeners` salta
+    // por muchos motivos y reconstruir el catalogo entero por cada uno costaria
+    // mas que lo que se gana.
+    final hayPreliminares = _servicio.itemsPreliminares.isNotEmpty;
+    final hayIndexado =
+        _servicio.movies.isNotEmpty || _servicio.series.isNotEmpty;
+    if (!hayPreliminares && !hayIndexado) return;
+    setState(() {
+      _filas = _armarFilas();
+      _cargando = false;
+      if (_filas.isNotEmpty) _error = null;
+    });
+  }
+
+  /// Primera pasada: SOLO PELICULAS, con los items en crudo.
+  ///
+  /// El agrupado por serie sale del isolate que todavia no ha terminado, asi
+  /// que de las series solo hay episodios sueltos. Una fila de "Capitulo 3",
+  /// "Capitulo 7"... se ve rota y barata: mejor enseñar unicamente lo que ya
+  /// esta completo y bien, y que las series aparezcan cuando existan de verdad.
+  List<({String titulo, List<M3UItem> items})> _filasPreliminares() {
+    final filas = <({String titulo, List<M3UItem> items})>[];
+    final porCategoria = <String, List<M3UItem>>{};
+
+    for (final it in _servicio.itemsPreliminares) {
+      if (it.isLive || it.seriesName != null) continue;
+      (porCategoria[it.category] ??= <M3UItem>[]).add(it);
+    }
+    for (final e in porCategoria.entries) {
+      if (filas.length >= _maxFilas) break;
+      if (e.value.length < 3) continue;
+      filas.add((titulo: e.key, items: e.value.take(_maxPorFila).toList()));
+    }
+    return filas;
+  }
+
+  /// Arma las filas con lo mejor que haya AHORA MISMO.
+  List<({String titulo, List<M3UItem> items})> _armarFilas() {
+    // Todavia sin indexar: se pinta lo que se puede en vez de dejar la pantalla
+    // vacia 15 segundos mas.
+    if (_servicio.movies.isEmpty && _servicio.series.isEmpty) {
+      return _filasPreliminares();
+    }
+
+    // Cuantas peliculas y cuantas series hay de verdad, y cuantas de esas
+    // series traen episodios. Sin este dato es imposible saber si una serie
+    // sale mal porque esta mal agrupada o porque nunca llego a la fila.
+    final conEpisodios =
+        _servicio.series.where((e) => e.episodes.isNotEmpty).length;
+    debugPrint(
+      'TvCatalogo: peliculas=${_servicio.movies.length} '
+      'series=${_servicio.series.length} (con episodios: $conEpisodios)',
+    );
+
+    final filas = <({String titulo, List<M3UItem> items})>[];
+
+    // Seguir viendo. Se calcula aparte porque el historial es una lectura
+    // asincrona y esto tiene que poder correr en cualquier momento.
+    if (_seguirViendo.isNotEmpty) {
+      filas.add((titulo: 'Seguir viendo', items: _seguirViendo));
+    }
+
+    // Novedades, con los episodios sustituidos por SU SERIE.
+    //
+    // `latestItems` mezcla peliculas y episodios recien anadidos. Un episodio
+    // suelto en la fila de novedades no sirve de nada: no se sabe de que
+    // serie es y al abrirlo no hay donde elegir. Se cambia por la serie
+    // entera, sin repetir.
+    final porNombreSerie = {
+      for (final se in _servicio.series)
+        if (se.seriesName != null) se.seriesName!: se,
+    };
+    final novedades = <M3UItem>[];
+    final vistos = <String>{};
+    for (final it in _servicio.latestItems) {
+      final elegido = porNombreSerie[it.seriesName] ?? it;
+      if (elegido.isLive || !vistos.add(elegido.url)) continue;
+      novedades.add(elegido);
+      if (novedades.length >= _maxPorFila) break;
+    }
+    if (novedades.isNotEmpty) {
+      filas.add((titulo: 'Novedades', items: novedades));
+    }
+
+    // PELICULAS y SERIES, INTERCALADAS.
+    //
+    // `items` no vale: trae los episodios SUELTOS, uno por tarjeta, asi que
+    // la lista salia llena de "Capitulo 3" y una serie no se distinguia de
+    // una pelicula. `series` los trae ya agrupados, con sus episodios dentro,
+    // que es lo que la ficha necesita para ofrecer temporadas.
+    //
+    // Y se INTERCALAN. Al concatenar peliculas y luego series, el mapa
+    // quedaba con todas las categorias de peliculas primero: con el tope de
+    // filas, las series no llegaban a pintarse NUNCA. Alternando una y una,
+    // ambas entran pase lo que pase.
+    final catPelis = <String, List<M3UItem>>{};
+    for (final it in _servicio.movies) {
+      if (it.isLive) continue;
+      (catPelis[it.category] ??= <M3UItem>[]).add(it);
+    }
+    final catSeries = <String, List<M3UItem>>{};
+    for (final it in _servicio.series) {
+      if (it.isLive) continue;
+      (catSeries[it.category] ??= <M3UItem>[]).add(it);
+    }
+
+    final colaPelis = catPelis.entries.toList();
+    final colaSeries = catSeries.entries.toList();
+    int ip = 0, iss = 0;
+
+    while (filas.length < _maxFilas &&
+        (ip < colaPelis.length || iss < colaSeries.length)) {
+      for (final cola in [colaPelis, colaSeries]) {
+        final esPelis = identical(cola, colaPelis);
+        var i = esPelis ? ip : iss;
+        // Una fila de dos se ve rota, asi que se salta.
+        while (i < cola.length && cola[i].value.length < 3) {
+          i++;
+        }
+        if (i >= cola.length) {
+          if (esPelis) {
+            ip = i;
+          } else {
+            iss = i;
+          }
+          continue;
+        }
+        filas.add((
+          titulo: cola[i].key,
+          items: cola[i].value.take(_maxPorFila).toList(),
+        ));
+        if (esPelis) {
+          ip = i + 1;
+        } else {
+          iss = i + 1;
+        }
+        if (filas.length >= _maxFilas) break;
+      }
+    }
+
+    return filas;
   }
 
   Future<void> _cargar() async {
@@ -58,123 +217,40 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       if (_servicio.items.isEmpty) {
         await _servicio.loadM3UContent(useRetry: true);
       }
-      if (!mounted) return;
 
-      final filas = <({String titulo, List<M3UItem> items})>[];
-
-      // ── Seguir viendo, lo primero de todo ────────────────────────────
-      //
-      // Va antes que nada porque es lo que el usuario viene a hacer casi
-      // siempre. Guardar el progreso y luego esconderlo tres filas mas abajo
-      // seria hacer el trabajo y no cobrarlo.
-      //
-      // Se cruza el historial con el catalogo por URL: el historial guarda
-      // donde te quedaste, pero no la caratula ni los episodios.
+      // El historial, antes de armar nada: es una lectura asincrona y no puede
+      // vivir dentro del armado, que corre tambien desde el listener.
       try {
         final historial = await WatchProgressService().getHistory();
-        if (historial.isNotEmpty) {
-          final porUrl = <String, M3UItem>{
-            for (final it in _servicio.items) it.url: it,
-          };
-          final siguiendo = <M3UItem>[];
-          for (final h in historial) {
-            if (h.isCompleted) continue; // terminado no es "seguir viendo"
-            final it = porUrl[h.url];
-            if (it != null) siguiendo.add(it);
-            if (siguiendo.length >= 12) break;
-          }
-          if (siguiendo.isNotEmpty) {
-            filas.add((titulo: 'Seguir viendo', items: siguiendo));
-          }
+        final porUrl = <String, M3UItem>{
+          for (final it in _servicio.items) it.url: it,
+        };
+        final siguiendo = <M3UItem>[];
+        for (final h in historial) {
+          if (h.isCompleted) continue; // terminado no es "seguir viendo"
+          final it = porUrl[h.url];
+          if (it != null) siguiendo.add(it);
+          if (siguiendo.length >= 12) break;
         }
+        _seguirViendo = siguiendo;
       } catch (_) {
         // El historial es un extra: si falla, el catalogo sale igual.
       }
+      if (!mounted) return;
 
-      // Novedades, con los episodios sustituidos por SU SERIE.
-      //
-      // `latestItems` mezcla peliculas y episodios recien anadidos. Un episodio
-      // suelto en la fila de novedades no sirve de nada: no se sabe de que
-      // serie es y al abrirlo no hay donde elegir. Se cambia por la serie
-      // entera, sin repetir.
-      final porNombreSerie = {
-        for (final se in _servicio.series)
-          if (se.seriesName != null) se.seriesName!: se,
-      };
-      final novedades = <M3UItem>[];
-      final vistos = <String>{};
-      for (final it in _servicio.latestItems) {
-        final elegido = porNombreSerie[it.seriesName] ?? it;
-        if (elegido.isLive || !vistos.add(elegido.url)) continue;
-        novedades.add(elegido);
-        if (novedades.length >= _maxPorFila) break;
-      }
-      if (novedades.isNotEmpty) {
-        filas.add((titulo: 'Novedades', items: novedades));
-      }
-
-      // PELICULAS y SERIES, INTERCALADAS.
-      //
-      // `items` no vale: trae los episodios SUELTOS, uno por tarjeta, asi que
-      // la lista salia llena de "Capitulo 3" y una serie no se distinguia de
-      // una pelicula. `series` los trae ya agrupados, con sus episodios dentro,
-      // que es lo que la ficha necesita para ofrecer temporadas.
-      //
-      // Y se INTERCALAN. Al concatenar peliculas y luego series, el mapa
-      // quedaba con todas las categorias de peliculas primero: con el tope de
-      // filas, las series no llegaban a pintarse NUNCA. Alternando una y una,
-      // ambas entran pase lo que pase.
-      final catPelis = <String, List<M3UItem>>{};
-      for (final it in _servicio.movies) {
-        if (it.isLive) continue;
-        (catPelis[it.category] ??= <M3UItem>[]).add(it);
-      }
-      final catSeries = <String, List<M3UItem>>{};
-      for (final it in _servicio.series) {
-        if (it.isLive) continue;
-        (catSeries[it.category] ??= <M3UItem>[]).add(it);
-      }
-
-      final colaPelis = catPelis.entries.toList();
-      final colaSeries = catSeries.entries.toList();
-      int ip = 0, iss = 0;
-
-      while (filas.length < _maxFilas &&
-          (ip < colaPelis.length || iss < colaSeries.length)) {
-        for (final cola in [colaPelis, colaSeries]) {
-          final esPelis = identical(cola, colaPelis);
-          var i = esPelis ? ip : iss;
-          // Una fila de dos se ve rota, asi que se salta.
-          while (i < cola.length && cola[i].value.length < 3) {
-            i++;
-          }
-          if (i >= cola.length) {
-            if (esPelis) {
-              ip = i;
-            } else {
-              iss = i;
-            }
-            continue;
-          }
-          filas.add((
-            titulo: cola[i].key,
-            items: cola[i].value.take(_maxPorFila).toList(),
-          ));
-          if (esPelis) {
-            ip = i + 1;
-          } else {
-            iss = i + 1;
-          }
-          if (filas.length >= _maxFilas) break;
-        }
-      }
-
+      if (!mounted) return;
       setState(() {
-        _filas = filas;
+        _filas = _armarFilas();
         _cargando = false;
+        // Sin fuentes el mensaje del servicio habla de "URL M3U", que al
+        // usuario de un televisor no le dice nada: el nunca configuro ninguna
+        // URL, la trajo la vinculacion.
         _error =
-            filas.isEmpty
-                ? (_servicio.lastError ?? 'No hay contenido disponible.')
+            _filas.isEmpty
+                ? (_servicio.sources.isEmpty
+                    ? 'No se pudo traer tu contenido. Vuelve a vincular el '
+                        'televisor desde el teléfono.'
+                    : (_servicio.lastError ?? 'No hay contenido disponible.'))
                 : null;
       });
     } catch (e) {

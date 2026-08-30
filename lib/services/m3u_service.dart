@@ -106,6 +106,32 @@ class M3USource {
 ///   FEAT-3  — getContentStats() returns aggregate stats for analytics/UI
 ///   FEAT-4  — DownloadProgress typed class instead of raw Function params
 class M3UService extends ChangeNotifier {
+  /// ¿Esto corre en un televisor?
+  ///
+  /// Lo pone `main()` al detectar Android TV, antes de arrancar nada. Sirve
+  /// para SALTARSE trabajo de indexado que el televisor no usa: no tiene
+  /// buscador ni pantalla de sagas, asi que calcular ambas cosas es tiempo que
+  /// se tira. En un Chromecast HD eso son ~7 de los 43 segundos de arranque.
+  ///
+  /// No cambia NADA de lo que el televisor si muestra: las filas por categoria
+  /// salen igual.
+  static bool modoTelevisor = false;
+
+  /// Los items EN CRUDO, publicados antes de terminar el indexado.
+  ///
+  /// El indexado tarda ~19s en un Chromecast HD, y el grueso es el cruce con el
+  /// contenido propio. Pero para PINTAR un catalogo no hace falta nada de eso:
+  /// nombre, categoria y caratula ya estan aqui desde el primer momento.
+  ///
+  /// Publicarlos antes deja enseñar el catalogo en 3-4s en vez de 19, y lo que
+  /// falta —las series agrupadas y el contenido de la base de datos— entra solo
+  /// cuando el isolate acaba, via `notifyListeners()`.
+  ///
+  /// Vacio en cuanto el indexado termina: a partir de ahi mandan `movies` y
+  /// `series`, que son los buenos.
+  List<M3UItem> _itemsPreliminares = const [];
+  List<M3UItem> get itemsPreliminares => _itemsPreliminares;
+
   // ── Supabase credentials ─────────────────────────────────────────────────
   // SECURITY NOTE: Keys moved to .env file
   static String get _supabaseUrl =>
@@ -2628,14 +2654,38 @@ class M3UService extends ChangeNotifier {
       }
       final tCarga = sw.elapsedMilliseconds;
 
+      // Se publican en crudo ANTES de indexar, para que quien quiera pueda ir
+      // pintando. Ver `itemsPreliminares`.
+      if (modoTelevisor && _items.isEmpty) {
+        _itemsPreliminares = items;
+        notifyListeners();
+
+        // SE CEDEN DOS FRAMES ANTES DE LLAMAR A `compute`.
+        //
+        // Publicar y encadenar el `compute` no servia de nada: para mandar los
+        // 28.000 items al isolate hay que SERIALIZARLOS, y eso corre en el hilo
+        // principal. El `setState` se hacia, pero el frame no llegaba a
+        // dibujarse hasta despues — el usuario seguia viendo el spinner igual.
+        //
+        // Con esta pausa el catalogo se pinta primero y la serializacion viene
+        // detras.
+        await Future<void>.delayed(const Duration(milliseconds: 32));
+      }
+
       final result = await compute(_indexItemsInBackground, {
         'items': items,
         'customItems': customItems,
-        'hasSagas': true, // Logic to include saga detection
+        // Las sagas agrupan franquicias para una pantalla que el televisor
+        // no tiene. Calcularlas cuesta ~7s en un Chromecast HD.
+        'hasSagas': !modoTelevisor,
+        // El indice de busqueda tampoco: no hay buscador en el televisor.
+        'conBusqueda': !modoTelevisor,
         'rutaClaves': rutaClaves,
       });
       final tIsolate = sw.elapsedMilliseconds;
 
+      // Ya hay datos buenos: los preliminares sobran.
+      _itemsPreliminares = const [];
       _items = (result['items'] as List?)?.cast<M3UItem>() ?? const [];
       _cachedLatestItems =
           (result['latestItems'] as List?)?.cast<M3UItem>() ?? const [];
@@ -5717,6 +5767,7 @@ Map<String, dynamic> _indexItemsInBackground(Map<String, dynamic> input) {
 
   final List<M3UItem> items = _filterOut4kItems(merged);
   final bool hasSagas = input['hasSagas'] ?? true;
+  final bool conBusqueda = input['conBusqueda'] ?? true;
 
   final Map<String, List<M3UItem>> catIndex = {};
   final Set<String> catSet = {};
@@ -5790,11 +5841,14 @@ Map<String, dynamic> _indexItemsInBackground(Map<String, dynamic> input) {
     items.length,
     const <String>[],
   );
-  for (int i = 0; i < items.length; i++) {
-    if (items[i].isLive) continue;
-    final normalized = _clavesDe(items[i].name)[Clave.busqueda];
-    searchNames[i] = normalized;
-    searchWords[i] = normalized.split(' ').where((w) => w.isNotEmpty).toList();
+  if (conBusqueda) {
+    for (int i = 0; i < items.length; i++) {
+      if (items[i].isLive) continue;
+      final normalized = _clavesDe(items[i].name)[Clave.busqueda];
+      searchNames[i] = normalized;
+      searchWords[i] =
+          normalized.split(' ').where((w) => w.isNotEmpty).toList();
+    }
   }
 
   final tBusqueda = swIso.elapsedMilliseconds;

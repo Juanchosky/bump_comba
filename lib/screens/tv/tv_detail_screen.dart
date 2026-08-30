@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../models/m3u_item.dart';
+import '../../services/m3u_service.dart';
 import '../../services/tmdb_service.dart';
 import 'tv_player_screen.dart';
 
@@ -33,6 +34,18 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
   Map<String, dynamic>? _ficha;
   bool _buscando = true;
 
+  /// Los episodios, que casi nunca vienen con el item.
+  ///
+  /// De 3.301 series del catalogo, solo 55 llegan con sus episodios dentro. El
+  /// resto son fichas SIN contenido: el proveedor entrega los episodios cuando
+  /// se los pides, no en el listado. Por eso la ficha salia con "Reproducir" y
+  /// ninguna temporada — no era que estuvieran mal agrupadas, es que aun no se
+  /// habian pedido.
+  ///
+  /// Es lo mismo que ya hace la ficha del telefono con `fetchEpisodesForItem`.
+  List<M3UItem> _episodiosCargados = const [];
+  bool _cargandoEpisodios = false;
+
   /// Temporada elegida. `null` hasta que se sabe cual es la primera.
   int? _temporada;
 
@@ -40,6 +53,32 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
   void initState() {
     super.initState();
     _buscarFicha();
+    _cargarEpisodios();
+  }
+
+  /// Pide los episodios al proveedor si el item no los trae.
+  ///
+  /// No bloquea la ficha: el titulo, la caratula y el boton de reproducir se
+  /// pintan al instante y los episodios entran cuando llegan. Quien solo
+  /// queria darle a play no espera a nada.
+  Future<void> _cargarEpisodios() async {
+    // Los que ya vienen puestos son los buenos: no se vuelve a pedir nada.
+    if (widget.item.episodes.isNotEmpty) {
+      setState(() => _episodiosCargados = widget.item.episodes);
+      return;
+    }
+    // Una pelicula no tiene episodios que pedir.
+    if (!widget.item.isSeries && widget.item.seriesName == null) return;
+
+    setState(() => _cargandoEpisodios = true);
+    try {
+      final eps = await M3UService().fetchEpisodesForItem(widget.item);
+      if (mounted) setState(() => _episodiosCargados = eps);
+    } catch (e) {
+      debugPrint('TvDetalle: no se pudieron traer los episodios: $e');
+    } finally {
+      if (mounted) setState(() => _cargandoEpisodios = false);
+    }
   }
 
   Future<void> _buscarFicha() async {
@@ -60,8 +99,8 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
   }
 
   List<M3UItem> get _episodios {
-    if (widget.item.episodes.isEmpty) return const [];
-    final lista = [...widget.item.episodes];
+    if (_episodiosCargados.isEmpty) return const [];
+    final lista = [..._episodiosCargados];
     lista.sort((a, b) {
       final t = (a.seasonNumber ?? 0).compareTo(b.seasonNumber ?? 0);
       return t != 0
@@ -249,6 +288,36 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
                         ),
                       ),
                       const SizedBox(height: 12),
+
+                      // ── V1+ / BD ────────────────────────────────────────
+                      //
+                      // La misma marca que la ficha del telefono. No es
+                      // decorativa: dice si ese titulo tiene MAS DE UN sitio de
+                      // donde tirar. Con V1+ el cambio automatico de servidor
+                      // puede actuar; sin ella, si el proveedor falla no hay
+                      // adonde ir.
+                      //
+                      // Se mira el item Y sus episodios: en una serie las
+                      // alternativas suelen estar en los episodios, no en la
+                      // ficha.
+                      Builder(
+                        builder: (context) {
+                          final hayAlternativas =
+                              widget.item.alternatives.isNotEmpty ||
+                              _episodios.any((e) => e.alternatives.isNotEmpty);
+                          final deLaBD =
+                              widget.item.esDeLaBD ||
+                              _episodios.any((e) => e.esDeLaBD);
+                          final texto =
+                              hayAlternativas ? 'V1+' : (deLaBD ? 'BD' : null);
+                          if (texto == null) return const SizedBox.shrink();
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 12),
+                            child: _Distintivo(texto: texto),
+                          );
+                        },
+                      ),
+
                       _LineaDatos(
                         anio: _anio,
                         nota: _nota,
@@ -303,6 +372,34 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
                       ],
 
                       const SizedBox(height: 24),
+
+                      // Mientras llegan los episodios se dice, en vez de dejar
+                      // un hueco que parece que falta algo. Ocupa poco y
+                      // desaparece solo.
+                      if (_cargandoEpisodios) ...[
+                        Row(
+                          children: [
+                            const SizedBox(
+                              width: 13,
+                              height: 13,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white38,
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Text(
+                              'Buscando episodios...',
+                              style: TextStyle(
+                                color: Colors.white.withValues(alpha: 0.4),
+                                fontSize: 14,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                      ],
+
                       _BotonPrincipal(
                         autofocus: true,
                         icono: Icons.play_arrow_rounded,
@@ -696,6 +793,38 @@ class _ChipTemporadaState extends State<_ChipTemporada> {
             fontSize: 15,
             fontWeight: widget.elegida ? FontWeight.w600 : FontWeight.w400,
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Marca de servidor: V1+ (hay alternativas) o BD (contenido propio).
+class _Distintivo extends StatelessWidget {
+  final String texto;
+  const _Distintivo({required this.texto});
+
+  @override
+  Widget build(BuildContext context) {
+    final esV1 = texto == 'V1+';
+    // Rojo para V1+ y verde para BD, igual que en el telefono: son dos cosas
+    // distintas y el color es lo que las separa de un vistazo desde el sofa.
+    final color = esV1 ? const Color(0xFFE50914) : const Color(0xFF34C759);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.16),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: color.withValues(alpha: 0.55)),
+      ),
+      child: Text(
+        texto,
+        style: TextStyle(
+          color: color,
+          fontSize: 13,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.5,
         ),
       ),
     );
