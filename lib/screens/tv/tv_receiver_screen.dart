@@ -2392,13 +2392,13 @@ class _IconoPista extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(icon, size: 18, color: color),
+        Icon(icon, size: 19, color: color),
         const SizedBox(width: 7),
         AnimatedDefaultTextStyle(
           duration: const Duration(milliseconds: 130),
           style: TextStyle(
             color: color,
-            fontSize: 15.6,
+            fontSize: 16,
             fontWeight: FontWeight.w400,
           ),
           child: Text(etiqueta),
