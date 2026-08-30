@@ -442,21 +442,42 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// error claro con algo que pulsar. Nunca narra la espera, porque narrarla no
   /// le sirve de nada a quien espera: no dice cuanto falta ni que hacer.
   ///
-  /// Asi que pasado el plazo no se avisa de nada: se declara el fallo y se
-  /// enseña la pantalla de error que ya existe, con "Reintentar" —que ademas
-  /// rota de servidor y reanuda por donde ibas— y la salida.
+  /// Asi que cuando se da por perdido no se avisa de nada: se declara el fallo
+  /// y se enseña la pantalla de error que ya existe, con "Reintentar" —que
+  /// ademas rota de servidor y reanuda por donde ibas— y la salida.
+  ///
+  /// No mide tiempo, mide PROGRESO. Ver
+  /// `_segundosSinProgresoParaFallar`.
   Timer? _watchdogArranque;
 
-  /// Cuanto se espera antes de darlo por fallido.
+  /// Cuanto lleva sin ENTRAR NADA, en segundos.
+  int _segundosSinProgreso = 0;
+
+  /// Bufer visto en la ultima comprobacion, para saber si crecio.
+  Duration _buferVistoWatchdog = Duration.zero;
+
+  /// Segundos SIN PROGRESO tras los que se da por fallido.
   ///
-  /// Mas largo que el failover de arranque a proposito: cuando SI hay servidor
-  /// alternativo, queremos que actue el failover —que es una recuperacion de
-  /// verdad— y no esto, que es rendirse. El watchdog es la ultima red, para
-  /// cuando no hay a donde ir.
+  /// Ojo al matiz, que es lo importante: no son segundos de reloj, son
+  /// segundos sin que entre un solo byte. Xtream se satura a ratos y tarda,
+  /// pero mientras tarda SIGUE mandando datos — y eso no es un fallo, es
+  /// lentitud. Un reloj fijo no distingue las dos cosas y cortaba descargas
+  /// sanas; subir el numero solo alarga la espera cuando de verdad esta
+  /// muerto, que es el caso opuesto.
   ///
-  /// Se rearma en cada intento, asi que cada servidor tiene su propio plazo
-  /// completo en vez de compartir un unico reloj.
-  static const Duration _plazoArranque = Duration(seconds: 20);
+  /// Midiendo progreso, un servidor lento puede tardar lo que necesite y uno
+  /// caido se detecta en 20 segundos.
+  static const int _segundosSinProgresoParaFallar = 20;
+
+  /// Tope absoluto, por si entra un hilillo de datos que no llega a nada.
+  ///
+  /// Con solo la regla de progreso, un servidor que mandara cuatro bytes cada
+  /// dos segundos mantendria el spinner girando para siempre. Es raro, pero
+  /// "raro" no es "imposible" y la promesa era que no hubiera spinner infinito.
+  static const Duration _topeAbsolutoArranque = Duration(minutes: 2);
+
+  /// Cuando empezo este intento, para el tope de arriba.
+  DateTime? _inicioIntento;
 
   int _currentServerIndex = 0;
   List<String> _serverUrls = [];
@@ -1576,19 +1597,54 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         // al 0 cuando se acaban (con el mismo enfriamiento de 90s, que ademas
         // impide que esto se convierta en un bucle de recargas si NINGUNO
         // arranca).
-        // Ultima red: si esto no arranca en `_plazoArranque`, se da por
-        // fallido. Se arma SIEMPRE, haya o no servidor alternativo — de hecho
-        // el caso que de verdad lo necesita es cuando NO lo hay, porque
-        // entonces el failover de abajo ni siquiera se arma.
+        // Ultima red: si aqui no ENTRA NADA, se da por fallido. Se arma
+        // SIEMPRE, haya o no servidor alternativo — de hecho el caso que de
+        // verdad lo necesita es cuando NO lo hay, porque entonces el failover
+        // de abajo ni siquiera se arma.
         _watchdogArranque?.cancel();
-        _watchdogArranque = Timer(_plazoArranque, () {
-          if (!mounted || _hasPlaybackStarted || _hasError) return;
+        _segundosSinProgreso = 0;
+        _buferVistoWatchdog = Duration.zero;
+        _inicioIntento = DateTime.now();
+        _watchdogArranque = Timer.periodic(const Duration(seconds: 2), (
+          t,
+        ) async {
+          if (!mounted || _hasPlaybackStarted || _hasError) {
+            t.cancel();
+            return;
+          }
           // Transmitiendo manda el televisor: el player local puede estar
           // parado a proposito y no significa que nada vaya mal.
           if (CastService().isCasting.value) return;
+
+          // ¿Entro algo desde la ultima vuelta? Vale cualquiera de las dos
+          // señales: que el bufer haya crecido —ya hay video demuxado— o que
+          // `cache-speed` reporte bytes —todavia se esta bajando la cabecera—.
+          final bufer = _player?.state.buffer ?? Duration.zero;
+          final velocidad = await _leerCacheSpeedBytes();
+          if (!mounted) return;
+
+          if (bufer > _buferVistoWatchdog || velocidad > 0) {
+            _buferVistoWatchdog = bufer;
+            _segundosSinProgreso = 0;
+            return;
+          }
+
+          _segundosSinProgreso += 2;
+
+          final desdeElInicio =
+              _inicioIntento == null
+                  ? Duration.zero
+                  : DateTime.now().difference(_inicioIntento!);
+          final sinProgreso =
+              _segundosSinProgreso >= _segundosSinProgresoParaFallar;
+          final pasadoElTope = desdeElInicio >= _topeAbsolutoArranque;
+
+          if (!sinProgreso && !pasadoElTope) return;
+
+          t.cancel();
           debugPrint(
-            'Arranque: "${_currentItem.name}" no empezo en '
-            '${_plazoArranque.inSeconds}s — mostrando el error',
+            'Arranque: "${_currentItem.name}" se rinde — '
+            '${sinProgreso ? "${_segundosSinProgreso}s sin recibir datos" : "tope de ${_topeAbsolutoArranque.inMinutes} min"}',
           );
           setState(() => _hasError = true);
         });
