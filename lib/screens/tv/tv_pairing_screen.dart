@@ -325,15 +325,28 @@ class _TvPairingScreenState extends State<TvPairingScreen> {
               borderRadius: BorderRadius.circular(14),
               border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
             ),
-            child: Text(
-              _codigo!,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 52,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 7,
-                height: 1.0,
-                fontFeatures: [FontFeature.tabularFigures()],
+            // FittedBox y `softWrap: false`: el codigo va en UNA linea,
+            // pase lo que pase.
+            //
+            // A cuerpo fijo se partia en dos ("4XVY-" / "AGJE") en cuanto el
+            // panel se quedaba corto, y un codigo partido se lee mal y se
+            // teclea peor: el guion al final de la primera linea parece un
+            // caracter mas. Asi se encoge lo justo para caber y nunca se
+            // rompe.
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                _codigo!,
+                softWrap: false,
+                maxLines: 1,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 52,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 7,
+                  height: 1.0,
+                  fontFeatures: [FontFeature.tabularFigures()],
+                ),
               ),
             ),
           ),

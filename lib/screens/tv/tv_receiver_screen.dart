@@ -165,6 +165,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     // y quien ya pago no tiene por que perder el acceso porque el wifi falle.
     final token = await TvPairingService.instance.tokenGuardado();
     if (!mounted) return;
+    debugPrint('TvReceiver: vinculado=${token != null}');
     setState(() => _tvVinculado = token != null);
     if (token == null) return;
 
@@ -1607,9 +1608,18 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
                   ? const TvCatalogScreen()
                   : _WaitingScreen(
                     deviceName: _deviceName,
-                    // Mientras se comprueba no se enseña la puerta: aparecer y
-                    // desaparecer es peor que tardar un instante en salir.
-                    mostrarActivar: _tvVinculado == false,
+                    // Se enseña SALVO que sepamos que ya esta vinculado.
+                    //
+                    // Antes era `== false`, es decir: oculto mientras se
+                    // comprueba. La idea era evitar un parpadeo, pero el
+                    // precio es absurdo — si la comprobacion no termina por lo
+                    // que sea, el boton no aparece JAMAS y no hay forma de
+                    // activar el televisor. Una funcion inalcanzable es mucho
+                    // peor que un parpadeo de medio segundo.
+                    //
+                    // Con `!= true`, el unico caso en que se oculta es el que
+                    // de verdad lo justifica: que ya este activado.
+                    mostrarActivar: _tvVinculado != true,
                     onActivado: _revisarVinculoTv,
                   ),
 
