@@ -9,6 +9,9 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../services/tv/tv_protocol.dart';
+import '../../services/tv/tv_pairing_service.dart';
+import 'tv_catalog_screen.dart';
+import 'tv_pairing_screen.dart';
 import '../../services/tv/tv_receiver_service.dart';
 
 /// Pantalla receptora que corre en el TV. Es dueña del [Player] de media_kit
@@ -148,6 +151,30 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
   // Área con foco: 0 = botón play/pausa, 1 = línea de tiempo.
   int _focusArea = 0;
 
+  /// ¿Está este televisor activado para el modo autonomo?
+  ///
+  /// null mientras se comprueba, y se distingue de `false` a proposito: sin
+  /// esa diferencia la pantalla parpadea al arrancar, enseñando la espera un
+  /// instante antes de cambiar al catalogo.
+  bool? _tvVinculado;
+
+  Future<void> _revisarVinculoTv() async {
+    // Basta con que HAYA token para pintar el catalogo. La validacion contra
+    // el servidor va aparte y en segundo plano: si se esperara su respuesta,
+    // un televisor sin red se quedaria en la pantalla de espera para siempre,
+    // y quien ya pago no tiene por que perder el acceso porque el wifi falle.
+    final token = await TvPairingService.instance.tokenGuardado();
+    if (!mounted) return;
+    setState(() => _tvVinculado = token != null);
+    if (token == null) return;
+
+    final valido = await TvPairingService.instance.validarToken();
+    // `null` = no se pudo preguntar. Solo un NO explicito cierra la puerta.
+    if (mounted && valido == false) {
+      setState(() => _tvVinculado = false);
+    }
+  }
+
   // Posición/duración para pintar el overlay (actualizadas por streams).
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
@@ -173,6 +200,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
   @override
   void initState() {
     super.initState();
+    _revisarVinculoTv();
     _deviceName = _service.deviceName;
     _configureMpv();
     _startService();
@@ -380,6 +408,10 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
   }
 
   Future<void> _handleLoad(Map<String, dynamic> msg) async {
+    // Llega video: el mando vuelve a mandarlo el receptor. Sin esto, el foco
+    // se queda en el boton de activar —que ya no esta en pantalla— y ninguna
+    // tecla controlaria la reproduccion.
+    _focusNode.requestFocus();
     // Contenido nuevo, cuenta nueva: la corrupcion del anterior no
     // puede condenar a este.
     _eventosCorrupcion.clear();
@@ -1566,7 +1598,20 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
                       padding: EdgeInsets.fromLTRB(48, 0, 48, 56),
                     ),
                   )
-                  : _WaitingScreen(deviceName: _deviceName),
+                  : _tvVinculado == true
+                  // Activado: el catalogo entero, sin teléfono.
+                  //
+                  // Transmitir sigue funcionando igual por debajo: en cuanto
+                  // llega un LOAD, `_hasMedia` se pone a true y el
+                  // reproductor tapa esto sin preguntar.
+                  ? const TvCatalogScreen()
+                  : _WaitingScreen(
+                    deviceName: _deviceName,
+                    // Mientras se comprueba no se enseña la puerta: aparecer y
+                    // desaparecer es peor que tardar un instante en salir.
+                    mostrarActivar: _tvVinculado == false,
+                    onActivado: _revisarVinculoTv,
+                  ),
 
               // Spinner de carga idéntico al del reproductor del teléfono.
               // Se mantiene mientras haya buffering O mientras no haya llegado el
@@ -1709,7 +1754,13 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
 /// este receptor se llama [deviceName], y guía en 3 pasos.
 class _WaitingScreen extends StatefulWidget {
   final String deviceName;
-  const _WaitingScreen({required this.deviceName});
+  final bool mostrarActivar;
+  final Future<void> Function() onActivado;
+  const _WaitingScreen({
+    required this.deviceName,
+    required this.mostrarActivar,
+    required this.onActivado,
+  });
   @override
   State<_WaitingScreen> createState() => _WaitingScreenState();
 }
@@ -1790,58 +1841,109 @@ class _WaitingScreenState extends State<_WaitingScreen>
           ),
 
           // Composición central.
-          Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Etiqueta contextual.
-                Text(
-                  'TRANSMITE A',
-                  style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.4),
-                    fontSize: 15,
-                    fontWeight: FontWeight.w500,
-                    letterSpacing: 3.0,
-                  ),
-                ),
-                const SizedBox(height: 20),
-                // El nombre que hay que buscar en el teléfono — protagonista.
-                Text(
-                  widget.deviceName,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 43,
-                    fontWeight: FontWeight.w400, // fino, tipo SF
-                    letterSpacing: -0.9,
-                    height: 1.0,
-                  ),
-                ),
-                const SizedBox(height: 56),
-                // Hairline separador.
-                Container(
-                  width: 420,
-                  height: 1,
-                  color: Colors.white.withValues(alpha: 0.08),
-                ),
-                const SizedBox(height: 48),
-                // Guía de 3 pasos, en fila.
-                Row(
+          //
+          // Con hueco reservado abajo para el estado de la conexion, que vive
+          // en su propio `Positioned`. Sin esta reserva los dos bloques se
+          // acercan hasta tocarse en cuanto el televisor es de 720p, que es
+          // como se metio el solape la primera vez.
+          //
+          // Y con scroll: si aun asi no cupiera —una tele rara, un idioma que
+          // alarga los textos—, se desplaza en vez de pintar las franjas
+          // amarillas de desbordamiento encima del video.
+          Padding(
+            padding: const EdgeInsets.only(bottom: 112),
+            child: Center(
+              child: SingleChildScrollView(
+                child: Column(
                   mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _step(1, 'Abre Bump Comba\nen tu teléfono'),
-                    _stepGap(),
-                    _step(
-                      2,
-                      'Toca el ícono\nde transmitir',
-                      icon: Icons.cast_rounded,
+                    // Etiqueta contextual.
+                    Text(
+                      'TRANSMITE A',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.4),
+                        fontSize: 15,
+                        fontWeight: FontWeight.w500,
+                        letterSpacing: 3.0,
+                      ),
                     ),
-                    _stepGap(),
-                    _step(3, 'Elige "${widget.deviceName}"\nen la lista'),
+                    const SizedBox(height: 20),
+                    // El nombre que hay que buscar en el teléfono — protagonista.
+                    Text(
+                      widget.deviceName,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 43,
+                        fontWeight: FontWeight.w400, // fino, tipo SF
+                        letterSpacing: -0.9,
+                        height: 1.0,
+                      ),
+                    ),
+                    const SizedBox(height: 40),
+                    // Hairline separador.
+                    Container(
+                      width: 420,
+                      height: 1,
+                      color: Colors.white.withValues(alpha: 0.08),
+                    ),
+                    const SizedBox(height: 36),
+                    // Guía de 3 pasos, en fila.
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _step(1, 'Abre Bump Comba\nen tu teléfono'),
+                        _stepGap(),
+                        _step(
+                          2,
+                          'Toca el ícono\nde transmitir',
+                          icon: Icons.cast_rounded,
+                        ),
+                        _stepGap(),
+                        _step(3, 'Elige "${widget.deviceName}"\nen la lista'),
+                      ],
+                    ),
+
+                    // ── Activar este televisor ────────────────────────────────
+                    //
+                    // VA DENTRO DE LA COLUMNA, NO FLOTANDO ABAJO.
+                    //
+                    // Antes era un `Positioned(bottom: 44)` y el estado de la
+                    // conexion un `Positioned(bottom: 40)`: dos bloques sueltos
+                    // peleandose por los mismos pixeles. Se solapaban.
+                    //
+                    // Aqui va en el flujo, detras de los pasos y separado por su
+                    // propia linea: se lee como lo que es —la otra cosa que puedes
+                    // hacer desde esta pantalla— en vez de como un texto que
+                    // aparecio encima de otro.
+                    //
+                    // Y el estado de la conexion se queda solo abajo del todo, que
+                    // es donde tiene sentido: es informacion de fondo, no una
+                    // opcion.
+                    if (widget.mostrarActivar) ...[
+                      const SizedBox(height: 38),
+                      Container(
+                        width: 420,
+                        height: 1,
+                        color: Colors.white.withValues(alpha: 0.08),
+                      ),
+                      const SizedBox(height: 26),
+                      Text(
+                        '¿TIENES SUSCRIPCIÓN?',
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.3),
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 2.4,
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      _BotonActivar(onHecho: widget.onActivado),
+                    ],
                   ],
                 ),
-              ],
+              ),
             ),
           ),
 
@@ -2835,6 +2937,124 @@ class _ColumnaPistas extends StatelessWidget {
             ),
           ),
       ],
+    );
+  }
+}
+
+/// Puerta a la activacion premium, en la pantalla de espera.
+class _BotonActivar extends StatelessWidget {
+  final Future<void> Function() onHecho;
+  const _BotonActivar({required this.onHecho});
+
+  @override
+  Widget build(BuildContext context) {
+    return _FocoSuave(
+      onOk: () async {
+        await Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder:
+                (c) =>
+                    TvPairingScreen(onVinculado: () => Navigator.of(c).pop()),
+          ),
+        );
+        await onHecho();
+      },
+    );
+  }
+}
+
+/// Boton de la pantalla de espera: texto gris que se vuelve blanco al
+/// enfocarse. Sin caja ni borde, el mismo lenguaje que los controles del
+/// reproductor.
+class _FocoSuave extends StatefulWidget {
+  final Future<void> Function() onOk;
+  const _FocoSuave({required this.onOk});
+
+  @override
+  State<_FocoSuave> createState() => _FocoSuaveState();
+}
+
+class _FocoSuaveState extends State<_FocoSuave> {
+  bool _foco = false;
+  final FocusNode _nodo = FocusNode(debugLabel: 'activarTv');
+
+  @override
+  void initState() {
+    super.initState();
+    // TOMA EL FOCO DESPUES DEL PRIMER FOTOGRAMA, y hace falta que sea asi.
+    //
+    // `autofocus: true` no basta: solo actua cuando NADIE tiene el foco, y el
+    // `Focus` raiz del receptor lo pide a mano en su `initState`, que corre
+    // antes. Resultado: el boton se pintaba en gris, sin foco, y como el nodo
+    // raiz ocupa la pantalla entera tampoco habia forma de llegar hasta el con
+    // las flechas —la navegacion direccional no sabe moverse desde un
+    // rectangulo que lo abarca todo—. Se veia y no se podia pulsar.
+    //
+    // Pidiendolo tras el primer fotograma se lo quita al raiz, que para
+    // entonces ya lo tiene. Las teclas siguen subiendo hasta el receptor por el
+    // camino de propagacion, asi que no se pierde nada de lo de arriba; y en
+    // cuanto llega video, `_handleLoad` lo reclama de vuelta.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _nodo.requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    _nodo.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Focus(
+      focusNode: _nodo,
+      // PIDE EL FOCO AL APARECER, y no es un detalle de comodidad.
+      //
+      // El `Focus` raiz del receptor ocupa la pantalla entera y retiene el
+      // foco. Desde un rectangulo de pantalla completa, la navegacion
+      // direccional de Flutter no sabe hacia donde ir —no hay "arriba" ni
+      // "abajo" respecto a algo que lo ocupa todo—, asi que ninguna flecha
+      // llegaba nunca hasta aqui. El boton se veia y no se podia enfocar.
+      //
+      // Pidiendolo al construirse, esta enfocado desde el primer momento y
+      // basta con pulsar OK. Las teclas siguen subiendo hasta el receptor por
+      // el camino de propagacion, asi que no se pierde nada de lo de arriba.
+      autofocus: true,
+      onFocusChange: (v) => setState(() => _foco = v),
+      onKeyEvent: (node, event) {
+        if (event is! KeyDownEvent) return KeyEventResult.ignored;
+        final k = event.logicalKey;
+        if (k == LogicalKeyboardKey.select ||
+            k == LogicalKeyboardKey.enter ||
+            k == LogicalKeyboardKey.gameButtonA) {
+          widget.onOk();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.lock_open_rounded,
+              size: 17,
+              color: _foco ? Colors.white : Colors.white38,
+            ),
+            const SizedBox(width: 9),
+            Text(
+              'Activar este televisor',
+              style: TextStyle(
+                color: _foco ? Colors.white : Colors.white38,
+                fontSize: 16,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

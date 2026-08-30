@@ -96,6 +96,33 @@ class PremiumService {
   }
 
   /// Get unique device ID (Hardware ID) for Windows
+  /// Con qué identidad se presenta este usuario al vincular un televisor.
+  ///
+  /// Hay dos maneras legítimas de ser premium en esta app y el servidor las
+  /// comprueba distinto, así que hay que decirle cuál es:
+  ///  · 'licencia'   -> un código de `premium_codes` (la vía sin tienda)
+  ///  · 'revenuecat' -> una suscripción de la tienda
+  ///
+  /// La licencia va primero porque es la que gana en `initialize()`: si hay
+  /// una válida, RevenueCat ni se consulta.
+  ///
+  /// Devuelve null cuando no hay ninguna de las dos, y entonces no hay nada
+  /// que vincular. Ojo: esto NO decide si el usuario es premium — solo dice
+  /// con qué nombre preguntarlo. Quien decide es el servidor.
+  Future<({String ref, String kind})?> identidadParaTv() async {
+    final licencia = _prefs?.getString(_pcLicenseKey);
+    if (licencia != null && licencia.isNotEmpty) {
+      return (ref: licencia, kind: 'licencia');
+    }
+    try {
+      final id = await Purchases.appUserID;
+      if (id.isNotEmpty) return (ref: id, kind: 'revenuecat');
+    } catch (e) {
+      debugPrint('Premium: no se pudo leer el appUserID: $e');
+    }
+    return null;
+  }
+
   Future<String?> _getDeviceId() async {
     try {
       if (kIsWeb) return null;

@@ -122,6 +122,15 @@ class M3UService extends ChangeNotifier {
             'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImludWtxYm9xZHZ3dG1tdGhqd3JsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzkyMzM3NDIsImV4cCI6MjA1NDgwOTc0Mn0.bWNkWIErT71tXchtxN9D83w-I--UIGOIzZKff3-X5V8',
       );
 
+  /// Las mismas credenciales, accesibles desde fuera.
+  ///
+  /// Son la URL del proyecto y la clave `anon`, que es publica por diseño: ya
+  /// viaja dentro del APK. Se exponen para que el arranque del televisor pueda
+  /// configurar la vinculacion sin inicializar Supabase entero ni repetir los
+  /// valores en un tercer sitio.
+  static String get supabaseUrlPublica => _supabaseUrl;
+  static String get supabaseAnonKeyPublica => _supabaseAnonKey;
+
   // ── SharedPreferences keys ───────────────────────────────────────────────
   static const String _favoritesKey = 'm3u_favorites';
   static const String _cacheTimestampKey = 'm3u_cache_timestamp';

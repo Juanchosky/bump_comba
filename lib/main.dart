@@ -18,6 +18,8 @@ import 'utils/colors.dart';
 import 'services/cast_audio_handler.dart';
 import 'services/tv/tv_platform.dart';
 import 'screens/tv/tv_receiver_app.dart';
+import 'services/tv/tv_pairing_service.dart';
+import 'services/m3u_service.dart';
 
 class MyHttpOverrides extends HttpOverrides {
   @override
@@ -46,6 +48,19 @@ void main() {
       // retrasar el primer frame.
       if (await TvPlatform.isAndroidTv()) {
         GoogleFonts.config.allowRuntimeFetching = false;
+        // Las credenciales salen del .env igual que en el telefono. Si falla,
+        // `M3UService` cae en los valores por defecto compilados y todo sigue
+        // funcionando: por eso no se propaga el error.
+        try {
+          await dotenv.load(fileName: ".env");
+        } catch (_) {}
+        // La vinculacion habla con la Edge Function, no con la base de datos,
+        // asi que aqui basta con la URL y la clave publica. El televisor no
+        // inicializa Supabase entero.
+        TvPairingService.configurar(
+          url: M3UService.supabaseUrlPublica,
+          anonKey: M3UService.supabaseAnonKeyPublica,
+        );
         runApp(const TvReceiverApp());
         return;
       }

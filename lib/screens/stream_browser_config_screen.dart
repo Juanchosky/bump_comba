@@ -1,4 +1,5 @@
 import 'package:flutter/cupertino.dart';
+import 'vincular_tv_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -112,6 +113,20 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
                     title: 'Efectos Visuales',
                     subtitle: _getPerformanceModeText(),
                     onTap: _showPerformanceConfigDialog,
+                    isLast: false,
+                  ),
+                  _buildDivider(),
+                  _buildTapRow(
+                    icon: CupertinoIcons.tv,
+                    title: 'Vincular televisor',
+                    subtitle: 'Ver el contenido en el TV sin transmitir',
+                    onTap: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const VincularTvScreen(),
+                        ),
+                      );
+                    },
                     isLast: false,
                   ),
                   _buildDivider(),
