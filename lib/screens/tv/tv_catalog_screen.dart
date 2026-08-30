@@ -449,7 +449,10 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                           ),
                         )
                         : ListView.builder(
-                          padding: const EdgeInsets.fromLTRB(0, 36, 0, 40),
+                          // 92 arriba: es lo que ocupa la marca. Sin ello el
+                          // titulo de la primera categoria se le montaba
+                          // encima.
+                          padding: const EdgeInsets.fromLTRB(0, 92, 0, 40),
                           itemCount: _filas.length,
                           itemBuilder: (context, i) {
                             final fila = _filas[i];
@@ -469,22 +472,51 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
             ),
           ),
 
-          // ── La marca, FUERA del menu ────────────────────────────────
+          // ── Velo superior ───────────────────────────────────────────
           //
-          // Vive en la pantalla, no dentro del lateral. Asi no se recoge ni se
-          // desvanece con el: la marca esta siempre, que es lo suyo, y ademas
-          // deja de competir por el ancho del menu — era lo que desbordaba.
+          // La marca se veia "medio oscura y medio clara": la mitad caia sobre
+          // el degradado del menu y la otra mitad sobre el fondo, asi que el
+          // texto cambiaba de contraste por la mitad.
+          //
+          // Con una banda propia de negro a transparente, la marca se apoya
+          // SIEMPRE en lo mismo, pase lo que pase por detras.
           Positioned(
-            left: 30,
-            top: 24,
+            left: 0,
+            right: 0,
+            top: 0,
+            height: 120,
+            child: IgnorePointer(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.black.withValues(alpha: 0.92),
+                      Colors.black.withValues(alpha: 0.55),
+                      Colors.transparent,
+                    ],
+                    stops: const [0.0, 0.5, 1.0],
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          // ── La marca, FUERA del menu ────────────────────────────────────
+          //
+          // Vive en la pantalla, no dentro del lateral: asi no se recoge ni se
+          // desvanece con el, y deja de competir por su ancho.
+          Positioned(
+            left: 52,
+            top: 30,
             child: Text(
               'Bump Comba',
               style: TextStyle(
-                color: Colors.white.withValues(alpha: 0.9),
-                fontSize: 17,
+                color: Colors.white.withValues(alpha: 0.95),
+                fontSize: 24,
                 fontWeight: FontWeight.w700,
-                letterSpacing: 0.3,
-                shadows: const [Shadow(color: Colors.black, blurRadius: 8)],
+                letterSpacing: 0.4,
               ),
             ),
           ),
@@ -822,7 +854,7 @@ class _Lateral extends StatelessWidget {
       // de 220 ms: lo bastante para que se lea como un movimiento y no como un
       // salto, y lo bastante corta para no estorbar a quien va rapido.
       width: abierto ? 218 : 90,
-      padding: const EdgeInsets.only(left: 30, top: 70, bottom: 26),
+      padding: const EdgeInsets.only(left: 30, top: 26, bottom: 26),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
