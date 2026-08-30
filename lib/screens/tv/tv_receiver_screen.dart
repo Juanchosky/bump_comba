@@ -2171,20 +2171,8 @@ class _TvControlsOverlay extends StatelessWidget {
                             ),
                           ),
                           const SizedBox(height: 14),
-                          // Título del contenido, debajo de la barra (como la foto).
-                          if (title.isNotEmpty)
-                            Text(
-                              _displayTitle(title),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 21,
-                                fontWeight: FontWeight.w400,
-                              ),
-                            ),
-
-                          // ── Subtítulos y audio ──────────────────────────
+                          // Título a la izquierda, pistas a la derecha, en la
+                          // MISMA linea.
                           //
                           // Antes se llegaba a las pistas pulsando ARRIBA dos
                           // veces desde el botón de play: un atajo invisible,
@@ -2192,15 +2180,36 @@ class _TvControlsOverlay extends StatelessWidget {
                           // del mando. Aquí son dos iconos que se ven, se
                           // enfocan con abajo y se abren con OK, igual que
                           // cualquier otro control.
-                          const SizedBox(height: 18),
+                          //
+                          // Y comparten linea con el título en vez de ir
+                          // debajo por dos motivos. Uno: esta columna crece
+                          // hacia ARRIBA —está anclada abajo—, asi que
+                          // cualquier fila nueva empuja el título y la barra
+                          // de progreso fuera de su sitio. Dos: a la
+                          // izquierda y bajo el tiempo transcurrido, las dos
+                          // cosas se leian como un mismo bloque; al otro
+                          // extremo se ven como lo que son, ajustes.
                           Row(
                             children: [
+                              Expanded(
+                                child: Text(
+                                  title.isNotEmpty ? _displayTitle(title) : '',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 21,
+                                    fontWeight: FontWeight.w400,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 16),
                               _IconoPista(
                                 icon: Icons.subtitles_outlined,
                                 etiqueta: 'Subtítulos',
                                 focused: focusArea == 2,
                               ),
-                              const SizedBox(width: 16),
+                              const SizedBox(width: 12),
                               _IconoPista(
                                 icon: Icons.multitrack_audio_rounded,
                                 etiqueta: 'Audio',
@@ -2225,9 +2234,13 @@ class _TvControlsOverlay extends StatelessWidget {
 /// Icono de la fila de pistas (subtítulos / audio) bajo la línea de tiempo.
 ///
 /// Lleva la etiqueta al lado del icono a propósito: en un televisor se mira de
-/// lejos y un pictograma suelto obliga a adivinar. El foco se marca con relleno
-/// y borde blancos —el mismo lenguaje que el botón de play— porque en una tele
-/// el "dónde estoy" tiene que verse de un vistazo desde el sofá.
+/// lejos y un pictograma suelto obliga a adivinar. Pero va en cuerpo pequeño y
+/// discreto: es un ajuste ocasional, no un control principal, y compitiendo en
+/// tamaño con el play robaba la vista.
+///
+/// El foco se marca con relleno y borde blancos —el mismo lenguaje que el botón
+/// de play— porque en una tele el "dónde estoy" tiene que verse de un vistazo
+/// desde el sofá, y eso no se puede encoger.
 class _IconoPista extends StatelessWidget {
   final IconData icon;
   final String etiqueta;
@@ -2243,28 +2256,28 @@ class _IconoPista extends StatelessWidget {
   Widget build(BuildContext context) {
     return AnimatedContainer(
       duration: const Duration(milliseconds: 140),
-      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
         color:
             focused
                 ? Colors.white.withValues(alpha: 0.18)
                 : Colors.white.withValues(alpha: 0.06),
-        borderRadius: BorderRadius.circular(24),
+        borderRadius: BorderRadius.circular(18),
         border: Border.all(
           color: focused ? Colors.white : Colors.transparent,
-          width: 2,
+          width: 1.5,
         ),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 22, color: focused ? Colors.white : Colors.white70),
-          const SizedBox(width: 10),
+          Icon(icon, size: 16, color: focused ? Colors.white : Colors.white70),
+          const SizedBox(width: 7),
           Text(
             etiqueta,
             style: TextStyle(
               color: focused ? Colors.white : Colors.white70,
-              fontSize: 17,
+              fontSize: 13,
               fontWeight: focused ? FontWeight.w600 : FontWeight.w400,
             ),
           ),

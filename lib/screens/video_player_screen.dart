@@ -134,110 +134,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     Duration.zero,
   );
   Duration _knownDuration = Duration.zero;
-  Timer? _speedPollTimer;
-  final ValueNotifier<double> _downloadSpeedBytesPerSec = ValueNotifier<double>(
-    0.0,
-  );
-
-  /// Pulso del mensaje de carga: sube uno por muestreo (300 ms).
-  ///
-  /// Existe porque `_downloadSpeedBytesPerSec` es un ValueNotifier y solo avisa
-  /// cuando el valor CAMBIA. Mientras se conecta, la velocidad es 0 muestreo
-  /// tras muestreo, asi que el texto no se repintaba nunca: se quedaba un
-  /// "Conectando al servidor..." fijo en pantalla. Un texto quieto sobre negro
-  /// es exactamente lo que hace pensar que la app se colgo.
-  ///
-  /// Con esto siempre hay algo moviendose, aunque el servidor no conteste.
-  final ValueNotifier<int> _pulsoCarga = ValueNotifier<int>(0);
-
-  /// Texto de carga: una sola palabra, y la cifra al lado cuando la hay.
-  ///
-  /// POR QUE UNA SOLA PALABRA
-  /// Antes alternaba entre "Conectando al servidor" y "Cargando video" segun la
-  /// fase, y las dos cosas estaban mal:
-  ///
-  ///  · "servidor" es jerga de sistema. Al usuario no le existe un servidor,
-  ///    le existe la pelicula. Es la clase de palabra que Netflix no escribe
-  ///    nunca en una pantalla de carga.
-  ///  · Al cambiar de fase el texto se reescribia ENTERO, que es un parpadeo
-  ///    regalado justo cuando la persona esta mirando fijamente la pantalla
-  ///    buscando señales de que algo va mal.
-  ///
-  /// Ahora la palabra no se mueve: solo se le añade la velocidad al lado. Y se
-  /// quita "video" porque ya se sabe que lo es — se esta en el reproductor.
-  ///
-  /// LA CIFRA SE QUEDA, Y ESO SI SE APARTA DE NETFLIX
-  /// Netflix no enseña nunca la velocidad: no puedes hacer nada con ese numero.
-  /// Aqui si, porque el publico convive con IPTV inestable y saber si entran
-  /// datos es lo que distingue "va lento" de "esta muerto". Es la parte que
-  /// DEMUESTRA que avanza, que era el problema a resolver.
-  ///
-  /// Un decimal y no dos: con dos, el numero baila en el ultimo digito varias
-  /// veces por segundo y el movimiento distrae mas de lo que informa.
-  String _formatLoadingSpeed(double bytesPerSec) {
-    // "Preparando" y no "Cargando".
-    //
-    // "Cargando" describe lo que hace la maquina. "Preparando" implica que
-    // alguien esta haciendo algo POR ti, y esa diferencia de tono es lo unico
-    // que crea identidad en una pantalla que se ve veinte veces al dia.
-    //
-    // Fija, nunca rotatoria: los mensajes graciosos que van cambiando hacen
-    // gracia el primer dia y molestan al decimo, porque aparecen justo cuando
-    // el usuario esta esperando y no quiere que le hagan un chiste. La
-    // identidad sale de la repeticion, no de la variedad.
-    const base = 'Preparando';
-
-    // Puntos que avanzan. Es la unica pieza en pantalla que demuestra que el
-    // hilo sigue vivo cuando todavia no entra nada.
-    String conPuntos() => '$base${'.' * (1 + (_pulsoCarga.value ~/ 2) % 3)}';
-
-    if (bytesPerSec <= 0) return conPuntos();
-
-    final mbPerSec = bytesPerSec / (1024 * 1024);
-    if (mbPerSec >= 0.1) {
-      return '$base · ${mbPerSec.toStringAsFixed(1).replaceAll('.', ',')} MB/s';
-    }
-
-    final kbPerSec = bytesPerSec / 1024;
-    if (kbPerSec >= 1) {
-      return '$base · ${kbPerSec.toStringAsFixed(0)} KB/s';
-    }
-
-    // Entra algo, pero menos de 1 KB/s. Enseñar "0 KB/s" seria peor que no
-    // enseñar cifra: parece parado cuando en realidad gotea.
-    return conPuntos();
-  }
-
-  void _startSpeedPolling() {
-    if (_speedPollTimer?.isActive == true) return;
-    _pulsoCarga.value = 0;
-    _speedPollTimer = Timer.periodic(const Duration(milliseconds: 300), (
-      _,
-    ) async {
-      if (!mounted) return;
-      if (!_isVideoLoading && !_isBuffering && !_isSeeking) {
-        _speedPollTimer?.cancel();
-        _speedPollTimer = null;
-        return;
-      }
-      double speed = await _leerCacheSpeedBytes();
-
-      if (speed <= 0 && _turboActive) {
-        final mbps = TurboProxy().sampleMbps();
-        if (mbps > 0) {
-          speed = (mbps * 1000000) / 8;
-        }
-      }
-
-      if (mounted && _downloadSpeedBytesPerSec.value != speed) {
-        _downloadSpeedBytesPerSec.value = speed;
-      }
-      // El pulso sube SIEMPRE, tenga o no velocidad que reportar. Es lo que
-      // mantiene vivo el mensaje mientras se conecta.
-      if (mounted) _pulsoCarga.value++;
-    });
-  }
-
   Duration _parseItemDuration(String? raw) {
     if (raw == null || raw.trim().isEmpty) return Duration.zero;
     final clean = raw.trim();
@@ -1055,7 +951,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _hideControlsTimer?.cancel();
     _stallTimer?.cancel();
     _liveHealthTimer?.cancel();
-    _speedPollTimer?.cancel();
     _seekFeedbackTimer?.cancel();
     _countdownTimer?.cancel();
     _progressSaveTimer?.cancel();
@@ -1111,8 +1006,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _videoFitNotifier.dispose();
     _videoControllerNotifier.dispose();
     _bufferedDuration.dispose();
-    _downloadSpeedBytesPerSec.dispose();
-    _pulsoCarga.dispose();
     _noticeAnimController.dispose();
 
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
@@ -3259,7 +3152,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// TurboProxy tiene datos en mano y cero cuando esta seco. Quien habla con
   /// el origen de verdad es TurboProxy, y su `sampleMbps()` es el unico dato
   /// que mide la red. (El indicador de velocidad de la UI ya hacia esta
-  /// distincion en `_startSpeedPolling`; el clasificador de red no.)
+  /// distincion; se retiro al dejar la carga con solo el spinner.)
   Future<void> _sampleRealThroughput() async {
     double mbps;
     if (_turboActive) {
@@ -6506,28 +6399,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                   !_showControls)
                                 _buildSeekFeedback(),
 
-                              // ── NADA DE CONTROLES MIENTRAS CARGA ──────
-                              //
-                              // Esta capa lleva la barra de arriba (atras,
-                              // titulo, cast, PiP), los botones del centro y la
-                              // de abajo. Mientras el contenido no ha empezado
-                              // a reproducirse no se pinta ninguna: en pantalla
-                              // queda solo el spinner con la velocidad debajo.
-                              //
-                              // Es la misma idea que la linea de tiempo: si
-                              // todavia no hay nada que controlar, no se enseña
-                              // el mando. Netflix hace exactamente esto.
-                              //
-                              // Se usa la MISMA condicion que el boton de cast,
-                              // asi que todo aparece a la vez y de golpe cuando
-                              // el video arranca de verdad. Ojo: `_isBuffering`
-                              // a mitad de pelicula NO cuenta —ahi los
-                              // controles siguen, que es lo que se quiere: si
-                              // se corta, tienes que poder salir o buscar.
-                              if (!_isVideoLoading && _hasPlaybackStarted)
-                                defaultTargetPlatform == TargetPlatform.iOS
-                                    ? _buildControlsIOS()
-                                    : _buildControls(),
+                              defaultTargetPlatform == TargetPlatform.iOS
+                                  ? _buildControlsIOS()
+                                  : _buildControls(),
                               if (_subtitlesEnabled &&
                                   _currentSubtitleText.isNotEmpty)
                                 _buildSubtitleOverlay(),
@@ -6588,7 +6462,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   Widget _buildVideoLoading({bool showBackground = false}) {
-    _startSpeedPolling();
     final size = MediaQuery.of(context).size;
     final double scale = (size.shortestSide / 414.0).clamp(0.8, 1.25) * 1.02;
     final double spinnerSize = 56.0 * scale;
@@ -6643,50 +6516,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                             size: spinnerSize,
                             strokeWidth: 3.5 * scale,
                           ),
-                ),
-              ),
-              // Texto de velocidad de descarga colocado exactamente debajo del spinner
-              Positioned(
-                top: spinnerSize + (14.0 * scale),
-                // AnimatedBuilder y no ValueListenableBuilder: hay que
-                // escuchar el pulso ADEMAS de la velocidad. Sin el, el mensaje
-                // se congelaba mientras la velocidad seguia clavada en 0, que
-                // es justo el rato en que parece que la app se colgo.
-                child: AnimatedBuilder(
-                  animation: Listenable.merge([
-                    _downloadSpeedBytesPerSec,
-                    _pulsoCarga,
-                  ]),
-                  builder: (context, _) {
-                    final text = _formatLoadingSpeed(
-                      _downloadSpeedBytesPerSec.value,
-                    );
-                    return Container(
-                      padding: EdgeInsets.symmetric(
-                        horizontal: 15.5 * scale,
-                        vertical: 7.4 * scale,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.55),
-                        borderRadius: BorderRadius.circular(20 * scale),
-                        border: Border.all(
-                          color: const Color.fromARGB(14, 255, 255, 255),
-                          width: 1,
-                        ),
-                      ),
-                      child: Text(
-                        text,
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          color: const Color.fromARGB(255, 223, 223, 223),
-                          fontSize: 12.7 * scale,
-                          fontWeight: FontWeight.w500,
-                          fontStyle: FontStyle.italic,
-                          letterSpacing: 0.2,
-                        ),
-                      ),
-                    );
-                  },
                 ),
               ),
             ],
@@ -7328,216 +7157,177 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                     // dura cero", que es un estado de error. Y un `--:--` sigue siendo
                                                     // un simbolo que hay que interpretar.
                                                     //
-                                                    // Mientras no hay duracion no se pinta nada: ya hay un spinner
-                                                    // centrado con los KB/s debajo, que cuenta la historia entera.
-                                                    // Es lo que hace Netflix.
-                                                    //
-                                                    // `maintainSize` reserva la altura, asi que al aparecer la barra no
-                                                    // se mueve ni un pixel de lo que hay alrededor. Y sin
-                                                    // `maintainInteractivity` (por defecto) tampoco recibe toques
-                                                    // mientras esta oculta, que es justo lo que se quiere: no se puede
-                                                    // arrastrar una linea de tiempo que todavia no significa nada.
-                                                    return Visibility(
-                                                      visible:
-                                                          duration >
-                                                          Duration.zero,
-                                                      maintainSize: true,
-                                                      maintainAnimation: true,
-                                                      maintainState: true,
-                                                      child: GestureDetector(
-                                                        behavior:
-                                                            HitTestBehavior
-                                                                .opaque,
-                                                        onHorizontalDragUpdate:
-                                                            (_) {},
-                                                        child: Column(
-                                                          children: [
-                                                            SliderTheme(
-                                                              data: SliderThemeData(
-                                                                trackHeight:
-                                                                    1.7 * scale,
-                                                                activeTrackColor:
-                                                                    Colors
-                                                                        .white,
-                                                                inactiveTrackColor: Colors
-                                                                    .white
-                                                                    .withValues(
-                                                                      alpha:
-                                                                          0.24,
-                                                                    ),
-                                                                // Pista de bufer
-                                                                // (estilo
-                                                                // YouTube): mas
-                                                                // opaca que lo no
-                                                                // cargado, mas
-                                                                // tenue que lo ya
-                                                                // reproducido.
-                                                                secondaryActiveTrackColor: Colors
-                                                                    .white
-                                                                    .withValues(
-                                                                      alpha:
-                                                                          0.45,
-                                                                    ),
-                                                                thumbColor:
-                                                                    Colors
-                                                                        .white,
-                                                                thumbShape:
-                                                                    RoundSliderThumbShape(
-                                                                      enabledThumbRadius:
-                                                                          6 *
-                                                                          scale,
-                                                                    ),
-                                                                overlayShape:
-                                                                    RoundSliderOverlayShape(
-                                                                      overlayRadius:
-                                                                          14 *
-                                                                          scale,
-                                                                    ),
-                                                              ),
-                                                              child: Slider(
-                                                                min: 0,
-                                                                max:
-                                                                    max > 0
-                                                                        ? max
-                                                                        : 1,
-                                                                value: value,
-                                                                secondaryTrackValue:
-                                                                    _bufferedSliderValue(
-                                                                      isCasting:
-                                                                          isCasting,
-                                                                      value:
-                                                                          value,
-                                                                      max:
-                                                                          max > 0
-                                                                              ? max
-                                                                              : 1,
-                                                                    ),
-                                                                onChangeStart: (
-                                                                  newValue,
-                                                                ) {
-                                                                  setState(() {
-                                                                    _isDragging =
-                                                                        true;
-                                                                    _dragValue =
-                                                                        newValue;
-                                                                  });
-                                                                },
-                                                                onChanged: (
-                                                                  newValue,
-                                                                ) {
-                                                                  setState(
-                                                                    () =>
-                                                                        _dragValue =
-                                                                            newValue,
-                                                                  );
-                                                                },
-                                                                onChangeEnd: (
-                                                                  newValue,
-                                                                ) {
-                                                                  final castService =
-                                                                      CastService();
-                                                                  if (castService
-                                                                      .isCasting
-                                                                      .value) {
-                                                                    castService.seek(
-                                                                      newValue /
-                                                                          1000.0,
-                                                                    );
-                                                                  } else {
-                                                                    _player?.seek(
-                                                                      Duration(
-                                                                        milliseconds:
-                                                                            newValue.toInt(),
+                                                    // Mientras no hay duracion la barra se pinta vacia, sin recorrido.
+                                                    // Ocupa su sitio desde el principio para que nada se mueva al
+                                                    // llegar los datos.
+                                                    return GestureDetector(
+                                                      behavior:
+                                                          HitTestBehavior
+                                                              .opaque,
+                                                      onHorizontalDragUpdate:
+                                                          (_) {},
+                                                      child: Column(
+                                                        children: [
+                                                          SliderTheme(
+                                                            data: SliderThemeData(
+                                                              trackHeight:
+                                                                  1.7 * scale,
+                                                              activeTrackColor:
+                                                                  Colors.white,
+                                                              inactiveTrackColor:
+                                                                  Colors.white
+                                                                      .withValues(
+                                                                        alpha:
+                                                                            0.24,
                                                                       ),
-                                                                    );
-                                                                  }
-                                                                  setState(() {
-                                                                    _isDragging =
-                                                                        false;
-                                                                    _isSeeking =
-                                                                        true;
-                                                                  });
-                                                                  Future.delayed(
-                                                                    const Duration(
-                                                                      milliseconds:
-                                                                          1000,
-                                                                    ),
-                                                                    () {
-                                                                      if (mounted &&
-                                                                          _isSeeking) {
-                                                                        setState(
-                                                                          () =>
-                                                                              _isSeeking =
-                                                                                  false,
-                                                                        );
-                                                                      }
-                                                                    },
-                                                                  );
-                                                                },
-                                                              ),
-                                                            ),
-                                                            Padding(
-                                                              padding:
-                                                                  EdgeInsets.symmetric(
-                                                                    horizontal:
-                                                                        8 *
+                                                              // Pista de bufer
+                                                              // (estilo
+                                                              // YouTube): mas
+                                                              // opaca que lo no
+                                                              // cargado, mas
+                                                              // tenue que lo ya
+                                                              // reproducido.
+                                                              secondaryActiveTrackColor:
+                                                                  Colors.white
+                                                                      .withValues(
+                                                                        alpha:
+                                                                            0.45,
+                                                                      ),
+                                                              thumbColor:
+                                                                  Colors.white,
+                                                              thumbShape:
+                                                                  RoundSliderThumbShape(
+                                                                    enabledThumbRadius:
+                                                                        6 *
                                                                         scale,
                                                                   ),
-                                                              child: Row(
-                                                                children: [
-                                                                  Text(
-                                                                    WatchProgressService.formatDuration(
-                                                                      _isDragging
-                                                                          ? Duration(
-                                                                            milliseconds:
-                                                                                _dragValue.toInt(),
-                                                                          )
-                                                                          : position,
-                                                                    ),
-                                                                    style: TextStyle(
-                                                                      color:
-                                                                          Colors
-                                                                              .white70,
-                                                                      fontSize:
-                                                                          11 *
-                                                                          scale,
-                                                                      fontWeight:
-                                                                          FontWeight
-                                                                              .w500,
-                                                                    ),
+                                                              overlayShape:
+                                                                  RoundSliderOverlayShape(
+                                                                    overlayRadius:
+                                                                        14 *
+                                                                        scale,
                                                                   ),
-                                                                  const Spacer(),
-                                                                  if (_playlist
-                                                                          .length >
-                                                                      1) ...[
-                                                                    IconButton(
-                                                                      icon: Icon(
-                                                                        Icons
-                                                                            .list_alt,
-                                                                        color:
-                                                                            Colors.white,
-                                                                        size:
-                                                                            20 *
-                                                                            scale,
-                                                                      ),
-                                                                      padding:
-                                                                          EdgeInsets.all(
-                                                                            6 *
-                                                                                scale,
-                                                                          ),
-                                                                      onPressed:
-                                                                          _showEpisodeSelection,
+                                                            ),
+                                                            child: Slider(
+                                                              min: 0,
+                                                              max:
+                                                                  max > 0
+                                                                      ? max
+                                                                      : 1,
+                                                              value: value,
+                                                              secondaryTrackValue:
+                                                                  _bufferedSliderValue(
+                                                                    isCasting:
+                                                                        isCasting,
+                                                                    value:
+                                                                        value,
+                                                                    max:
+                                                                        max > 0
+                                                                            ? max
+                                                                            : 1,
+                                                                  ),
+                                                              onChangeStart: (
+                                                                newValue,
+                                                              ) {
+                                                                setState(() {
+                                                                  _isDragging =
+                                                                      true;
+                                                                  _dragValue =
+                                                                      newValue;
+                                                                });
+                                                              },
+                                                              onChanged: (
+                                                                newValue,
+                                                              ) {
+                                                                setState(
+                                                                  () =>
+                                                                      _dragValue =
+                                                                          newValue,
+                                                                );
+                                                              },
+                                                              onChangeEnd: (
+                                                                newValue,
+                                                              ) {
+                                                                final castService =
+                                                                    CastService();
+                                                                if (castService
+                                                                    .isCasting
+                                                                    .value) {
+                                                                  castService.seek(
+                                                                    newValue /
+                                                                        1000.0,
+                                                                  );
+                                                                } else {
+                                                                  _player?.seek(
+                                                                    Duration(
+                                                                      milliseconds:
+                                                                          newValue
+                                                                              .toInt(),
                                                                     ),
-                                                                    SizedBox(
-                                                                      width:
-                                                                          8 *
-                                                                          scale,
-                                                                    ),
-                                                                  ],
+                                                                  );
+                                                                }
+                                                                setState(() {
+                                                                  _isDragging =
+                                                                      false;
+                                                                  _isSeeking =
+                                                                      true;
+                                                                });
+                                                                Future.delayed(
+                                                                  const Duration(
+                                                                    milliseconds:
+                                                                        1000,
+                                                                  ),
+                                                                  () {
+                                                                    if (mounted &&
+                                                                        _isSeeking) {
+                                                                      setState(
+                                                                        () =>
+                                                                            _isSeeking =
+                                                                                false,
+                                                                      );
+                                                                    }
+                                                                  },
+                                                                );
+                                                              },
+                                                            ),
+                                                          ),
+                                                          Padding(
+                                                            padding:
+                                                                EdgeInsets.symmetric(
+                                                                  horizontal:
+                                                                      8 * scale,
+                                                                ),
+                                                            child: Row(
+                                                              children: [
+                                                                Text(
+                                                                  WatchProgressService.formatDuration(
+                                                                    _isDragging
+                                                                        ? Duration(
+                                                                          milliseconds:
+                                                                              _dragValue.toInt(),
+                                                                        )
+                                                                        : position,
+                                                                  ),
+                                                                  style: TextStyle(
+                                                                    color:
+                                                                        Colors
+                                                                            .white70,
+                                                                    fontSize:
+                                                                        11 *
+                                                                        scale,
+                                                                    fontWeight:
+                                                                        FontWeight
+                                                                            .w500,
+                                                                  ),
+                                                                ),
+                                                                const Spacer(),
+                                                                if (_playlist
+                                                                        .length >
+                                                                    1) ...[
                                                                   IconButton(
                                                                     icon: Icon(
                                                                       Icons
-                                                                          .settings,
+                                                                          .list_alt,
                                                                       color:
                                                                           Colors
                                                                               .white,
@@ -7551,34 +7341,56 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                               scale,
                                                                         ),
                                                                     onPressed:
-                                                                        _showSettingsMenu,
+                                                                        _showEpisodeSelection,
                                                                   ),
                                                                   SizedBox(
                                                                     width:
                                                                         8 *
                                                                         scale,
                                                                   ),
-                                                                  Text(
-                                                                    WatchProgressService.formatDuration(
-                                                                      duration,
-                                                                    ),
-                                                                    style: TextStyle(
-                                                                      color:
-                                                                          Colors
-                                                                              .white70,
-                                                                      fontSize:
-                                                                          11 *
-                                                                          scale,
-                                                                      fontWeight:
-                                                                          FontWeight
-                                                                              .w500,
-                                                                    ),
-                                                                  ),
                                                                 ],
-                                                              ),
+                                                                IconButton(
+                                                                  icon: Icon(
+                                                                    Icons
+                                                                        .settings,
+                                                                    color:
+                                                                        Colors
+                                                                            .white,
+                                                                    size:
+                                                                        20 *
+                                                                        scale,
+                                                                  ),
+                                                                  padding:
+                                                                      EdgeInsets.all(
+                                                                        6 * scale,
+                                                                      ),
+                                                                  onPressed:
+                                                                      _showSettingsMenu,
+                                                                ),
+                                                                SizedBox(
+                                                                  width:
+                                                                      8 * scale,
+                                                                ),
+                                                                Text(
+                                                                  WatchProgressService.formatDuration(
+                                                                    duration,
+                                                                  ),
+                                                                  style: TextStyle(
+                                                                    color:
+                                                                        Colors
+                                                                            .white70,
+                                                                    fontSize:
+                                                                        11 *
+                                                                        scale,
+                                                                    fontWeight:
+                                                                        FontWeight
+                                                                            .w500,
+                                                                  ),
+                                                                ),
+                                                              ],
                                                             ),
-                                                          ],
-                                                        ),
+                                                          ),
+                                                        ],
                                                       ),
                                                     );
                                                   },
@@ -8229,218 +8041,169 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                   // dura cero", que es un estado de error. Y un `--:--` sigue siendo
                                                   // un simbolo que hay que interpretar.
                                                   //
-                                                  // Mientras no hay duracion no se pinta nada: ya hay un spinner
-                                                  // centrado con los KB/s debajo, que cuenta la historia entera.
-                                                  // Es lo que hace Netflix.
-                                                  //
-                                                  // `maintainSize` reserva la altura, asi que al aparecer la barra no
-                                                  // se mueve ni un pixel de lo que hay alrededor. Y sin
-                                                  // `maintainInteractivity` (por defecto) tampoco recibe toques
-                                                  // mientras esta oculta, que es justo lo que se quiere: no se puede
-                                                  // arrastrar una linea de tiempo que todavia no significa nada.
-                                                  return Visibility(
-                                                    visible:
-                                                        duration >
-                                                        Duration.zero,
-                                                    maintainSize: true,
-                                                    maintainAnimation: true,
-                                                    maintainState: true,
-                                                    child: GestureDetector(
-                                                      behavior:
-                                                          HitTestBehavior
-                                                              .opaque,
-                                                      onHorizontalDragUpdate:
-                                                          (_) {},
-                                                      child: Column(
-                                                        mainAxisSize:
-                                                            MainAxisSize.min,
-                                                        children: [
-                                                          // Slider iOS
-                                                          SliderTheme(
-                                                            data: SliderThemeData(
-                                                              trackHeight:
-                                                                  2.5 * scale,
-                                                              activeTrackColor:
-                                                                  Colors.white,
-                                                              inactiveTrackColor:
-                                                                  Colors.white
-                                                                      .withValues(
-                                                                        alpha:
-                                                                            0.28,
-                                                                      ),
-                                                              secondaryActiveTrackColor:
-                                                                  Colors.white
-                                                                      .withValues(
-                                                                        alpha:
-                                                                            0.45,
-                                                                      ),
-                                                              thumbColor:
-                                                                  Colors.white,
-                                                              thumbShape:
-                                                                  RoundSliderThumbShape(
-                                                                    enabledThumbRadius:
-                                                                        6 *
-                                                                        scale,
-                                                                  ),
-                                                              overlayShape:
-                                                                  RoundSliderOverlayShape(
-                                                                    overlayRadius:
-                                                                        16 *
-                                                                        scale,
-                                                                  ),
-                                                            ),
-                                                            child: Slider(
-                                                              min: 0,
-                                                              max:
-                                                                  maxMs > 0
-                                                                      ? maxMs
-                                                                      : 1,
-                                                              value: curMs,
-                                                              secondaryTrackValue:
-                                                                  _bufferedSliderValue(
-                                                                    isCasting:
-                                                                        isCasting,
-                                                                    value:
-                                                                        curMs,
-                                                                    max: maxMs,
-                                                                  ),
-                                                              onChangeStart:
-                                                                  (
-                                                                    v,
-                                                                  ) => setState(() {
+                                                  // Mientras no hay duracion la barra se pinta vacia, sin recorrido.
+                                                  // Ocupa su sitio desde el principio para que nada se mueva al
+                                                  // llegar los datos.
+                                                  return GestureDetector(
+                                                    behavior:
+                                                        HitTestBehavior.opaque,
+                                                    onHorizontalDragUpdate:
+                                                        (_) {},
+                                                    child: Column(
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      children: [
+                                                        // Slider iOS
+                                                        SliderTheme(
+                                                          data: SliderThemeData(
+                                                            trackHeight:
+                                                                2.5 * scale,
+                                                            activeTrackColor:
+                                                                Colors.white,
+                                                            inactiveTrackColor:
+                                                                Colors.white
+                                                                    .withValues(
+                                                                      alpha:
+                                                                          0.28,
+                                                                    ),
+                                                            secondaryActiveTrackColor:
+                                                                Colors.white
+                                                                    .withValues(
+                                                                      alpha:
+                                                                          0.45,
+                                                                    ),
+                                                            thumbColor:
+                                                                Colors.white,
+                                                            thumbShape:
+                                                                RoundSliderThumbShape(
+                                                                  enabledThumbRadius:
+                                                                      6 * scale,
+                                                                ),
+                                                            overlayShape:
+                                                                RoundSliderOverlayShape(
+                                                                  overlayRadius:
+                                                                      16 *
+                                                                      scale,
+                                                                ),
+                                                          ),
+                                                          child: Slider(
+                                                            min: 0,
+                                                            max:
+                                                                maxMs > 0
+                                                                    ? maxMs
+                                                                    : 1,
+                                                            value: curMs,
+                                                            secondaryTrackValue:
+                                                                _bufferedSliderValue(
+                                                                  isCasting:
+                                                                      isCasting,
+                                                                  value: curMs,
+                                                                  max: maxMs,
+                                                                ),
+                                                            onChangeStart:
+                                                                (v) => setState(
+                                                                  () {
                                                                     _isDragging =
                                                                         true;
                                                                     _dragValue =
                                                                         v;
-                                                                  }),
-                                                              onChanged:
-                                                                  (
-                                                                    v,
-                                                                  ) => setState(
-                                                                    () =>
-                                                                        _dragValue =
-                                                                            v,
-                                                                  ),
-                                                              onChangeEnd: (v) {
-                                                                final cs =
-                                                                    CastService();
-                                                                if (cs
-                                                                    .isCasting
-                                                                    .value) {
-                                                                  cs.seek(
-                                                                    v / 1000.0,
-                                                                  );
-                                                                } else {
-                                                                  _player?.seek(
-                                                                    Duration(
-                                                                      milliseconds:
-                                                                          v.toInt(),
-                                                                    ),
-                                                                  );
-                                                                }
-                                                                setState(() {
-                                                                  _isDragging =
-                                                                      false;
-                                                                  _isSeeking =
-                                                                      true;
-                                                                });
-                                                                Future.delayed(
-                                                                  const Duration(
-                                                                    milliseconds:
-                                                                        1000,
-                                                                  ),
-                                                                  () {
-                                                                    if (mounted &&
-                                                                        _isSeeking) {
-                                                                      setState(
-                                                                        () =>
-                                                                            _isSeeking =
-                                                                                false,
-                                                                      );
-                                                                    }
                                                                   },
+                                                                ),
+                                                            onChanged:
+                                                                (v) => setState(
+                                                                  () =>
+                                                                      _dragValue =
+                                                                          v,
+                                                                ),
+                                                            onChangeEnd: (v) {
+                                                              final cs =
+                                                                  CastService();
+                                                              if (cs
+                                                                  .isCasting
+                                                                  .value) {
+                                                                cs.seek(
+                                                                  v / 1000.0,
                                                                 );
-                                                              },
-                                                            ),
+                                                              } else {
+                                                                _player?.seek(
+                                                                  Duration(
+                                                                    milliseconds:
+                                                                        v.toInt(),
+                                                                  ),
+                                                                );
+                                                              }
+                                                              setState(() {
+                                                                _isDragging =
+                                                                    false;
+                                                                _isSeeking =
+                                                                    true;
+                                                              });
+                                                              Future.delayed(
+                                                                const Duration(
+                                                                  milliseconds:
+                                                                      1000,
+                                                                ),
+                                                                () {
+                                                                  if (mounted &&
+                                                                      _isSeeking) {
+                                                                    setState(
+                                                                      () =>
+                                                                          _isSeeking =
+                                                                              false,
+                                                                    );
+                                                                  }
+                                                                },
+                                                              );
+                                                            },
                                                           ),
-                                                          // Tiempo + botones
-                                                          Padding(
-                                                            padding:
-                                                                EdgeInsets.symmetric(
-                                                                  horizontal:
-                                                                      6 * scale,
+                                                        ),
+                                                        Padding(
+                                                          padding:
+                                                              EdgeInsets.symmetric(
+                                                                horizontal:
+                                                                    6 * scale,
+                                                              ),
+                                                          child: Row(
+                                                            children: [
+                                                              Text(
+                                                                // Posición REAL:
+                                                                // si el stream no
+                                                                // reporta duración,
+                                                                // el clamp de curMs
+                                                                // la dejaría en 0.
+                                                                WatchProgressService.formatDuration(
+                                                                  _isDragging
+                                                                      ? Duration(
+                                                                        milliseconds:
+                                                                            _dragValue.toInt(),
+                                                                      )
+                                                                      : position,
                                                                 ),
-                                                            child: Row(
-                                                              children: [
-                                                                Text(
-                                                                  // Posición REAL:
-                                                                  // si el stream no
-                                                                  // reporta duración,
-                                                                  // el clamp de curMs
-                                                                  // la dejaría en 0.
-                                                                  WatchProgressService.formatDuration(
-                                                                    _isDragging
-                                                                        ? Duration(
-                                                                          milliseconds:
-                                                                              _dragValue.toInt(),
-                                                                        )
-                                                                        : position,
-                                                                  ),
-                                                                  style: TextStyle(
-                                                                    color:
-                                                                        Colors
-                                                                            .white,
-                                                                    fontSize:
-                                                                        13 *
-                                                                        scale,
-                                                                    fontWeight:
-                                                                        FontWeight
-                                                                            .w400,
-                                                                    letterSpacing:
-                                                                        0.1,
-                                                                  ),
+                                                                style: TextStyle(
+                                                                  color:
+                                                                      Colors
+                                                                          .white,
+                                                                  fontSize:
+                                                                      13 *
+                                                                      scale,
+                                                                  fontWeight:
+                                                                      FontWeight
+                                                                          .w400,
+                                                                  letterSpacing:
+                                                                      0.1,
                                                                 ),
-                                                                const Spacer(),
-                                                                if (_playlist
-                                                                        .length >
-                                                                    1) ...[
-                                                                  CupertinoButton(
-                                                                    padding:
-                                                                        EdgeInsets.all(
-                                                                          6 *
-                                                                              scale,
-                                                                        ),
-                                                                    onPressed:
-                                                                        _showEpisodeSelection,
-                                                                    minimumSize:
-                                                                        Size(
-                                                                          0,
-                                                                          0,
-                                                                        ),
-                                                                    child: Icon(
-                                                                      CupertinoIcons
-                                                                          .list_bullet,
-                                                                      color:
-                                                                          Colors
-                                                                              .white,
-                                                                      size:
-                                                                          20 *
-                                                                          scale,
-                                                                    ),
-                                                                  ),
-                                                                  SizedBox(
-                                                                    width:
-                                                                        4 *
-                                                                        scale,
-                                                                  ),
-                                                                ],
+                                                              ),
+                                                              const Spacer(),
+                                                              if (_playlist
+                                                                      .length >
+                                                                  1) ...[
                                                                 CupertinoButton(
                                                                   padding:
                                                                       EdgeInsets.all(
                                                                         6 * scale,
                                                                       ),
                                                                   onPressed:
-                                                                      _showSettingsMenu,
+                                                                      _showEpisodeSelection,
                                                                   minimumSize:
                                                                       Size(
                                                                         0,
@@ -8448,7 +8211,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                       ),
                                                                   child: Icon(
                                                                     CupertinoIcons
-                                                                        .gear,
+                                                                        .list_bullet,
                                                                     color:
                                                                         Colors
                                                                             .white,
@@ -8459,31 +8222,55 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                 ),
                                                                 SizedBox(
                                                                   width:
-                                                                      6 * scale,
-                                                                ),
-                                                                Text(
-                                                                  WatchProgressService.formatDuration(
-                                                                    duration,
-                                                                  ),
-                                                                  style: TextStyle(
-                                                                    color:
-                                                                        Colors
-                                                                            .white70,
-                                                                    fontSize:
-                                                                        13 *
-                                                                        scale,
-                                                                    fontWeight:
-                                                                        FontWeight
-                                                                            .w400,
-                                                                    letterSpacing:
-                                                                        0.1,
-                                                                  ),
+                                                                      4 * scale,
                                                                 ),
                                                               ],
-                                                            ),
+                                                              CupertinoButton(
+                                                                padding:
+                                                                    EdgeInsets.all(
+                                                                      6 * scale,
+                                                                    ),
+                                                                onPressed:
+                                                                    _showSettingsMenu,
+                                                                minimumSize:
+                                                                    Size(0, 0),
+                                                                child: Icon(
+                                                                  CupertinoIcons
+                                                                      .gear,
+                                                                  color:
+                                                                      Colors
+                                                                          .white,
+                                                                  size:
+                                                                      20 *
+                                                                      scale,
+                                                                ),
+                                                              ),
+                                                              SizedBox(
+                                                                width:
+                                                                    6 * scale,
+                                                              ),
+                                                              Text(
+                                                                WatchProgressService.formatDuration(
+                                                                  duration,
+                                                                ),
+                                                                style: TextStyle(
+                                                                  color:
+                                                                      Colors
+                                                                          .white70,
+                                                                  fontSize:
+                                                                      13 *
+                                                                      scale,
+                                                                  fontWeight:
+                                                                      FontWeight
+                                                                          .w400,
+                                                                  letterSpacing:
+                                                                      0.1,
+                                                                ),
+                                                              ),
+                                                            ],
                                                           ),
-                                                        ],
-                                                      ),
+                                                        ),
+                                                      ],
                                                     ),
                                                   );
                                                 },
