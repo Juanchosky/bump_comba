@@ -122,6 +122,28 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
   /// normales del bufer, y por encima el usuario ya se ha ido.
   static const int _umbralParado = 9;
 
+  // ── Vigilante de ARRANQUE ────────────────────────────────────────────────
+  //
+  // Es un fallo DISTINTO del de "se paro a mitad", y necesita su propio juez.
+  //
+  // El de mitad mira si la posicion avanza. Ese no sirve aqui: durante el
+  // arranque la posicion es 0 y no se mueve porque aun no hay imagen. Aplicarle
+  // el mismo criterio provocaba que cambiara de servidor cada 9s sin dejar
+  // arrancar nunca; excluir el arranque del todo dejaba el caso contrario, un
+  // servidor que se queda cargando para siempre y nadie lo releva.
+  //
+  // Lo que se mide aqui es si ENTRAN DATOS. Con `cache-speed` a cero no esta
+  // cargando lento: no esta cargando.
+  int _segundosSinDatos = 0;
+  int _segundosDesdeAbrir = 0;
+
+  /// Segundos SIN QUE ENTRE UN SOLO BYTE antes de dar el servidor por muerto.
+  static const int _umbralSinDatos = 12;
+
+  /// Tope absoluto: aunque entren datos, si a los 45s no hay imagen es que algo
+  /// va mal —un archivo corrupto, un servidor que gotea— y se prueba otro.
+  static const int _topeArranque = 45;
+
   /// Avisos de MPV de que los bytes que llegan estan rotos.
   ///
   /// Un vigilante que solo mira si la posicion avanza NO ve este fallo: con
@@ -147,7 +169,6 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
     // Ahora los dos comparten `TvMpvConfig` — framedrop=vo, cache en RAM, el
     // reparto 96/48 MB del bufer... — que son decisiones ganadas peleando con
     // este proveedor en este aparato.
-    unawaited(TvMpvConfig.aplicarBase(_player));
 
     _subs.addAll([
       _player.stream.playing.listen((v) {
@@ -203,6 +224,14 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
   /// que nadie pidio: en el 95% de los casos se quiere continuar, y para el
   /// otro 5% ya esta la barra de tiempo.
   Future<void> _arrancar() async {
+    // LA CONFIGURACION DE MPV SE ESPERA, no se lanza y se olvida.
+    //
+    // Estaba con `unawaited`, asi que el `open()` podia salir ANTES de que
+    // estuvieran puestos el tamaño de cache, el reparto del bufer y el resto.
+    // MPV arrancaba con sus valores por defecto y se comportaba de otra forma
+    // — justo lo que este perfil existe para evitar.
+    await TvMpvConfig.aplicarBase(_player);
+
     Duration desde = Duration.zero;
     try {
       final p = await _progreso.getProgressForItem(widget.item);
@@ -225,6 +254,11 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
   }
 
   Future<void> _abrir(Duration desde) async {
+    // Servidor nuevo, cuenta nueva: lo que tardara el anterior no puede
+    // condenar a este.
+    _segundosSinDatos = 0;
+    _segundosDesdeAbrir = 0;
+
     final original = _urls[_idxServidor];
     String url = original;
 
@@ -298,7 +332,9 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
   // ── Vigilante: cambiar de servidor cuando este va mal ────────────────────
   void _armarVigilante() {
     _vigilante?.cancel();
-    if (_urls.length < 2) return; // sin alternativa no hay nada que vigilar
+    // Se arma SIEMPRE, aunque no haya alternativa: `_siguienteServidor` ya
+    // comprueba si hay adonde ir, y el contador de arranque sirve igual para
+    // dejar constancia en el log de que ese servidor no dio un byte.
 
     _vigilante = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted || _cambiandoServidor) return;
@@ -312,6 +348,51 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
       if (_corrupcion.length >= _corrupcionParaCambiar) {
         _corrupcion.clear();
         unawaited(_siguienteServidor('datos corruptos'));
+        return;
+      }
+
+      // ── Nada de esto cuenta mientras el video todavia ARRANCA ──────────
+      //
+      // Este vigilante mide "la posicion no se mueve". Pero durante la carga
+      // inicial la posicion es 0 y no se mueve porque aun no hay imagen, no
+      // porque el servidor falle.
+      //
+      // Sin esta guarda el resultado era demoledor: a los 9s saltaba, cambiaba
+      // de servidor, volvia a empezar, y a los 9s otra vez. El contenido no
+      // llegaba a cargar NUNCA y en pantalla se veia "Cambiando de servidor"
+      // una y otra vez sobre un fondo negro. El arranque lento que se estaba
+      // viendo no era lentitud: era este bucle.
+      //
+      // Mientras bufferea tampoco: bufferear es estar cargando, no estar
+      // atascado. El caso de "no arranca" tiene su propio remedio — si el video
+      // nunca empieza, no hay nada que vigilar aqui.
+      // ── Todavia ARRANCANDO ─────────────────────────────────────────────
+      if (!_primerFrameListo) {
+        _segundosSinAvance = 0;
+        _posVigilada = _posicion;
+        _segundosDesdeAbrir++;
+
+        // Sin un solo byte entrando: el servidor no esta lento, esta muerto.
+        if (_kbps <= 0) {
+          _segundosSinDatos++;
+        } else {
+          _segundosSinDatos = 0;
+        }
+
+        if (_segundosSinDatos >= _umbralSinDatos) {
+          unawaited(
+            _siguienteServidor('sin datos en ${_umbralSinDatos}s al arrancar'),
+          );
+        } else if (_segundosDesdeAbrir >= _topeArranque) {
+          unawaited(_siguienteServidor('sin imagen tras ${_topeArranque}s'));
+        }
+        return;
+      }
+
+      // Bufferear con imagen ya en pantalla es cargar, no estar atascado.
+      if (_buffering) {
+        _segundosSinAvance = 0;
+        _posVigilada = _posicion;
         return;
       }
 
@@ -339,6 +420,12 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
     if (_urls.length < 2 || _cambiandoServidor) return;
 
     _cambiandoServidor = true;
+    // Servidor nuevo: vuelve a no haber imagen hasta que llegue la primera. Sin
+    // esto, el vigilante seguiria contando desde el primer segundo del video
+    // nuevo y encadenaria otro cambio.
+    if (mounted) setState(() => _primerFrameListo = false);
+    _segundosSinDatos = 0;
+    _segundosDesdeAbrir = 0;
     final desde = _posicion;
     _idxServidor = (_idxServidor + 1) % _urls.length;
     debugPrint('TvPlayer: cambio de servidor ($motivo) -> $_idxServidor');
@@ -741,6 +828,45 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
                   child: Text(
                     'Reanudado desde ${_fmt(_reanudadoDesde!)}',
                     style: const TextStyle(color: Colors.white54, fontSize: 15),
+                  ),
+                ),
+
+              // ── Play, SOLO EN PAUSA ─────────────────────────────────
+              //
+              // Es lo que hace el receptor, y tenia razon de ser: no es un
+              // control permanente sino un "dale para seguir". Mientras se
+              // reproduce no pinta nada en mitad de la pantalla; en cuanto
+              // pausas, aparece y dice que hacer.
+              //
+              // Yo lo habia quitado del todo al malinterpretar que no debia
+              // salir "ahi" — no salia SIEMPRE, que es distinto.
+              if (!_reproduciendo &&
+                  !_buffering &&
+                  _primerFrameListo &&
+                  !_menuAbierto)
+                Center(
+                  child: Container(
+                    width: 72,
+                    height: 72,
+                    decoration: const BoxDecoration(
+                      shape: BoxShape.circle,
+                      // Misma esfera roja glossy que el receptor.
+                      gradient: RadialGradient(
+                        center: Alignment(-0.4, -0.5),
+                        radius: 1.2,
+                        colors: [
+                          Color(0xFFFF6B5E),
+                          Color(0xFFE53935),
+                          Color(0xFFB71C1C),
+                        ],
+                        stops: [0.0, 0.55, 1.0],
+                      ),
+                    ),
+                    child: const Icon(
+                      Icons.play_arrow_rounded,
+                      color: Colors.white,
+                      size: 40,
+                    ),
                   ),
                 ),
 
