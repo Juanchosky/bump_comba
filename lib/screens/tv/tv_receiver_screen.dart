@@ -159,29 +159,18 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
   bool? _tvVinculado;
 
   Future<void> _revisarVinculoTv() async {
+    // Basta con que HAYA token para pintar el catalogo. La validacion contra el
+    // servidor va aparte y en segundo plano: si se esperara su respuesta, un
+    // televisor sin red se quedaria en la pantalla de espera para siempre, y
+    // quien ya pago no tiene por que perder el acceso porque el wifi falle.
     final token = await TvPairingService.instance.tokenGuardado();
     if (!mounted) return;
-
-    // EN DEPURACION LA INTERFAZ VA SIEMPRE DESBLOQUEADA.
-    //
-    // Sin esto no hay forma de probar el catalogo ni el reproductor del TV:
-    // haria falta una suscripcion activa de verdad y pasar por la vinculacion
-    // entera cada vez que se reinstala.
-    //
-    // Misma convencion que `PremiumService.isPremium`, que devuelve
-    // `kDebugMode ? true : _isPremium`. Y `kDebugMode` es constante de
-    // compilacion: en release esta rama no existe en el binario.
-    //
-    // OJO: desbloquea la PANTALLA, no se salta la validacion. Si hay token se
-    // valida igual, porque es ahi donde llegan las fuentes del telefono — y
-    // sin fuentes el catalogo sale vacio por muy desbloqueado que este.
-    setState(() => _tvVinculado = kDebugMode || token != null);
+    setState(() => _tvVinculado = token != null);
     if (token == null) return;
 
     final valido = await TvPairingService.instance.validarToken();
-    // `null` = no se pudo preguntar. Solo un NO explicito cierra la puerta, y
-    // en depuracion no la cierra nunca.
-    if (mounted && valido == false && !kDebugMode) {
+    // `null` = no se pudo preguntar. Solo un NO explicito cierra la puerta.
+    if (mounted && valido == false) {
       setState(() => _tvVinculado = false);
     }
   }

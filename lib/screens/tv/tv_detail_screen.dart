@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../models/m3u_item.dart';
 import '../../services/tmdb_service.dart';
@@ -32,6 +33,9 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
   Map<String, dynamic>? _ficha;
   bool _buscando = true;
 
+  /// Temporada elegida. `null` hasta que se sabe cual es la primera.
+  int? _temporada;
+
   @override
   void initState() {
     super.initState();
@@ -42,8 +46,9 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
     try {
       final d = await TMDBService().searchAndGetDetails(
         // De una serie se busca la serie, no el episodio: "Capítulo 4" no
-        // existe en TMDB, pero el nombre de la serie sí.
-        widget.item.seriesName ?? widget.item.name,
+        // existe en TMDB, pero el nombre de la serie sí. Y limpio, porque los
+        // titulos del proveedor vienen con basura pegada.
+        _paraBuscar(widget.item.seriesName ?? widget.item.name),
         isSeries: widget.item.isSeries || widget.item.seriesName != null,
       );
       if (mounted) setState(() => _ficha = d.isEmpty ? null : d);
@@ -64,6 +69,59 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
           : (a.episodeNumber ?? 0).compareTo(b.episodeNumber ?? 0);
     });
     return lista;
+  }
+
+  /// Deja el titulo en algo que TMDB pueda encontrar.
+  ///
+  /// Los nombres del proveedor llegan asi: "Spider Man - Un Nuevo Día (HDTS)
+  /// (2026)". Con la marca de calidad y el año pegados, TMDB no devuelve nada
+  /// —la ficha salia siempre vacia— y no es un fallo de TMDB: le estabamos
+  /// pasando un nombre que no existe.
+  ///
+  /// Se quitan las marcas de calidad, el año entre parentesis y los corchetes
+  /// del proveedor. El año NO se pierde del todo: `searchAndGetDetails` ya lo
+  /// extrae por su cuenta del texto original para afinar la busqueda.
+  static final RegExp _basura = RegExp(
+    r'\((?:HDTS|CAM|TS|HDRIP|BRRIP|WEBRIP|WEB-?DL|HD|SD|4K|FHD|UHD|LAT|CAST|'
+    r'SUB|VOSE|DUAL|REMUX|BLURAY|DVDRIP|SCREENER|LINE)\)|\[[^\]]*\]|'
+    r'(?:19|20)\d{2}|\(\s*\)',
+    caseSensitive: false,
+  );
+
+  static String _paraBuscar(String bruto) {
+    var t = bruto.replaceAll(_basura, ' ');
+    // Los parentesis que quedan vacios tras vaciar su contenido.
+    t = t.replaceAll(RegExp(r'\(\s*\)'), ' ');
+    // Separadores del proveedor al final: " - ", " | ", puntos sueltos.
+    t = t.replaceAll(RegExp(r'\s*[|·]\s*'), ' ');
+    t = t.replaceAll(RegExp(r'\s{2,}'), ' ').trim();
+    // Un guion suelto al final no aporta y estorba a la busqueda.
+    t = t.replaceAll(RegExp(r'\s*-\s*$'), '').trim();
+    return t.isEmpty ? bruto : t;
+  }
+
+  /// Las temporadas que trae esta serie, ordenadas.
+  List<int> get _temporadas {
+    final t = <int>{};
+    for (final e in _episodios) {
+      t.add(e.seasonNumber ?? 1);
+    }
+    final lista = t.toList()..sort();
+    return lista;
+  }
+
+  /// Episodios de la temporada elegida.
+  ///
+  /// Con una sola temporada no se filtra nada y tampoco se enseña el selector:
+  /// un control con una unica opcion es un control que sobra.
+  List<M3UItem> get _episodiosVisibles {
+    final temporadas = _temporadas;
+    if (temporadas.length < 2) return _episodios;
+    final elegida = _temporada ?? temporadas.first;
+    return [
+      for (final e in _episodios)
+        if ((e.seasonNumber ?? 1) == elegida) e,
+    ];
   }
 
   void _reproducir(M3UItem queVer) {
@@ -267,14 +325,41 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
                           ),
                         ),
                         const SizedBox(height: 8),
+
+                        // Selector de temporada, solo si hay mas de una.
+                        if (_temporadas.length > 1) ...[
+                          SizedBox(
+                            height: 40,
+                            child: ListView(
+                              scrollDirection: Axis.horizontal,
+                              children: [
+                                for (final t in _temporadas)
+                                  _ChipTemporada(
+                                    numero: t,
+                                    elegida:
+                                        (_temporada ?? _temporadas.first) == t,
+                                    onOk: () => setState(() => _temporada = t),
+                                  ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                        ],
+
                         Expanded(
                           child: ListView.builder(
-                            itemCount: episodios.length,
-                            itemBuilder:
-                                (context, i) => _FilaEpisodio(
-                                  episodio: episodios[i],
-                                  onOk: () => _reproducir(episodios[i]),
-                                ),
+                            // La clave incluye la temporada: sin ella, Flutter
+                            // reutiliza las filas y la lista se queda con los
+                            // episodios de la temporada anterior.
+                            key: ValueKey(_temporada),
+                            itemCount: _episodiosVisibles.length,
+                            itemBuilder: (context, i) {
+                              final ep = _episodiosVisibles[i];
+                              return _FilaEpisodio(
+                                episodio: ep,
+                                onOk: () => _reproducir(ep),
+                              );
+                            },
                           ),
                         ),
                       ] else
@@ -410,16 +495,26 @@ class _BotonPrincipalState extends State<_BotonPrincipal> {
 
   @override
   Widget build(BuildContext context) {
-    return FocusableActionDetector(
+    return Focus(
       autofocus: widget.autofocus,
-      onShowFocusHighlight: (v) => setState(() => _foco = v),
-      actions: <Type, Action<Intent>>{
-        ActivateIntent: CallbackAction<ActivateIntent>(
-          onInvoke: (_) {
-            widget.onOk();
-            return null;
-          },
-        ),
+      onFocusChange: (v) => setState(() => _foco = v),
+      // OK SE LEE DIRECTO DE LA TECLA, sin Actions ni Intents.
+      //
+      // Dos intentos fallaron antes en el aparato: un `Actions` colgado DENTRO
+      // del `Focus` (los Intent se despachan hacia ARRIBA, asi que no se
+      // consultaba nunca) y `onShowFocusHighlight`, que depende de
+      // `FocusManager.highlightMode` y con el mando de un televisor no se pone
+      // en modo teclado. Leer la tecla no depende de ninguna de las dos cosas.
+      onKeyEvent: (node, event) {
+        if (event is! KeyDownEvent) return KeyEventResult.ignored;
+        final k = event.logicalKey;
+        if (k == LogicalKeyboardKey.select ||
+            k == LogicalKeyboardKey.enter ||
+            k == LogicalKeyboardKey.gameButtonA) {
+          widget.onOk();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
       },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 140),
@@ -473,8 +568,8 @@ class _FilaEpisodioState extends State<_FilaEpisodio> {
       if (ep.episodeNumber != null) 'E${ep.episodeNumber}',
     ].join(' ');
 
-    return FocusableActionDetector(
-      onShowFocusHighlight: (v) {
+    return Focus(
+      onFocusChange: (v) {
         setState(() => _foco = v);
         if (v) {
           Scrollable.ensureVisible(
@@ -484,13 +579,23 @@ class _FilaEpisodioState extends State<_FilaEpisodio> {
           );
         }
       },
-      actions: <Type, Action<Intent>>{
-        ActivateIntent: CallbackAction<ActivateIntent>(
-          onInvoke: (_) {
-            widget.onOk();
-            return null;
-          },
-        ),
+      // OK SE LEE DIRECTO DE LA TECLA, sin Actions ni Intents.
+      //
+      // Dos intentos fallaron antes en el aparato: un `Actions` colgado DENTRO
+      // del `Focus` (los Intent se despachan hacia ARRIBA, asi que no se
+      // consultaba nunca) y `onShowFocusHighlight`, que depende de
+      // `FocusManager.highlightMode` y con el mando de un televisor no se pone
+      // en modo teclado. Leer la tecla no depende de ninguna de las dos cosas.
+      onKeyEvent: (node, event) {
+        if (event is! KeyDownEvent) return KeyEventResult.ignored;
+        final k = event.logicalKey;
+        if (k == LogicalKeyboardKey.select ||
+            k == LogicalKeyboardKey.enter ||
+            k == LogicalKeyboardKey.gameButtonA) {
+          widget.onOk();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
       },
       child: Container(
         margin: const EdgeInsets.only(bottom: 4),
@@ -524,6 +629,73 @@ class _FilaEpisodioState extends State<_FilaEpisodio> {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Numero de temporada en la ficha de una serie.
+class _ChipTemporada extends StatefulWidget {
+  final int numero;
+  final bool elegida;
+  final VoidCallback onOk;
+
+  const _ChipTemporada({
+    required this.numero,
+    required this.elegida,
+    required this.onOk,
+  });
+
+  @override
+  State<_ChipTemporada> createState() => _ChipTemporadaState();
+}
+
+class _ChipTemporadaState extends State<_ChipTemporada> {
+  bool _foco = false;
+
+  @override
+  Widget build(BuildContext context) {
+    // Dos estados que se leen a la vez y significan cosas distintas: cual estas
+    // MIRANDO (el foco, borde blanco) y cual esta PUESTA (el relleno). Sin
+    // separarlos, mover el foco parece cambiar de temporada sin haber pulsado.
+    final color = widget.elegida || _foco ? Colors.white : Colors.white54;
+
+    return Focus(
+      onFocusChange: (v) => setState(() => _foco = v),
+      onKeyEvent: (node, event) {
+        if (event is! KeyDownEvent) return KeyEventResult.ignored;
+        final k = event.logicalKey;
+        if (k == LogicalKeyboardKey.select ||
+            k == LogicalKeyboardKey.enter ||
+            k == LogicalKeyboardKey.gameButtonA) {
+          widget.onOk();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 130),
+        margin: const EdgeInsets.only(right: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+        decoration: BoxDecoration(
+          color:
+              widget.elegida
+                  ? Colors.white.withValues(alpha: 0.14)
+                  : Colors.transparent,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: _foco ? Colors.white : Colors.transparent,
+            width: 2,
+          ),
+        ),
+        child: Text(
+          'Temporada ${widget.numero}',
+          style: TextStyle(
+            color: color,
+            fontSize: 15,
+            fontWeight: widget.elegida ? FontWeight.w600 : FontWeight.w400,
+          ),
         ),
       ),
     );

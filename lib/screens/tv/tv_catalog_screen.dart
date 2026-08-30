@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../../services/m3u_service.dart';
 import '../../services/watch_progress_service.dart';
 import 'tv_detail_screen.dart';
@@ -45,6 +46,18 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   Future<void> _cargar() async {
     try {
       await _servicio.init();
+
+      // `init()` prepara el servicio pero NO descarga los titulos: eso lo hace
+      // `loadM3UContent()`. Faltaba, y por eso el catalogo salia vacio aunque
+      // las fuentes estuvieran bien puestas — el televisor no llegaba a pedir
+      // nada al proveedor.
+      //
+      // Con reintentos: el TV suele arrancar a la vez que el wifi, y un primer
+      // intento fallido no puede dejar la pantalla en "no hay contenido" para
+      // siempre.
+      if (_servicio.items.isEmpty) {
+        await _servicio.loadM3UContent(useRetry: true);
+      }
       if (!mounted) return;
 
       final filas = <({String titulo, List<M3UItem> items})>[];
@@ -78,32 +91,91 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
         // El historial es un extra: si falla, el catalogo sale igual.
       }
 
-      final novedades = _servicio.latestItems;
+      // Novedades, con los episodios sustituidos por SU SERIE.
+      //
+      // `latestItems` mezcla peliculas y episodios recien anadidos. Un episodio
+      // suelto en la fila de novedades no sirve de nada: no se sabe de que
+      // serie es y al abrirlo no hay donde elegir. Se cambia por la serie
+      // entera, sin repetir.
+      final porNombreSerie = {
+        for (final se in _servicio.series)
+          if (se.seriesName != null) se.seriesName!: se,
+      };
+      final novedades = <M3UItem>[];
+      final vistos = <String>{};
+      for (final it in _servicio.latestItems) {
+        final elegido = porNombreSerie[it.seriesName] ?? it;
+        if (elegido.isLive || !vistos.add(elegido.url)) continue;
+        novedades.add(elegido);
+        if (novedades.length >= _maxPorFila) break;
+      }
       if (novedades.isNotEmpty) {
-        filas.add((
-          titulo: 'Novedades',
-          items: novedades.take(_maxPorFila).toList(),
-        ));
+        filas.add((titulo: 'Novedades', items: novedades));
       }
 
-      // Agrupar por categoría conservando el orden en que vienen: ese orden ya
-      // lo decide el catálogo, y reordenar aquí desharía ese trabajo.
-      final porCategoria = <String, List<M3UItem>>{};
-      for (final it in _servicio.items) {
-        if (it.isLive) continue; // los canales en directo van aparte
-        (porCategoria[it.category] ??= <M3UItem>[]).add(it);
+      // PELICULAS y SERIES, INTERCALADAS.
+      //
+      // `items` no vale: trae los episodios SUELTOS, uno por tarjeta, asi que
+      // la lista salia llena de "Capitulo 3" y una serie no se distinguia de
+      // una pelicula. `series` los trae ya agrupados, con sus episodios dentro,
+      // que es lo que la ficha necesita para ofrecer temporadas.
+      //
+      // Y se INTERCALAN. Al concatenar peliculas y luego series, el mapa
+      // quedaba con todas las categorias de peliculas primero: con el tope de
+      // filas, las series no llegaban a pintarse NUNCA. Alternando una y una,
+      // ambas entran pase lo que pase.
+      final catPelis = <String, List<M3UItem>>{};
+      for (final it in _servicio.movies) {
+        if (it.isLive) continue;
+        (catPelis[it.category] ??= <M3UItem>[]).add(it);
+      }
+      final catSeries = <String, List<M3UItem>>{};
+      for (final it in _servicio.series) {
+        if (it.isLive) continue;
+        (catSeries[it.category] ??= <M3UItem>[]).add(it);
       }
 
-      for (final e in porCategoria.entries) {
-        if (filas.length >= _maxFilas) break;
-        if (e.value.length < 3) continue; // una fila de dos se ve rota
-        filas.add((titulo: e.key, items: e.value.take(_maxPorFila).toList()));
+      final colaPelis = catPelis.entries.toList();
+      final colaSeries = catSeries.entries.toList();
+      int ip = 0, iss = 0;
+
+      while (filas.length < _maxFilas &&
+          (ip < colaPelis.length || iss < colaSeries.length)) {
+        for (final cola in [colaPelis, colaSeries]) {
+          final esPelis = identical(cola, colaPelis);
+          var i = esPelis ? ip : iss;
+          // Una fila de dos se ve rota, asi que se salta.
+          while (i < cola.length && cola[i].value.length < 3) {
+            i++;
+          }
+          if (i >= cola.length) {
+            if (esPelis) {
+              ip = i;
+            } else {
+              iss = i;
+            }
+            continue;
+          }
+          filas.add((
+            titulo: cola[i].key,
+            items: cola[i].value.take(_maxPorFila).toList(),
+          ));
+          if (esPelis) {
+            ip = i + 1;
+          } else {
+            iss = i + 1;
+          }
+          if (filas.length >= _maxFilas) break;
+        }
       }
 
       setState(() {
         _filas = filas;
         _cargando = false;
-        _error = filas.isEmpty ? 'No hay contenido disponible.' : null;
+        _error =
+            filas.isEmpty
+                ? (_servicio.lastError ?? 'No hay contenido disponible.')
+                : null;
       });
     } catch (e) {
       if (!mounted) return;
@@ -225,6 +297,32 @@ class _Tarjeta extends StatefulWidget {
 
 class _TarjetaState extends State<_Tarjeta> {
   bool _foco = false;
+  final FocusNode _nodo = FocusNode(debugLabel: 'tarjetaTv');
+
+  @override
+  void initState() {
+    super.initState();
+    // La primera tarjeta TOMA el foco tras el primer fotograma.
+    //
+    // `autofocus` no basta: solo actua cuando NADIE tiene el foco, y el `Focus`
+    // raiz del receptor lo pide a mano en su `initState`, que corre antes. Con
+    // el raiz ocupando la pantalla entera, la navegacion direccional tampoco
+    // sabe bajar hasta aqui: el catalogo se pintaba y no habia forma de mover
+    // el foco ni de pulsar OK.
+    //
+    // Es el mismo patron que ya resolvio el boton "Activar este televisor".
+    if (widget.autofoco) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _nodo.requestFocus();
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _nodo.dispose();
+    super.dispose();
+  }
 
   void _abrir() {
     Navigator.of(context).push(
@@ -237,12 +335,12 @@ class _TarjetaState extends State<_Tarjeta> {
   @override
   Widget build(BuildContext context) {
     return Focus(
-      autofocus: widget.autofoco,
+      focusNode: _nodo,
       onFocusChange: (v) {
         setState(() => _foco = v);
         if (v) {
           // Traer la tarjeta a la vista. `alignment: 0.5` la deja centrada, que
-          // es lo que hace que se intuya que hay más a los lados.
+          // es lo que hace que se intuya que hay mas a los lados.
           Scrollable.ensureVisible(
             context,
             alignment: 0.5,
@@ -251,89 +349,90 @@ class _TarjetaState extends State<_Tarjeta> {
           );
         }
       },
+      // OK SE LEE DIRECTO DE LA TECLA, sin Actions ni Intents.
+      //
+      // Dos intentos fallaron antes en el aparato:
+      //  1. `Actions` colgado DENTRO del `Focus`. `ActivateIntent` se despacha
+      //     hacia ARRIBA desde el nodo con foco, asi que ese `Actions` no se
+      //     consultaba nunca. El foco se movia y OK no hacia nada.
+      //  2. `FocusableActionDetector` con `onShowFocusHighlight`. Ese callback
+      //     depende de `FocusManager.highlightMode`, que con el mando de un
+      //     televisor no se pone en modo teclado: dejo de pintarse el foco.
+      //
+      // Leer la tecla en `onKeyEvent` no depende de ninguna de las dos cosas.
+      // Es lo que ya hace el boton de activar el televisor, que si responde.
       onKeyEvent: (node, event) {
-        if (event.logicalKey.keyLabel == 'Select' ||
-            event.logicalKey.keyLabel == 'Enter') {
-          return KeyEventResult.ignored;
+        if (event is! KeyDownEvent) return KeyEventResult.ignored;
+        final k = event.logicalKey;
+        if (k == LogicalKeyboardKey.select ||
+            k == LogicalKeyboardKey.enter ||
+            k == LogicalKeyboardKey.gameButtonA) {
+          _abrir();
+          return KeyEventResult.handled;
         }
         return KeyEventResult.ignored;
       },
-      child: Builder(
-        builder: (context) {
-          return GestureDetector(
-            onTap: _abrir,
-            child: Actions(
-              actions: <Type, Action<Intent>>{
-                ActivateIntent: CallbackAction<ActivateIntent>(
-                  onInvoke: (_) {
-                    _abrir();
-                    return null;
-                  },
-                ),
-              },
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 140),
-                width: 132,
-                margin: const EdgeInsets.only(right: 16),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(
-                    // El foco se marca con un borde y no cambiando el tamaño:
-                    // una tarjeta que crece empuja a sus vecinas y la fila
-                    // entera se mueve al recorrerla.
-                    color: _foco ? Colors.white : Colors.transparent,
-                    width: 3,
-                  ),
-                ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(6),
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      Container(color: const Color(0xFF1A1A1E)),
-                      if (widget.item.logo != null &&
-                          widget.item.logo!.isNotEmpty)
-                        Image.network(
-                          widget.item.logo!,
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, _, _) => const SizedBox.shrink(),
-                        ),
-                      // El título solo se pinta cuando la tarjeta tiene el
-                      // foco. Con todos los títulos encima, una fila de
-                      // carátulas se convierte en una pared de texto.
-                      if (_foco)
-                        Positioned(
-                          left: 0,
-                          right: 0,
-                          bottom: 0,
-                          child: Container(
-                            padding: const EdgeInsets.fromLTRB(8, 18, 8, 8),
-                            decoration: const BoxDecoration(
-                              gradient: LinearGradient(
-                                begin: Alignment.topCenter,
-                                end: Alignment.bottomCenter,
-                                colors: [Colors.transparent, Colors.black87],
-                              ),
-                            ),
-                            child: Text(
-                              widget.item.name,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 13,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
+      child: GestureDetector(
+        onTap: _abrir,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 140),
+          width: 132,
+          margin: const EdgeInsets.only(right: 16),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              // El foco se marca con un borde y no cambiando el tamano: una
+              // tarjeta que crece empuja a sus vecinas y la fila entera se
+              // mueve al recorrerla.
+              color: _foco ? Colors.white : Colors.transparent,
+              width: 3,
             ),
-          );
-        },
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                Container(color: const Color(0xFF1A1A1E)),
+                if (widget.item.logo != null && widget.item.logo!.isNotEmpty)
+                  Image.network(
+                    widget.item.logo!,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                  ),
+                // El titulo solo se pinta cuando la tarjeta tiene el foco. Con
+                // todos los titulos encima, una fila de caratulas se convierte
+                // en una pared de texto.
+                if (_foco)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: Container(
+                      padding: const EdgeInsets.fromLTRB(8, 18, 8, 8),
+                      decoration: const BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [Colors.transparent, Colors.black87],
+                        ),
+                      ),
+                      child: Text(
+                        widget.item.name,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

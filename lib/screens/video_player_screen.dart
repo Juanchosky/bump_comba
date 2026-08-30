@@ -468,6 +468,26 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   /// Avisos de bytes rotos por minuto que bastan para cambiar de servidor.
   static const int _corrupcionParaFailover = 6;
+
+  // ── Bytes rotos en la reproduccion LOCAL ─────────────────────────────────
+  //
+  // El mismo detector que ya vigila la transmision, pero para lo que suena en
+  // este telefono. Faltaba, y es el mismo punto ciego de siempre: el vigilante
+  // local solo mira si la POSICION avanza, y con los bytes rotos la posicion
+  // avanza —a tirones, con el audio adelantandose y el video corriendo despues
+  // para alcanzarlo—. Para ese vigilante el video estaba perfecto.
+  final List<DateTime> _corrupcionLocal = [];
+  bool _cambiandoPorCorrupcion = false;
+  static const Duration _ventanaCorrupcionLocal = Duration(seconds: 60);
+
+  /// Marcas con las que MPV avisa de que los bytes que recibe estan rotos.
+  static const List<String> _marcasCorrupcion = [
+    'invalid ebml length',
+    'corrupt file detected',
+    'invalid audio pts',
+    'invalid video pts',
+    'audio/video desynchronisation',
+  ];
   bool _castFailoverInProgress = false;
   DateTime? _lastCastFailoverAt;
   static const Duration _castFailoverCooldown = Duration(seconds: 15);
@@ -854,6 +874,51 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // Sin esto, los cortes del contenido anterior seguirian contando contra el
     // siguiente y podrian provocarle un cambio de servidor inmerecido.
     _episodiosStallCast.clear();
+  }
+
+  /// Cambia de servidor porque los bytes que llegan estan rotos.
+  ///
+  /// Se retoma POR DONDE IBA. Cambiar de servidor no puede costarle al usuario
+  /// volver a buscar su minuto — y menos cuando el cambio lo decide la app y no
+  /// el.
+  Future<void> _cambiarServidorPorCorrupcion() async {
+    if (!mounted || _cambiandoPorCorrupcion) return;
+    // Con la transmision activa manda el vigilante del televisor, que ya tiene
+    // su propio detector: dos failovers a la vez se pisarian.
+    if (CastService().isCasting.value) return;
+    if (_serverItems.length < 2)
+      return; // sin alternativa no hay nada que hacer
+
+    _cambiandoPorCorrupcion = true;
+    try {
+      final int siguiente;
+      if (_currentServerIndex < _serverItems.length - 1) {
+        siguiente = _currentServerIndex + 1;
+      } else if (_puedeDarLaVuelta()) {
+        siguiente = 0;
+      } else {
+        debugPrint(
+          'Corrupcion: agotados los servidores y la vuelta esta en '
+          'enfriamiento — se sigue con este',
+        );
+        return;
+      }
+
+      final desde = _player?.state.position ?? Duration.zero;
+      debugPrint(
+        'Corrupcion: $_corrupcionParaFailover avisos de bytes rotos en un '
+        'minuto en el servidor $_currentServerIndex -> pasando al $siguiente '
+        '(desde ${desde.inSeconds}s)',
+      );
+
+      if (!mounted) return;
+      setState(() => _currentServerIndex = siguiente);
+      await _initializePlayer(_serverItems[siguiente], startFrom: desde);
+    } catch (e) {
+      debugPrint('Corrupcion: el cambio de servidor fallo: $e');
+    } finally {
+      _cambiandoPorCorrupcion = false;
+    }
   }
 
   Future<void> _triggerCastFailover(String reason) async {
@@ -1577,6 +1642,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         // de TurboProxy y el televisor se come las reconexiones del proveedor
         // una a una.
         _isLiveContent = esEnVivoPorUrl(item.url);
+        // Servidor nuevo, cuenta nueva: la corrupcion del anterior no
+        // puede condenar a este.
+        _corrupcionLocal.clear();
         _hasError = false;
         _videoKey = '${item.url}_${DateTime.now().millisecondsSinceEpoch}';
 
@@ -2534,6 +2602,34 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         );
       }
     });
+
+    // ── Bytes rotos: el log de MPV ───────────────────────────────────────
+    //
+    // `stream.error` NO sirve para esto: la corrupcion no llega como error,
+    // llega como avisos del demuxer mientras todo "funciona". Por eso hay que
+    // leer el log.
+    //
+    // Y es la unica prueba directa: un vigilante de posicion no puede verlo,
+    // porque con los bytes rotos la posicion avanza igual.
+    _streamSubscriptions.add(
+      _player!.stream.log.listen((l) {
+        final texto = l.text.toLowerCase();
+        if (!_marcasCorrupcion.any(texto.contains)) return;
+
+        final ahora = DateTime.now();
+        _corrupcionLocal.add(ahora);
+        _corrupcionLocal.removeWhere(
+          (t) => ahora.difference(t) > _ventanaCorrupcionLocal,
+        );
+
+        // Uno suelto no prueba nada —un bache de red lo explica—; varios
+        // seguidos son el patron del proveedor sirviendo basura.
+        if (_corrupcionLocal.length >= _corrupcionParaFailover) {
+          _corrupcionLocal.clear();
+          unawaited(_cambiarServidorPorCorrupcion());
+        }
+      }),
+    );
 
     // Reload en error de stream con detección de errores en subtítulos
     _streamSubscriptions.add(
