@@ -58,6 +58,16 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   ];
 
   int _seccion = 0;
+
+  /// ¿Esta el usuario dentro del menu?
+  ///
+  /// El lateral se ENSANCHA mientras se navega por el y se recoge al pasar al
+  /// contenido. Es el patron de las apps de television: mientras eliges seccion
+  /// el menu manda, y en cuanto estas mirando caratulas se aparta.
+  ///
+  /// Recogido no desaparece: quedan los iconos, que bastan para saber donde
+  /// estas y para volver.
+  bool _lateralAbierto = false;
   final List<FocusNode> _nodosLateral = List.generate(
     _secciones.length,
     (i) => FocusNode(debugLabel: 'lateral$i'),
@@ -388,8 +398,22 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       );
     }
 
-    return Container(
-      color: Colors.black,
+    return DecoratedBox(
+      // ── Fondo ──────────────────────────────────────────────────────────
+      //
+      // Sustituye al negro plano. Es oscuro y de contraste bajo a proposito:
+      // detras de un catalogo, un fondo con fuerza compite con las caratulas,
+      // que son lo que se viene a mirar. Este solo da temperatura.
+      //
+      // `cover` y no `fill`: en un televisor la proporcion puede no ser 16:9
+      // exacta y estirar la imagen se nota enseguida en las diagonales.
+      decoration: const BoxDecoration(
+        color: Colors.black,
+        image: DecorationImage(
+          image: AssetImage('assets/images/fondotv.png'),
+          fit: BoxFit.cover,
+        ),
+      ),
       // ── El lateral va ENCIMA del contenido, no al lado ──────────────
       //
       // Es lo que le da el aire moderno de la referencia: las caratulas siguen
@@ -445,6 +469,26 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
             ),
           ),
 
+          // ── La marca, FUERA del menu ────────────────────────────────
+          //
+          // Vive en la pantalla, no dentro del lateral. Asi no se recoge ni se
+          // desvanece con el: la marca esta siempre, que es lo suyo, y ademas
+          // deja de competir por el ancho del menu — era lo que desbordaba.
+          Positioned(
+            left: 30,
+            top: 24,
+            child: Text(
+              'Bump Comba',
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.9),
+                fontSize: 17,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.3,
+                shadows: const [Shadow(color: Colors.black, blurRadius: 8)],
+              ),
+            ),
+          ),
+
           // ── El menu, ENCIMA del contenido ──────────────────────────────
           //
           // Con un degradado de negro a transparente por debajo. Sin el, el
@@ -460,7 +504,10 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                   begin: Alignment.centerLeft,
                   end: Alignment.centerRight,
                   colors: [Colors.black, Colors.black87, Colors.transparent],
-                  stops: [0.0, 0.6, 1.0],
+                  // El velo cubre casi todo el menu y se difumina al final: al
+                  // abrirse, el texto nuevo tiene que caer sobre negro, no
+                  // sobre una caratula.
+                  stops: [0.0, 0.72, 1.0],
                 ),
               ),
               // ── Barra lateral ──────────────────────────────────────────────
@@ -480,6 +527,12 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                   });
                 },
                 onEntrarContenido: () => _nodoContenido.requestFocus(),
+                abierto: _lateralAbierto,
+                onFoco: (dentro) {
+                  if (dentro != _lateralAbierto) {
+                    setState(() => _lateralAbierto = dentro);
+                  }
+                },
               ),
             ),
           ),
@@ -505,12 +558,15 @@ class _Fila extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 34),
+      // 18 y no 34. Con el titulo ya debajo de cada caratula, la separacion
+      // anterior dejaba un vacio que hacia parecer que faltaba algo entre una
+      // fila y otra. Lo justo para que se lean como grupos distintos.
+      padding: const EdgeInsets.only(bottom: 18),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding: const EdgeInsets.only(left: 172, bottom: 14),
+            padding: const EdgeInsets.only(left: 106, bottom: 10),
             child: Text(
               titulo,
               style: const TextStyle(
@@ -521,13 +577,13 @@ class _Fila extends StatelessWidget {
             ),
           ),
           SizedBox(
-            // Caratula (240) + separacion + titulo debajo.
-            height: 284,
+            // Caratula (222) + separacion + titulo debajo.
+            height: 262,
             child: ListView.builder(
               scrollDirection: Axis.horizontal,
               // Empieza donde acaba el menu: las caratulas pasan POR DEBAJO de
               // el al desplazarse, pero la primera nunca queda tapada.
-              padding: const EdgeInsets.only(left: 172, right: 20),
+              padding: const EdgeInsets.only(left: 106, right: 20),
               itemCount: items.length,
               itemBuilder:
                   (context, i) => _Tarjeta(
@@ -647,7 +703,7 @@ class _TarjetaState extends State<_Tarjeta> {
       child: GestureDetector(
         onTap: _abrir,
         child: SizedBox(
-          width: 160,
+          width: 148,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
@@ -659,8 +715,8 @@ class _TarjetaState extends State<_Tarjeta> {
               // o enmarcarlo grueso le quita presencia.
               AnimatedContainer(
                 duration: const Duration(milliseconds: 140),
-                width: 160,
-                height: 240,
+                width: 148,
+                height: 222,
                 margin: const EdgeInsets.only(right: 14),
                 decoration: BoxDecoration(
                   border: Border.all(
@@ -695,7 +751,7 @@ class _TarjetaState extends State<_Tarjeta> {
               // Mismo grosor en los dos: la negrita ensancharia el texto y
               // movería las tarjetas al recorrer la fila.
               SizedBox(
-                width: 146,
+                width: 134,
                 child: AnimatedDefaultTextStyle(
                   duration: const Duration(milliseconds: 130),
                   style: TextStyle(
@@ -741,6 +797,8 @@ class _Lateral extends StatelessWidget {
   final List<FocusNode> nodos;
   final ValueChanged<int> onElegir;
   final VoidCallback onEntrarContenido;
+  final bool abierto;
+  final ValueChanged<bool> onFoco;
 
   const _Lateral({
     required this.secciones,
@@ -748,57 +806,43 @@ class _Lateral extends StatelessWidget {
     required this.nodos,
     required this.onElegir,
     required this.onEntrarContenido,
+    required this.abierto,
+    required this.onFoco,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
       // Estrecho y pegado al contenido, como en la referencia: el lateral es
       // una guia, no una columna con peso propio. Cuanto menos separe, mas
       // sitio queda para lo que se viene a ver.
-      width: 158,
-      padding: const EdgeInsets.only(left: 26, top: 26),
+      // Recogido caben los iconos; abierto, iconos y texto. La transicion es
+      // de 220 ms: lo bastante para que se lea como un movimiento y no como un
+      // salto, y lo bastante corta para no estorbar a quien va rapido.
+      width: abierto ? 218 : 90,
+      padding: const EdgeInsets.only(left: 30, top: 70, bottom: 26),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Marca arriba, como en la referencia.
-          Row(
-            children: [
-              Container(
-                width: 15,
-                height: 15,
-                decoration: const BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: RadialGradient(
-                    center: Alignment(-0.4, -0.5),
-                    radius: 1.2,
-                    colors: [
-                      Color(0xFFFF6B5E),
-                      Color(0xFFE53935),
-                      Color(0xFFB71C1C),
-                    ],
-                    stops: [0.0, 0.55, 1.0],
-                  ),
-                ),
-              ),
-              const SizedBox(width: 9),
-              Text(
-                'Bump Comba',
-                style: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.85),
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 44),
+          // ── El menu, CENTRADO en vertical ──────────────────────────
+          //
+          // Pegado arriba quedaba desequilibrado: marca y secciones formaban un
+          // bloque en la esquina con toda la mitad inferior vacia. Centrado, el
+          // menu acompaña a las filas de caratulas en vez de colgar de arriba.
+          //
+          // La marca se queda donde estaba —arriba es su sitio— y son los
+          // `Spacer` los que empujan las secciones al centro.
+          const Spacer(),
 
           for (int i = 0; i < secciones.length; i++)
             _ItemLateral(
               texto: secciones[i].texto,
               icono: secciones[i].icono,
               activa: i == activa,
+              abierto: abierto,
+              onFoco: onFoco,
               nodo: nodos[i],
               onElegir: () => onElegir(i),
               onDerecha: onEntrarContenido,
@@ -808,6 +852,8 @@ class _Lateral extends StatelessWidget {
                       ? () => nodos[i + 1].requestFocus()
                       : null,
             ),
+
+          const Spacer(),
         ],
       ),
     );
@@ -818,6 +864,8 @@ class _ItemLateral extends StatefulWidget {
   final String texto;
   final IconData icono;
   final bool activa;
+  final bool abierto;
+  final ValueChanged<bool> onFoco;
   final FocusNode nodo;
   final VoidCallback onElegir;
   final VoidCallback onDerecha;
@@ -828,6 +876,8 @@ class _ItemLateral extends StatefulWidget {
     required this.texto,
     required this.icono,
     required this.activa,
+    required this.abierto,
+    required this.onFoco,
     required this.nodo,
     required this.onElegir,
     required this.onDerecha,
@@ -863,7 +913,13 @@ class _ItemLateralState extends State<_ItemLateral> {
 
     return Focus(
       focusNode: widget.nodo,
-      onFocusChange: (v) => setState(() => _foco = v),
+      onFocusChange: (v) {
+        setState(() => _foco = v);
+        // Cualquier item con el foco abre el menu; al salir, se recoge. El
+        // padre agrupa los avisos, asi que pasar de un item a otro no lo cierra
+        // y lo vuelve a abrir.
+        widget.onFoco(v);
+      },
       onKeyEvent: (node, event) {
         if (event is! KeyDownEvent) return KeyEventResult.ignored;
         final k = event.logicalKey;
@@ -892,21 +948,33 @@ class _ItemLateralState extends State<_ItemLateral> {
         padding: const EdgeInsets.only(bottom: 26),
         child: Row(
           children: [
-            Icon(widget.icono, size: 19, color: color),
-            const SizedBox(width: 11),
+            Icon(widget.icono, size: 20, color: color),
+            const SizedBox(width: 13),
             Expanded(
-              child: AnimatedDefaultTextStyle(
-                duration: const Duration(milliseconds: 130),
-                style: TextStyle(
-                  color: color,
-                  fontSize: 13,
-                  fontWeight:
-                      widget.activa || _foco
-                          ? FontWeight.w700
-                          : FontWeight.w500,
-                  letterSpacing: 0.6,
+              // Recogido el texto se desvanece en vez de desaparecer de golpe:
+              // el ancho del menu y la opacidad viajan juntos y el movimiento
+              // se lee como uno solo.
+              child: AnimatedOpacity(
+                duration: const Duration(milliseconds: 180),
+                opacity: widget.abierto ? 1 : 0,
+                child: AnimatedDefaultTextStyle(
+                  duration: const Duration(milliseconds: 130),
+                  style: TextStyle(
+                    color: color,
+                    fontSize: 15,
+                    fontWeight:
+                        widget.activa || _foco
+                            ? FontWeight.w700
+                            : FontWeight.w500,
+                    letterSpacing: 0.7,
+                  ),
+                  child: Text(
+                    widget.texto,
+                    maxLines: 1,
+                    overflow: TextOverflow.clip,
+                    softWrap: false,
+                  ),
                 ),
-                child: Text(widget.texto, maxLines: 1),
               ),
             ),
           ],
