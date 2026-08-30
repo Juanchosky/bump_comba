@@ -107,17 +107,19 @@ class M3UItem {
     this.sourceName,
     this.duration,
     List<String> titleAliases = const [],
-  })  : titleAliases = titleAliases.isEmpty
-            ? const []
-            : titleAliases
-                .map(NormalizationUtils.fixMojibake)
-                .toList(growable: false),
-        name = NormalizationUtils.fixMojibake(name),
-        category = NormalizationUtils.fixMojibake(category),
-        seriesName = seriesName != null
-            ? NormalizationUtils.fixMojibake(seriesName)
-            : null,
-        _isSeries = isSeries;
+  }) : titleAliases =
+           titleAliases.isEmpty
+               ? const []
+               : titleAliases
+                   .map(NormalizationUtils.fixMojibake)
+                   .toList(growable: false),
+       name = NormalizationUtils.fixMojibake(name),
+       category = NormalizationUtils.fixMojibake(category),
+       seriesName =
+           seriesName != null
+               ? NormalizationUtils.fixMojibake(seriesName)
+               : null,
+       _isSeries = isSeries;
 
   M3UItem copyWith({
     String? name,

@@ -7,8 +7,9 @@ class NormalizationUtils {
   // cientos de miles de compilaciones y era una parte importante del tiempo
   // de indexado. Declaradas aqui se compilan una sola vez.
   static final RegExp _reUhd = RegExp(r'\buhd\b', caseSensitive: false);
-  static final RegExp _reUrlTime =
-      RegExp(r'[#&?](t|time|start|at|position)=\d+[smh]?.*$');
+  static final RegExp _reUrlTime = RegExp(
+    r'[#&?](t|time|start|at|position)=\d+[smh]?.*$',
+  );
   static final RegExp _reBrackets = RegExp(r'\[.*?\]');
   static final RegExp _reParens = RegExp(r'\(.*?\)');
   static final RegExp _reCatTags = RegExp(
@@ -41,10 +42,12 @@ class NormalizationUtils {
   static bool is4kTitle(String name) {
     if (name.isEmpty) return false;
     final n = name.toLowerCase();
-    if (n.contains('4k') || n.contains('4 k') || n.contains('2160p')) return true;
+    if (n.contains('4k') || n.contains('4 k') || n.contains('2160p'))
+      return true;
     if (_reUhd.hasMatch(n)) return true;
     return false;
   }
+
   /// Repara cadenas con codificación UTF-8 doble / Mojibake (garabatos raros).
   /// Ej: "algÃºn" -> "algún", "SuperaciÃ³n" -> "Superación", "Â¿" -> "¿".
   static String fixMojibake(String input) {
@@ -133,10 +136,7 @@ class NormalizationUtils {
       return innerUri.replace(queryParameters: newParams).toString();
     } catch (_) {
       // Fallback regex si Uri.parse falla
-      return url.replaceFirst(
-        _reUrlTime,
-        '',
-      );
+      return url.replaceFirst(_reUrlTime, '');
     }
   }
 
@@ -149,9 +149,7 @@ class NormalizationUtils {
     String result = fixMojibake(category.trim());
 
     // 2. Eliminar etiquetas comunes entre corchetes o paréntesis
-    result = result
-        .replaceAll(_reBrackets, '')
-        .replaceAll(_reParens, '');
+    result = result.replaceAll(_reBrackets, '').replaceAll(_reParens, '');
 
     // 3. Eliminar términos técnicos sueltos
     result = result.replaceAll(_reCatTags, '');

@@ -146,42 +146,43 @@ class _CategoryScreenState extends State<CategoryScreen> {
                       padding: const EdgeInsets.all(8),
                       sliver: SliverGrid(
                         gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: (MediaQuery.of(context).size.width / 160)
+                          crossAxisCount: (MediaQuery.of(context).size.width /
+                                  160)
                               .floor()
                               .clamp(3, 12),
                           childAspectRatio: 0.6,
                           crossAxisSpacing: 8,
                           mainAxisSpacing: 8,
                         ),
-                        delegate: SliverChildBuilderDelegate(
-                          (context, index) {
-                            final item = itemsToDisplay[index];
-                            return GestureDetector(
-                              onTap: () async {
-                                // Calculate similar items
-                                final similarItems =
-                                    widget.items.where((i) => i.url != item.url).toList();
-                                similarItems.shuffle();
+                        delegate: SliverChildBuilderDelegate((context, index) {
+                          final item = itemsToDisplay[index];
+                          return GestureDetector(
+                            onTap: () async {
+                              // Calculate similar items
+                              final similarItems =
+                                  widget.items
+                                      .where((i) => i.url != item.url)
+                                      .toList();
+                              similarItems.shuffle();
 
-                                await Navigator.push(
-                                  context,
-                                  ContentDetailPageRoute(
-                                    page: ContentDetailScreen(
-                                      item: item,
-                                      similarItems: similarItems.take(10).toList(),
-                                      onToggleFavorite: (favItem) async {
-                                        await _m3uService.toggleFavorite(favItem);
-                                        if (mounted) setState(() {});
-                                      },
-                                    ),
+                              await Navigator.push(
+                                context,
+                                ContentDetailPageRoute(
+                                  page: ContentDetailScreen(
+                                    item: item,
+                                    similarItems:
+                                        similarItems.take(10).toList(),
+                                    onToggleFavorite: (favItem) async {
+                                      await _m3uService.toggleFavorite(favItem);
+                                      if (mounted) setState(() {});
+                                    },
                                   ),
-                                );
-                              },
-                              child: _buildCard(item),
-                            );
-                          },
-                          childCount: itemsToDisplay.length,
-                        ),
+                                ),
+                              );
+                            },
+                            child: _buildCard(item),
+                          );
+                        }, childCount: itemsToDisplay.length),
                       ),
                     ),
                     if (_isLoadingMore)

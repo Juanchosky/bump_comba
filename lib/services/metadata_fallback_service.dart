@@ -6,21 +6,25 @@ import 'tmdb_service.dart';
 /// It implements in-memory caching and request de-duplication to prevent
 /// excessive API calls during list scrolling.
 class MetadataFallbackService {
-  static final MetadataFallbackService _instance = MetadataFallbackService._internal();
+  static final MetadataFallbackService _instance =
+      MetadataFallbackService._internal();
   factory MetadataFallbackService() => _instance;
   MetadataFallbackService._internal();
 
   final TMDBService _tmdb = TMDBService();
-  
+
   // Cache: "title_isSeries" -> "posterUrl"
   final Map<String, String?> _posterCache = {};
-  
+
   // Track pending lookups to avoid duplicate requests for the same title
   final Map<String, Future<String?>> _pendingLookups = {};
 
   /// Resolves a poster URL from TMDB for the given title.
   /// Returns null if not found.
-  Future<String?> getFallbackPoster(String title, {bool isSeries = false}) async {
+  Future<String?> getFallbackPoster(
+    String title, {
+    bool isSeries = false,
+  }) async {
     if (title.isEmpty) return null;
 
     final cacheKey = '${title.trim().toLowerCase()}_$isSeries';
@@ -40,9 +44,12 @@ class MetadataFallbackService {
     _pendingLookups[cacheKey] = completer.future;
 
     try {
-      final details = await _tmdb.searchAndGetDetails(title, isSeries: isSeries);
+      final details = await _tmdb.searchAndGetDetails(
+        title,
+        isSeries: isSeries,
+      );
       final String? posterUrl = details['poster_url'] as String?;
-      
+
       _posterCache[cacheKey] = posterUrl;
       completer.complete(posterUrl);
     } catch (e) {

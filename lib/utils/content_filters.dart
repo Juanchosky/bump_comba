@@ -213,7 +213,12 @@ class ContentFilters {
   static const List<Map<String, dynamic>> curatedAnimationSections = [
     {
       'title': 'Anime',
-      'keywords': ['anime', 'animes', 'animacion japonesa', 'japanese animation'],
+      'keywords': [
+        'anime',
+        'animes',
+        'animacion japonesa',
+        'japanese animation',
+      ],
     },
     {
       'title': 'Disney & Pixar',
@@ -221,19 +226,55 @@ class ContentFilters {
     },
     {
       'title': 'Caricaturas Clásicas',
-      'keywords': ['cartoon', 'caricatura', 'looney', 'tom y jerry', 'scooby', 'hanna barbera'],
+      'keywords': [
+        'cartoon',
+        'caricatura',
+        'looney',
+        'tom y jerry',
+        'scooby',
+        'hanna barbera',
+      ],
     },
     {
       'title': 'Anime de Acción',
-      'keywords': ['dragon ball', 'naruto', 'one piece', 'bleach', 'attack on titan', 'shingeki', 'demon slayer', 'kimetsu', 'jujutsu'],
+      'keywords': [
+        'dragon ball',
+        'naruto',
+        'one piece',
+        'bleach',
+        'attack on titan',
+        'shingeki',
+        'demon slayer',
+        'kimetsu',
+        'jujutsu',
+      ],
     },
     {
       'title': 'Para Niños',
-      'keywords': ['kids', 'infantil', 'nickelodeon', 'nick', 'paw patrol', 'peppa', 'bob esponja', 'spongebob', 'dora'],
+      'keywords': [
+        'kids',
+        'infantil',
+        'nickelodeon',
+        'nick',
+        'paw patrol',
+        'peppa',
+        'bob esponja',
+        'spongebob',
+        'dora',
+      ],
     },
     {
       'title': 'Películas Animadas',
-      'keywords': ['animada', 'animado', 'animated', 'animation', 'dreamworks', 'illumination', 'ghibli', 'studio ghibli'],
+      'keywords': [
+        'animada',
+        'animado',
+        'animated',
+        'animation',
+        'dreamworks',
+        'illumination',
+        'ghibli',
+        'studio ghibli',
+      ],
     },
     {
       'title': 'Anime Romántico',
@@ -241,7 +282,16 @@ class ContentFilters {
     },
     {
       'title': 'Superhéroes Animados',
-      'keywords': ['marvel', 'dc', 'superman', 'batman', 'spider', 'avenger', 'hero', 'heroe'],
+      'keywords': [
+        'marvel',
+        'dc',
+        'superman',
+        'batman',
+        'spider',
+        'avenger',
+        'hero',
+        'heroe',
+      ],
     },
   ];
 }

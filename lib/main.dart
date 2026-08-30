@@ -177,11 +177,16 @@ void main() {
             // usuario. refreshReminders se vuelve a llamar en cada cambio de
             // ciclo de vida para no acumular notificaciones.
             unawaited(
-              SmartNotificationService().initialize().then((_) {
-                return SmartNotificationService().refreshReminders();
-              }).catchError((e) {
-                debugPrint('SmartNotifications init error (no crítico): $e');
-              }),
+              SmartNotificationService()
+                  .initialize()
+                  .then((_) {
+                    return SmartNotificationService().refreshReminders();
+                  })
+                  .catchError((e) {
+                    debugPrint(
+                      'SmartNotifications init error (no crítico): $e',
+                    );
+                  }),
             );
           });
         });

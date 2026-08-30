@@ -95,23 +95,20 @@ class TvReceiverService {
   }
 
   void _serveConnections() {
-    _server!.listen(
-      (HttpRequest request) async {
-        try {
-          if (request.uri.path != TvProto.wsPath ||
-              !WebSocketTransformer.isUpgradeRequest(request)) {
-            request.response.statusCode = HttpStatus.forbidden;
-            await request.response.close();
-            return;
-          }
-          final ws = await WebSocketTransformer.upgrade(request);
-          _attachClient(ws);
-        } catch (e) {
-          debugPrint('TvReceiver: error en conexión entrante: $e');
+    _server!.listen((HttpRequest request) async {
+      try {
+        if (request.uri.path != TvProto.wsPath ||
+            !WebSocketTransformer.isUpgradeRequest(request)) {
+          request.response.statusCode = HttpStatus.forbidden;
+          await request.response.close();
+          return;
         }
-      },
-      onError: (e) => debugPrint('TvReceiver: error en el servidor: $e'),
-    );
+        final ws = await WebSocketTransformer.upgrade(request);
+        _attachClient(ws);
+      } catch (e) {
+        debugPrint('TvReceiver: error en conexión entrante: $e');
+      }
+    }, onError: (e) => debugPrint('TvReceiver: error en el servidor: $e'));
   }
 
   /// Acepta UN cliente a la vez. Si ya hay uno, el nuevo lo reemplaza (el

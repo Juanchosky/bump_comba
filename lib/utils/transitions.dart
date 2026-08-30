@@ -14,10 +14,7 @@ class FadeScalePageRoute<T> extends PageRouteBuilder<T> {
             curve: const Interval(0.0, 0.6, curve: Curves.easeOut),
           );
 
-          return FadeTransition(
-            opacity: fadeAnimation,
-            child: child,
-          );
+          return FadeTransition(opacity: fadeAnimation, child: child);
         },
         transitionDuration: const Duration(milliseconds: 500),
         reverseTransitionDuration: const Duration(milliseconds: 400),

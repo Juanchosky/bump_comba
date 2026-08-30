@@ -32,6 +32,14 @@ class CastService {
   final ValueNotifier<String> castPlayerState = ValueNotifier('IDLE');
   final ValueNotifier<bool> castMediaFinished = ValueNotifier(false);
 
+  /// Avisos de corrupcion que el televisor ha visto en el ultimo minuto.
+  ///
+  /// Lo publica el receptor mirando el log de MPV. Es la unica senal que
+  /// distingue "el video se ve mal" de "el video no avanza": esto ultimo ya lo
+  /// vigila el detector de posicion, pero un stream con los bytes rotos AVANZA
+  /// —a saltos, y con el audio por su lado— y ese detector lo daba por sano.
+  final ValueNotifier<int> castCorruption = ValueNotifier(0);
+
   /// Pistas de audio/subtítulos reportadas por el receptor (MiApp TV).
   /// Cada elemento: {id, title, language}. La UI las consume igual que las del
   /// Chromecast.
@@ -1284,6 +1292,11 @@ class CastService {
         // Pista activa segun el TV. Manda el receptor, no lo que este telefono
         // creyera haber seleccionado: el usuario puede haberla cambiado con el
         // mando, y en ese caso el selector del movil tiene que seguirle.
+        // Un receptor antiguo no manda este campo: se lee como 0 y todo
+        // sigue funcionando igual que antes.
+        final corrup = event['corruptionPerMinute'];
+        castCorruption.value = corrup is num ? corrup.toInt() : 0;
+
         final aId = event['activeAudioId']?.toString();
         if (aId != null && aId.isNotEmpty) castActiveAudioId.value = aId;
         final sId = event['activeSubtitleId']?.toString();

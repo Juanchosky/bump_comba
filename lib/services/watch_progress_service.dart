@@ -229,8 +229,7 @@ class WatchProgressService with ChangeNotifier {
     if (!_dirty) return;
     if (!force) {
       final last = _lastFlushAt;
-      if (last != null &&
-          DateTime.now().difference(last) < _minFlushInterval) {
+      if (last != null && DateTime.now().difference(last) < _minFlushInterval) {
         _scheduleFlush();
         return;
       }
@@ -279,8 +278,10 @@ class WatchProgressService with ChangeNotifier {
     if (mapa.length <= _maxEntries) return;
     final entradas =
         mapa.entries.toList()..sort((a, b) {
-          final tA = (a.value is Map ? a.value['timestamp'] as int? : null) ?? 0;
-          final tB = (b.value is Map ? b.value['timestamp'] as int? : null) ?? 0;
+          final tA =
+              (a.value is Map ? a.value['timestamp'] as int? : null) ?? 0;
+          final tB =
+              (b.value is Map ? b.value['timestamp'] as int? : null) ?? 0;
           return tB.compareTo(tA); // mas reciente primero
         });
     for (final e in entradas.skip(_maxEntries)) {

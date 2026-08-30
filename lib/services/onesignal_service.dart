@@ -20,7 +20,9 @@ class OneSignalService {
 
     try {
       // Remove this method to stop OneSignal from automatically showing notifications while the app is in focus.
-      OneSignal.Debug.setLogLevel(kDebugMode ? OSLogLevel.error : OSLogLevel.none);
+      OneSignal.Debug.setLogLevel(
+        kDebugMode ? OSLogLevel.error : OSLogLevel.none,
+      );
 
       OneSignal.initialize(appId);
 

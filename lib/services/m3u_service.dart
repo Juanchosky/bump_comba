@@ -18,6 +18,7 @@ import '../services/claves_derivadas_cache.dart';
 import '../services/catalog_snapshot_service.dart';
 import '../utils/security_utils.dart';
 import '../models/m3u_item.dart';
+import '../utils/clasificacion_stream.dart';
 import '../models/download_progress.dart';
 import '../utils/normalization_utils.dart';
 import '../services/watch_progress_service.dart';
@@ -1051,8 +1052,7 @@ class M3UService extends ChangeNotifier {
   /// URL del volcado de `custom_content` que genera `vps/bd.sh` y sirve nginx
   /// desde `/var/www/catalogo/`. Mismo lugar y mismo mecanismo que
   /// `/catalogo/vod.json`, asi que no hizo falta tocar la config de nginx.
-  static const String _urlVolcadoBd =
-      'http://217.216.80.212/catalogo/bd.json';
+  static const String _urlVolcadoBd = 'http://217.216.80.212/catalogo/bd.json';
 
   /// Baja el volcado de la BD desde el VPS. Devuelve lista vacia ante
   /// cualquier problema, que el llamador interpreta como "usa Supabase".
@@ -1817,8 +1817,7 @@ class M3UService extends ChangeNotifier {
         // segundo hacía que un usuario en una red que bloquea IPTV —wifi de
         // universidad, oficina, algunos ISP de España— creyera que su cuenta
         // estaba mala. Con VPN funcionaba perfectamente.
-        final porRed =
-            xtream.ultimoFalloLogin == XtreamLoginFallo.red;
+        final porRed = xtream.ultimoFalloLogin == XtreamLoginFallo.red;
         debugPrint(
           'Xtream login validation failed for $host '
           '(${xtream.ultimoFalloLogin.name})',
@@ -2330,7 +2329,9 @@ class M3UService extends ChangeNotifier {
     // tipo correctamente.
     final Map<String, List<M3UItem>> customByCategory = {};
     for (final item in orphanCustom) {
-      customByCategory.putIfAbsent(_claveCategoriaTipo(item), () => []).add(item);
+      customByCategory
+          .putIfAbsent(_claveCategoriaTipo(item), () => [])
+          .add(item);
     }
 
     // ── Paso 2: Posiciones de los items regulares por categoría Y TIPO ──
@@ -4930,7 +4931,9 @@ String _normalizeTitleForMatching(String raw) {
 final RegExp _reCanon0 = RegExp(r'\(.*?\)');
 final RegExp _reCanon1 = RegExp(r'\[.*?\]');
 final RegExp _reCanon2 = RegExp(r'\b(19\d\d|20\d\d)\b');
-final RegExp _reCanon3 = RegExp(r'\b(4k|uhd|hd|fhd|sd|720p|1080p|2160p|60fps|hdr|hdr10|dv|dolby|multi|latino|castellano|sub|subtitulado|dual|cam|ts|tc|hd-ts|telesync|scr|opc?\s*\d+|opcion\s*\d+|opo\s*\d+|server\s*\d+|dual|lat|spa|esp|eng|vo|vose|h264|h265|x264|x265|web-dl|webrip|bluray|brrip|dvdrip|telesync|scr|full hd|movies|vod|extended|uncut|complete|edition|version|versión|coleccion|collection|saga|trilogia|pelicula|movie)\b',);
+final RegExp _reCanon3 = RegExp(
+  r'\b(4k|uhd|hd|fhd|sd|720p|1080p|2160p|60fps|hdr|hdr10|dv|dolby|multi|latino|castellano|sub|subtitulado|dual|cam|ts|tc|hd-ts|telesync|scr|opc?\s*\d+|opcion\s*\d+|opo\s*\d+|server\s*\d+|dual|lat|spa|esp|eng|vo|vose|h264|h265|x264|x265|web-dl|webrip|bluray|brrip|dvdrip|telesync|scr|full hd|movies|vod|extended|uncut|complete|edition|version|versión|coleccion|collection|saga|trilogia|pelicula|movie)\b',
+);
 final RegExp _reCanon4 = RegExp(r'\bviii\b');
 final RegExp _reCanon5 = RegExp(r'\bvii\b');
 final RegExp _reCanon6 = RegExp(r'\bvi\b');
@@ -4943,9 +4946,13 @@ final RegExp _reCanon12 = RegExp(r'\bx\b');
 final RegExp _reCanon13 = RegExp(r'\blobezno\b|\baguja dinamica\b|\bgloton\b');
 final RegExp _reCanon14 = RegExp(r'\borigenes\b|\borigen\b');
 final RegExp _reCanon15 = RegExp(r'\bvengadores\b');
-final RegExp _reCanon16 = RegExp(r'\brapidos y furiosos\b|\brapido y furioso\b|\brapidos & furiosos\b',);
+final RegExp _reCanon16 = RegExp(
+  r'\brapidos y furiosos\b|\brapido y furioso\b|\brapidos & furiosos\b',
+);
 final RegExp _reCanon17 = RegExp(r'\bguerra de las galaxias\b');
-final RegExp _reCanon18 = RegExp(r'\bel senor de los anillos\b|\bsenor de los anillos\b');
+final RegExp _reCanon18 = RegExp(
+  r'\bel senor de los anillos\b|\bsenor de los anillos\b',
+);
 final RegExp _reCanon19 = RegExp(r'\bjuego de tronos\b');
 final RegExp _reCanon20 = RegExp(r'\bel hombre arana\b|\bhombre arana\b');
 final RegExp _reCanon21 = RegExp(r'\bpiratas del caribe\b');
@@ -4955,14 +4962,18 @@ final RegExp _reCanon24 = RegExp(r'\bestacion 19\b');
 final RegExp _reCanon25 = RegExp(r'\banatomia de grey\b');
 final RegExp _reCanon26 = RegExp(r'\blos simpson\b|\blos simpsons\b');
 final RegExp _reCanon27 = RegExp(r'\bla casa de papel\b|\bcasa de papel\b');
-final RegExp _reCanon28 = RegExp(r'\bel caballero de la noche\b|\bel caballero oscuro\b');
+final RegExp _reCanon28 = RegExp(
+  r'\bel caballero de la noche\b|\bel caballero oscuro\b',
+);
 final RegExp _reCanon29 = RegExp(r'\bel hombre de acero\b');
 final RegExp _reCanon30 = RegExp(r'\bintensa mente\b|\bintensamente\b');
 final RegExp _reCanon31 = RegExp(r'\buna aventura congelada\b');
 final RegExp _reCanon32 = RegExp(r'\bzootropolis\b');
 final RegExp _reCanon33 = RegExp(r'\bvaiana\b');
 final RegExp _reCanon34 = RegExp(r'[^a-z0-9\s]');
-final RegExp _reCanon35 = RegExp(r'^\s*(the|el|la|los|las|les|un|una|unos|unas)\s+');
+final RegExp _reCanon35 = RegExp(
+  r'^\s*(the|el|la|los|las|les|un|una|unos|unas)\s+',
+);
 final RegExp _reCanon36 = RegExp(r'\s+');
 
 /// Guardas de una sola pasada para los bloques 3 y 4 de _canonicalTitleKey.
@@ -4972,8 +4983,12 @@ final RegExp _reCanon36 = RegExp(r'\s+');
 /// veces para no cambiar nada. Estas dos uniones se generaron a partir de las
 /// MISMAS constantes de arriba, asi que el resultado es identico por
 /// construccion: si la union no encuentra nada, ninguna de sus partes lo haria.
-final RegExp _reCanonAlgunRomano = RegExp(r'\bviii\b|\bvii\b|\bvi\b|\biii\b|\bii\b|\biv\b|\bv\b|\bix\b|\bx\b');
-final RegExp _reCanonAlgunaFranquicia = RegExp(r'\blobezno\b|\baguja dinamica\b|\bgloton\b|\borigenes\b|\borigen\b|\bvengadores\b|\brapidos y furiosos\b|\brapido y furioso\b|\brapidos & furiosos\b|\bguerra de las galaxias\b|\bel senor de los anillos\b|\bsenor de los anillos\b|\bjuego de tronos\b|\bel hombre arana\b|\bhombre arana\b|\bpiratas del caribe\b|\bmi villano favorito\b|\blos increibles\b|\bincreibles\b|\bestacion 19\b|\banatomia de grey\b|\blos simpson\b|\blos simpsons\b|\bla casa de papel\b|\bcasa de papel\b|\bel caballero de la noche\b|\bel caballero oscuro\b|\bel hombre de acero\b|\bintensa mente\b|\bintensamente\b|\buna aventura congelada\b|\bzootropolis\b|\bvaiana\b');
+final RegExp _reCanonAlgunRomano = RegExp(
+  r'\bviii\b|\bvii\b|\bvi\b|\biii\b|\bii\b|\biv\b|\bv\b|\bix\b|\bx\b',
+);
+final RegExp _reCanonAlgunaFranquicia = RegExp(
+  r'\blobezno\b|\baguja dinamica\b|\bgloton\b|\borigenes\b|\borigen\b|\bvengadores\b|\brapidos y furiosos\b|\brapido y furioso\b|\brapidos & furiosos\b|\bguerra de las galaxias\b|\bel senor de los anillos\b|\bsenor de los anillos\b|\bjuego de tronos\b|\bel hombre arana\b|\bhombre arana\b|\bpiratas del caribe\b|\bmi villano favorito\b|\blos increibles\b|\bincreibles\b|\bestacion 19\b|\banatomia de grey\b|\blos simpson\b|\blos simpsons\b|\bla casa de papel\b|\bcasa de papel\b|\bel caballero de la noche\b|\bel caballero oscuro\b|\bel hombre de acero\b|\bintensa mente\b|\bintensamente\b|\buna aventura congelada\b|\bzootropolis\b|\bvaiana\b',
+);
 
 String _canonicalTitleKey(String raw) {
   // Reparar mojibake de servidores Xtream antes de generar clave canónica
@@ -4985,10 +5000,7 @@ String _canonicalTitleKey(String raw) {
   n = n.replaceAll(_reCanon2, ' ');
 
   // 2. Quitar etiquetas técnicas de calidad, idioma y formato
-  n = n.replaceAll(
-    _reCanon3,
-    ' ',
-  );
+  n = n.replaceAll(_reCanon3, ' ');
 
   // 3. Normalizar números romanos comunes (II -> 2, III -> 3, IV -> 4, V -> 5, VI -> 6, VII -> 7, VIII -> 8, IX -> 9, X -> 10)
   if (_reCanonAlgunRomano.hasMatch(n)) {
@@ -5005,43 +5017,22 @@ String _canonicalTitleKey(String raw) {
 
   // 4. Mapeo de equivalencias de franquicias / nombres en español vs inglés
   if (_reCanonAlgunaFranquicia.hasMatch(n)) {
-    n = n.replaceAll(
-      _reCanon13,
-      'wolverine',
-    );
+    n = n.replaceAll(_reCanon13, 'wolverine');
     n = n.replaceAll(_reCanon14, 'origins');
     n = n.replaceAll(_reCanon15, 'avengers');
-    n = n.replaceAll(
-      _reCanon16,
-      'fast and furious',
-    );
+    n = n.replaceAll(_reCanon16, 'fast and furious');
     n = n.replaceAll(_reCanon17, 'star wars');
-    n = n.replaceAll(
-      _reCanon18,
-      'lord of the rings',
-    );
+    n = n.replaceAll(_reCanon18, 'lord of the rings');
     n = n.replaceAll(_reCanon19, 'game of thrones');
-    n = n.replaceAll(
-      _reCanon20,
-      'spiderman',
-    );
-    n = n.replaceAll(
-      _reCanon21,
-      'pirates of the caribbean',
-    );
+    n = n.replaceAll(_reCanon20, 'spiderman');
+    n = n.replaceAll(_reCanon21, 'pirates of the caribbean');
     n = n.replaceAll(_reCanon22, 'despicable me');
     n = n.replaceAll(_reCanon23, 'incredibles');
     n = n.replaceAll(_reCanon24, 'station 19');
     n = n.replaceAll(_reCanon25, 'greys anatomy');
     n = n.replaceAll(_reCanon26, 'simpsons');
-    n = n.replaceAll(
-      _reCanon27,
-      'money heist',
-    );
-    n = n.replaceAll(
-      _reCanon28,
-      'dark knight',
-    );
+    n = n.replaceAll(_reCanon27, 'money heist');
+    n = n.replaceAll(_reCanon28, 'dark knight');
     n = n.replaceAll(_reCanon29, 'man of steel');
     n = n.replaceAll(_reCanon30, 'inside out');
     n = n.replaceAll(_reCanon31, 'frozen');
@@ -5053,10 +5044,7 @@ String _canonicalTitleKey(String raw) {
   n = n.replaceAll(_reCanon34, ' ');
 
   // 6. Quitar artículos comunes al inicio
-  n = n.replaceAll(
-    _reCanon35,
-    '',
-  );
+  n = n.replaceAll(_reCanon35, '');
 
   // 7. Normalizar espacios múltiples
   return n.replaceAll(_reCanon36, ' ').trim();
@@ -5683,10 +5671,8 @@ Map<String, dynamic> _indexItemsInBackground(Map<String, dynamic> input) {
     if (_is4kTitle(item.name) || _is4kTitle(item.category)) continue;
     item = _clean4kFromItem(item);
 
-    final urlLower = item.url.toLowerCase();
-    if (urlLower.contains('/live/') ||
-        urlLower.contains('type=live') ||
-        (urlLower.contains('.m3u8') && !urlLower.contains('/vod/'))) {
+    // Misma regla que usa el reproductor, no una copia parecida.
+    if (esEnVivoPorUrl(item.url)) {
       if (!item.isLive) {
         item = item.copyWith(isLive: true);
         items[i] = item;

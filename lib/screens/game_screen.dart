@@ -336,7 +336,10 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
             ],
           ),
           border: Border(
-            bottom: BorderSide(color: Colors.white.withValues(alpha: 0.3), width: 3),
+            bottom: BorderSide(
+              color: Colors.white.withValues(alpha: 0.3),
+              width: 3,
+            ),
           ),
         ),
         child: Row(

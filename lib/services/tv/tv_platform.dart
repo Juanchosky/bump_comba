@@ -11,8 +11,9 @@ import 'package:flutter/services.dart';
 class TvPlatform {
   TvPlatform._();
 
-  static const MethodChannel _channel =
-      MethodChannel('com.juanchosky.bumpcomba/tv');
+  static const MethodChannel _channel = MethodChannel(
+    'com.juanchosky.bumpcomba/tv',
+  );
 
   /// Devuelve `true` si el dispositivo es un TV.
   ///
@@ -41,9 +42,7 @@ class TvPlatform {
         // El handler nativo aún no está registrado: dar un respiro y reintentar.
         await Future.delayed(const Duration(milliseconds: 200));
       } catch (e) {
-        debugPrint(
-          'TvPlatform: isAndroidTv intento ${i + 1} falló: $e',
-        );
+        debugPrint('TvPlatform: isAndroidTv intento ${i + 1} falló: $e');
       }
     }
     debugPrint('TvPlatform: isAndroidTv agotó reintentos (asumiendo teléfono)');

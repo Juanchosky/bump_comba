@@ -252,8 +252,12 @@ class _MainMenuScreenState extends State<MainMenuScreen>
                                               begin: Alignment.topCenter,
                                               end: Alignment.bottomCenter,
                                               colors: [
-                                                Colors.white.withValues(alpha: 0.3),
-                                                Colors.white.withValues(alpha: 0.0),
+                                                Colors.white.withValues(
+                                                  alpha: 0.3,
+                                                ),
+                                                Colors.white.withValues(
+                                                  alpha: 0.0,
+                                                ),
                                               ],
                                             ),
                                           ),

@@ -372,7 +372,6 @@ class NetworkQualityService {
       // aporta (evita oscilar con un bache pasajero).
       _applyQuality(newQuality, estimatedBandwidthMbps.value, latencyMs.value);
     } else if (isImproving) {
-
       // Si la calidad anterior era 'offline', recuperamos inmediatamente
       // para evitar quedar atascados por 60 segundos debido a la histeresis
       if (quality.value == NetworkQuality.offline) {

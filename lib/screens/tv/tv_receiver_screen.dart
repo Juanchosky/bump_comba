@@ -380,6 +380,9 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
   }
 
   Future<void> _handleLoad(Map<String, dynamic> msg) async {
+    // Contenido nuevo, cuenta nueva: la corrupcion del anterior no
+    // puede condenar a este.
+    _eventosCorrupcion.clear();
     final url = msg['url']?.toString();
     if (url == null || url.isEmpty) {
       _service.sendEvent(TvProto.evtLoadFailed, {'error': 'url vacía'});
@@ -637,6 +640,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
   }
 
   Future<void> _handleStop() async {
+    _eventosCorrupcion.clear();
     try {
       await _player.stop();
     } catch (_) {}
@@ -747,13 +751,18 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     // stream de `error` calla, `buffering` se queda en true y la posicion no
     // avanza, asi que el log de Flutter no dice si el problema es la conexion,
     // el demuxer o el decodificador. Esto lo saca de MPV directamente.
-    if (kDebugMode) {
-      _subs.add(
-        _player.stream.log.listen((l) {
+    //
+    // Y se escucha SIEMPRE, no solo en depuracion. Aqui dentro pasa la unica
+    // prueba fiable de que al demuxer le estan llegando bytes rotos, y esa
+    // prueba hacia falta en la compilacion que usa la gente, no en la mia.
+    _subs.add(
+      _player.stream.log.listen((l) {
+        if (kDebugMode) {
           debugPrint('TvReceiver: mpv[${l.prefix}/${l.level}] ${l.text}');
-        }),
-      );
-    }
+        }
+        _anotarSiEsCorrupcion(l.text);
+      }),
+    );
   }
 
   // ─────────────────────────── Empuje de estado ─────────────────────────────
@@ -790,6 +799,47 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
         }
       } catch (_) {}
     });
+  }
+
+  /// Marcas con las que MPV avisa de que los bytes que recibe estan rotos.
+  ///
+  /// No son avisos cosmeticos. Cuando salen, lo que se ve en la tele es
+  /// exactamente esto: la imagen se congela, el audio salta hacia delante por
+  /// su cuenta —"Invalid audio PTS: 580.28 -> 584.23"— y el video corre
+  /// despues para alcanzarlo.
+  ///
+  /// El televisor ya los tenia delante y no hacia nada con ellos: el unico
+  /// juez del cambio de servidor era el del telefono, que solo sabe mirar si
+  /// la POSICION avanza. Y aqui la posicion avanza divinamente; de hecho
+  /// avanza de mas. Por eso un titulo se podia ver fatal media hora sin que
+  /// nadie cambiara nada.
+  static const List<String> _marcasCorrupcion = [
+    'Invalid EBML length',
+    'Corrupt file detected',
+    'Invalid audio PTS',
+    'Audio/Video desynchronisation',
+    'Invalid video PTS',
+  ];
+
+  final List<DateTime> _eventosCorrupcion = [];
+  static const Duration _ventanaCorrupcion = Duration(seconds: 60);
+
+  void _anotarSiEsCorrupcion(String texto) {
+    if (!_marcasCorrupcion.any(texto.contains)) return;
+    final ahora = DateTime.now();
+    _eventosCorrupcion.add(ahora);
+    _eventosCorrupcion.removeWhere(
+      (t) => ahora.difference(t) > _ventanaCorrupcion,
+    );
+  }
+
+  /// Cuantos avisos de corrupcion lleva el ultimo minuto.
+  int _corrupcionReciente() {
+    final ahora = DateTime.now();
+    _eventosCorrupcion.removeWhere(
+      (t) => ahora.difference(t) > _ventanaCorrupcion,
+    );
+    return _eventosCorrupcion.length;
   }
 
   void _pushStatus() {
@@ -882,6 +932,10 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
         'bufferPercent': _bufferPercent(),
         if (audioActivo != null) 'activeAudioId': audioActivo,
         if (subActivo != null) 'activeSubtitleId': subActivo,
+        // El telefono es quien decide cambiar de servidor, asi que necesita
+        // ver esto. Campo nuevo: un receptor viejo simplemente no lo manda y
+        // el telefono lo lee como 0.
+        'corruptionPerMinute': _corrupcionReciente(),
       });
     } catch (e) {
       debugPrint('TvReceiver: error empujando STATUS: $e');
@@ -1266,9 +1320,10 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
           key == LogicalKeyboardKey.enter ||
           key == LogicalKeyboardKey.gameButtonA;
 
-      // Izquierda/derecha cambian de pestaña (Audio <-> Subtitulos) y colocan
-      // el cursor en lo que ya esta activo en la pestaña nueva, que es lo que
-      // el usuario espera ver marcado al llegar.
+      // Izquierda/derecha saltan de COLUMNA (Audio <-> Subtitulos) y colocan
+      // el cursor en lo que ya esta activo en la columna nueva, que es lo que
+      // el usuario espera ver marcado al llegar. Con las dos listas a la vista
+      // el gesto se explica solo: se ve adonde lleva antes de pulsarlo.
       if (key == LogicalKeyboardKey.arrowLeft ||
           key == LogicalKeyboardKey.arrowRight) {
         setState(() {
@@ -2080,7 +2135,7 @@ class _TvControlsOverlay extends StatelessWidget {
                                       // grosor, que es la senal de "estas
                                       // aqui" de la barra.
                                       final barHeight =
-                                          timelineFocused ? 8.0 : 5.8;
+                                          timelineFocused ? 8.0 : 6.0;
                                       final thumbSize =
                                           timelineFocused ? 26.0 : 18.0;
                                       return SizedBox(
@@ -2236,16 +2291,24 @@ class _TvControlsOverlay extends StatelessWidget {
   }
 }
 
-/// Icono de la fila de pistas (subtítulos / audio) bajo la línea de tiempo.
+/// Icono de la fila de pistas (subtitulos / audio), junto al titulo.
 ///
-/// Lleva la etiqueta al lado del icono a propósito: en un televisor se mira de
-/// lejos y un pictograma suelto obliga a adivinar. Pero va en cuerpo pequeño y
-/// discreto: es un ajuste ocasional, no un control principal, y compitiendo en
-/// tamaño con el play robaba la vista.
+/// Sin caja, sin borde, sin relleno y sin subrayado: el mismo lenguaje que el
+/// selector que abren.
 ///
-/// El foco se marca con relleno y borde blancos —el mismo lenguaje que el botón
-/// de play— porque en una tele el "dónde estoy" tiene que verse de un vistazo
-/// desde el sofá, y eso no se puede encoger.
+/// EL FOCO, SIN PINTAR NADA NUEVO
+/// Se marca con tres cosas que no anaden ni una linea a la pantalla:
+///  · gris -> BLANCO PURO,
+///  · la letra engorda,
+///  · y el conjunto CRECE un 10%.
+///
+/// El color solo no basta en un televisor: los modos de imagen que aplastan el
+/// contraste se comen la diferencia entre un gris claro y el blanco. El tamano
+/// no se lo come ninguno, y ademas el movimiento se percibe por el rabillo del
+/// ojo, que es como se navega con un mando en la mano.
+///
+/// Crece con `AnimatedScale`, que es una transformacion y no toca el layout:
+/// asi al pasar el foco de un icono al otro no se mueve nada alrededor.
 class _IconoPista extends StatelessWidget {
   final IconData icon;
   final String etiqueta;
@@ -2259,32 +2322,25 @@ class _IconoPista extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 140),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(
-        color:
-            focused
-                ? Colors.white.withValues(alpha: 0.18)
-                : Colors.white.withValues(alpha: 0.06),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(
-          color: focused ? Colors.white : Colors.transparent,
-          width: 1.5,
-        ),
-      ),
+    final color = focused ? Colors.white : Colors.white54;
+
+    return AnimatedScale(
+      duration: const Duration(milliseconds: 130),
+      curve: Curves.easeOut,
+      scale: focused ? 1.10 : 1.0,
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 16, color: focused ? Colors.white : Colors.white70),
+          Icon(icon, size: 17, color: color),
           const SizedBox(width: 7),
-          Text(
-            etiqueta,
+          AnimatedDefaultTextStyle(
+            duration: const Duration(milliseconds: 130),
             style: TextStyle(
-              color: focused ? Colors.white : Colors.white70,
-              fontSize: 13,
+              color: color,
+              fontSize: 14,
               fontWeight: focused ? FontWeight.w600 : FontWeight.w400,
             ),
+            child: Text(etiqueta),
           ),
         ],
       ),
@@ -2561,112 +2617,44 @@ class _TvTrackMenu extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final filas = tab == 0 ? audio : subtitulos;
-    final activo = tab == 0 ? audioActivo : subtituloActivo;
-
+    // LAS DOS LISTAS A LA VEZ, sin caja y sin adornos.
+    //
+    // Asi lo resuelve Netflix en television, y no por gusto: con una sola
+    // lista y pestanas hay que ACORDARSE de que existe la otra y descubrir
+    // que se llega con izquierda/derecha. Con las dos delante, el gesto es
+    // evidente sin explicarlo, y de paso se ve de un vistazo que idioma y que
+    // subtitulo hay puestos: son la misma decision.
+    //
+    // El manejo del mando no cambia ni una linea: `tab` ya era 0/1 y
+    // izquierda/derecha ya alternaba. Lo que antes eran dos pestanas ahora son
+    // dos columnas, que es lo que ese gesto sugeria desde el principio.
     return Positioned.fill(
       child: Container(
-        color: Colors.black.withValues(alpha: 0.82),
+        color: Colors.black.withValues(alpha: 0.88),
         alignment: Alignment.center,
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 620, maxHeight: 560),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+          constraints: const BoxConstraints(maxWidth: 760, maxHeight: 560),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  _Pestana(texto: 'Audio', activa: tab == 0),
-                  const SizedBox(width: 12),
-                  _Pestana(texto: 'Subtítulos', activa: tab == 1),
-                ],
+              Expanded(
+                child: _ColumnaPistas(
+                  titulo: 'AUDIO',
+                  filas: audio,
+                  seleccionada: audioActivo,
+                  enfocada: tab == 0,
+                  indiceFoco: indice,
+                ),
               ),
-              const SizedBox(height: 22),
-              Flexible(
-                child:
-                    filas.isEmpty
-                        ? const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 32),
-                          child: Text(
-                            'Este contenido no trae pistas alternativas.',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              color: Colors.white54,
-                              fontSize: 19,
-                            ),
-                          ),
-                        )
-                        : ListView.builder(
-                          shrinkWrap: true,
-                          itemCount: filas.length,
-                          itemBuilder: (context, i) {
-                            final enfocada = i == indice;
-                            return Container(
-                              margin: const EdgeInsets.symmetric(
-                                horizontal: 24,
-                                vertical: 3,
-                              ),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 20,
-                                vertical: 14,
-                              ),
-                              decoration: BoxDecoration(
-                                color:
-                                    enfocada
-                                        ? Colors.white.withValues(alpha: 0.16)
-                                        : Colors.transparent,
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(
-                                  color:
-                                      enfocada
-                                          ? Colors.white
-                                          : Colors.transparent,
-                                  width: 2,
-                                ),
-                              ),
-                              child: Row(
-                                children: [
-                                  SizedBox(
-                                    width: 30,
-                                    child:
-                                        i == activo
-                                            ? const Icon(
-                                              Icons.check_rounded,
-                                              color: Color(0xFFE50914),
-                                              size: 22,
-                                            )
-                                            : null,
-                                  ),
-                                  Expanded(
-                                    child: Text(
-                                      filas[i],
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(
-                                        color:
-                                            enfocada
-                                                ? Colors.white
-                                                : Colors.white70,
-                                        fontSize: 21,
-                                        fontWeight:
-                                            enfocada
-                                                ? FontWeight.w600
-                                                : FontWeight.w400,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            );
-                          },
-                        ),
-              ),
-              const SizedBox(height: 18),
-              const Text(
-                'Izquierda/derecha cambia de lista  -  OK selecciona  -  Atrás cierra',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.white38, fontSize: 15),
+              const SizedBox(width: 56),
+              Expanded(
+                child: _ColumnaPistas(
+                  titulo: 'SUBTÍTULOS',
+                  filas: subtitulos,
+                  seleccionada: subtituloActivo,
+                  enfocada: tab == 1,
+                  indiceFoco: indice,
+                ),
               ),
             ],
           ),
@@ -2676,27 +2664,113 @@ class _TvTrackMenu extends StatelessWidget {
   }
 }
 
-class _Pestana extends StatelessWidget {
-  final String texto;
-  final bool activa;
-  const _Pestana({required this.texto, required this.activa});
+/// Una columna del selector: cabecera y lista de texto pelado.
+///
+/// Sin recuadros, sin bordes, sin rojo. En una pantalla grande el texto ya es
+/// suficientemente grande para leerse de lejos, y cada caja que se anade es
+/// una linea mas que compite con el titulo que se estaba viendo.
+class _ColumnaPistas extends StatelessWidget {
+  final String titulo;
+  final List<String> filas;
+  final int seleccionada;
+  final bool enfocada;
+  final int indiceFoco;
+
+  const _ColumnaPistas({
+    required this.titulo,
+    required this.filas,
+    required this.seleccionada,
+    required this.enfocada,
+    required this.indiceFoco,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 10),
-      decoration: BoxDecoration(
-        color: activa ? const Color(0xFFE50914) : Colors.white10,
-        borderRadius: BorderRadius.circular(24),
-      ),
-      child: Text(
-        texto,
-        style: TextStyle(
-          color: activa ? Colors.white : Colors.white54,
-          fontSize: 19,
-          fontWeight: activa ? FontWeight.w600 : FontWeight.w400,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          titulo,
+          style: TextStyle(
+            // La columna sin foco se apaga entera. Es lo unico que dice donde
+            // esta el mando, y basta: no hace falta marco.
+            color: enfocada ? Colors.white : Colors.white24,
+            fontSize: 15,
+            fontWeight: FontWeight.w500,
+            letterSpacing: 1.6,
+          ),
         ),
-      ),
+        const SizedBox(height: 20),
+        if (filas.isEmpty)
+          Text(
+            'No hay',
+            style: TextStyle(
+              color: enfocada ? Colors.white38 : Colors.white24,
+              fontSize: 20,
+            ),
+          )
+        else
+          Flexible(
+            child: ListView.builder(
+              shrinkWrap: true,
+              padding: EdgeInsets.zero,
+              itemCount: filas.length,
+              itemBuilder: (context, i) {
+                final foco = enfocada && i == indiceFoco;
+                final puesta = i == seleccionada;
+
+                // Tres estados y ni un pixel de decoracion:
+                //  · con el foco  -> blanco puro
+                //  · ya elegida   -> blanco apagado, con su marca
+                //  · el resto     -> gris
+                final Color color;
+                if (foco) {
+                  color = Colors.white;
+                } else if (!enfocada) {
+                  color = Colors.white24;
+                } else {
+                  color = puesta ? Colors.white70 : Colors.white54;
+                }
+
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 9),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 34,
+                        child:
+                            puesta
+                                ? Icon(
+                                  Icons.check_rounded,
+                                  size: 20,
+                                  color: color,
+                                )
+                                : null,
+                      ),
+                      Expanded(
+                        child: AnimatedDefaultTextStyle(
+                          duration: const Duration(milliseconds: 120),
+                          style: TextStyle(
+                            color: color,
+                            fontSize: 21,
+                            fontWeight:
+                                foco ? FontWeight.w600 : FontWeight.w400,
+                          ),
+                          child: Text(
+                            filas[i],
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+      ],
     );
   }
 }

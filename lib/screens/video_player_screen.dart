@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'dart:ui';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import '../utils/clasificacion_stream.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
@@ -457,6 +458,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   Timer? _liveHealthTimer;
   Duration _lastCastMonitoredPosition = Duration.zero;
   int _castNoMovementSeconds = 0;
+
+  /// Adelantos bruscos del televisor, para detectar que va a saltos.
+  DateTime? _ultimoTickCast;
+  final List<DateTime> _saltosAdelanteCast = [];
+  static const int _saltoAdelanteSegundos = 3;
+  static const int _saltosParaFailover = 3;
+  static const Duration _ventanaSaltos = Duration(seconds: 60);
+
+  /// Avisos de bytes rotos por minuto que bastan para cambiar de servidor.
+  static const int _corrupcionParaFailover = 6;
   bool _castFailoverInProgress = false;
   DateTime? _lastCastFailoverAt;
   static const Duration _castFailoverCooldown = Duration(seconds: 15);
@@ -675,6 +686,95 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       if (pos.inMilliseconds < 500) {
         _lastCastMonitoredPosition = pos;
         return;
+      }
+
+      // ── Bytes rotos ──────────────────────────────────────────────────────
+      //
+      // El televisor lleva la cuenta de los avisos de MPV del ultimo minuto
+      // ("Invalid EBML length", "Corrupt file detected", "Invalid audio PTS",
+      // "Audio/Video desynchronisation"). Cuando salen, lo que se ve en la
+      // pantalla es la imagen congelandose, el audio yendose por su lado y el
+      // video corriendo despues para alcanzarlo.
+      //
+      // Es la prueba MAS directa de las tres que hay aqui: no deduce nada de
+      // como se mueve la posicion, lee lo que el demuxer dice de los bytes que
+      // le llegan. Por eso basta con menos margen que los otros dos.
+      //
+      // El umbral no es 1: un aviso suelto lo produce cualquier bache y el
+      // reproductor se recupera solo. Seis en un minuto no es un bache, es un
+      // servidor que no sirve.
+      final corrupcion = castService.castCorruption.value;
+      if (corrupcion >= _corrupcionParaFailover) {
+        _castNoMovementSeconds = 0;
+        _episodiosStallCast.clear();
+        _saltosAdelanteCast.clear();
+        _lastCastMonitoredPosition = pos;
+        _triggerCastFailover(
+          'El TV recibe datos corruptos ($corrupcion avisos en un minuto)',
+        );
+        return;
+      }
+
+      // ── Adelanto anomalo ─────────────────────────────────────────────────
+      //
+      // Todo lo de abajo sabe detectar una sola cosa: que la posicion NO se
+      // mueve. Pero el fallo mas feo del televisor es justo el contrario.
+      // Cuando el proveedor trunca la descarga, la imagen se congela, el audio
+      // sigue por su cuenta con el bufer que ya tenia, y despues el video corre
+      // para alcanzarlo. La posicion avanza a tirones... y para un detector de
+      // "no avanza" eso parece salud perfecta.
+      //
+      // Ese es el motivo de que un titulo se viera fatal y nadie cambiara de
+      // servidor: el unico juez que habia estaba mirando el sintoma contrario.
+      //
+      // Se mide contra el RELOJ DE PARED, no contra "un segundo por vuelta": si
+      // el hilo se retrasa, el timer dispara tarde y un avance mayor es
+      // legitimo. Comparar con el reloj distingue las dos cosas solo.
+      final ahora = DateTime.now();
+      final tickPrevio = _ultimoTickCast;
+      _ultimoTickCast = ahora;
+
+      if (tickPrevio != null && pos > _lastCastMonitoredPosition) {
+        final exceso =
+            (pos - _lastCastMonitoredPosition) - ahora.difference(tickPrevio);
+
+        // Un salto que pidio el usuario, o el reacomodo tras una pausa, no son
+        // sintoma de nada. Mismas guardas que usa el detector de cortes.
+        final trasSalto =
+            _lastSeekTime == null
+                ? 999
+                : ahora.difference(_lastSeekTime!).inSeconds;
+        final trasPausa =
+            _lastCastResumeTime == null
+                ? 999
+                : ahora.difference(_lastCastResumeTime!).inSeconds;
+
+        if (exceso.inSeconds >= _saltoAdelanteSegundos &&
+            trasSalto >= 8 &&
+            trasPausa >= 15) {
+          _saltosAdelanteCast.add(ahora);
+          debugPrint(
+            'TV: adelanto anomalo de ${exceso.inSeconds}s '
+            '(${_saltosAdelanteCast.length} en la ventana)',
+          );
+        }
+
+        // Uno suelto no prueba nada —un bache de red lo explica—; varios
+        // seguidos son el patron del proveedor truncando.
+        _saltosAdelanteCast.removeWhere(
+          (t) => ahora.difference(t) > _ventanaSaltos,
+        );
+        if (_saltosAdelanteCast.length >= _saltosParaFailover) {
+          _saltosAdelanteCast.clear();
+          _castNoMovementSeconds = 0;
+          _episodiosStallCast.clear();
+          _lastCastMonitoredPosition = pos;
+          _triggerCastFailover(
+            'El TV va a saltos: $_saltosParaFailover adelantos bruscos '
+            'en un minuto',
+          );
+          return;
+        }
       }
 
       if (pos == _lastCastMonitoredPosition) {
@@ -1470,11 +1570,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         _midRollNoticeShown = false;
         _adCountdown = null;
 
-        final url = item.url.toLowerCase();
-        _isLiveContent =
-            url.contains('/live/') ||
-            url.contains('type=live') ||
-            (url.endsWith('.m3u8') && !url.contains('/vod/'));
+        // Regla unica y compartida (ver `esEnVivoPorUrl`). Antes se decidia
+        // aqui con un heuristico propio que daba por DIRECTO cualquier .m3u8
+        // sin `/vod/`, incluidas las peliculas servidas como
+        // `/movie/.../12345.m3u8`. Un VOD marcado como directo se queda fuera
+        // de TurboProxy y el televisor se come las reconexiones del proveedor
+        // una a una.
+        _isLiveContent = esEnVivoPorUrl(item.url);
         _hasError = false;
         _videoKey = '${item.url}_${DateTime.now().millisecondsSinceEpoch}';
 

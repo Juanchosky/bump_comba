@@ -125,7 +125,8 @@ class TvSender {
   void seek(double positionSeconds) =>
       _send(TvProto.cmdSeek, {'position': positionSeconds});
   void stop() => _send(TvProto.cmdStop);
-  void setAudio(String trackId) => _send(TvProto.cmdSetAudio, {'trackId': trackId});
+  void setAudio(String trackId) =>
+      _send(TvProto.cmdSetAudio, {'trackId': trackId});
   void setSubtitle(String trackId) =>
       _send(TvProto.cmdSetSubtitle, {'trackId': trackId});
   void ping() =>

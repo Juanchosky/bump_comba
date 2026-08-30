@@ -709,7 +709,10 @@ class _SubscriptionScreenState extends State<SubscriptionScreen>
             backgroundColor: const Color(0xFF0a0a0a),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(20),
-              side: BorderSide(color: Colors.white.withValues(alpha: 0.1), width: 1),
+              side: BorderSide(
+                color: Colors.white.withValues(alpha: 0.1),
+                width: 1,
+              ),
             ),
             title: Text(
               title,

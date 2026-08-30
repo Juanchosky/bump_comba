@@ -309,6 +309,7 @@ class TurboProxy {
   /// Versión de la limpieza de perfiles ya guardados. Subirla vuelve a
   /// ejecutar la limpieza una vez en cada instalación. Ver `_loadHostProfiles`.
   static const String _prefsCleanupKey = 'turbo_proxy_profiles_cleanup';
+
   /// Se sube cada vez que hay que rehabilitar perfiles mal sancionados.
   ///
   /// v3 (2026-08-22): la marca hostil se ponia con 10 fallos consecutivos de
@@ -619,11 +620,7 @@ class TurboProxy {
     // un id aleatorio en /t/<id>, solo existe mientras dura la reproduccion, y
     // el puerto es efimero (0 = el que asigne el sistema). Sin el id no se
     // puede sacar nada del servidor.
-    _server = await HttpServer.bind(
-      InternetAddress.anyIPv4,
-      0,
-      shared: true,
-    );
+    _server = await HttpServer.bind(InternetAddress.anyIPv4, 0, shared: true);
     _server!.listen((req) {
       unawaited(_handle(req));
     }, onError: (e) => debugPrint('TurboProxy: server error: $e'));

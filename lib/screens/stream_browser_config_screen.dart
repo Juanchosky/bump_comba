@@ -133,9 +133,7 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
                 // -- SUSCRIPCIÓN -------------------------------------------
                 _buildSectionHeader('Suscripción'),
                 const SizedBox(height: 8),
-                _buildCard([
-                  _buildPremiumRow(),
-                ]),
+                _buildCard([_buildPremiumRow()]),
 
                 const SizedBox(height: 24),
 
@@ -955,11 +953,14 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
               width: 36,
               height: 36,
               decoration: BoxDecoration(
-                color: (isPremium ? const Color(0xFFFFD700) : Colors.amber).withValues(alpha: 0.07),
+                color: (isPremium ? const Color(0xFFFFD700) : Colors.amber)
+                    .withValues(alpha: 0.07),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Icon(
-                isPremium ? CupertinoIcons.checkmark_seal_fill : CupertinoIcons.checkmark_seal,
+                isPremium
+                    ? CupertinoIcons.checkmark_seal_fill
+                    : CupertinoIcons.checkmark_seal,
                 color: isPremium ? const Color(0xFFFFD700) : Colors.amber,
                 size: 18,
               ),

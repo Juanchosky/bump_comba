@@ -24,7 +24,9 @@ class DnsBypassUtils {
     if (_ipCache.containsKey(host)) {
       final cachedIp = _ipCache[host];
       // Verify cached IP is a valid IPv4 address (clearing stale/old IPv6 from hot-reloads)
-      if (cachedIp != null && _isValidIp(cachedIp) && !_failedIps.contains(cachedIp)) {
+      if (cachedIp != null &&
+          _isValidIp(cachedIp) &&
+          !_failedIps.contains(cachedIp)) {
         return cachedIp;
       }
       _ipCache.remove(host);
@@ -33,8 +35,9 @@ class DnsBypassUtils {
     // Try standard DNS resolution first
     List<InternetAddress> addresses = [];
     try {
-      addresses = await InternetAddress.lookup(host)
-          .timeout(const Duration(seconds: 4));
+      addresses = await InternetAddress.lookup(
+        host,
+      ).timeout(const Duration(seconds: 4));
       if (addresses.isNotEmpty) {
         // Look for IPv4 only, filtering out failed IPs
         final ipv4 = addresses
@@ -48,13 +51,18 @@ class DnsBypassUtils {
         }
       }
     } catch (e) {
-      debugPrint('DNS standard lookup failed for $host: $e. Trying DoH fallback...');
+      debugPrint(
+        'DNS standard lookup failed for $host: $e. Trying DoH fallback...',
+      );
     }
 
     // ISP no resuelve o solo da IPv6 → intentar con DNS público
-    if (addresses.isEmpty || addresses.every((addr) => addr.type != InternetAddressType.IPv4)) {
+    if (addresses.isEmpty ||
+        addresses.every((addr) => addr.type != InternetAddressType.IPv4)) {
       final publicIp = await DnsBypassUtils.resolveWithPublicDns(host);
-      if (publicIp != null && _isValidIp(publicIp) && !_failedIps.contains(publicIp)) {
+      if (publicIp != null &&
+          _isValidIp(publicIp) &&
+          !_failedIps.contains(publicIp)) {
         _ipCache[host] = publicIp;
         return publicIp;
       }
@@ -83,21 +91,24 @@ class DnsBypassUtils {
 
     for (final endpoint in endpoints) {
       try {
-        final response = await http.get(
-          Uri.parse(endpoint),
-          headers: {'Accept': 'application/dns-json'},
-        ).timeout(const Duration(seconds: 4));
+        final response = await http
+            .get(
+              Uri.parse(endpoint),
+              headers: {'Accept': 'application/dns-json'},
+            )
+            .timeout(const Duration(seconds: 4));
 
         if (response.statusCode == 200) {
           final data = jsonDecode(response.body);
           final answers = data['Answer'] as List?;
           if (answers != null) {
             // Filtrar solo registros tipo A (IPv4 = tipo 1)
-            final ipv4 = answers
-                .where((a) => a['type'] == 1)
-                .map((a) => a['data'] as String)
-                .where((ip) => !ip.contains(':')) // excluir IPv6
-                .toList();
+            final ipv4 =
+                answers
+                    .where((a) => a['type'] == 1)
+                    .map((a) => a['data'] as String)
+                    .where((ip) => !ip.contains(':')) // excluir IPv6
+                    .toList();
             if (ipv4.isNotEmpty) return ipv4.first;
           }
         }
@@ -111,17 +122,20 @@ class DnsBypassUtils {
   static Future<String?> _resolveViaDoH(String host) async {
     // Try Cloudflare DoH first
     try {
-      final url = Uri.parse('https://cloudflare-dns.com/dns-query?name=$host&type=A');
-      final res = await http.get(url, headers: {
-        'Accept': 'application/dns-json',
-      }).timeout(const Duration(seconds: 4));
+      final url = Uri.parse(
+        'https://cloudflare-dns.com/dns-query?name=$host&type=A',
+      );
+      final res = await http
+          .get(url, headers: {'Accept': 'application/dns-json'})
+          .timeout(const Duration(seconds: 4));
 
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
         final answers = data['Answer'] as List?;
         if (answers != null && answers.isNotEmpty) {
           for (final answer in answers) {
-            if (answer['type'] == 1) { // A record
+            if (answer['type'] == 1) {
+              // A record
               final ip = answer['data'] as String?;
               if (ip != null && _isValidIp(ip) && !_failedIps.contains(ip)) {
                 debugPrint('DoH Cloudflare resolved $host -> $ip');
@@ -145,7 +159,8 @@ class DnsBypassUtils {
         final answers = data['Answer'] as List?;
         if (answers != null && answers.isNotEmpty) {
           for (final answer in answers) {
-            if (answer['type'] == 1) { // A record
+            if (answer['type'] == 1) {
+              // A record
               final ip = answer['data'] as String?;
               if (ip != null && _isValidIp(ip) && !_failedIps.contains(ip)) {
                 debugPrint('DoH Google resolved $host -> $ip');
@@ -188,7 +203,8 @@ class DnsBypassUtils {
     }
 
     // Skip DoH endpoints themselves to avoid circular dependencies
-    if (uri.host.contains('cloudflare-dns.com') || uri.host.contains('dns.google')) {
+    if (uri.host.contains('cloudflare-dns.com') ||
+        uri.host.contains('dns.google')) {
       return (uri: uri, headers: originalHeaders);
     }
 
@@ -205,7 +221,9 @@ class DnsBypassUtils {
     final authority = uri.hasPort ? '$ip:${uri.port}' : ip;
     final newUri = uri.replace(host: ip);
 
-    debugPrint('DNS Bypass Applied: ${uri.host} -> $authority (Original Host header set)');
+    debugPrint(
+      'DNS Bypass Applied: ${uri.host} -> $authority (Original Host header set)',
+    );
     return (uri: newUri, headers: newHeaders);
   }
 }
