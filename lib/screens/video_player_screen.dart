@@ -6651,6 +6651,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                           color: const Color.fromARGB(255, 223, 223, 223),
                           fontSize: 12.7 * scale,
                           fontWeight: FontWeight.w500,
+                          fontStyle: FontStyle.italic,
                           letterSpacing: 0.2,
                         ),
                       ),
