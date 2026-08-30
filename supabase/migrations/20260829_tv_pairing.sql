@@ -21,10 +21,11 @@
 create table if not exists public.tv_devices (
   id uuid primary key default gen_random_uuid(),
 
-  -- A quién pertenece. `user_kind` dice cómo interpretarlo:
-  --   'revenuecat' -> user_ref es el appUserID de RevenueCat
-  --   'licencia'   -> user_ref es un código de `premium_codes`
-  -- Se guardan los dos casos porque ya conviven en la app.
+  -- A quién pertenece: el `appUserID` de RevenueCat.
+  --
+  -- `user_kind` queda por si algún día hay otra vía de cobro, pero hoy solo
+  -- existe 'revenuecat'. Hubo un camino de licencias para la versión de
+  -- escritorio; se retiró al dejar de venderse.
   user_ref  text not null,
   user_kind text not null default 'revenuecat',
 
@@ -34,6 +35,16 @@ create table if not exists public.tv_devices (
   -- Lo único que el televisor guarda. No es una contraseña del usuario: es un
   -- secreto de ESTE aparato, y se puede revocar solo.
   device_token text not null unique,
+
+  -- Configuracion de fuentes del telefono, en JSON.
+  --
+  -- El televisor arranca con las preferencias vacias y no tiene de donde sacar
+  -- titulos: las credenciales del proveedor viven en el telefono. Se guardan
+  -- aqui para que el TV funcione aunque el telefono este apagado.
+  --
+  -- OJO: son credenciales. Esta tabla va sin politicas RLS a proposito, asi que
+  -- solo las lee la Edge Function con `service_role`; nunca la clave `anon`.
+  sources text,
 
   created_at   timestamptz not null default now(),
   last_seen_at timestamptz,

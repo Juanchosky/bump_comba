@@ -600,6 +600,57 @@ class M3UService extends ChangeNotifier {
     }
   }
 
+  /// Las fuentes configuradas, en JSON, para llevarlas a otro aparato.
+  ///
+  /// PARA QUE: el televisor autonomo es una instalacion aparte y arranca con
+  /// las preferencias vacias. Sin esto su catalogo sale vacio pase lo que
+  /// pase, porque no tiene de donde sacar titulos: las credenciales viven en
+  /// el telefono.
+  ///
+  /// Se reutiliza el mismo `toJson()` que ya usa el guardado en disco, ofuscado
+  /// incluido. No es cifrado de verdad —quien tenga el JSON tiene las
+  /// credenciales—, asi que esto solo debe viajar por canales que ya sean de
+  /// confianza.
+  String exportarFuentes() {
+    return json.encode({
+      'v': 1,
+      'activa': _activeSourceIndex,
+      'fuentes': [for (final f in _sources) f.toJson()],
+    });
+  }
+
+  /// Aplica una configuracion de fuentes traida de otro aparato.
+  ///
+  /// Devuelve cuantas fuentes quedaron. No hace nada si el JSON viene vacio o
+  /// roto: mejor un catalogo vacio que borrar lo que ya hubiera configurado.
+  Future<int> importarFuentes(String bruto) async {
+    try {
+      final mapa = json.decode(bruto) as Map<String, dynamic>;
+      final lista = mapa['fuentes'];
+      if (lista is! List || lista.isEmpty) return _sources.length;
+
+      final nuevas = <M3USource>[];
+      for (final e in lista) {
+        if (e is Map<String, dynamic>) nuevas.add(M3USource.fromJson(e));
+      }
+      if (nuevas.isEmpty) return _sources.length;
+
+      _prefs ??= await SharedPreferences.getInstance();
+      _sources = nuevas;
+      final activa = mapa['activa'];
+      _activeSourceIndex =
+          (activa is num && activa >= 0 && activa < nuevas.length)
+              ? activa.toInt()
+              : 0;
+      await _saveSources();
+      debugPrint('M3UService: importadas ${nuevas.length} fuentes');
+      return nuevas.length;
+    } catch (e) {
+      debugPrint('M3UService: no se pudieron importar las fuentes: $e');
+      return _sources.length;
+    }
+  }
+
   Future<void> _saveSources() async {
     final sourcesJson =
         _sources.map((s) {

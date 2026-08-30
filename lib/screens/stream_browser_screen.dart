@@ -96,9 +96,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   final ValueNotifier<int> _watchProgressVersion = ValueNotifier<int>(0);
   final ScrollController _homeScrollController = ScrollController();
   // Custom PC Premium Support
-  final TextEditingController _pcLicenseController = TextEditingController();
-  bool _isValidatingLicense = false;
-  String? _licenseErrorMessage;
 
   bool _isLoading = true;
   // bool _isSearchingLoading = false; // REMOVED
@@ -380,7 +377,6 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     _slowLoadingTimer?.cancel();
     _liveSearchController.dispose();
     _inlineControlsTimer?.cancel();
-    _pcLicenseController.dispose();
     _sourceUrlController.dispose();
 
     WakelockPlus.disable();
@@ -711,76 +707,80 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                   children: [
                     _buildAppBar(),
                     Expanded(
-                      child:
-                          (_isDesktopOrWeb() && !PremiumService().isPremium)
-                              ? _buildDesktopPremiumGate()
-                              : AnimatedSwitcher(
-                                duration: const Duration(milliseconds: 340),
-                                switchInCurve: Curves.easeOutCubic,
-                                switchOutCurve: Curves.easeInCubic,
-                                // Transición premium al cambiar de pestaña
-                                // (Inicio → Películas → Series, etc.): fade
-                                // suave + un ligero escalado para que el
-                                // contenido "asiente" con fluidez.
-                                transitionBuilder: (child, animation) {
-                                  final key = child.key;
-                                  final keyValue =
-                                      key is ValueKey ? '${key.value}' : '';
-                                  // "Mi Lista" (barra inferior, índice 1):
-                                  // entra con fade + sutil deslizamiento
-                                  // desde abajo, natural para navegación
-                                  // inferior.
-                                  if (keyValue.startsWith('content_1_')) {
-                                    return FadeTransition(
-                                      opacity: animation,
-                                      child: SlideTransition(
-                                        position: Tween<Offset>(
-                                          begin: const Offset(0.0, 0.04),
-                                          end: Offset.zero,
-                                        ).animate(
-                                          CurvedAnimation(
-                                            parent: animation,
-                                            curve: Curves.easeOutCubic,
-                                          ),
-                                        ),
-                                        child: child,
-                                      ),
-                                    );
-                                  }
-                                  // Resto (pestañas y estados): fade suave con
-                                  // un ligero escalado.
-                                  return FadeTransition(
-                                    opacity: animation,
-                                    child: ScaleTransition(
-                                      scale: Tween<double>(
-                                        begin: 0.985,
-                                        end: 1.0,
-                                      ).animate(animation),
-                                      child: child,
-                                    ),
-                                  );
-                                },
-                                child:
-                                    _isLoading
-                                        ? KeyedSubtree(
-                                          key: const ValueKey('loading'),
-                                          child: _buildLoading(),
-                                        )
-                                        : _hasError
-                                        ? KeyedSubtree(
-                                          key: const ValueKey('error'),
-                                          child: _buildError(),
-                                        )
-                                        : KeyedSubtree(
-                                          // La key incluye la pestaña activa
-                                          // para que el switcher anime cada
-                                          // cambio de tab (y de barra inferior).
-                                          key: ValueKey(
-                                            'content_${_bottomNavIndex}_$_selectedTab',
-                                          ),
-                                          child: _buildStreamContent(),
-                                        ),
+                      // Sin puerta de pago en escritorio.
+                      //
+                      // Existia porque RevenueCat no funciona en Windows ni
+                      // Linux: alli se cobraba con un codigo de licencia. Esa
+                      // version ya no se vende, y una puerta sin llave —el
+                      // canje del codigo— dejaria el escritorio bloqueado para
+                      // siempre.
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 340),
+                        switchInCurve: Curves.easeOutCubic,
+                        switchOutCurve: Curves.easeInCubic,
+                        // Transición premium al cambiar de pestaña
+                        // (Inicio → Películas → Series, etc.): fade
+                        // suave + un ligero escalado para que el
+                        // contenido "asiente" con fluidez.
+                        transitionBuilder: (child, animation) {
+                          final key = child.key;
+                          final keyValue =
+                              key is ValueKey ? '${key.value}' : '';
+                          // "Mi Lista" (barra inferior, índice 1):
+                          // entra con fade + sutil deslizamiento
+                          // desde abajo, natural para navegación
+                          // inferior.
+                          if (keyValue.startsWith('content_1_')) {
+                            return FadeTransition(
+                              opacity: animation,
+                              child: SlideTransition(
+                                position: Tween<Offset>(
+                                  begin: const Offset(0.0, 0.04),
+                                  end: Offset.zero,
+                                ).animate(
+                                  CurvedAnimation(
+                                    parent: animation,
+                                    curve: Curves.easeOutCubic,
+                                  ),
+                                ),
+                                child: child,
                               ),
+                            );
+                          }
+                          // Resto (pestañas y estados): fade suave con
+                          // un ligero escalado.
+                          return FadeTransition(
+                            opacity: animation,
+                            child: ScaleTransition(
+                              scale: Tween<double>(
+                                begin: 0.985,
+                                end: 1.0,
+                              ).animate(animation),
+                              child: child,
+                            ),
+                          );
+                        },
+                        child:
+                            _isLoading
+                                ? KeyedSubtree(
+                                  key: const ValueKey('loading'),
+                                  child: _buildLoading(),
+                                )
+                                : _hasError
+                                ? KeyedSubtree(
+                                  key: const ValueKey('error'),
+                                  child: _buildError(),
+                                )
+                                : KeyedSubtree(
+                                  // La key incluye la pestaña activa
+                                  // para que el switcher anime cada
+                                  // cambio de tab (y de barra inferior).
+                                  key: ValueKey(
+                                    'content_${_bottomNavIndex}_$_selectedTab',
+                                  ),
+                                  child: _buildStreamContent(),
+                                ),
+                      ),
                     ),
                   ],
                 ),
@@ -827,277 +827,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     );
   }
 
-  bool _isDesktopOrWeb() {
-    return kIsWeb ||
-        defaultTargetPlatform == TargetPlatform.windows ||
-        defaultTargetPlatform == TargetPlatform.macOS ||
-        defaultTargetPlatform == TargetPlatform.linux;
-  }
-
   Widget _buildAppBar() {
     return Container(); // No app bar needed here as we have custom headers inside content
-  }
-
-  Widget _buildDesktopPremiumGate() {
-    return Container(
-      width: double.infinity,
-      decoration: BoxDecoration(
-        color: AppColors.background,
-        image: DecorationImage(
-          image: const AssetImage('assets/images/background.jpg'),
-          fit: BoxFit.cover,
-          colorFilter: ColorFilter.mode(
-            AppColors.background.withValues(alpha: 0.9),
-            BlendMode.darken,
-          ),
-        ),
-      ),
-      child: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 40),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              // Icon with glow
-              Container(
-                padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: Colors.amber.withValues(alpha: 0.1),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.amber.withValues(alpha: 0.1),
-                      blurRadius: 40,
-                      spreadRadius: 10,
-                    ),
-                  ],
-                ),
-                child: const Icon(
-                  Icons.workspace_premium_rounded,
-                  size: 80,
-                  color: Colors.amber,
-                ),
-              ),
-              const SizedBox(height: 32),
-              const Text(
-                'Versión de Escritorio',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 28,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 1,
-                ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'Esta versión es exclusiva para nuestros suscriptores Premium. Disfruta de una experiencia sin límites, sin anuncios y con la mejor calidad en tu PC.',
-                style: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.7),
-                  fontSize: 16,
-                  height: 1.5,
-                  fontWeight: FontWeight.w500,
-                ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 48),
-
-              // PC License Key Redemption UI
-              Container(
-                width: double.infinity,
-                constraints: const BoxConstraints(maxWidth: 400),
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.05),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                    color: Colors.white.withValues(alpha: 0.1),
-                    width: 1,
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.2),
-                      blurRadius: 20,
-                      offset: const Offset(0, 10),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Activa tu Premium PC',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Si compraste la versión PC por \$3.99, ingresa tu código de licencia aquí:',
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.6),
-                        fontSize: 13,
-                        height: 1.4,
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-
-                    // Input Field
-                    TextField(
-                      controller: _pcLicenseController,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 2,
-                      ),
-                      decoration: InputDecoration(
-                        hintText: 'XXXX-XXXX',
-                        hintStyle: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.3),
-                          letterSpacing: 2,
-                        ),
-                        filled: true,
-                        fillColor: Colors.black.withValues(alpha: 0.5),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(
-                            color:
-                                _licenseErrorMessage != null
-                                    ? Colors.red.withValues(alpha: 0.5)
-                                    : Colors.white.withValues(alpha: 0.2),
-                          ),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: const BorderSide(color: Colors.amber),
-                        ),
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 20,
-                          vertical: 18,
-                        ),
-                      ),
-                      onChanged: (_) {
-                        if (_licenseErrorMessage != null) {
-                          setState(() => _licenseErrorMessage = null);
-                        }
-                      },
-                      onSubmitted: (_) => _validatePCLicense(),
-                    ),
-
-                    if (_licenseErrorMessage != null) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        _licenseErrorMessage!,
-                        style: const TextStyle(
-                          color: Colors.redAccent,
-                          fontSize: 13,
-                        ),
-                      ),
-                    ],
-
-                    const SizedBox(height: 20),
-
-                    // Action Button
-                    SizedBox(
-                      width: double.infinity,
-                      height: 52,
-                      child: ElevatedButton(
-                        onPressed:
-                            _isValidatingLicense ? null : _validatePCLicense,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.amber,
-                          foregroundColor: Colors.black,
-                          elevation: 0,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                        child:
-                            _isValidatingLicense
-                                ? const SizedBox(
-                                  width: 24,
-                                  height: 24,
-                                  child: CircularProgressIndicator(
-                                    color: Colors.black,
-                                    strokeWidth: 2.5,
-                                  ),
-                                )
-                                : const Text(
-                                  'Verificar Código',
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 32),
-
-              TextButton(
-                onPressed: () async {
-                  const url = 'https://bump-comba-landing.vercel.app/';
-                  if (await canLaunchUrl(Uri.parse(url))) {
-                    await launchUrl(Uri.parse(url));
-                  }
-                },
-                child: const Text(
-                  '¿No tienes código? Obtenlo aquí por \$3.99/mes',
-                  style: TextStyle(
-                    color: Colors.amber,
-                    decoration: TextDecoration.underline,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Future<void> _validatePCLicense() async {
-    final code = _pcLicenseController.text.trim();
-    if (code.isEmpty) {
-      setState(() => _licenseErrorMessage = 'Por favor ingresa un código.');
-      return;
-    }
-
-    setState(() {
-      _isValidatingLicense = true;
-      _licenseErrorMessage = null;
-    });
-
-    try {
-      final result = await PremiumService().validateAndActivateLicenseCode(
-        code,
-      );
-
-      if (!mounted) return;
-
-      if (result['success'] == true) {
-        SnackBarUtils.showAppSnackBar(context, result['message']);
-        // Force full re-initialization of services to acknowledge premium
-        await _initService();
-        setState(() {}); // Remove the block immediately
-      } else {
-        setState(() => _licenseErrorMessage = result['message']);
-      }
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _licenseErrorMessage = 'Error: $e');
-    } finally {
-      if (mounted) {
-        setState(() => _isValidatingLicense = false);
-      }
-    }
   }
 
   Widget _buildLoading() {

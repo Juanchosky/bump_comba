@@ -75,22 +75,9 @@ async function verificarPremium(
   userRef: string,
   userKind: string,
 ): Promise<{ ok: boolean; hasta: string | null; motivo?: string }> {
-  // Camino 1: código de licencia (el que ya usa la versión de escritorio).
-  if (userKind === "licencia") {
-    const { data } = await supabase
-      .from("premium_codes")
-      .select("code, expires_at")
-      .eq("code", userRef)
-      .maybeSingle();
-
-    if (!data) return { ok: false, hasta: null, motivo: "licencia_no_existe" };
-    if (data.expires_at && new Date(data.expires_at) < new Date()) {
-      return { ok: false, hasta: null, motivo: "licencia_caducada" };
-    }
-    return { ok: true, hasta: data.expires_at ?? null };
-  }
-
-  // Camino 2: RevenueCat, que es la fuente de verdad de las suscripciones.
+  // RevenueCat es la fuente de verdad de las suscripciones.
+  // `userKind` se conserva en la firma y en la tabla por si algun dia hay
+  // otra via, pero hoy solo existe esta.
   const clave =
     Deno.env.get("REVENUECAT_SECRET_KEY") ??
     "goog_choPIwxbmFDjcTSaglVwWRsEGYR";
@@ -209,6 +196,17 @@ serve(async (req) => {
       const code = String(cuerpo.code ?? "").trim().toUpperCase();
       const userRef = String(cuerpo.userRef ?? "").trim();
       const userKind = String(cuerpo.userKind ?? "revenuecat");
+      // Configuracion de fuentes del telefono.
+      //
+      // El televisor es una instalacion aparte y arranca con las preferencias
+      // vacias: sin esto su catalogo sale vacio siempre, porque las
+      // credenciales del proveedor viven en el telefono.
+      //
+      // Viaja aqui y no por la red local para que el TV siga funcionando
+      // aunque el telefono este apagado o fuera de casa.
+      const sources = typeof cuerpo.sources === "string"
+        ? cuerpo.sources.slice(0, 200_000)
+        : null;
 
       if (!code || !userRef) return json({ error: "faltan datos" }, 400);
 
@@ -275,6 +273,9 @@ serve(async (req) => {
           device_token: token,
           revoked_at: null,
           last_seen_at: new Date().toISOString(),
+          // Solo se pisa si el telefono manda algo: revincular sin enviarlas
+          // no debe dejar al televisor sin catalogo.
+          ...(sources ? { sources } : {}),
         },
         { onConflict: "user_ref,device_id" },
       );
@@ -323,7 +324,10 @@ serve(async (req) => {
       if (!premium.ok) {
         return json({ ok: false, motivo: premium.motivo ?? "no_premium" });
       }
-      return json({ ok: true, hasta: premium.hasta });
+      // Las fuentes viajan en la validacion, que es la que corre al arrancar
+      // el televisor. Asi un cambio de proveedor en el telefono llega solo al
+      // TV en el siguiente arranque, sin volver a vincular.
+      return json({ ok: true, hasta: premium.hasta, sources: dev.sources ?? null });
     }
 
     // ═══ TELÉFONO: ver y quitar televisores ═══════════════════════════════

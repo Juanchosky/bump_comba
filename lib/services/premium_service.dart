@@ -1,12 +1,11 @@
 import 'dart:async';
+
 import 'package:flutter/foundation.dart';
+
 import 'package:flutter/services.dart';
 import 'package:purchases_flutter/purchases_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'm3u_service.dart';
-import 'package:device_info_plus/device_info_plus.dart';
 
 /// Service to manage premium subscription status via RevenueCat and Supabase (PC)
 class PremiumService {
@@ -33,7 +32,6 @@ class PremiumService {
 
   static const String _premiumCacheKey = 'is_premium_cached';
   static const String _lastCheckKey = 'premium_last_check';
-  static const String _pcLicenseKey = 'pc_premium_license_code';
   static const Duration _cacheValidDuration = Duration(hours: 1);
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -98,22 +96,14 @@ class PremiumService {
   /// Get unique device ID (Hardware ID) for Windows
   /// Con qué identidad se presenta este usuario al vincular un televisor.
   ///
-  /// Hay dos maneras legítimas de ser premium en esta app y el servidor las
-  /// comprueba distinto, así que hay que decirle cuál es:
-  ///  · 'licencia'   -> un código de `premium_codes` (la vía sin tienda)
-  ///  · 'revenuecat' -> una suscripción de la tienda
+  /// Es el `appUserID` de RevenueCat, que es donde vive la suscripción. El
+  /// servidor lo usa para preguntarle a RevenueCat si esa cuenta esta al
+  /// corriente.
   ///
-  /// La licencia va primero porque es la que gana en `initialize()`: si hay
-  /// una válida, RevenueCat ni se consulta.
-  ///
-  /// Devuelve null cuando no hay ninguna de las dos, y entonces no hay nada
-  /// que vincular. Ojo: esto NO decide si el usuario es premium — solo dice
-  /// con qué nombre preguntarlo. Quien decide es el servidor.
+  /// Devuelve null cuando no hay identidad, y entonces no hay nada que
+  /// vincular. Ojo: esto NO decide si el usuario es premium — solo dice con
+  /// que nombre preguntarlo. Quien decide es el servidor.
   Future<({String ref, String kind})?> identidadParaTv() async {
-    final licencia = _prefs?.getString(_pcLicenseKey);
-    if (licencia != null && licencia.isNotEmpty) {
-      return (ref: licencia, kind: 'licencia');
-    }
     try {
       final id = await Purchases.appUserID;
       if (id.isNotEmpty) return (ref: id, kind: 'revenuecat');
@@ -121,22 +111,6 @@ class PremiumService {
       debugPrint('Premium: no se pudo leer el appUserID: $e');
     }
     return null;
-  }
-
-  Future<String?> _getDeviceId() async {
-    try {
-      if (kIsWeb) return null;
-      final deviceInfo = DeviceInfoPlugin();
-      if (defaultTargetPlatform == TargetPlatform.windows) {
-        final windowsInfo = await deviceInfo.windowsInfo;
-        // deviceId on Windows is usually a unique hardware identifier
-        return windowsInfo.deviceId;
-      }
-      return null;
-    } catch (e) {
-      debugPrint('Premium: Error getting device ID: $e');
-      return null;
-    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -153,21 +127,6 @@ class PremiumService {
 
       // Load cached premium status for immediate UI response
       _isPremium = _prefs?.getBool(_premiumCacheKey) ?? false;
-
-      // Ensure Supabase is initialized before checking PC license
-      await M3UService.initializeSupabase();
-
-      // 1. Check PC License completely bypasses RevenueCat if valid
-      if (!_isSupported) {
-        final pcKeyResult = await _validateStoredPCLicense();
-        if (pcKeyResult) {
-          _isPremium = true;
-          _isInitialized = true;
-          _premiumStatusController.add(_isPremium);
-          debugPrint('Premium: PC License is valid and active');
-          return;
-        }
-      }
 
       // Configure RevenueCat
       PurchasesConfiguration configuration;
@@ -427,147 +386,6 @@ class PremiumService {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /// Helper to validate a stored PC license on app startup
-  Future<bool> _validateStoredPCLicense() async {
-    try {
-      final storedCode = _prefs?.getString(_pcLicenseKey);
-      if (storedCode == null || storedCode.isEmpty) return false;
-
-      final response =
-          await Supabase.instance.client
-              .from('premium_codes')
-              .select('*')
-              .eq('code', storedCode)
-              .maybeSingle();
-
-      if (response == null) {
-        // Code was deleted from server or is invalid
-        await _prefs?.remove(_pcLicenseKey);
-        return false;
-      }
-
-      // Check Expiration
-      if (response['expires_at'] != null) {
-        final expiresAt = DateTime.parse(response['expires_at']);
-        if (DateTime.now().isAfter(expiresAt)) {
-          debugPrint('Premium: PC License code expired');
-          await _prefs?.remove(_pcLicenseKey);
-          await _prefs?.remove('${_pcLicenseKey}_expires_at');
-          _pcExpirationDate = null;
-          return false;
-        }
-
-        // Security check: Verify device ID matches if bound
-        final currentDeviceId = await _getDeviceId();
-        if (response['used_by_device_id'] != null &&
-            currentDeviceId != null &&
-            response['used_by_device_id'] != currentDeviceId) {
-          debugPrint('Premium: License bound to another device');
-          _isPremium = false;
-          await _prefs?.remove(_pcLicenseKey);
-          return false;
-        }
-
-        _pcExpirationDate = response['expires_at'];
-      }
-
-      return true;
-    } catch (e) {
-      debugPrint('Premium: Error validating PC license: $e');
-      // Honour offline cache temporarily
-      if (_prefs?.getString(_pcLicenseKey) != null) {
-        _pcExpirationDate = _prefs?.getString('${_pcLicenseKey}_expires_at');
-        return true;
-      }
-      return false;
-    }
-  }
-
-  /// UI Facing method: User inputs a code to activate Premium on PC
-  Future<Map<String, dynamic>> validateAndActivateLicenseCode(
-    String code,
-  ) async {
-    try {
-      final cleanCode = code.trim().toUpperCase();
-      if (cleanCode.isEmpty) {
-        return {'success': false, 'message': 'El código no puede estar vacío.'};
-      }
-
-      final response =
-          await Supabase.instance.client
-              .from('premium_codes')
-              .select('*')
-              .eq('code', cleanCode)
-              .maybeSingle();
-
-      if (response == null) {
-        return {
-          'success': false,
-          'message': 'Código inválido o no encontrado.',
-        };
-      }
-
-      // Check if expired
-      if (response['expires_at'] != null) {
-        final expiresAt = DateTime.parse(response['expires_at']);
-        if (DateTime.now().isAfter(expiresAt)) {
-          return {
-            'success': false,
-            'message': 'Este código de licencia ha expirado.',
-          };
-        }
-      }
-
-      // Check if already used by another device
-      final currentDeviceId = await _getDeviceId();
-      if (response['is_used'] == true &&
-          response['used_by_device_id'] != null &&
-          currentDeviceId != null &&
-          response['used_by_device_id'] != currentDeviceId) {
-        return {
-          'success': false,
-          'message': 'Este código de licencia ya está vinculado a otro equipo.',
-        };
-      }
-
-      // Update DB to mark as used and bind to this device
-      if (response['is_used'] == false) {
-        await Supabase.instance.client
-            .from('premium_codes')
-            .update({
-              'is_used': true,
-              'used_at': DateTime.now().toIso8601String(),
-              'used_by_device_id': currentDeviceId,
-            })
-            .eq('code', cleanCode);
-      }
-
-      // Save locally and activate
-      await _prefs?.setString(_pcLicenseKey, cleanCode);
-
-      _isPremium = true;
-      if (response['expires_at'] != null) {
-        _pcExpirationDate = response['expires_at'];
-        await _prefs?.setString(
-          '${_pcLicenseKey}_expires_at',
-          _pcExpirationDate!,
-        );
-      }
-
-      _prefs?.setBool(_premiumCacheKey, true);
-      _premiumStatusController.add(true);
-
-      return {
-        'success': true,
-        'message': '¡Código activado con éxito! Bienvenido a Premium.',
-      };
-    } catch (e) {
-      debugPrint('Premium: Redempton error: $e');
-      return {
-        'success': false,
-        'message': 'Error de conexión. Inténtalo de nuevo.',
-      };
-    }
-  }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // CLEANUP

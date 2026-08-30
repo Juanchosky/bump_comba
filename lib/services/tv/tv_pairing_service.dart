@@ -154,6 +154,13 @@ class TvPairingService {
     final r = await _llamar({'accion': 'validar', 'token': token});
     if (r == null) return null;
 
+    // Las fuentes llegan aqui, en cada arranque, no solo al vincular. Asi un
+    // cambio de proveedor en el telefono alcanza al televisor solo.
+    final fuentes = r['sources'];
+    if (fuentes is String && fuentes.isNotEmpty) {
+      await M3UService().importarFuentes(fuentes);
+    }
+
     final ok = r['ok'] == true;
     // Solo se olvida el token si el servidor dice que ya no vale. Un fallo de
     // red nunca borra nada.
@@ -174,11 +181,22 @@ class TvPairingService {
     required String userRef,
     String userKind = 'revenuecat',
   }) async {
+    // Se manda la configuracion de fuentes junto con el canje. Sin ella el
+    // televisor queda vinculado pero con el catalogo vacio, que para el usuario
+    // se ve igual que si no hubiera funcionado.
+    String? fuentes;
+    try {
+      fuentes = M3UService().exportarFuentes();
+    } catch (e) {
+      debugPrint('TvPairing: no se pudieron exportar las fuentes: $e');
+    }
+
     final r = await _llamar({
       'accion': 'canjear',
       'code': codigo.trim().toUpperCase(),
       'userRef': userRef,
       'userKind': userKind,
+      if (fuentes != null) 'sources': fuentes,
     });
     if (r == null) return (ok: false, motivo: 'sin_conexion', max: null);
     return (
@@ -229,10 +247,6 @@ class TvPairingService {
       case 'no_premium':
         return 'Necesitas una suscripción activa para ver el contenido en el '
             'televisor.';
-      case 'licencia_caducada':
-        return 'Tu licencia ha caducado.';
-      case 'licencia_no_existe':
-        return 'No encontramos tu licencia.';
       case 'sin_conexion':
         return 'No hay conexión con el servidor. Inténtalo de nuevo.';
       case 'servidor_sin_configurar':
