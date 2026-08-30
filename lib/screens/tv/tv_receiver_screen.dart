@@ -1108,9 +1108,12 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     });
   }
 
-  void _cerrarMenuPistas() {
+  void _cerrarMenuPistas({bool volverAlPlay = false}) {
     if (!mounted) return;
-    setState(() => _menuAbierto = false);
+    setState(() {
+      _menuAbierto = false;
+      if (volverAlPlay) _focusArea = 0;
+    });
     _showControls(); // re-arma el auto-ocultado
   }
 
@@ -1346,7 +1349,19 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
       }
       if (ok) {
         unawaited(_aplicarPistaSeleccionada());
-        _cerrarMenuPistas();
+        // Elegida la pista, el foco vuelve al PLAY, no al icono de donde
+        // salio.
+        //
+        // Quien acaba de poner un subtitulo ya termino con los ajustes: lo
+        // siguiente que quiere es seguir viendo. Devolviendolo al icono habia
+        // que subir dos veces —iconos, linea de tiempo, botones— para algo que
+        // nadie pidio; y lo peor es que al volver a la pelicula uno ya no se
+        // acuerda de donde dejo el foco, asi que la primera pulsacion de OK
+        // hacia cualquier cosa menos reanudar.
+        //
+        // Cancelar con ATRAS no hace esto: ahi no se ha cambiado nada y lo
+        // menos sorprendente es aparecer donde se estaba.
+        _cerrarMenuPistas(volverAlPlay: true);
         return KeyEventResult.handled;
       }
       return KeyEventResult.handled;
@@ -1440,6 +1455,18 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
           _previewing = true;
           _previewPos = _position;
         });
+        return KeyEventResult.handled;
+      }
+      // ABAJO da la vuelta al boton de play.
+      //
+      // Antes esta tecla no hacia nada: es la fila de mas abajo, asi que abajo
+      // "no lleva a ningun sitio". Pero eso deja el camino de vuelta en dos
+      // pulsaciones de ARRIBA pasando por la linea de tiempo, y volver a
+      // reproducir es lo que uno quiere hacer casi siempre despues de tocar
+      // aqui. Una tecla que no hacia nada ahora resuelve el caso mas frecuente
+      // de una sola vez.
+      if (key == LogicalKeyboardKey.arrowDown) {
+        setState(() => _focusArea = 0);
         return KeyEventResult.handled;
       }
       if (select) {
