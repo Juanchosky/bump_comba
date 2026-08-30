@@ -150,32 +150,62 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// Con esto siempre hay algo moviendose, aunque el servidor no conteste.
   final ValueNotifier<int> _pulsoCarga = ValueNotifier<int>(0);
 
+  /// Texto de carga: una sola palabra, y la cifra al lado cuando la hay.
+  ///
+  /// POR QUE UNA SOLA PALABRA
+  /// Antes alternaba entre "Conectando al servidor" y "Cargando video" segun la
+  /// fase, y las dos cosas estaban mal:
+  ///
+  ///  · "servidor" es jerga de sistema. Al usuario no le existe un servidor,
+  ///    le existe la pelicula. Es la clase de palabra que Netflix no escribe
+  ///    nunca en una pantalla de carga.
+  ///  · Al cambiar de fase el texto se reescribia ENTERO, que es un parpadeo
+  ///    regalado justo cuando la persona esta mirando fijamente la pantalla
+  ///    buscando señales de que algo va mal.
+  ///
+  /// Ahora la palabra no se mueve: solo se le añade la velocidad al lado. Y se
+  /// quita "video" porque ya se sabe que lo es — se esta en el reproductor.
+  ///
+  /// LA CIFRA SE QUEDA, Y ESO SI SE APARTA DE NETFLIX
+  /// Netflix no enseña nunca la velocidad: no puedes hacer nada con ese numero.
+  /// Aqui si, porque el publico convive con IPTV inestable y saber si entran
+  /// datos es lo que distingue "va lento" de "esta muerto". Es la parte que
+  /// DEMUESTRA que avanza, que era el problema a resolver.
+  ///
+  /// Un decimal y no dos: con dos, el numero baila en el ultimo digito varias
+  /// veces por segundo y el movimiento distrae mas de lo que informa.
   String _formatLoadingSpeed(double bytesPerSec) {
-    final hasVideoFrame =
-        (_player?.state.width ?? 0) > 0 ||
-        _bufferedDuration.value > Duration.zero ||
-        _isBuffering;
-    final prefix = hasVideoFrame ? 'Cargando video' : 'Conectando al servidor';
+    // "Preparando" y no "Cargando".
+    //
+    // "Cargando" describe lo que hace la maquina. "Preparando" implica que
+    // alguien esta haciendo algo POR ti, y esa diferencia de tono es lo unico
+    // que crea identidad en una pantalla que se ve veinte veces al dia.
+    //
+    // Fija, nunca rotatoria: los mensajes graciosos que van cambiando hacen
+    // gracia el primer dia y molestan al decimo, porque aparecen justo cuando
+    // el usuario esta esperando y no quiere que le hagan un chiste. La
+    // identidad sale de la repeticion, no de la variedad.
+    const base = 'Preparando';
 
-    final int pulso = _pulsoCarga.value;
+    // Puntos que avanzan. Es la unica pieza en pantalla que demuestra que el
+    // hilo sigue vivo cuando todavia no entra nada.
+    String conPuntos() => '$base${'.' * (1 + (_pulsoCarga.value ~/ 2) % 3)}';
 
-    // Sin datos todavia: puntos que avanzan. Es la unica pieza en pantalla que
-    // demuestra que el hilo sigue vivo cuando el servidor no manda nada.
-    if (bytesPerSec <= 0) {
-      final puntos = '.' * (1 + (pulso ~/ 2) % 3);
-      return '$prefix$puntos';
-    }
+    if (bytesPerSec <= 0) return conPuntos();
+
     final mbPerSec = bytesPerSec / (1024 * 1024);
     if (mbPerSec >= 0.1) {
-      return '$prefix ${mbPerSec.toStringAsFixed(2).replaceAll('.', ',')} MB/s';
-    } else {
-      final kbPerSec = bytesPerSec / 1024;
-      if (kbPerSec >= 1) {
-        return '$prefix · ${kbPerSec.toStringAsFixed(0)} KB/s';
-      } else {
-        return '$prefix...';
-      }
+      return '$base · ${mbPerSec.toStringAsFixed(1).replaceAll('.', ',')} MB/s';
     }
+
+    final kbPerSec = bytesPerSec / 1024;
+    if (kbPerSec >= 1) {
+      return '$base · ${kbPerSec.toStringAsFixed(0)} KB/s';
+    }
+
+    // Entra algo, pero menos de 1 KB/s. Enseñar "0 KB/s" seria peor que no
+    // enseñar cifra: parece parado cuando en realidad gotea.
+    return conPuntos();
   }
 
   void _startSpeedPolling() {
