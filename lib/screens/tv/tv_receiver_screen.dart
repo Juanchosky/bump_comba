@@ -2643,7 +2643,11 @@ class _TvTrackMenu extends StatelessWidget {
         color: Colors.black.withValues(alpha: 0.88),
         alignment: Alignment.center,
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 760, maxHeight: 560),
+          // El ancho es lo que de verdad separa las dos listas: cada columna
+          // se lleva la mitad, asi que cuanto mas ancho, mas lejos cae el
+          // texto de la segunda. Estrechando el conjunto se juntan sin tocar
+          // el hueco entre ellas.
+          constraints: const BoxConstraints(maxWidth: 580, maxHeight: 560),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -2656,7 +2660,7 @@ class _TvTrackMenu extends StatelessWidget {
                   indiceFoco: indice,
                 ),
               ),
-              const SizedBox(width: 56),
+              const SizedBox(width: 36),
               Expanded(
                 child: _ColumnaPistas(
                   titulo: 'SUBTÍTULOS',
