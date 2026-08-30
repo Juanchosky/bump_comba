@@ -2134,10 +2134,17 @@ class _TvControlsOverlay extends StatelessWidget {
                                       // enfocada para no perder el salto de
                                       // grosor, que es la senal de "estas
                                       // aqui" de la barra.
-                                      final barHeight =
-                                          timelineFocused ? 8.0 : 6.0;
-                                      final thumbSize =
-                                          timelineFocused ? 26.0 : 18.0;
+                                      // NI LA BARRA NI EL TIRADOR CAMBIAN DE
+                                      // TAMANO AL ENFOCARSE.
+                                      //
+                                      // Crecer llama la atencion, pero tambien
+                                      // hace que la linea de tiempo "salte"
+                                      // cada vez que el foco entra o sale, y
+                                      // eso se nota mucho mas de lo que ayuda.
+                                      // El foco se marca abajo con brillo, que
+                                      // no mueve ni un pixel.
+                                      const barHeight = 6.0;
+                                      const thumbSize = 20.0;
                                       return SizedBox(
                                         height: 28,
                                         child: Stack(
@@ -2177,7 +2184,16 @@ class _TvControlsOverlay extends StatelessWidget {
                                               child: Container(
                                                 height: barHeight,
                                                 decoration: BoxDecoration(
-                                                  color: accent,
+                                                  // Sin foco, el acento se
+                                                  // apaga un poco: es la marca
+                                                  // que sustituye al cambio de
+                                                  // grosor.
+                                                  color:
+                                                      timelineFocused
+                                                          ? accent
+                                                          : accent.withValues(
+                                                            alpha: 0.6,
+                                                          ),
                                                   borderRadius:
                                                       BorderRadius.circular(4),
                                                 ),
@@ -2189,26 +2205,49 @@ class _TvControlsOverlay extends StatelessWidget {
                                                     0.0,
                                                     barWidth - thumbSize,
                                                   ),
-                                              child: Container(
-                                                width: thumbSize,
-                                                height: thumbSize,
-                                                // Mismo estilo glossy rojo que
-                                                // el botón de play.
-                                                decoration: const BoxDecoration(
-                                                  shape: BoxShape.circle,
-                                                  gradient: RadialGradient(
-                                                    center: Alignment(
-                                                      -0.4,
-                                                      -0.5,
-                                                    ),
-                                                    radius: 1.2,
-                                                    colors: [
-                                                      Color(0xFFFF6B5E),
-                                                      Color(0xFFE53935),
-                                                      Color(0xFFB71C1C),
-                                                    ],
-                                                    stops: [0.0, 0.55, 1.0],
-                                                  ),
+                                              child: AnimatedOpacity(
+                                                duration: const Duration(
+                                                  milliseconds: 150,
+                                                ),
+                                                // El tirador es lo que se
+                                                // arrastra, asi que es donde
+                                                // mas se agradece saber si el
+                                                // mando esta aqui.
+                                                opacity:
+                                                    timelineFocused ? 1.0 : 0.5,
+                                                child: Container(
+                                                  width: thumbSize,
+                                                  height: thumbSize,
+                                                  // Mismo estilo glossy rojo que
+                                                  // el botón de play.
+                                                  decoration:
+                                                      const BoxDecoration(
+                                                        shape: BoxShape.circle,
+                                                        gradient:
+                                                            RadialGradient(
+                                                              center: Alignment(
+                                                                -0.4,
+                                                                -0.5,
+                                                              ),
+                                                              radius: 1.2,
+                                                              colors: [
+                                                                Color(
+                                                                  0xFFFF6B5E,
+                                                                ),
+                                                                Color(
+                                                                  0xFFE53935,
+                                                                ),
+                                                                Color(
+                                                                  0xFFB71C1C,
+                                                                ),
+                                                              ],
+                                                              stops: [
+                                                                0.0,
+                                                                0.55,
+                                                                1.0,
+                                                              ],
+                                                            ),
+                                                      ),
                                                 ),
                                               ),
                                             ),
@@ -2299,19 +2338,15 @@ class _TvControlsOverlay extends StatelessWidget {
 /// Sin caja, sin borde, sin relleno y sin subrayado: el mismo lenguaje que el
 /// selector que abren.
 ///
-/// EL FOCO, SIN PINTAR NADA NUEVO
-/// Se marca con tres cosas que no anaden ni una linea a la pantalla:
-///  · gris -> BLANCO PURO,
-///  · la letra engorda,
-///  · y el conjunto CRECE un 10%.
+/// EL FOCO ES SOLO COLOR, Y NADA MAS
+/// Gris cuando no lo tiene, BLANCO PURO cuando si. Ni el tamano ni el grosor
+/// de la letra cambian.
 ///
-/// El color solo no basta en un televisor: los modos de imagen que aplastan el
-/// contraste se comen la diferencia entre un gris claro y el blanco. El tamano
-/// no se lo come ninguno, y ademas el movimiento se percibe por el rabillo del
-/// ojo, que es como se navega con un mando en la mano.
-///
-/// Crece con `AnimatedScale`, que es una transformacion y no toca el layout:
-/// asi al pasar el foco de un icono al otro no se mueve nada alrededor.
+/// Se probaron las dos alternativas y las dos molestaban mas de lo que
+/// ayudaban: la negrita ensancha el texto y empuja al icono de al lado, y
+/// crecer al enfocarse hace que la fila entera "salte" cada vez que el foco
+/// pasa por encima. Un cambio de color no mueve ni un pixel, y con blanco puro
+/// contra gris medio el salto de contraste es de sobra visible desde el sofa.
 class _IconoPista extends StatelessWidget {
   final IconData icon;
   final String etiqueta;
@@ -2327,33 +2362,21 @@ class _IconoPista extends StatelessWidget {
   Widget build(BuildContext context) {
     final color = focused ? Colors.white : Colors.white54;
 
-    return AnimatedScale(
-      duration: const Duration(milliseconds: 130),
-      curve: Curves.easeOut,
-      scale: focused ? 1.10 : 1.0,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 18, color: color),
-          const SizedBox(width: 7),
-          // El grosor NO cambia con el foco, aunque seria lo natural.
-          //
-          // La negrita ensancha el texto, y aqui eso costaba dos cosas: la
-          // etiqueta parecia crecer de tamano (que no es lo que se quiere
-          // decir; el tamano ya lo dice la escala) y al ensancharse empujaba
-          // al icono de al lado. Con el grosor fijo, el ancho es siempre el
-          // mismo y lo unico que se mueve es lo que debe moverse.
-          AnimatedDefaultTextStyle(
-            duration: const Duration(milliseconds: 130),
-            style: TextStyle(
-              color: color,
-              fontSize: 15,
-              fontWeight: FontWeight.w500,
-            ),
-            child: Text(etiqueta),
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 18, color: color),
+        const SizedBox(width: 7),
+        AnimatedDefaultTextStyle(
+          duration: const Duration(milliseconds: 130),
+          style: TextStyle(
+            color: color,
+            fontSize: 15.6,
+            fontWeight: FontWeight.w400,
           ),
-        ],
-      ),
+          child: Text(etiqueta),
+        ),
+      ],
     );
   }
 }
