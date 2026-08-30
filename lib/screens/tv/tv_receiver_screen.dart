@@ -2258,18 +2258,21 @@ class _TvControlsOverlay extends StatelessWidget {
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(
                                     color: Colors.white,
-                                    fontSize: 21,
+                                    fontSize: 19,
                                     fontWeight: FontWeight.w400,
                                   ),
                                 ),
                               ),
-                              const SizedBox(width: 16),
+                              const SizedBox(width: 28),
                               _IconoPista(
                                 icon: Icons.subtitles_outlined,
                                 etiqueta: 'Subtítulos',
                                 focused: focusArea == 2,
                               ),
-                              const SizedBox(width: 12),
+                              // Separados de verdad: pegados parecian un solo
+                              // control de dos partes, y ademas al crecer con
+                              // el foco casi se tocaban.
+                              const SizedBox(width: 26),
                               _IconoPista(
                                 icon: Icons.multitrack_audio_rounded,
                                 etiqueta: 'Audio',
@@ -2331,14 +2334,21 @@ class _IconoPista extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 17, color: color),
+          Icon(icon, size: 18, color: color),
           const SizedBox(width: 7),
+          // El grosor NO cambia con el foco, aunque seria lo natural.
+          //
+          // La negrita ensancha el texto, y aqui eso costaba dos cosas: la
+          // etiqueta parecia crecer de tamano (que no es lo que se quiere
+          // decir; el tamano ya lo dice la escala) y al ensancharse empujaba
+          // al icono de al lado. Con el grosor fijo, el ancho es siempre el
+          // mismo y lo unico que se mueve es lo que debe moverse.
           AnimatedDefaultTextStyle(
             duration: const Duration(milliseconds: 130),
             style: TextStyle(
               color: color,
-              fontSize: 14,
-              fontWeight: focused ? FontWeight.w600 : FontWeight.w400,
+              fontSize: 15,
+              fontWeight: FontWeight.w500,
             ),
             child: Text(etiqueta),
           ),
@@ -2707,7 +2717,7 @@ class _ColumnaPistas extends StatelessWidget {
             'No hay',
             style: TextStyle(
               color: enfocada ? Colors.white38 : Colors.white24,
-              fontSize: 20,
+              fontSize: 18,
             ),
           )
         else
@@ -2738,12 +2748,12 @@ class _ColumnaPistas extends StatelessWidget {
                   child: Row(
                     children: [
                       SizedBox(
-                        width: 34,
+                        width: 30,
                         child:
                             puesta
                                 ? Icon(
                                   Icons.check_rounded,
-                                  size: 20,
+                                  size: 18,
                                   color: color,
                                 )
                                 : null,
@@ -2753,7 +2763,7 @@ class _ColumnaPistas extends StatelessWidget {
                           duration: const Duration(milliseconds: 120),
                           style: TextStyle(
                             color: color,
-                            fontSize: 21,
+                            fontSize: 18,
                             fontWeight:
                                 foco ? FontWeight.w600 : FontWeight.w400,
                           ),
