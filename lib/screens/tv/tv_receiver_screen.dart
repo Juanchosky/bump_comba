@@ -2074,8 +2074,13 @@ class _TvControlsOverlay extends StatelessWidget {
                                     builder: (context, constraints) {
                                       final barWidth = constraints.maxWidth;
                                       final thumbX = barWidth * progress;
+                                      // Un punto mas gruesa de lo que era
+                                      // (6/8 en vez de 5/7). Sube tambien la
+                                      // enfocada para no perder el salto de
+                                      // grosor, que es la senal de "estas
+                                      // aqui" de la barra.
                                       final barHeight =
-                                          timelineFocused ? 7.0 : 5.0;
+                                          timelineFocused ? 8.0 : 5.8;
                                       final thumbSize =
                                           timelineFocused ? 26.0 : 18.0;
                                       return SizedBox(
