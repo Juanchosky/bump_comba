@@ -201,7 +201,27 @@ class TMDBService {
       'rating': rating,
       'cast': cast,
       'director': director,
+      // Titulo tal y como se llama en su idioma y pais de produccion: la ficha
+      // del televisor los enseña en la linea de debajo del titulo, igual que
+      // hacen las fichas de las apps de IPTV al uso.
+      'original_title': details['original_title'] ?? details['original_name'],
+      'country': _primerPais(details),
     };
+  }
+
+  /// Pais de produccion, en una sola palabra para la linea de la ficha.
+  static String? _primerPais(Map<String, dynamic> details) {
+    final paises = details['production_countries'];
+    if (paises is List && paises.isNotEmpty) {
+      final n = paises.first['name'];
+      if (n is String && n.isNotEmpty) return n;
+    }
+    final origen = details['origin_country'];
+    if (origen is List && origen.isNotEmpty) {
+      final c = origen.first;
+      if (c is String && c.isNotEmpty) return c;
+    }
+    return null;
   }
 
   Future<List<Map<String, String>>> getTrendingTitles() async {

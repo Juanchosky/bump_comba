@@ -85,6 +85,7 @@ flutter:
     - assets/images/logodepremium.png
     - assets/images/background.jpg
     - assets/images/fondotv.png
+    - assets/images/detallestv.png
     - assets/images/Avanzar.png
     - assets/images/Retroceder.png
     - .env

@@ -8,19 +8,26 @@ import 'tv_player_screen.dart';
 
 /// Ficha de un título en el televisor.
 ///
+/// CÓMO ESTÁ ARMADA
+/// La forma es la de las fichas de las apps de IPTV al uso: el texto manda a la
+/// izquierda —título, procedencia, sinopsis—, la imagen apaisada acompaña
+/// arriba a la derecha, y ABAJO va lo único que se pulsa de verdad: la fila de
+/// episodios (o el botón de reproducir, si es película). Quien llega con el
+/// mando baja una vez y ya está encima de lo que quiere.
+///
 /// DE DÓNDE SALE LA INFORMACIÓN
-/// El catálogo solo trae nombre, categoría y carátula: con eso no se decide si
-/// ver algo. La sinopsis, el año, la duración, la nota y el reparto vienen de
-/// TMDB, el mismo servicio que ya usa la ficha del teléfono — así las dos
-/// pantallas cuentan lo mismo del mismo título.
+/// El catálogo solo trae nombre, categoría y carátula. La sinopsis, el año, el
+/// país y el título original vienen de TMDB, el mismo servicio que ya usa la
+/// ficha del teléfono — así las dos pantallas cuentan lo mismo del mismo
+/// título.
 ///
 /// Y LLEGA TARDE, A PROPÓSITO
 /// TMDB es una llamada de red: si la ficha esperase a tenerla, pulsar una
 /// carátula daría pantalla en negro un segundo. Aquí se pinta al instante todo
-/// lo que ya se sabe —título, carátula, botón de reproducir— y lo de TMDB
-/// aparece cuando llega. Lo importante es que el botón de reproducir NO se
-/// mueve al llegar los datos: quien va directo a darle a OK no se encuentra el
-/// foco en otro sitio a mitad de gesto.
+/// lo que ya se sabe —título, imagen, episodios— y lo de TMDB aparece cuando
+/// llega. Lo importante es que la fila de abajo NO se mueve al llegar los
+/// datos: quien va directo a darle a OK no se encuentra el foco en otro sitio a
+/// mitad de gesto.
 class TvDetailScreen extends StatefulWidget {
   final M3UItem item;
 
@@ -49,6 +56,16 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
   /// Temporada elegida. `null` hasta que se sabe cual es la primera.
   int? _temporada;
 
+  /// Episodio marcado, el que se lleva el boton de reproducir.
+  ///
+  /// Empieza en el primero y cambia SOLO al pulsar un numero, no al pasar el
+  /// foco por encima: si cambiara al pasar, la linea naranja de arriba estaria
+  /// bailando mientras uno se limita a recorrer la fila.
+  int _episodioElegido = 0;
+
+  /// Otros titulos de la misma categoria. Se calcula una vez.
+  late final List<M3UItem> _sugerencias = _calcularSugerencias();
+
   @override
   void initState() {
     super.initState();
@@ -58,7 +75,7 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
 
   /// Pide los episodios al proveedor si el item no los trae.
   ///
-  /// No bloquea la ficha: el titulo, la caratula y el boton de reproducir se
+  /// No bloquea la ficha: el titulo, la imagen y el boton de reproducir se
   /// pintan al instante y los episodios entran cuando llegan. Quien solo
   /// queria darle a play no espera a nada.
   Future<void> _cargarEpisodios() async {
@@ -98,6 +115,36 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
     }
   }
 
+  /// Titulos parecidos: los de la misma categoria que ya estan en memoria.
+  ///
+  /// No se pide nada a la red. El catalogo ya esta cargado —es de donde se
+  /// venia— y sacar de ahi cuesta cero, que es justo lo que puede permitirse
+  /// una fila decorativa al final de la ficha.
+  List<M3UItem> _calcularSugerencias() {
+    final s = M3UService();
+    final esSerie = widget.item.isSeries || widget.item.seriesName != null;
+    var base = esSerie ? s.series : s.movies;
+    if (base.isEmpty) base = s.itemsPreliminares;
+    if (base.isEmpty) return const [];
+
+    final propio = widget.item.seriesName ?? widget.item.name;
+    final cat = widget.item.category.trim();
+
+    final mismos = <M3UItem>[];
+    final otros = <M3UItem>[];
+    for (final e in base) {
+      if ((e.seriesName ?? e.name) == propio) continue;
+      if ((e.logo ?? '').isEmpty) continue;
+      if (cat.isNotEmpty && e.category.trim() == cat) {
+        mismos.add(e);
+        if (mismos.length >= 14) break;
+      } else if (otros.length < 14) {
+        otros.add(e);
+      }
+    }
+    return [...mismos, ...otros].take(14).toList();
+  }
+
   List<M3UItem> get _episodios {
     if (_episodiosCargados.isEmpty) return const [];
     final lista = [..._episodiosCargados];
@@ -123,7 +170,7 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
   static final RegExp _basura = RegExp(
     r'\((?:HDTS|CAM|TS|HDRIP|BRRIP|WEBRIP|WEB-?DL|HD|SD|4K|FHD|UHD|LAT|CAST|'
     r'SUB|VOSE|DUAL|REMUX|BLURAY|DVDRIP|SCREENER|LINE)\)|\[[^\]]*\]|'
-    r'(?:19|20)\d{2}|\(\s*\)',
+    r'(?:19|20)\d{2}|\(\s*\)',
     caseSensitive: false,
   );
 
@@ -171,299 +218,153 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
     );
   }
 
+  /// Saltar de una ficha a otra desde "Quizás te guste".
+  ///
+  /// Se REEMPLAZA en vez de apilar: encadenando sugerencias se llegaba a tener
+  /// diez fichas una encima de otra, y volver desde ahi eran diez pulsaciones
+  /// de "atras" para regresar al catalogo.
+  void _abrir(M3UItem otro) {
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute<void>(builder: (_) => TvDetailScreen(item: otro)),
+    );
+  }
+
   // ── Datos derivados de la ficha ──────────────────────────────────────────
+  String? _texto(String clave) {
+    final v = _ficha?[clave];
+    if (v is String && v.trim().isNotEmpty) return v.trim();
+    return null;
+  }
+
   String? get _anio {
-    final f = _ficha?['release_date'] ?? _ficha?['first_air_date'];
-    if (f is String && f.length >= 4) return f.substring(0, 4);
+    final f = _texto('release_date');
+    if (f != null && f.length >= 4) return f.substring(0, 4);
     return null;
   }
 
-  String? get _nota {
-    final v = _ficha?['vote_average'];
-    if (v is num && v > 0) return v.toStringAsFixed(1);
-    return null;
-  }
+  String get _sinopsis => _texto('overview') ?? '';
+  String? get _pais => _texto('country');
+  String? get _tituloOriginal => _texto('original_title');
+  String? get _fondo => _texto('backdrop_url');
 
-  String? get _duracion {
-    final r = _ficha?['runtime'];
-    if (r is num && r > 0) return '${r.toInt()} min';
-    final e = _ficha?['episode_run_time'];
-    if (e is List && e.isNotEmpty && e.first is num && e.first > 0) {
-      return '${(e.first as num).toInt()} min';
-    }
-    return widget.item.duration;
-  }
-
-  List<String> get _generos {
-    final g = _ficha?['genres'];
-    if (g is! List) return const [];
-    return [
-      for (final x in g.take(3))
-        if (x is Map && x['name'] is String) x['name'] as String,
-    ];
-  }
-
-  String get _sinopsis {
-    final o = _ficha?['overview'];
-    return (o is String) ? o.trim() : '';
-  }
-
-  List<String> get _reparto {
-    final c = _ficha?['credits'];
-    if (c is! Map) return const [];
-    final cast = c['cast'];
-    if (cast is! List) return const [];
-    return [
-      for (final p in cast.take(4))
-        if (p is Map && p['name'] is String) p['name'] as String,
-    ];
-  }
-
-  String? get _fondo {
-    final b = _ficha?['backdrop_path'];
-    if (b is String && b.isNotEmpty) {
-      return 'https://image.tmdb.org/t/p/w1280$b';
-    }
-    return null;
-  }
+  /// La imagen apaisada de arriba a la derecha.
+  ///
+  /// Primero el backdrop de TMDB, que es el que da el aire de ficha. Si TMDB no
+  /// tiene nada, la caratula del proveedor antes que un hueco gris.
+  String? get _imagen => _fondo ?? _texto('poster_url') ?? widget.item.logo;
 
   @override
   Widget build(BuildContext context) {
-    final episodios = _episodios;
-    final esSerie = episodios.isNotEmpty;
-    final fondo = _fondo;
+    final episodios = _episodiosVisibles;
+    final esSerie = _episodios.isNotEmpty;
 
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: const Color(0xFF0B0B0D),
       body: Stack(
         fit: StackFit.expand,
         children: [
           // ── Fondo ────────────────────────────────────────────────────────
           //
-          // El backdrop es lo que convierte una lista de datos en una ficha que
-          // apetece mirar. Va muy apagado y con un degradado encima: si compite
-          // con el texto, la ficha deja de leerse, que es para lo que está.
-          if (fondo != null)
-            Opacity(
-              opacity: 0.32,
-              child: Image.network(
-                fondo,
-                fit: BoxFit.cover,
-                alignment: Alignment.topCenter,
-                errorBuilder: (_, _, _) => const SizedBox.shrink(),
-              ),
-            ),
+          // El mismo fondo fijo del catalogo, para que pasar de una pantalla a
+          // otra no cambie de escenario. Antes aqui iba el backdrop del titulo
+          // y tenia un problema: cada ficha se veia de un color distinto, y
+          // con un backdrop claro el texto blanco de encima se perdia. La
+          // imagen del titulo sigue estando, pero donde se mira — en el
+          // recuadro grande de la derecha.
+          //
+          // `cover` y no `fill`: en un televisor la proporcion puede no ser
+          // 16:9 exacta y estirar la imagen se nota enseguida en las
+          // diagonales. Y con `color: black` debajo, el recorte nunca deja un
+          // borde vacio en pantallas mas altas o mas anchas.
           const DecoratedBox(
             decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.centerLeft,
-                end: Alignment.centerRight,
-                colors: [Colors.black, Colors.black87, Colors.transparent],
-                stops: [0.0, 0.52, 1.0],
+              color: Colors.black,
+              image: DecorationImage(
+                image: AssetImage('assets/images/detallestv.png'),
+                fit: BoxFit.cover,
               ),
             ),
             child: SizedBox.expand(),
           ),
 
-          Padding(
-            padding: const EdgeInsets.fromLTRB(56, 44, 56, 36),
-            child: Row(
+          // Un velo oscuro que se abre de izquierda a derecha. El fondo tiene
+          // el dibujo justo en el centro, que es por donde pasa la sinopsis:
+          // sin esto, el texto cae encima de las circunferencias claras y deja
+          // de leerse desde el sofa.
+          const DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.centerLeft,
+                end: Alignment.centerRight,
+                colors: [
+                  Color(0xF2000000),
+                  Color(0xB3000000),
+                  Color(0x59000000),
+                ],
+                stops: [0.0, 0.55, 1.0],
+              ),
+            ),
+            child: SizedBox.expand(),
+          ),
+
+          SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(48, 26, 48, 30),
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _Caratula(item: widget.item),
-                const SizedBox(width: 40),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        widget.item.seriesName ?? widget.item.name,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 36,
-                          fontWeight: FontWeight.w600,
-                          height: 1.15,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
+                // ── Cabecera: texto a la izquierda, imagen a la derecha ────
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(child: _cabeceraTexto(esSerie, episodios)),
+                    const SizedBox(width: 36),
 
-                      // ── V1+ / BD ────────────────────────────────────────
-                      //
-                      // La misma marca que la ficha del telefono. No es
-                      // decorativa: dice si ese titulo tiene MAS DE UN sitio de
-                      // donde tirar. Con V1+ el cambio automatico de servidor
-                      // puede actuar; sin ella, si el proveedor falla no hay
-                      // adonde ir.
-                      //
-                      // Se mira el item Y sus episodios: en una serie las
-                      // alternativas suelen estar en los episodios, no en la
-                      // ficha.
-                      Builder(
-                        builder: (context) {
-                          final hayAlternativas =
-                              widget.item.alternatives.isNotEmpty ||
-                              _episodios.any((e) => e.alternatives.isNotEmpty);
-                          final deLaBD =
-                              widget.item.esDeLaBD ||
-                              _episodios.any((e) => e.esDeLaBD);
-                          final texto =
-                              hayAlternativas ? 'V1+' : (deLaBD ? 'BD' : null);
-                          if (texto == null) return const SizedBox.shrink();
-                          return Padding(
-                            padding: const EdgeInsets.only(bottom: 12),
-                            child: _Distintivo(texto: texto),
-                          );
-                        },
-                      ),
-
-                      _LineaDatos(
-                        anio: _anio,
-                        nota: _nota,
-                        duracion: _duracion,
-                        episodios: esSerie ? episodios.length : null,
-                        categoria: widget.item.category,
-                        buscando: _buscando,
-                      ),
-
-                      if (_generos.isNotEmpty) ...[
-                        const SizedBox(height: 12),
-                        Text(
-                          _generos.join('  ·  '),
-                          style: const TextStyle(
-                            color: Colors.white54,
-                            fontSize: 15,
-                          ),
-                        ),
-                      ],
-
-                      // ── Sinopsis ──────────────────────────────────────────
-                      //
-                      // Cinco líneas como techo. En una tele el texto se lee a
-                      // tres metros: un bloque más largo no se lee, se saltea.
-                      // Y no hay "ver más" porque abrirlo con el mando cuesta
-                      // un foco más para algo que casi nadie hace.
-                      if (_sinopsis.isNotEmpty) ...[
-                        const SizedBox(height: 18),
-                        Text(
-                          _sinopsis,
-                          maxLines: 5,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 16,
-                            height: 1.55,
-                          ),
-                        ),
-                      ],
-
-                      if (_reparto.isNotEmpty) ...[
-                        const SizedBox(height: 14),
-                        Text(
-                          'Con ${_reparto.join(', ')}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white38,
-                            fontSize: 14,
-                          ),
-                        ),
-                      ],
-
-                      const SizedBox(height: 24),
-
-                      // Mientras llegan los episodios se dice, en vez de dejar
-                      // un hueco que parece que falta algo. Ocupa poco y
-                      // desaparece solo.
-                      if (_cargandoEpisodios) ...[
-                        Row(
-                          children: [
-                            const SizedBox(
-                              width: 13,
-                              height: 13,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Colors.white38,
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            Text(
-                              'Buscando episodios...',
-                              style: TextStyle(
-                                color: Colors.white.withValues(alpha: 0.4),
-                                fontSize: 14,
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 16),
-                      ],
-
-                      _BotonPrincipal(
-                        autofocus: true,
-                        icono: Icons.play_arrow_rounded,
-                        texto:
-                            esSerie ? 'Reproducir 1º episodio' : 'Reproducir',
-                        onOk:
-                            () => _reproducir(
-                              esSerie ? episodios.first : widget.item,
-                            ),
-                      ),
-
-                      if (esSerie) ...[
-                        const SizedBox(height: 24),
-                        const Text(
-                          'Episodios',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 17,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-
-                        // Selector de temporada, solo si hay mas de una.
-                        if (_temporadas.length > 1) ...[
-                          SizedBox(
-                            height: 40,
-                            child: ListView(
-                              scrollDirection: Axis.horizontal,
-                              children: [
-                                for (final t in _temporadas)
-                                  _ChipTemporada(
-                                    numero: t,
-                                    elegida:
-                                        (_temporada ?? _temporadas.first) == t,
-                                    onOk: () => setState(() => _temporada = t),
-                                  ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 10),
-                        ],
-
-                        Expanded(
-                          child: ListView.builder(
-                            // La clave incluye la temporada: sin ella, Flutter
-                            // reutiliza las filas y la lista se queda con los
-                            // episodios de la temporada anterior.
-                            key: ValueKey(_temporada),
-                            itemCount: _episodiosVisibles.length,
-                            itemBuilder: (context, i) {
-                              final ep = _episodiosVisibles[i];
-                              return _FilaEpisodio(
-                                episodio: ep,
-                                onOk: () => _reproducir(ep),
-                              );
-                            },
-                          ),
-                        ),
-                      ] else
-                        const Spacer(),
-                    ],
-                  ),
+                    // La imagen ES el boton de reproducir.
+                    //
+                    // Antes habia un "Reproducir" aparte debajo, y sobraba: en
+                    // la ficha ya hay una imagen grande justo donde mira el
+                    // ojo, asi que darle el foco a ella quita un control de la
+                    // pantalla sin quitar nada de lo que se puede hacer. Es
+                    // ademas el primer foco, asi que entrar y pulsar OK
+                    // reproduce, sin mover el mando.
+                    _ImagenFicha(
+                      url: _imagen,
+                      autofocus: true,
+                      onOk:
+                          () =>
+                              _reproducir(_queSeReproduce(esSerie, episodios)),
+                    ),
+                  ],
                 ),
+
+                const SizedBox(height: 22),
+
+                if (esSerie) _bloqueEpisodios(episodios),
+
+                if (_sugerencias.isNotEmpty) ...[
+                  const SizedBox(height: 26),
+                  const Text(
+                    'Quizás te guste',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    height: 176,
+                    child: ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: _sugerencias.length,
+                      itemBuilder:
+                          (context, i) => _CardSugerencia(
+                            item: _sugerencias[i],
+                            onOk: () => _abrir(_sugerencias[i]),
+                          ),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -471,130 +372,305 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
       ),
     );
   }
-}
 
-class _Caratula extends StatelessWidget {
-  final M3UItem item;
-  const _Caratula({required this.item});
-
-  @override
-  Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(8),
-      child: Container(
-        width: 210,
-        height: 315,
-        color: const Color(0xFF1A1A1E),
-        child:
-            (item.logo != null && item.logo!.isNotEmpty)
-                ? Image.network(
-                  item.logo!,
-                  fit: BoxFit.cover,
-                  errorBuilder:
-                      (_, _, _) => const Icon(
-                        Icons.movie_outlined,
-                        color: Colors.white24,
-                        size: 52,
-                      ),
-                )
-                : const Icon(
-                  Icons.movie_outlined,
-                  color: Colors.white24,
-                  size: 52,
-                ),
-      ),
-    );
+  /// Lo que se pone al pulsar la imagen: el episodio marcado, o la pelicula.
+  M3UItem _queSeReproduce(bool esSerie, List<M3UItem> episodios) {
+    if (!esSerie || episodios.isEmpty) return widget.item;
+    return _episodioElegido < episodios.length
+        ? episodios[_episodioElegido]
+        : episodios.first;
   }
-}
 
-/// Año · nota · duración · episodios · categoría.
-///
-/// El hueco se reserva aunque no haya nada que poner todavía: si la línea
-/// creciera al llegar TMDB, empujaría hacia abajo el botón de reproducir justo
-/// cuando el usuario va a pulsarlo.
-class _LineaDatos extends StatelessWidget {
-  final String? anio;
-  final String? nota;
-  final String? duracion;
-  final int? episodios;
-  final String categoria;
-  final bool buscando;
+  // ── Cabecera ─────────────────────────────────────────────────────────────
+  Widget _cabeceraTexto(bool esSerie, List<M3UItem> episodios) {
+    // País | Año | Título original. Se junta con " | " y se saltan los huecos:
+    // con TMDB a medio llegar es normal tener solo uno de los tres, y una linea
+    // con separadores sueltos ("| 2016 |") se lee como un error.
+    final linea = [
+      if (_pais != null) _pais!,
+      if (_anio != null) _anio!,
+      if (_tituloOriginal != null) _tituloOriginal!,
+    ].join('  |  ');
 
-  const _LineaDatos({
-    required this.anio,
-    required this.nota,
-    required this.duracion,
-    required this.episodios,
-    required this.categoria,
-    required this.buscando,
-  });
+    final marcado =
+        (esSerie && _episodioElegido < episodios.length)
+            ? episodios[_episodioElegido]
+            : null;
 
-  @override
-  Widget build(BuildContext context) {
-    final partes = <String>[
-      if (anio != null) anio!,
-      if (duracion != null) duracion!,
-      if (episodios != null) '$episodios episodios',
-      if (categoria.trim().isNotEmpty) categoria.trim(),
-    ];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          widget.item.seriesName ?? widget.item.name,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 26.6,
+            fontWeight: FontWeight.w700,
+            height: 1.15,
+          ),
+        ),
+        const SizedBox(height: 8),
 
-    return SizedBox(
-      height: 24,
-      child: Row(
-        children: [
-          if (nota != null) ...[
-            const Icon(Icons.star_rounded, color: Color(0xFFF5C518), size: 19),
-            const SizedBox(width: 5),
-            Text(
-              nota!,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
-              ),
+        // El hueco de la linea se reserva aunque TMDB no haya llegado: si
+        // creciera despues, empujaria hacia abajo la fila de episodios justo
+        // cuando el usuario va a pulsarla.
+        SizedBox(
+          height: 20,
+          child: Text(
+            linea.isNotEmpty ? linea : (_buscando ? '' : widget.item.category),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
             ),
-            const SizedBox(width: 16),
-          ],
-          Expanded(
-            child: Text(
-              partes.join('  ·  '),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: Colors.white60, fontSize: 16),
+          ),
+        ),
+
+        // ── Episodio marcado ────────────────────────────────────────────
+        //
+        // En naranja porque es el unico dato de la cabecera que CAMBIA con lo
+        // que uno hace abajo: al pulsar un numero, esta linea es la que
+        // confirma cual quedo puesto.
+        if (marcado != null) ...[
+          const SizedBox(height: 10),
+          Text(
+            _nombreEpisodio(marcado),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Color(0xFFF5A623),
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
             ),
           ),
         ],
-      ),
+
+        // Marca de servidor: V1+ (hay de donde tirar si falla) o BD (propio).
+        Builder(
+          builder: (context) {
+            final hayAlternativas =
+                widget.item.alternatives.isNotEmpty ||
+                _episodios.any((e) => e.alternatives.isNotEmpty);
+            final deLaBD =
+                widget.item.esDeLaBD || _episodios.any((e) => e.esDeLaBD);
+            final texto = hayAlternativas ? 'V1+' : (deLaBD ? 'BD' : null);
+            if (texto == null) return const SizedBox.shrink();
+            return Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: _Distintivo(texto: texto),
+            );
+          },
+        ),
+
+        const SizedBox(height: 14),
+
+        // ── Sinopsis ──────────────────────────────────────────────────────
+        //
+        // Cuatro líneas como techo. En una tele el texto se lee a tres metros:
+        // un bloque más largo no se lee, se saltea. Y no hay "ver más" porque
+        // abrirlo con el mando cuesta un foco más para algo que casi nadie
+        // hace.
+        RichText(
+          maxLines: 4,
+          overflow: TextOverflow.ellipsis,
+          text: TextSpan(
+            children: [
+              const TextSpan(
+                text: 'Sinopsis  ',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  height: 1.5,
+                ),
+              ),
+              TextSpan(
+                text:
+                    _sinopsis.isNotEmpty
+                        ? _sinopsis
+                        : (_buscando ? 'Cargando…' : 'Sin datos'),
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 14,
+                  height: 1.5,
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        // Mientras llegan los episodios se dice, en vez de dejar un hueco que
+        // parece que falta algo. Ocupa poco y desaparece solo.
+        if (_cargandoEpisodios) ...[
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              const SizedBox(
+                width: 13,
+                height: 13,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white38,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                'Buscando episodios...',
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.4),
+                  fontSize: 14,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+
+  String _nombreEpisodio(M3UItem ep) {
+    final n = ep.episodeNumber;
+    if (n == null) return ep.name;
+    final t = ep.seasonNumber;
+    return (t != null && _temporadas.length > 1)
+        ? 'Temporada $t · Episodio $n'
+        : 'Episodio $n';
+  }
+
+  // ── Bloque de episodios ─────────────────────────────────────────────────
+  //
+  // Una sola fila de numeros, como en las apps de IPTV: la lista vertical
+  // obligaba a bajar episodio a episodio hasta el 12, y con el mando eso son
+  // doce pulsaciones para algo que aqui son tres.
+  Widget _bloqueEpisodios(List<M3UItem> episodios) {
+    final temporadas = _temporadas;
+    final primero =
+        episodios.isEmpty ? null : (episodios.first.episodeNumber ?? 1);
+    final ultimo =
+        episodios.isEmpty
+            ? null
+            : (episodios.last.episodeNumber ?? episodios.length);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Selector de temporada, solo si hay mas de una.
+        if (temporadas.length > 1) ...[
+          SizedBox(
+            height: 38,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              children: [
+                for (final t in temporadas)
+                  _ChipTemporada(
+                    numero: t,
+                    elegida: (_temporada ?? temporadas.first) == t,
+                    onOk:
+                        () => setState(() {
+                          _temporada = t;
+                          _episodioElegido = 0;
+                        }),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+        ],
+
+        // El rango de la temporada, en naranja. Dice de un vistazo cuantos
+        // episodios hay sin tener que recorrer la fila hasta el final.
+        if (primero != null && ultimo != null) ...[
+          Text(
+            '$primero-$ultimo',
+            style: const TextStyle(
+              color: Color(0xFFF5A623),
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 8),
+        ],
+
+        SizedBox(
+          height: 46,
+          child: ListView.builder(
+            // La clave incluye la temporada: sin ella, Flutter reutiliza las
+            // celdas y la fila se queda con los episodios de la anterior.
+            key: ValueKey(_temporada),
+            scrollDirection: Axis.horizontal,
+            // Una celda mas que episodios: la primera es el boton de
+            // reproducir, que se lleva el episodio marcado.
+            itemCount: episodios.length + 1,
+            itemBuilder: (context, i) {
+              if (i == 0) {
+                final marcado =
+                    _episodioElegido < episodios.length
+                        ? episodios[_episodioElegido]
+                        : episodios.first;
+                return _CeldaEpisodio(
+                  icono: Icons.play_arrow_rounded,
+                  onOk: () => _reproducir(marcado),
+                );
+              }
+              final ep = episodios[i - 1];
+              return _CeldaEpisodio(
+                texto: '${ep.episodeNumber ?? i}',
+                marcada: _episodioElegido == i - 1,
+                onOk: () {
+                  setState(() => _episodioElegido = i - 1);
+                  _reproducir(ep);
+                },
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 }
 
-/// Botón grande de la ficha. Blanco cuando tiene el foco, contorno cuando no.
-class _BotonPrincipal extends StatefulWidget {
-  final IconData icono;
-  final String texto;
-  final VoidCallback onOk;
+/// La imagen apaisada de la cabecera, que es tambien el boton de reproducir.
+///
+/// Sin esquinas redondeadas: pegada al borde recto se lee como un fotograma
+/// del propio titulo y no como una tarjeta mas de una interfaz.
+class _ImagenFicha extends StatefulWidget {
+  final String? url;
   final bool autofocus;
+  final VoidCallback onOk;
 
-  const _BotonPrincipal({
-    required this.icono,
-    required this.texto,
+  const _ImagenFicha({
+    required this.url,
     required this.onOk,
     this.autofocus = false,
   });
 
   @override
-  State<_BotonPrincipal> createState() => _BotonPrincipalState();
+  State<_ImagenFicha> createState() => _ImagenFichaState();
 }
 
-class _BotonPrincipalState extends State<_BotonPrincipal> {
+class _ImagenFichaState extends State<_ImagenFicha> {
   bool _foco = false;
 
   @override
   Widget build(BuildContext context) {
+    final url = widget.url;
+
     return Focus(
       autofocus: widget.autofocus,
-      onFocusChange: (v) => setState(() => _foco = v),
+      onFocusChange: (v) {
+        setState(() => _foco = v);
+        if (v) {
+          Scrollable.ensureVisible(
+            context,
+            alignment: 0.5,
+            duration: const Duration(milliseconds: 180),
+          );
+        }
+      },
       // OK SE LEE DIRECTO DE LA TECLA, sin Actions ni Intents.
       //
       // Dos intentos fallaron antes en el aparato: un `Actions` colgado DENTRO
@@ -615,29 +691,49 @@ class _BotonPrincipalState extends State<_BotonPrincipal> {
       },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 140),
-        padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 13),
-        decoration: BoxDecoration(
-          color: _foco ? Colors.white : Colors.transparent,
-          borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: Colors.white70, width: 2),
+        width: 360,
+        height: 203,
+        decoration: const BoxDecoration(color: Color(0xFF1A1A1E)),
+        // El recuadro del foco va POR ENCIMA de la imagen, no alrededor.
+        //
+        // Como borde normal dejaba un marco oscuro permanente aun sin foco: el
+        // borde transparente sigue ocupando y deja ver el color de la caja de
+        // debajo. Asi la imagen llega hasta el filo y el blanco solo aparece
+        // cuando esta seleccionada.
+        foregroundDecoration: BoxDecoration(
+          border: Border.all(
+            color: _foco ? Colors.white : Colors.transparent,
+            width: 2,
+          ),
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
+        child: Stack(
+          fit: StackFit.expand,
           children: [
-            Icon(
-              widget.icono,
-              color: _foco ? Colors.black : Colors.white,
-              size: 25,
-            ),
-            const SizedBox(width: 10),
-            Text(
-              widget.texto,
-              style: TextStyle(
-                color: _foco ? Colors.black : Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
+            if (url != null && url.isNotEmpty)
+              Image.network(
+                url,
+                fit: BoxFit.cover,
+                errorBuilder:
+                    (_, _, _) => const Icon(
+                      Icons.movie_outlined,
+                      color: Colors.white24,
+                      size: 52,
+                    ),
+              )
+            else
+              const Icon(Icons.movie_outlined, color: Colors.white24, size: 52),
+
+            // El play solo aparece con el foco encima. Puesto siempre seria un
+            // adorno; asi es la señal de que ESTO es lo que se pulsa, que es
+            // justo lo que hay que decir al quitar el boton de debajo.
+            if (_foco)
+              const Center(
+                child: Icon(
+                  Icons.play_circle_fill_rounded,
+                  color: Colors.white,
+                  size: 58,
+                ),
               ),
-            ),
           ],
         ),
       ),
@@ -645,26 +741,29 @@ class _BotonPrincipalState extends State<_BotonPrincipal> {
   }
 }
 
-class _FilaEpisodio extends StatefulWidget {
-  final M3UItem episodio;
+/// Cada tecla de la fila de episodios: un numero, o el play de la primera.
+class _CeldaEpisodio extends StatefulWidget {
+  final String? texto;
+  final IconData? icono;
+  final bool marcada;
   final VoidCallback onOk;
-  const _FilaEpisodio({required this.episodio, required this.onOk});
+
+  const _CeldaEpisodio({
+    this.texto,
+    this.icono,
+    this.marcada = false,
+    required this.onOk,
+  });
 
   @override
-  State<_FilaEpisodio> createState() => _FilaEpisodioState();
+  State<_CeldaEpisodio> createState() => _CeldaEpisodioState();
 }
 
-class _FilaEpisodioState extends State<_FilaEpisodio> {
+class _CeldaEpisodioState extends State<_CeldaEpisodio> {
   bool _foco = false;
 
   @override
   Widget build(BuildContext context) {
-    final ep = widget.episodio;
-    final numero = [
-      if (ep.seasonNumber != null) 'T${ep.seasonNumber}',
-      if (ep.episodeNumber != null) 'E${ep.episodeNumber}',
-    ].join(' ');
-
     return Focus(
       onFocusChange: (v) {
         setState(() => _foco = v);
@@ -694,38 +793,110 @@ class _FilaEpisodioState extends State<_FilaEpisodio> {
         }
         return KeyEventResult.ignored;
       },
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 4),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 140),
+        width: 64,
+        margin: const EdgeInsets.only(right: 8),
         decoration: BoxDecoration(
-          color: _foco ? Colors.white10 : Colors.transparent,
+          color: _foco ? Colors.white : const Color(0xFF2A2A2E),
           borderRadius: BorderRadius.circular(6),
+          border: Border.all(
+            // Marcada pero sin foco: un filo naranja para no perder de vista
+            // cual quedo puesto mientras se recorre el resto de la fila.
+            color:
+                widget.marcada && !_foco
+                    ? const Color(0xFFF5A623)
+                    : Colors.transparent,
+            width: 2,
+          ),
         ),
-        child: Row(
-          children: [
-            SizedBox(
-              width: 60,
-              child: Text(
-                numero,
-                style: TextStyle(
-                  color: _foco ? Colors.white : Colors.white38,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
+        alignment: Alignment.center,
+        child:
+            widget.icono != null
+                ? Icon(
+                  widget.icono,
+                  color: _foco ? Colors.black : Colors.white,
+                  size: 22,
+                )
+                : Text(
+                  widget.texto ?? '',
+                  style: TextStyle(
+                    color: _foco ? Colors.black : Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+      ),
+    );
+  }
+}
+
+/// Una carátula de la fila "Quizás te guste".
+class _CardSugerencia extends StatefulWidget {
+  final M3UItem item;
+  final VoidCallback onOk;
+  const _CardSugerencia({required this.item, required this.onOk});
+
+  @override
+  State<_CardSugerencia> createState() => _CardSugerenciaState();
+}
+
+class _CardSugerenciaState extends State<_CardSugerencia> {
+  bool _foco = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Focus(
+      onFocusChange: (v) {
+        setState(() => _foco = v);
+        if (v) {
+          Scrollable.ensureVisible(
+            context,
+            alignment: 0.5,
+            duration: const Duration(milliseconds: 180),
+          );
+        }
+      },
+      onKeyEvent: (node, event) {
+        if (event is! KeyDownEvent) return KeyEventResult.ignored;
+        final k = event.logicalKey;
+        if (k == LogicalKeyboardKey.select ||
+            k == LogicalKeyboardKey.enter ||
+            k == LogicalKeyboardKey.gameButtonA) {
+          widget.onOk();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 140),
+        width: 117,
+        margin: const EdgeInsets.only(right: 12),
+        // El recuadro del foco va POR ENCIMA de la caratula, no alrededor.
+        //
+        // Puesto como borde normal dejaba un marco oscuro permanente incluso
+        // sin foco —el borde transparente sigue ocupando y deja ver el fondo—,
+        // y las caratulas parecian enmarcadas en negro. Asi la imagen llega
+        // hasta el filo y el blanco solo aparece cuando toca.
+        foregroundDecoration: BoxDecoration(
+          border: Border.all(
+            color: _foco ? Colors.white : Colors.transparent,
+            width: 1.5,
+          ),
+        ),
+        child: Image.network(
+          widget.item.logo ?? '',
+          fit: BoxFit.cover,
+          errorBuilder:
+              (_, _, _) => Container(
+                color: const Color(0xFF1A1A1E),
+                alignment: Alignment.center,
+                child: const Icon(
+                  Icons.movie_outlined,
+                  color: Colors.white24,
+                  size: 30,
                 ),
               ),
-            ),
-            Expanded(
-              child: Text(
-                ep.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: _foco ? Colors.white : Colors.white60,
-                  fontSize: 16,
-                ),
-              ),
-            ),
-          ],
         ),
       ),
     );
@@ -774,7 +945,7 @@ class _ChipTemporadaState extends State<_ChipTemporada> {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 130),
         margin: const EdgeInsets.only(right: 10),
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
         decoration: BoxDecoration(
           color:
               widget.elegida
@@ -790,7 +961,7 @@ class _ChipTemporadaState extends State<_ChipTemporada> {
           'Temporada ${widget.numero}',
           style: TextStyle(
             color: color,
-            fontSize: 15,
+            fontSize: 14,
             fontWeight: widget.elegida ? FontWeight.w600 : FontWeight.w400,
           ),
         ),
