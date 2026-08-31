@@ -461,6 +461,9 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
                                 height: 176,
                                 child: ListView.builder(
                                   scrollDirection: Axis.horizontal,
+                                  // Sin recorte, para que el 5% que crece la
+                                  // enfocada no se corte arriba y abajo.
+                                  clipBehavior: Clip.none,
                                   itemCount: _sugerencias.length,
                                   itemBuilder:
                                       (context, i) => _CardSugerencia(
@@ -960,35 +963,45 @@ class _CardSugerenciaState extends State<_CardSugerencia> {
         }
         return KeyEventResult.ignored;
       },
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 140),
-        width: 117,
-        margin: const EdgeInsets.only(right: 12),
-        // El recuadro del foco va POR ENCIMA de la caratula, no alrededor.
+      child: AnimatedScale(
+        // ── El acercamiento al enfocar ──────────────────────────────────
         //
-        // Puesto como borde normal dejaba un marco oscuro permanente incluso
-        // sin foco —el borde transparente sigue ocupando y deja ver el fondo—,
-        // y las caratulas parecian enmarcadas en negro. Asi la imagen llega
-        // hasta el filo y el blanco solo aparece cuando toca.
-        foregroundDecoration: BoxDecoration(
-          border: Border.all(
-            color: _foco ? Colors.white : Colors.transparent,
-            width: 2.5,
+        // El mismo 5% que en el catalogo y en la rejilla. Que el foco se note
+        // igual en las tres pantallas es la mitad del asunto: si cada una lo
+        // marcara a su manera, habria que aprender tres.
+        scale: _foco ? 1.05 : 1.0,
+        duration: const Duration(milliseconds: 140),
+        curve: Curves.easeOut,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 140),
+          width: 117,
+          margin: const EdgeInsets.only(right: 12),
+          // El recuadro del foco va POR ENCIMA de la caratula, no alrededor.
+          //
+          // Puesto como borde normal dejaba un marco oscuro permanente incluso
+          // sin foco —el borde transparente sigue ocupando y deja ver el fondo—,
+          // y las caratulas parecian enmarcadas en negro. Asi la imagen llega
+          // hasta el filo y el blanco solo aparece cuando toca.
+          foregroundDecoration: BoxDecoration(
+            border: Border.all(
+              color: _foco ? Colors.white : Colors.transparent,
+              width: 2,
+            ),
           ),
-        ),
-        child: Image.network(
-          widget.item.logo ?? '',
-          fit: BoxFit.cover,
-          errorBuilder:
-              (_, _, _) => Container(
-                color: const Color(0xFF1A1A1E),
-                alignment: Alignment.center,
-                child: const Icon(
-                  Icons.movie_outlined,
-                  color: Colors.white24,
-                  size: 30,
+          child: Image.network(
+            widget.item.logo ?? '',
+            fit: BoxFit.cover,
+            errorBuilder:
+                (_, _, _) => Container(
+                  color: const Color(0xFF1A1A1E),
+                  alignment: Alignment.center,
+                  child: const Icon(
+                    Icons.movie_outlined,
+                    color: Colors.white24,
+                    size: 30,
+                  ),
                 ),
-              ),
+          ),
         ),
       ),
     );

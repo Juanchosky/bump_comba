@@ -70,9 +70,9 @@ class _TvCategoryScreenState extends State<TvCategoryScreen> {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 24,
-                          fontWeight: FontWeight.w700,
+                          color: Color.fromRGBO(255, 255, 255, 1),
+                          fontSize: 19.5,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                     ),
@@ -92,17 +92,32 @@ class _TvCategoryScreenState extends State<TvCategoryScreen> {
 
                 Expanded(
                   child: GridView.builder(
-                    padding: const EdgeInsets.only(bottom: 30),
+                    // Sin recorte: la tarjeta enfocada crece un 5% y ese pelo
+                    // se sale de su celda.
+                    clipBehavior: Clip.none,
+                    // Y con aire por los cuatro lados, que es lo que le faltaba
+                    // al quitar el recorte: las de la primera fila se salian
+                    // por arriba y las de los extremos por los lados. 6 de
+                    // ancho y 10 de alto es lo que se ensancha una caratula de
+                    // 120x180 al 5%.
+                    padding: const EdgeInsets.fromLTRB(6, 8, 6, 30),
                     gridDelegate:
-                        const SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 6,
-                          // 148 de ancho por 222 de alto mas el titulo debajo,
-                          // las mismas medidas que las tarjetas del catalogo:
-                          // cambiar de pantalla no deberia cambiar el tamaño
-                          // de lo que estas mirando.
-                          childAspectRatio: 148 / 252,
-                          crossAxisSpacing: 14,
-                          mainAxisSpacing: 16,
+                        const SliverGridDelegateWithMaxCrossAxisExtent(
+                          // Algo mas pequeñas que las del catalogo: aqui hay
+                          // pantalla entera y varias filas a la vez, asi que
+                          // caben mas titulos de un vistazo — que es para lo
+                          // que uno entra a "ver todo".
+                          //
+                          // Por ancho maximo y no por numero de columnas: con
+                          // un numero fijo, la tarjeta valia lo que sobrara de
+                          // dividir la pantalla y salia de un tamaño distinto
+                          // en cada televisor. Diciendo cuanto mide la
+                          // tarjeta, es la rejilla la que decide cuantas caben.
+                          maxCrossAxisExtent: 132,
+                          // Caratula (180) + hueco (6) + titulo, con holgura.
+                          mainAxisExtent: 208,
+                          crossAxisSpacing: 12,
+                          mainAxisSpacing: 14,
                         ),
                     itemCount: widget.items.length,
                     itemBuilder:
@@ -172,48 +187,61 @@ class _TarjetaState extends State<_Tarjeta> {
         }
         return KeyEventResult.ignored;
       },
-      child: GestureDetector(
-        onTap: _abrir,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Expanded(
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 140),
-                width: double.infinity,
-                foregroundDecoration: BoxDecoration(
-                  border: Border.all(
-                    color: _foco ? Colors.white : Colors.transparent,
-                    width: 2,
+      child: AnimatedScale(
+        // ── El acercamiento al enfocar ────────────────────────────────────────
+        //
+        // Un 5%, no mas. Lo que se busca es que la vista encuentre sola donde esta
+        // el foco al mirar la pantalla desde el sofa; un salto mayor empuja a las
+        // vecinas y convierte recorrer una fila en un oleaje.
+        //
+        // Es una transformacion de PINTADO: no toca la distribucion, asi que al
+        // crecer no se recoloca nada de alrededor.
+        scale: _foco ? 1.05 : 1.0,
+        duration: const Duration(milliseconds: 140),
+        curve: Curves.easeOut,
+        child: GestureDetector(
+          onTap: _abrir,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Expanded(
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 140),
+                  width: double.infinity,
+                  foregroundDecoration: BoxDecoration(
+                    border: Border.all(
+                      color: _foco ? Colors.white : Colors.transparent,
+                      width: 2,
+                    ),
                   ),
+                  decoration: const BoxDecoration(color: Color(0xFF1A1A1E)),
+                  child:
+                      (widget.item.logo != null && widget.item.logo!.isNotEmpty)
+                          ? Image.network(
+                            widget.item.logo!,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                          )
+                          : const SizedBox.shrink(),
                 ),
-                decoration: const BoxDecoration(color: Color(0xFF1A1A1E)),
-                child:
-                    (widget.item.logo != null && widget.item.logo!.isNotEmpty)
-                        ? Image.network(
-                          widget.item.logo!,
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, _, _) => const SizedBox.shrink(),
-                        )
-                        : const SizedBox.shrink(),
               ),
-            ),
-            const SizedBox(height: 6),
-            AnimatedDefaultTextStyle(
-              duration: const Duration(milliseconds: 130),
-              style: TextStyle(
-                color: _foco ? Colors.white : Colors.white54,
-                fontSize: 12,
-                fontWeight: FontWeight.w400,
+              const SizedBox(height: 6),
+              AnimatedDefaultTextStyle(
+                duration: const Duration(milliseconds: 130),
+                style: TextStyle(
+                  color: _foco ? Colors.white : Colors.white54,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w400,
+                ),
+                child: Text(
+                  widget.item.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
-              child: Text(
-                widget.item.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

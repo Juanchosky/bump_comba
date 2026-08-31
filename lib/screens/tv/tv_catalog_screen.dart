@@ -466,10 +466,12 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                           ),
                         )
                         : ListView.builder(
-                          // 92 arriba: es lo que ocupa la marca. Sin ello el
-                          // titulo de la primera categoria se le montaba
-                          // encima.
-                          padding: const EdgeInsets.fromLTRB(0, 92, 0, 40),
+                          // 40 arriba y no 92: los 92 eran el hueco que
+                          // ocupaba la marca. Quitada la marca, ese hueco es
+                          // una franja vacia en lo alto de la pantalla, y en
+                          // un televisor eso es una fila de caratulas que se
+                          // deja de ver.
+                          padding: const EdgeInsets.fromLTRB(0, 40, 0, 40),
                           itemCount: _filas.length,
                           itemBuilder: (context, i) {
                             final fila = _filas[i];
@@ -491,17 +493,19 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
 
           // ── Velo superior ───────────────────────────────────────────
           //
-          // La marca se veia "medio oscura y medio clara": la mitad caia sobre
-          // el degradado del menu y la otra mitad sobre el fondo, asi que el
-          // texto cambiaba de contraste por la mitad.
+          // Estaba puesto para que la marca se apoyara siempre en lo mismo.
+          // Sin marca sigue haciendo falta, pero por otro motivo: las
+          // caratulas de la primera fila se desplazan por debajo y sin la
+          // banda asoman enteras por arriba, como si se salieran de la
+          // pantalla.
           //
-          // Con una banda propia de negro a transparente, la marca se apoya
-          // SIEMPRE en lo mismo, pase lo que pase por detras.
+          // Mas corto que antes —80 en vez de 120—: ya no tiene que cubrir un
+          // texto, solo difuminar el borde de arriba.
           Positioned(
             left: 0,
             right: 0,
             top: 0,
-            height: 120,
+            height: 80,
             child: IgnorePointer(
               child: DecoratedBox(
                 decoration: BoxDecoration(
@@ -516,24 +520,6 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                     stops: const [0.0, 0.5, 1.0],
                   ),
                 ),
-              ),
-            ),
-          ),
-
-          // ── La marca, FUERA del menu ────────────────────────────────────
-          //
-          // Vive en la pantalla, no dentro del lateral: asi no se recoge ni se
-          // desvanece con el, y deja de competir por su ancho.
-          Positioned(
-            left: 52,
-            top: 30,
-            child: Text(
-              'Bump Comba',
-              style: TextStyle(
-                color: Colors.white.withValues(alpha: 0.95),
-                fontSize: 24,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 0.4,
               ),
             ),
           ),
@@ -647,18 +633,32 @@ class _Fila extends StatelessWidget {
           // pantalla a proposito, que es lo que dice que la fila sigue y
           // invita a seguir moviendose.
           Padding(
-            padding: const EdgeInsets.only(left: 106),
+            // 100 y no 106: los 6 que faltan se los queda el `padding` del
+            // propio ListView, mas abajo. La cuenta sigue dando 106 —las
+            // caratulas arrancan donde el titulo de la seccion—, pero ahora
+            // hay 6 de aire dentro de la ventana para que la tarjeta enfocada
+            // crezca sin salirse por la izquierda.
+            padding: const EdgeInsets.only(left: 100),
             child: SizedBox(
-              // Caratula (222) + hueco (8) + titulo (~15), con holgura.
+              // Caratula (204) + hueco (8) + titulo (~15), y 12 mas de aire:
+              // al crecer un 5%, la caratula gana 10 de alto y sin ese margen
+              // se comia el titulo de la fila de arriba.
               //
               // La holgura NO sobra: el televisor aplica su propia escala de
               // texto, asi que el titulo de debajo sale un pelo mas alto que
               // la cuenta de aqui. Sin ese margen, el pelo desborda la columna
               // y Flutter pinta las rayas amarillas.
-              height: 252,
+              height: 248,
               child: ListView.builder(
                 scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.only(right: 20),
+                // Sin recorte: la tarjeta enfocada crece un 5% y ese pelo se
+                // sale de su hueco. Con el recorte por defecto se le cortaban
+                // los bordes de arriba y abajo, que es justo lo que el
+                // acercamiento tiene que hacer notar.
+                clipBehavior: Clip.none,
+                // El aire por donde crece la tarjeta enfocada: 6 a cada lado,
+                // que es lo que se ensancha una caratula de 136 al 5%.
+                padding: const EdgeInsets.only(left: 6, right: 26),
                 // Una tarjeta mas cuando la categoria no cabe entera: la de
                 // "Más", que abre el catalogo completo. Solo aparece si hay
                 // algo detras — ponerla siempre seria prometer contenido que
@@ -740,62 +740,75 @@ class _TarjetaMasState extends State<_TarjetaMas> {
         }
         return KeyEventResult.ignored;
       },
-      child: GestureDetector(
-        onTap: widget.onOk,
-        child: SizedBox(
-          width: 148,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 140),
-                width: 148,
-                height: 222,
-                margin: const EdgeInsets.only(right: 14),
-                foregroundDecoration: BoxDecoration(
-                  border: Border.all(
-                    color: _foco ? Colors.white : Colors.transparent,
-                    width: 2,
-                  ),
-                ),
-                decoration: BoxDecoration(
-                  color: _foco ? Colors.white12 : const Color(0xFF1A1A1E),
-                ),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      Icons.more_horiz_rounded,
-                      color: _foco ? Colors.white : Colors.white54,
-                      size: 40,
+      child: AnimatedScale(
+        // ── El acercamiento al enfocar ────────────────────────────────────────
+        //
+        // Un 5%, no mas. Lo que se busca es que la vista encuentre sola donde esta
+        // el foco al mirar la pantalla desde el sofa; un salto mayor empuja a las
+        // vecinas y convierte recorrer una fila en un oleaje.
+        //
+        // Es una transformacion de PINTADO: no toca la distribucion, asi que al
+        // crecer no se recoloca nada de alrededor.
+        scale: _foco ? 1.05 : 1.0,
+        duration: const Duration(milliseconds: 140),
+        curve: Curves.easeOut,
+        child: GestureDetector(
+          onTap: widget.onOk,
+          child: SizedBox(
+            width: 136,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 140),
+                  width: 136,
+                  height: 204,
+                  margin: const EdgeInsets.only(right: 14),
+                  foregroundDecoration: BoxDecoration(
+                    border: Border.all(
+                      color: _foco ? Colors.white : Colors.transparent,
+                      width: 2,
                     ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '+${widget.restantes}',
-                      style: TextStyle(
-                        color: _foco ? Colors.white : Colors.white38,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600,
+                  ),
+                  decoration: BoxDecoration(
+                    color: _foco ? Colors.white12 : const Color(0xFF1A1A1E),
+                  ),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.more_horiz_rounded,
+                        color: _foco ? Colors.white : Colors.white54,
+                        size: 40,
                       ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 8),
-              SizedBox(
-                width: 134,
-                child: AnimatedDefaultTextStyle(
-                  duration: const Duration(milliseconds: 130),
-                  style: TextStyle(
-                    color: _foco ? Colors.white : Colors.white54,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w400,
+                      const SizedBox(height: 8),
+                      Text(
+                        '+${widget.restantes}',
+                        style: TextStyle(
+                          color: _foco ? Colors.white : Colors.white38,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
                   ),
-                  child: const Text('Ver todo'),
                 ),
-              ),
-            ],
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: 122,
+                  child: AnimatedDefaultTextStyle(
+                    duration: const Duration(milliseconds: 130),
+                    style: TextStyle(
+                      color: _foco ? Colors.white : Colors.white54,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w400,
+                    ),
+                    child: const Text('Ver todo'),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -902,73 +915,86 @@ class _TarjetaState extends State<_Tarjeta> {
         }
         return KeyEventResult.ignored;
       },
-      child: GestureDetector(
-        onTap: _abrir,
-        child: SizedBox(
-          width: 148,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // ── La carátula ────────────────────────────────────────────
-              //
-              // Sin esquinas redondeadas y con el borde de foco fino, como en
-              // la referencia: el poster ya trae su propio diseño y recortarlo
-              // o enmarcarlo grueso le quita presencia.
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 140),
-                width: 148,
-                height: 222,
-                margin: const EdgeInsets.only(right: 14),
-                decoration: BoxDecoration(
-                  border: Border.all(
-                    color: _foco ? Colors.white : Colors.transparent,
-                    width: 2,
+      child: AnimatedScale(
+        // ── El acercamiento al enfocar ────────────────────────────────────────
+        //
+        // Un 5%, no mas. Lo que se busca es que la vista encuentre sola donde esta
+        // el foco al mirar la pantalla desde el sofa; un salto mayor empuja a las
+        // vecinas y convierte recorrer una fila en un oleaje.
+        //
+        // Es una transformacion de PINTADO: no toca la distribucion, asi que al
+        // crecer no se recoloca nada de alrededor.
+        scale: _foco ? 1.05 : 1.0,
+        duration: const Duration(milliseconds: 140),
+        curve: Curves.easeOut,
+        child: GestureDetector(
+          onTap: _abrir,
+          child: SizedBox(
+            width: 136,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // ── La carátula ────────────────────────────────────────────
+                //
+                // Sin esquinas redondeadas y con el borde de foco fino, como en
+                // la referencia: el poster ya trae su propio diseño y recortarlo
+                // o enmarcarlo grueso le quita presencia.
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 140),
+                  width: 136,
+                  height: 204,
+                  margin: const EdgeInsets.only(right: 14),
+                  decoration: BoxDecoration(
+                    border: Border.all(
+                      color: _foco ? Colors.white : Colors.transparent,
+                      width: 2,
+                    ),
+                  ),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      Container(color: const Color(0xFF1A1A1E)),
+                      if (widget.item.logo != null &&
+                          widget.item.logo!.isNotEmpty)
+                        Image.network(
+                          widget.item.logo!,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                        ),
+                    ],
                   ),
                 ),
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    Container(color: const Color(0xFF1A1A1E)),
-                    if (widget.item.logo != null &&
-                        widget.item.logo!.isNotEmpty)
-                      Image.network(
-                        widget.item.logo!,
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, _, _) => const SizedBox.shrink(),
-                      ),
-                  ],
-                ),
-              ),
 
-              const SizedBox(height: 8),
+                const SizedBox(height: 8),
 
-              // ── El título, SIEMPRE debajo ──────────────────────────────
-              //
-              // Antes solo salia encima de la caratula al enfocarla. Debajo y
-              // permanente se lee mejor —no compite con la imagen— y de un
-              // vistazo se ve toda la fila sin ir tarjeta por tarjeta.
-              //
-              // El de la tarjeta enfocada se aclara; el resto queda en gris.
-              // Mismo grosor en los dos: la negrita ensancharia el texto y
-              // movería las tarjetas al recorrer la fila.
-              SizedBox(
-                width: 134,
-                child: AnimatedDefaultTextStyle(
-                  duration: const Duration(milliseconds: 130),
-                  style: TextStyle(
-                    color: _foco ? Colors.white : Colors.white54,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w400,
-                  ),
-                  child: Text(
-                    widget.item.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+                // ── El título, SIEMPRE debajo ──────────────────────────────
+                //
+                // Antes solo salia encima de la caratula al enfocarla. Debajo y
+                // permanente se lee mejor —no compite con la imagen— y de un
+                // vistazo se ve toda la fila sin ir tarjeta por tarjeta.
+                //
+                // El de la tarjeta enfocada se aclara; el resto queda en gris.
+                // Mismo grosor en los dos: la negrita ensancharia el texto y
+                // movería las tarjetas al recorrer la fila.
+                SizedBox(
+                  width: 122,
+                  child: AnimatedDefaultTextStyle(
+                    duration: const Duration(milliseconds: 130),
+                    style: TextStyle(
+                      color: _foco ? Colors.white : Colors.white54,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w400,
+                    ),
+                    child: Text(
+                      widget.item.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
