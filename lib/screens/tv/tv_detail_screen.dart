@@ -1,10 +1,12 @@
 import 'dart:async';
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../models/m3u_item.dart';
+import '../../services/fast_image_service.dart';
 import '../../services/m3u_service.dart';
 import '../../services/tmdb_service.dart';
 import 'tv_player_screen.dart';
@@ -115,8 +117,16 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
   Future<void> _precargarImagen() async {
     final url = _imagen;
     if (url == null || url.isEmpty || !mounted) return;
-    await precacheImage(NetworkImage(url), context, onError: (_, _) {});
+    await precacheImage(_proveedor(url), context, onError: (_, _) {});
   }
+
+  /// El mismo proveedor que usa `FastThumbnail` al pintar.
+  ///
+  /// Con `NetworkImage` a secas la precarga no servia de nada: calentaba una
+  /// entrada de cache con OTRA clave, asi que al pintar se volvia a bajar la
+  /// imagen entera. Se ve como que la ficha espera y aun asi aparece vacia.
+  ImageProvider _proveedor(String url) =>
+      CachedNetworkImageProvider(url, cacheManager: AppCacheManager.instance);
 
   /// Baja las caratulas de "Quizás te guste" ANTES de enseñar la fila.
   ///
@@ -133,7 +143,7 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
     await Future.wait([
       for (final e in _sugerencias.take(8))
         if ((e.logo ?? '').isNotEmpty)
-          precacheImage(NetworkImage(e.logo!), context, onError: (_, _) {}),
+          precacheImage(_proveedor(e.logo!), context, onError: (_, _) {}),
     ]);
   }
 
@@ -804,17 +814,10 @@ class _ImagenFichaState extends State<_ImagenFicha> {
         child: Stack(
           fit: StackFit.expand,
           children: [
+            // Con `FastThumbnail`, igual que el catalogo: guarda en disco, asi
+            // que volver a una ficha ya vista no vuelve a bajar la imagen.
             if (url != null && url.isNotEmpty)
-              Image.network(
-                url,
-                fit: BoxFit.cover,
-                errorBuilder:
-                    (_, _, _) => const Icon(
-                      Icons.movie_outlined,
-                      color: Colors.white24,
-                      size: 52,
-                    ),
-              )
+              FastThumbnail(url: url, width: 360, height: 203)
             else
               const Icon(Icons.movie_outlined, color: Colors.white24, size: 52),
 
@@ -988,19 +991,11 @@ class _CardSugerenciaState extends State<_CardSugerencia> {
               width: 2,
             ),
           ),
-          child: Image.network(
-            widget.item.logo ?? '',
-            fit: BoxFit.cover,
-            errorBuilder:
-                (_, _, _) => Container(
-                  color: const Color(0xFF1A1A1E),
-                  alignment: Alignment.center,
-                  child: const Icon(
-                    Icons.movie_outlined,
-                    color: Colors.white24,
-                    size: 30,
-                  ),
-                ),
+          child: FastThumbnail(
+            url: widget.item.logo,
+            width: 117,
+            height: 176,
+            title: widget.item.name,
           ),
         ),
       ),

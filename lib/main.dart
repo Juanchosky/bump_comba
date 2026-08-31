@@ -8,6 +8,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:media_kit/media_kit.dart';
 import 'screens/splash_screen.dart';
 import 'services/ad_service.dart';
+import 'services/fast_image_service.dart';
 import 'services/m3u_service.dart';
 import 'services/onesignal_service.dart';
 import 'services/performance_service.dart';
@@ -19,7 +20,6 @@ import 'services/cast_audio_handler.dart';
 import 'services/tv/tv_platform.dart';
 import 'screens/tv/tv_receiver_app.dart';
 import 'services/tv/tv_pairing_service.dart';
-import 'services/m3u_service.dart';
 
 class MyHttpOverrides extends HttpOverrides {
   @override
@@ -51,6 +51,10 @@ void main() {
         // Antes de tocar nada: el indexado se salta el trabajo que el
         // televisor no usa (sagas y buscador).
         M3UService.modoTelevisor = true;
+        // Y el cache de imagenes se queda en el tope del televisor: sin esto
+        // se le aplican los 250 MB de un telefono de gama alta y el sistema
+        // mata la app.
+        FastImageService.modoTelevisor = true;
         // Las credenciales salen del .env igual que en el telefono. Si falla,
         // `M3UService` cae en los valores por defecto compilados y todo sigue
         // funcionando: por eso no se propaga el error.

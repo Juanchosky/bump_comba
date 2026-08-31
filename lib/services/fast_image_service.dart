@@ -36,7 +36,20 @@ class _FailedImageTracker with WidgetsBindingObserver {
 
     // Dynamically adjust global image cache based on device hardware performance limits
     final performance = PerformanceService();
-    if (performance.lowMemoryLimit) {
+    if (FastImageService.modoTelevisor) {
+      // ── EL TELEVISOR TIENE SU PROPIO TOPE ─────────────────────────────
+      //
+      // Sin esto caia en la rama de gama alta —3.000 imagenes y 250 MB— porque
+      // `PerformanceService` no llega a arrancar en el televisor y por defecto
+      // dice que el equipo es potente. Un Chromecast HD tiene 1 GB de RAM para
+      // TODO: el sistema mataba la app al llenarse, y desde fuera se ve como
+      // "se cerro sola" o "se perdio la conexion con el aparato".
+      //
+      // 400 caratulas a 60 MB es de sobra para lo que se ve de una vez: una
+      // fila enseña treinta y la rejilla unas cuarenta.
+      PaintingBinding.instance.imageCache.maximumSize = 400;
+      PaintingBinding.instance.imageCache.maximumSizeBytes = 60 * 1024 * 1024;
+    } else if (performance.lowMemoryLimit) {
       PaintingBinding.instance.imageCache.maximumSize = 500;
       PaintingBinding.instance.imageCache.maximumSizeBytes =
           50 * 1024 * 1024; // 50MB
@@ -672,6 +685,13 @@ class FastImageService {
 
   static bool forceLowQuality = false;
 
+  /// Lo pone `main()` al detectar un televisor, antes de arrancar nada.
+  ///
+  /// Cambia SOLO cuanta memoria se le deja al cache de imagenes: el televisor
+  /// no ejecuta `PerformanceService`, asi que sin esta bandera se le aplican
+  /// los topes de un telefono de gama alta.
+  static bool modoTelevisor = false;
+
   void _loadSettings() {
     SharedPreferences.getInstance()
         .then((prefs) {
@@ -1266,6 +1286,16 @@ class _FastThumbnailState extends State<FastThumbnail>
   Widget _placeholder() {
     final bool isLow = PerformanceService().isLowPerformance;
 
+    // EN EL TELEVISOR, EL HUECO VA LIMPIO.
+    //
+    // En el telefono el titulo dentro del hueco ayuda: la caratula es pequeña
+    // y mientras baja se sabe igual que hay ahi. En una tele las tarjetas ya
+    // llevan su titulo DEBAJO, siempre visible, asi que el del hueco lo repite
+    // — y al aparecer la imagen, ese texto desaparece de golpe y da el efecto
+    // de que la tarjeta cambia dos veces.
+    final bool conTitulo =
+        widget.title != null && !isLow && !FastImageService.modoTelevisor;
+
     return Container(
       width: widget.width,
       height: widget.height,
@@ -1273,7 +1303,7 @@ class _FastThumbnailState extends State<FastThumbnail>
       child: Stack(
         alignment: Alignment.center,
         children: [
-          if (widget.title != null && !isLow)
+          if (conTitulo)
             Center(
               child: Padding(
                 padding: const EdgeInsets.all(12),

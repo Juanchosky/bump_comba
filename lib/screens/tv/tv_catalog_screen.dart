@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import '../../services/fast_image_service.dart';
 import '../../services/m3u_service.dart';
 import '../../services/watch_progress_service.dart';
 import 'tv_category_screen.dart';
@@ -88,6 +89,52 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     skipTraversal: true,
   );
 
+  /// Una llave por fila, para poder decirle "ponte el foco en la columna N".
+  ///
+  /// Subir y bajar de fila NO se le deja a la traversal de Flutter: elige por
+  /// geometria, y con las filas moviendose por su cuenta la geometria cambia
+  /// mientras decide. De ahi que a veces subieras y acabaras dos filas mas
+  /// abajo, o en la de al lado.
+  final List<GlobalKey<_FilaState>> _llavesFila = [];
+
+  final ScrollController _scrollVertical = ScrollController();
+
+  /// Alto exacto de una fila: titulo (33 con su hueco) + caratulas (248) +
+  /// separacion (18), y 5 de holgura.
+  ///
+  /// Fijo a proposito — con `itemExtent` la lista sabe donde esta cada fila sin
+  /// medirlas, y bajar a la fila N es una cuenta en vez de una busqueda.
+  ///
+  /// Los 33 del titulo son MEDIDOS en el aparato, no calculados: un texto de 16
+  /// con la altura de linea del tema ocupa 23, no 16. Ponerlos a ojo fue lo que
+  /// dejo la fila 3 pixeles corta y las rayas amarillas de desbordamiento.
+  static const double _altoFila = 304;
+
+  void _prepararLlaves(int cuantas) {
+    while (_llavesFila.length < cuantas) {
+      _llavesFila.add(GlobalKey<_FilaState>());
+    }
+  }
+
+  /// Mueve el foco a la fila `destino`, conservando la columna.
+  void _irAFila(int destino, int columna) {
+    if (destino < 0 || destino >= _filas.length) return;
+    _llavesFila[destino].currentState?.enfocar(columna);
+    if (_scrollVertical.hasClients) {
+      // La fila de destino, arrimada al borde de arriba pero sin pegarse: se
+      // ve entera y se intuye la siguiente.
+      final objetivo = (destino * _altoFila - 20).clamp(
+        0.0,
+        _scrollVertical.position.maxScrollExtent,
+      );
+      _scrollVertical.animateTo(
+        objetivo,
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+      );
+    }
+  }
+
   static const Set<String> _clavesNovela = {'novela', 'telenovela', 'turca'};
   static const Set<String> _clavesAnimacion = {
     'anime',
@@ -121,6 +168,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       n.dispose();
     }
     _nodoContenido.dispose();
+    _scrollVertical.dispose();
     super.dispose();
   }
 
@@ -135,6 +183,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     if (!hayPreliminares && !hayIndexado) return;
     setState(() {
       _filas = _armarFilas();
+      _prepararLlaves(_filas.length);
       _cargando = false;
       if (_filas.isNotEmpty) _error = null;
     });
@@ -153,6 +202,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       setState(() {
         _recomendados = r;
         _filas = _armarFilas();
+        _prepararLlaves(_filas.length);
       });
     } catch (_) {
       // Es una fila de mas: si no sale, el catalogo se ve igual.
@@ -192,6 +242,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       // El mismo filtro que el inicio y que el telefono: fuera deportes,
       // religion, canales en directo y las categorias de cada pais.
       if (!_servicio.categoriaVisible(it.category)) continue;
+      if (_esRecienAgregadas(it.category)) continue;
       if (filtro != null && !filtro(it.category)) continue;
       (porCategoria[it.category] ??= <M3UItem>[]).add(it);
     }
@@ -218,6 +269,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     for (final it in _servicio.itemsPreliminares) {
       if (it.isLive || it.seriesName != null) continue;
       if (!_servicio.categoriaVisible(it.category)) continue;
+      if (_esRecienAgregadas(it.category)) continue;
       (porCategoria[it.category] ??= <M3UItem>[]).add(it);
     }
     // EN EL MISMO ORDEN QUE TENDRAN DESPUES.
@@ -234,6 +286,16 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       filas.add((titulo: cat, items: items));
     }
     return filas;
+  }
+
+  /// Las mil formas en que el proveedor llama a "lo ultimo que subimos".
+  static bool _esRecienAgregadas(String cat) {
+    final c = cat.toLowerCase();
+    return c.contains('recientemente') ||
+        c.contains('recien agreg') ||
+        c.contains('recién agreg') ||
+        c.contains('agregadas recient') ||
+        c.contains('agregados recient');
   }
 
   /// Cambia los episodios sueltos por SU SERIE, sin repetir.
@@ -305,6 +367,10 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     // primeras categorias que en el telefono no salen.
     for (final cat in _servicio.categoriasParaMostrar()) {
       if (filas.length >= _maxFilas) break;
+      // "Recientemente agregadas" del proveedor no se enseña: es lo mismo que
+      // ya cuenta "Últimamente nuevo" ahi arriba, con otro nombre y en otro
+      // orden. Dos filas que dicen lo mismo hacen dudar de cual es la buena.
+      if (_esRecienAgregadas(cat)) continue;
       // Sin tope: la fila enseña las primeras y el boton "Más" abre el resto.
       // Recortar aqui era lo que dejaba fuera medio catalogo sin manera de
       // llegar a el.
@@ -363,6 +429,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       if (!mounted) return;
       setState(() {
         _filas = _armarFilas();
+        _prepararLlaves(_filas.length);
         _cargando = false;
         // Sin fuentes el mensaje del servicio habla de "URL M3U", que al
         // usuario de un televisor no le dice nada: el nunca configuro ninguna
@@ -447,12 +514,19 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
             child: FocusTraversalGroup(
               child: Focus(
                 focusNode: _nodoContenido,
-                // Al recibir el foco lo pasa a la primera tarjeta: este nodo es
-                // solo la puerta de entrada desde el lateral.
+                // Al recibir el foco lo pasa a la primera tarjeta: este nodo
+                // es solo la puerta de entrada desde el lateral.
+                //
+                // Y va a la primera de la PRIMERA fila, a mano. Con
+                // `nextFocus()` lo elegia la traversal, que con las filas
+                // desplazadas podia dejarlo en cualquier tarjeta del medio.
                 onFocusChange: (v) {
-                  if (v) {
+                  if (!v) return;
+                  if (_llavesFila.isEmpty) {
                     _nodoContenido.nextFocus();
+                    return;
                   }
+                  _llavesFila.first.currentState?.enfocar(0);
                 },
                 child:
                     _filas.isEmpty
@@ -466,24 +540,33 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                           ),
                         )
                         : ListView.builder(
+                          controller: _scrollVertical,
+                          // Con el mando no se arrastra: quien manda es el
+                          // foco, y el desplazamiento lo decide `_irAFila`.
+                          physics: const NeverScrollableScrollPhysics(),
                           // 40 arriba y no 92: los 92 eran el hueco que
                           // ocupaba la marca. Quitada la marca, ese hueco es
                           // una franja vacia en lo alto de la pantalla, y en
                           // un televisor eso es una fila de caratulas que se
                           // deja de ver.
                           padding: const EdgeInsets.fromLTRB(0, 40, 0, 40),
+                          itemExtent: _altoFila,
                           itemCount: _filas.length,
                           itemBuilder: (context, i) {
                             final fila = _filas[i];
                             return _Fila(
+                              key: _llavesFila[i],
                               titulo: fila.titulo,
                               items: fila.items,
-                              // Solo la primerísima tarjeta pide el foco: si lo pidieran todas
-                              // las primeras de cada fila, el foco saltaría a la última en
-                              // construirse y la pantalla arrancaría por el medio.
+                              // Solo la primerísima tarjeta pide el foco: si lo
+                              // pidieran las primeras de cada fila, el foco
+                              // saltaría a la última en construirse y la
+                              // pantalla arrancaría por el medio.
                               autofocoPrimero: i == 0,
                               onSalirIzquierda:
                                   () => _nodosLateral[_seccion].requestFocus(),
+                              onArriba: (col) => _irAFila(i - 1, col),
+                              onAbajo: (col) => _irAFila(i + 1, col),
                             );
                           },
                         ),
@@ -559,6 +642,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                   setState(() {
                     _seccion = i;
                     _filas = _armarFilas();
+                    _prepararLlaves(_filas.length);
                   });
                 },
                 onEntrarContenido: () => _nodoContenido.requestFocus(),
@@ -577,30 +661,167 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   }
 }
 
-class _Fila extends StatelessWidget {
+/// Una fila del catálogo: el título de la categoría y sus carátulas.
+///
+/// LA NAVEGACIÓN NO SE DEJA AL AZAR
+/// Antes el recorrido lo resolvía la traversal direccional de Flutter, que
+/// elige el siguiente widget por geometría. Con dos listas anidadas y un
+/// desplazamiento en marcha, la geometría cambia MIENTRAS se decide: pulsabas
+/// derecha y el foco se iba a otra fila, o volvía por donde había venido. Aquí
+/// cada tecla dice exactamente a qué nodo va, y el desplazamiento se calcula
+/// por índice en vez de perseguir al widget enfocado.
+class _Fila extends StatefulWidget {
   final String titulo;
   final List<M3UItem> items;
   final bool autofocoPrimero;
   final VoidCallback onSalirIzquierda;
 
+  /// Sube o baja de fila conservando la columna. El índice es la posición en
+  /// ESTA fila; la de destino lo recorta a lo que tenga.
+  final void Function(int indice)? onArriba;
+  final void Function(int indice)? onAbajo;
+
   const _Fila({
+    super.key,
     required this.titulo,
     required this.items,
     required this.autofocoPrimero,
     required this.onSalirIzquierda,
+    this.onArriba,
+    this.onAbajo,
   });
 
+  @override
+  State<_Fila> createState() => _FilaState();
+}
+
+class _FilaState extends State<_Fila> {
   /// Cuantas caben en la fila antes de mandar al catalogo completo.
   ///
   /// Treinta ya son treinta pulsaciones a la derecha; mas alla de eso nadie
-  /// llega con un mando, y para eso esta la rejilla.
+  /// llega con un mando, y para eso esta la rejilla de "ver todo".
   static const int _maxEnFila = 30;
+
+  /// Ancho de tarjeta mas separacion. Con esto el desplazamiento se calcula en
+  /// vez de buscarse: la tarjeta `i` esta en `i * _paso`, siempre.
+  static const double _paso = 150;
+
+  final ScrollController _scroll = ScrollController();
+  final List<FocusNode> _nodos = [];
+
+  List<M3UItem> get _visibles =>
+      widget.items.length > _maxEnFila
+          ? widget.items.take(_maxEnFila).toList()
+          : widget.items;
+
+  bool get _hayMas => widget.items.length > _visibles.length;
+
+  int get _celdas => _visibles.length + (_hayMas ? 1 : 0);
+
+  @override
+  void initState() {
+    super.initState();
+    _prepararNodos();
+    if (widget.autofocoPrimero) {
+      // Tras el primer fotograma: `autofocus` no basta porque el `Focus` raiz
+      // del receptor pide el foco en su propio `initState`, que corre antes.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _nodos.isNotEmpty) _nodos.first.requestFocus();
+      });
+    }
+  }
+
+  @override
+  void didUpdateWidget(_Fila viejo) {
+    super.didUpdateWidget(viejo);
+    _prepararNodos();
+  }
+
+  void _prepararNodos() {
+    while (_nodos.length < _celdas) {
+      _nodos.add(FocusNode(debugLabel: 'fila_${_nodos.length}'));
+    }
+  }
+
+  @override
+  void dispose() {
+    for (final n in _nodos) {
+      n.dispose();
+    }
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  /// Pone el foco en la celda `i` de esta fila y la trae a la vista.
+  void enfocar(int i) {
+    if (_celdas == 0) return;
+    final destino = i.clamp(0, _celdas - 1);
+    _nodos[destino].requestFocus();
+    _traerALaVista(destino);
+  }
+
+  /// Desplaza la fila por CUENTA, no persiguiendo al widget.
+  ///
+  /// `Scrollable.ensureVisible` sube por el arbol y mueve TODOS los
+  /// desplazables que encuentra: al enfocar una tarjeta movia tambien la lista
+  /// vertical, y ese era medio baile. Aqui solo se mueve esta fila, y a una
+  /// posicion que se sabe antes de empezar.
+  void _traerALaVista(int i) {
+    if (!_scroll.hasClients) return;
+    final ancho = _scroll.position.viewportDimension;
+    // Un hueco de cortesia a cada lado: deja ver que hay algo mas alla y evita
+    // que la tarjeta enfocada quede pegada al filo.
+    const margen = _paso;
+    final izquierda = i * _paso;
+    final derecha = izquierda + _paso;
+    double destino = _scroll.offset;
+    if (izquierda - margen < destino) {
+      destino = izquierda - margen;
+    } else if (derecha + margen > destino + ancho) {
+      destino = derecha + margen - ancho;
+    } else {
+      return;
+    }
+    _scroll.animateTo(
+      destino.clamp(0.0, _scroll.position.maxScrollExtent),
+      duration: const Duration(milliseconds: 160),
+      curve: Curves.easeOut,
+    );
+  }
+
+  KeyEventResult _tecla(int i, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    final k = event.logicalKey;
+
+    if (k == LogicalKeyboardKey.arrowRight) {
+      if (i + 1 < _celdas) enfocar(i + 1);
+      // En la ultima no se hace nada, pero se da por atendida: sin esto el
+      // foco saltaba a otra fila, que es el "me muevo a un lado y se va para
+      // otro".
+      return KeyEventResult.handled;
+    }
+    if (k == LogicalKeyboardKey.arrowLeft) {
+      if (i > 0) {
+        enfocar(i - 1);
+      } else {
+        widget.onSalirIzquierda();
+      }
+      return KeyEventResult.handled;
+    }
+    if (k == LogicalKeyboardKey.arrowUp) {
+      widget.onArriba?.call(i);
+      return KeyEventResult.handled;
+    }
+    if (k == LogicalKeyboardKey.arrowDown) {
+      widget.onAbajo?.call(i);
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
 
   @override
   Widget build(BuildContext context) {
-    final visibles =
-        items.length > _maxEnFila ? items.take(_maxEnFila).toList() : items;
-    final hayMas = items.length > visibles.length;
+    final visibles = _visibles;
 
     return Padding(
       // 18 y no 34. Con el titulo ya debajo de cada caratula, la separacion
@@ -613,10 +834,12 @@ class _Fila extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.only(left: 106, bottom: 10),
             child: Text(
-              titulo,
+              widget.titulo,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: const TextStyle(
                 color: Colors.white,
-                fontSize: 18,
+                fontSize: 18.7,
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -626,55 +849,45 @@ class _Fila extends StatelessWidget {
           // No es lo mismo que ponerlo en su `padding`: el padding se desplaza
           // con el contenido, asi que las caratulas se seguian pintando por
           // debajo del menu y asomaban por su lateral al recorrer la fila.
-          // Puesto fuera, lo que se estrecha es la ventana y la fila se
-          // recorta limpia justo donde empieza el titulo de la seccion.
           //
-          // A la DERECHA no se toca: ahi las caratulas llegan al filo de la
-          // pantalla a proposito, que es lo que dice que la fila sigue y
-          // invita a seguir moviendose.
+          // 100 y no 106: los 6 que faltan se los queda el `padding` del
+          // propio ListView, para que la tarjeta enfocada crezca sin salirse.
           Padding(
-            // 100 y no 106: los 6 que faltan se los queda el `padding` del
-            // propio ListView, mas abajo. La cuenta sigue dando 106 —las
-            // caratulas arrancan donde el titulo de la seccion—, pero ahora
-            // hay 6 de aire dentro de la ventana para que la tarjeta enfocada
-            // crezca sin salirse por la izquierda.
             padding: const EdgeInsets.only(left: 100),
             child: SizedBox(
               // Caratula (204) + hueco (8) + titulo (~15), y 12 mas de aire:
               // al crecer un 5%, la caratula gana 10 de alto y sin ese margen
               // se comia el titulo de la fila de arriba.
-              //
-              // La holgura NO sobra: el televisor aplica su propia escala de
-              // texto, asi que el titulo de debajo sale un pelo mas alto que
-              // la cuenta de aqui. Sin ese margen, el pelo desborda la columna
-              // y Flutter pinta las rayas amarillas.
               height: 248,
               child: ListView.builder(
+                controller: _scroll,
                 scrollDirection: Axis.horizontal,
+                // Con el mando no se arrastra: quien manda es el foco. Dejarla
+                // desplazable a mano solo abria la puerta a que la fila
+                // quedara en una posicion que el calculo del foco no espera.
+                physics: const NeverScrollableScrollPhysics(),
                 // Sin recorte: la tarjeta enfocada crece un 5% y ese pelo se
-                // sale de su hueco. Con el recorte por defecto se le cortaban
-                // los bordes de arriba y abajo, que es justo lo que el
-                // acercamiento tiene que hacer notar.
+                // sale de su hueco.
                 clipBehavior: Clip.none,
-                // El aire por donde crece la tarjeta enfocada: 6 a cada lado,
-                // que es lo que se ensancha una caratula de 136 al 5%.
                 padding: const EdgeInsets.only(left: 6, right: 26),
-                // Una tarjeta mas cuando la categoria no cabe entera: la de
-                // "Más", que abre el catalogo completo. Solo aparece si hay
-                // algo detras — ponerla siempre seria prometer contenido que
-                // no existe.
-                itemCount: visibles.length + (hayMas ? 1 : 0),
+                // Ancho fijo por celda: es lo que deja calcular la posicion de
+                // cada tarjeta sin medir nada, y de paso le ahorra a la lista
+                // el trabajo de ir midiendo hijo por hijo mientras se mueve.
+                itemExtent: _paso,
+                itemCount: _celdas,
                 itemBuilder: (context, i) {
                   if (i == visibles.length) {
                     return _TarjetaMas(
-                      restantes: items.length - visibles.length,
+                      nodo: _nodos[i],
+                      restantes: widget.items.length - visibles.length,
+                      onTecla: (e) => _tecla(i, e),
                       onOk:
                           () => Navigator.of(context).push(
                             MaterialPageRoute<void>(
                               builder:
                                   (_) => TvCategoryScreen(
-                                    titulo: titulo,
-                                    items: items,
+                                    titulo: widget.titulo,
+                                    items: widget.items,
                                   ),
                             ),
                           ),
@@ -682,11 +895,8 @@ class _Fila extends StatelessWidget {
                   }
                   return _Tarjeta(
                     item: visibles[i],
-                    autofoco: autofocoPrimero && i == 0,
-                    // Solo la primera de cada fila vuelve al lateral: desde
-                    // las de en medio, izquierda tiene que seguir
-                    // recorriendo.
-                    onSalirIzquierda: i == 0 ? onSalirIzquierda : null,
+                    nodo: _nodos[i],
+                    onTecla: (e) => _tecla(i, e),
                   );
                 },
               ),
@@ -705,9 +915,16 @@ class _Fila extends StatelessWidget {
 /// ver una pelicula.
 class _TarjetaMas extends StatefulWidget {
   final int restantes;
+  final FocusNode nodo;
   final VoidCallback onOk;
+  final KeyEventResult Function(KeyEvent) onTecla;
 
-  const _TarjetaMas({required this.restantes, required this.onOk});
+  const _TarjetaMas({
+    required this.restantes,
+    required this.nodo,
+    required this.onOk,
+    required this.onTecla,
+  });
 
   @override
   State<_TarjetaMas> createState() => _TarjetaMasState();
@@ -719,36 +936,22 @@ class _TarjetaMasState extends State<_TarjetaMas> {
   @override
   Widget build(BuildContext context) {
     return Focus(
-      onFocusChange: (v) {
-        setState(() => _foco = v);
-        if (v) {
-          Scrollable.ensureVisible(
-            context,
-            alignment: 0.5,
-            duration: const Duration(milliseconds: 180),
-          );
-        }
-      },
+      focusNode: widget.nodo,
+      onFocusChange: (v) => setState(() => _foco = v),
+      // OK SE LEE DIRECTO DE LA TECLA, sin Actions ni Intents: es lo unico que
+      // responde con el mando de un televisor. Las flechas las resuelve la
+      // fila, que es quien sabe cuantas tarjetas hay y donde esta cada una.
       onKeyEvent: (node, event) {
-        if (event is! KeyDownEvent) return KeyEventResult.ignored;
-        final k = event.logicalKey;
-        if (k == LogicalKeyboardKey.select ||
-            k == LogicalKeyboardKey.enter ||
-            k == LogicalKeyboardKey.gameButtonA) {
+        if (event is KeyDownEvent &&
+            (event.logicalKey == LogicalKeyboardKey.select ||
+                event.logicalKey == LogicalKeyboardKey.enter ||
+                event.logicalKey == LogicalKeyboardKey.gameButtonA)) {
           widget.onOk();
           return KeyEventResult.handled;
         }
-        return KeyEventResult.ignored;
+        return widget.onTecla(event);
       },
       child: AnimatedScale(
-        // ── El acercamiento al enfocar ────────────────────────────────────────
-        //
-        // Un 5%, no mas. Lo que se busca es que la vista encuentre sola donde esta
-        // el foco al mirar la pantalla desde el sofa; un salto mayor empuja a las
-        // vecinas y convierte recorrer una fila en un oleaje.
-        //
-        // Es una transformacion de PINTADO: no toca la distribucion, asi que al
-        // crecer no se recoloca nada de alrededor.
         scale: _foco ? 1.05 : 1.0,
         duration: const Duration(milliseconds: 140),
         curve: Curves.easeOut,
@@ -764,7 +967,6 @@ class _TarjetaMasState extends State<_TarjetaMas> {
                   duration: const Duration(milliseconds: 140),
                   width: 136,
                   height: 204,
-                  margin: const EdgeInsets.only(right: 14),
                   foregroundDecoration: BoxDecoration(
                     border: Border.all(
                       color: _foco ? Colors.white : Colors.transparent,
@@ -816,14 +1018,16 @@ class _TarjetaMasState extends State<_TarjetaMas> {
   }
 }
 
+/// Una carátula del catálogo.
 class _Tarjeta extends StatefulWidget {
   final M3UItem item;
-  final bool autofoco;
-  final VoidCallback? onSalirIzquierda;
+  final FocusNode nodo;
+  final KeyEventResult Function(KeyEvent) onTecla;
+
   const _Tarjeta({
     required this.item,
-    required this.autofoco,
-    this.onSalirIzquierda,
+    required this.nodo,
+    required this.onTecla,
   });
 
   @override
@@ -832,32 +1036,6 @@ class _Tarjeta extends StatefulWidget {
 
 class _TarjetaState extends State<_Tarjeta> {
   bool _foco = false;
-  final FocusNode _nodo = FocusNode(debugLabel: 'tarjetaTv');
-
-  @override
-  void initState() {
-    super.initState();
-    // La primera tarjeta TOMA el foco tras el primer fotograma.
-    //
-    // `autofocus` no basta: solo actua cuando NADIE tiene el foco, y el `Focus`
-    // raiz del receptor lo pide a mano en su `initState`, que corre antes. Con
-    // el raiz ocupando la pantalla entera, la navegacion direccional tampoco
-    // sabe bajar hasta aqui: el catalogo se pintaba y no habia forma de mover
-    // el foco ni de pulsar OK.
-    //
-    // Es el mismo patron que ya resolvio el boton "Activar este televisor".
-    if (widget.autofoco) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _nodo.requestFocus();
-      });
-    }
-  }
-
-  @override
-  void dispose() {
-    _nodo.dispose();
-    super.dispose();
-  }
 
   void _abrir() {
     Navigator.of(context).push(
@@ -870,20 +1048,8 @@ class _TarjetaState extends State<_Tarjeta> {
   @override
   Widget build(BuildContext context) {
     return Focus(
-      focusNode: _nodo,
-      onFocusChange: (v) {
-        setState(() => _foco = v);
-        if (v) {
-          // Traer la tarjeta a la vista. `alignment: 0.5` la deja centrada, que
-          // es lo que hace que se intuya que hay mas a los lados.
-          Scrollable.ensureVisible(
-            context,
-            alignment: 0.5,
-            duration: const Duration(milliseconds: 220),
-            curve: Curves.easeOut,
-          );
-        }
-      },
+      focusNode: widget.nodo,
+      onFocusChange: (v) => setState(() => _foco = v),
       // OK SE LEE DIRECTO DE LA TECLA, sin Actions ni Intents.
       //
       // Dos intentos fallaron antes en el aparato:
@@ -894,36 +1060,23 @@ class _TarjetaState extends State<_Tarjeta> {
       //     depende de `FocusManager.highlightMode`, que con el mando de un
       //     televisor no se pone en modo teclado: dejo de pintarse el foco.
       //
-      // Leer la tecla en `onKeyEvent` no depende de ninguna de las dos cosas.
-      // Es lo que ya hace el boton de activar el televisor, que si responde.
+      // Las flechas las resuelve la fila: es quien sabe cuantas tarjetas hay.
       onKeyEvent: (node, event) {
-        if (event is! KeyDownEvent) return KeyEventResult.ignored;
-        final k = event.logicalKey;
-        if (k == LogicalKeyboardKey.select ||
-            k == LogicalKeyboardKey.enter ||
-            k == LogicalKeyboardKey.gameButtonA) {
+        if (event is KeyDownEvent &&
+            (event.logicalKey == LogicalKeyboardKey.select ||
+                event.logicalKey == LogicalKeyboardKey.enter ||
+                event.logicalKey == LogicalKeyboardKey.gameButtonA)) {
           _abrir();
           return KeyEventResult.handled;
         }
-        // Izquierda desde la PRIMERA tarjeta devuelve al lateral. Es el camino
-        // de vuelta: sin el, una vez dentro del contenido no habria forma de
-        // cambiar de seccion.
-        if (k == LogicalKeyboardKey.arrowLeft &&
-            widget.onSalirIzquierda != null) {
-          widget.onSalirIzquierda!();
-          return KeyEventResult.handled;
-        }
-        return KeyEventResult.ignored;
+        return widget.onTecla(event);
       },
       child: AnimatedScale(
-        // ── El acercamiento al enfocar ────────────────────────────────────────
+        // ── El acercamiento al enfocar ────────────────────────────────────
         //
-        // Un 5%, no mas. Lo que se busca es que la vista encuentre sola donde esta
-        // el foco al mirar la pantalla desde el sofa; un salto mayor empuja a las
-        // vecinas y convierte recorrer una fila en un oleaje.
-        //
-        // Es una transformacion de PINTADO: no toca la distribucion, asi que al
-        // crecer no se recoloca nada de alrededor.
+        // Un 5%, no mas: lo justo para que la vista encuentre sola donde esta
+        // el foco desde el sofa. Es una transformacion de PINTADO, asi que no
+        // recoloca nada de alrededor al crecer.
         scale: _foco ? 1.05 : 1.0,
         duration: const Duration(milliseconds: 140),
         curve: Curves.easeOut,
@@ -935,48 +1088,41 @@ class _TarjetaState extends State<_Tarjeta> {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                // ── La carátula ────────────────────────────────────────────
+                // ── La carátula ──────────────────────────────────────────
                 //
-                // Sin esquinas redondeadas y con el borde de foco fino, como en
-                // la referencia: el poster ya trae su propio diseño y recortarlo
-                // o enmarcarlo grueso le quita presencia.
+                // Sin esquinas redondeadas y con el borde de foco fino: el
+                // poster ya trae su propio diseño y enmarcarlo grueso le quita
+                // presencia.
+                //
+                // La sirve `FastThumbnail`, no `Image.network`: guarda en
+                // disco y decodifica al tamaño en que se ve, asi que volver
+                // sobre una fila ya vista no vuelve a bajar nada.
                 AnimatedContainer(
                   duration: const Duration(milliseconds: 140),
                   width: 136,
                   height: 204,
-                  margin: const EdgeInsets.only(right: 14),
-                  decoration: BoxDecoration(
+                  foregroundDecoration: BoxDecoration(
                     border: Border.all(
                       color: _foco ? Colors.white : Colors.transparent,
                       width: 2,
                     ),
                   ),
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      Container(color: const Color(0xFF1A1A1E)),
-                      if (widget.item.logo != null &&
-                          widget.item.logo!.isNotEmpty)
-                        Image.network(
-                          widget.item.logo!,
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, _, _) => const SizedBox.shrink(),
-                        ),
-                    ],
+                  decoration: const BoxDecoration(color: Color(0xFF1A1A1E)),
+                  child: FastThumbnail(
+                    url: widget.item.logo,
+                    width: 136,
+                    height: 204,
                   ),
                 ),
 
                 const SizedBox(height: 8),
 
-                // ── El título, SIEMPRE debajo ──────────────────────────────
+                // ── El título, SIEMPRE debajo ────────────────────────────
                 //
-                // Antes solo salia encima de la caratula al enfocarla. Debajo y
-                // permanente se lee mejor —no compite con la imagen— y de un
-                // vistazo se ve toda la fila sin ir tarjeta por tarjeta.
-                //
-                // El de la tarjeta enfocada se aclara; el resto queda en gris.
-                // Mismo grosor en los dos: la negrita ensancharia el texto y
-                // movería las tarjetas al recorrer la fila.
+                // Debajo y permanente se lee mejor —no compite con la imagen—
+                // y de un vistazo se ve toda la fila sin ir tarjeta por
+                // tarjeta. Mismo grosor con foco y sin el: la negrita
+                // ensancharia el texto y movería las tarjetas al recorrerla.
                 SizedBox(
                   width: 122,
                   child: AnimatedDefaultTextStyle(

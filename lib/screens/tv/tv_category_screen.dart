@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../services/fast_image_service.dart';
 import '../../services/m3u_service.dart';
 import 'tv_detail_screen.dart';
 
@@ -216,14 +217,22 @@ class _TarjetaState extends State<_Tarjeta> {
                     ),
                   ),
                   decoration: const BoxDecoration(color: Color(0xFF1A1A1E)),
-                  child:
-                      (widget.item.logo != null && widget.item.logo!.isNotEmpty)
-                          ? Image.network(
-                            widget.item.logo!,
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, _, _) => const SizedBox.shrink(),
-                          )
-                          : const SizedBox.shrink(),
+                  // El mismo widget que el catalogo y que el telefono: guarda
+                  // en disco y decodifica al tamaño en que se ve, asi que
+                  // volver a esta rejilla no vuelve a bajar nada.
+                  //
+                  // Con `LayoutBuilder` porque aqui el ancho lo reparte la
+                  // rejilla y cambia con la pantalla: pasarle una medida fija
+                  // la haria decodificar a un tamaño que no es el que se ve.
+                  child: LayoutBuilder(
+                    builder:
+                        (context, c) => FastThumbnail(
+                          url: widget.item.logo,
+                          width: c.maxWidth,
+                          height: c.maxHeight,
+                          title: widget.item.name,
+                        ),
+                  ),
                 ),
               ),
               const SizedBox(height: 6),
