@@ -6,6 +6,7 @@ import '../../services/m3u_service.dart';
 import '../../services/watch_progress_service.dart';
 import 'tv_category_screen.dart';
 import 'tv_detail_screen.dart';
+import 'tv_search_screen.dart';
 
 /// Catálogo del televisor: filas por categoría, navegación con el mando.
 ///
@@ -65,7 +66,16 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     (texto: 'SERIES', icono: Icons.smart_display_outlined),
     (texto: 'TELENOVELAS', icono: Icons.favorite_outline),
     (texto: 'ANIMACIÓN', icono: Icons.child_care_outlined),
+    (texto: 'BUSCAR', icono: Icons.search),
   ];
+
+  /// BUSCAR no es una seccion del catalogo: es una pantalla aparte.
+  ///
+  /// Vive en la misma lista porque en el menu se recorre igual que las demas
+  /// —con las mismas flechas y el mismo aspecto—, pero al pulsarla NO cambia
+  /// las filas: abre el buscador y al cerrarlo el catalogo sigue como estaba,
+  /// en la seccion en la que lo dejaste.
+  static const int _iBuscar = 5;
 
   int _seccion = 0;
 
@@ -115,6 +125,22 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
 
   final ScrollController _scrollVertical = ScrollController();
 
+  /// Donde estaba el foco la ultima vez. Fila y columna.
+  ///
+  /// Es lo que hace que volver de una ficha te devuelva DONDE ESTABAS. Sin
+  /// esto, al cerrar la ficha el foco recaia en el contenedor del contenido,
+  /// que lo mandaba a la primera tarjeta de la primera fila: la pantalla se
+  /// iba sola al principio del catalogo y habias perdido por donde ibas.
+  int _filaActual = 0;
+  int _columnaActual = 0;
+
+  /// El hueco de arriba de la lista. Entra en la cuenta del desplazamiento:
+  /// sin sumarlo, la fila de destino quedaba 40 pixeles mas arriba de lo
+  /// pedido — medio tapada por el borde de la pantalla. Por eso al subir a
+  /// "Últimamente nuevo" o a "Recomendados para ti" el foco parecia perderse:
+  /// estaba puesto, pero fuera de la vista.
+  static const double _huecoArriba = 40;
+
   /// Alto exacto de una fila: titulo (33 con su hueco) + caratulas (248) +
   /// separacion (18), y 5 de holgura.
   ///
@@ -135,11 +161,13 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   /// fila ya esta armada, y entonces se le da el foco.
   void _irAFila(int destino, int columna, {int intento = 0}) {
     if (destino < 0 || destino >= _filas.length) return;
+    _filaActual = destino;
+    _columnaActual = columna;
 
     if (_scrollVertical.hasClients) {
       // La fila de destino, arrimada al borde de arriba pero sin pegarse: se
       // ve entera y se intuye la siguiente.
-      final objetivo = (destino * _altoFila - 20).clamp(
+      final objetivo = (_huecoArriba + destino * _altoFila - 24).clamp(
         0.0,
         _scrollVertical.position.maxScrollExtent,
       );
@@ -176,7 +204,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   KeyEventResult _rescatarFoco(KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
     if (_filas.isEmpty) return KeyEventResult.ignored;
-    _irAFila(0, 0);
+    _irAFila(_filaActual, _columnaActual);
     return KeyEventResult.handled;
   }
 
@@ -571,11 +599,17 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                     _nodoContenido.nextFocus();
                     return;
                   }
+                  // A DONDE ESTABAS, no al principio.
+                  //
+                  // Este nodo recibe el foco tanto al entrar desde el menu
+                  // como al volver de una ficha, y mandar siempre a la fila 0
+                  // era lo que tiraba el catalogo al principio cada vez que
+                  // entrabas a un titulo y salias.
+                  //
                   // Por `_irAFila` y no directo a la fila: si todavia no esta
-                  // construida —se entra desde el lateral nada mas cargar— el
-                  // reintento espera a que exista en vez de perder la
-                  // pulsacion.
-                  _irAFila(0, 0);
+                  // construida, el reintento espera a que exista en vez de
+                  // perder la pulsacion.
+                  _irAFila(_filaActual, _columnaActual);
                 },
                 child:
                     _filas.isEmpty
@@ -598,7 +632,12 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                           // una franja vacia en lo alto de la pantalla, y en
                           // un televisor eso es una fila de caratulas que se
                           // deja de ver.
-                          padding: const EdgeInsets.fromLTRB(0, 40, 0, 40),
+                          padding: const EdgeInsets.fromLTRB(
+                            0,
+                            _huecoArriba,
+                            0,
+                            40,
+                          ),
                           itemExtent: _altoFila,
                           // Una fila de margen construida arriba y abajo: al
                           // bajar, la siguiente ya existe y el foco entra sin
@@ -622,6 +661,12 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                                   () => _nodosLateral[_seccion].requestFocus(),
                               onArriba: (col) => _irAFila(i - 1, col),
                               onAbajo: (col) => _irAFila(i + 1, col),
+                              // Cada vez que el foco cae en una tarjeta se
+                              // apunta donde: es lo que se restaura al volver.
+                              onFocoEn: (col) {
+                                _filaActual = i;
+                                _columnaActual = col;
+                              },
                             );
                           },
                         ),
@@ -692,7 +737,19 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                 secciones: _secciones,
                 activa: _seccion,
                 nodos: _nodosLateral,
-                onElegir: (i) {
+                onElegir: (i) async {
+                  if (i == _iBuscar) {
+                    await Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const TvSearchScreen(),
+                      ),
+                    );
+                    // Al volver, el foco se queda en BUSCAR: es de donde
+                    // saliste, y dejarlo en otro sitio obliga a buscar con la
+                    // vista donde estabas.
+                    if (mounted) _nodosLateral[_iBuscar].requestFocus();
+                    return;
+                  }
                   if (i == _seccion) return;
                   setState(() {
                     _seccion = i;
@@ -735,6 +792,9 @@ class _Fila extends StatefulWidget {
   final void Function(int indice)? onArriba;
   final void Function(int indice)? onAbajo;
 
+  /// Avisa de en qué columna quedó el foco dentro de esta fila.
+  final void Function(int indice)? onFocoEn;
+
   const _Fila({
     super.key,
     required this.titulo,
@@ -743,6 +803,7 @@ class _Fila extends StatefulWidget {
     required this.onSalirIzquierda,
     this.onArriba,
     this.onAbajo,
+    this.onFocoEn,
   });
 
   @override
@@ -829,6 +890,7 @@ class _FilaState extends State<_Fila> {
     final nodo = _nodos[destino];
     if (nodo.context != null) {
       nodo.requestFocus();
+      widget.onFocoEn?.call(destino);
       return;
     }
     if (intento >= 8) return;
@@ -942,7 +1004,11 @@ class _FilaState extends State<_Fila> {
           // 100 y no 106: los 6 que faltan se los queda el `padding` del
           // propio ListView, para que la tarjeta enfocada crezca sin salirse.
           Padding(
-            padding: const EdgeInsets.only(left: 100),
+            // 94 y no 106: los 12 que faltan se los queda el `padding` del
+            // propio ListView, para que la tarjeta enfocada crezca sin salirse
+            // por la izquierda. La suma sigue dando 106, que es donde empieza
+            // el titulo de la seccion.
+            padding: const EdgeInsets.only(left: 94),
             child: SizedBox(
               // Caratula (204) + hueco (8) + titulo (~15), y 12 mas de aire:
               // al crecer un 5%, la caratula gana 10 de alto y sin ese margen
@@ -958,7 +1024,9 @@ class _FilaState extends State<_Fila> {
                 // Sin recorte: la tarjeta enfocada crece un 5% y ese pelo se
                 // sale de su hueco.
                 clipBehavior: Clip.none,
-                padding: const EdgeInsets.only(left: 6, right: 26),
+                // El aire por donde crece la tarjeta enfocada: 12 a cada lado,
+                // que es lo que se ensancha una caratula de 136 al 9%.
+                padding: const EdgeInsets.only(left: 12, right: 32),
                 // Ancho fijo por celda: es lo que deja calcular la posicion de
                 // cada tarjeta sin medir nada, y de paso le ahorra a la lista
                 // el trabajo de ir midiendo hijo por hijo mientras se mueve.
@@ -1048,7 +1116,7 @@ class _TarjetaMasState extends State<_TarjetaMas> {
         return widget.onTecla(event);
       },
       child: AnimatedScale(
-        scale: _foco ? 1.05 : 1.0,
+        scale: _foco ? 1.09 : 1.0,
         duration: const Duration(milliseconds: 140),
         curve: Curves.easeOut,
         child: GestureDetector(
@@ -1188,7 +1256,7 @@ class _TarjetaState extends State<_Tarjeta> {
         // Un 5%, no mas: lo justo para que la vista encuentre sola donde esta
         // el foco desde el sofa. Es una transformacion de PINTADO, asi que no
         // recoloca nada de alrededor al crecer.
-        scale: _foco ? 1.05 : 1.0,
+        scale: _foco ? 1.09 : 1.0,
         duration: const Duration(milliseconds: 140),
         curve: Curves.easeOut,
         child: GestureDetector(

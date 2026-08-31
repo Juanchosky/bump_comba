@@ -972,7 +972,7 @@ class _CardSugerenciaState extends State<_CardSugerencia> {
         // El mismo 5% que en el catalogo y en la rejilla. Que el foco se note
         // igual en las tres pantallas es la mitad del asunto: si cada una lo
         // marcara a su manera, habria que aprender tres.
-        scale: _foco ? 1.05 : 1.0,
+        scale: _foco ? 1.09 : 1.0,
         duration: const Duration(milliseconds: 140),
         curve: Curves.easeOut,
         child: AnimatedContainer(

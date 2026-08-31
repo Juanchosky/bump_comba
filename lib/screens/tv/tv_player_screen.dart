@@ -7,6 +7,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../models/m3u_item.dart';
+import '../../services/dynamic_scraper_service.dart';
 import '../../services/turbo_proxy.dart';
 import '../../services/tv/tv_mpv_config.dart';
 import '../../utils/cabeceras_stream.dart';
@@ -122,6 +123,21 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
   /// normales del bufer, y por encima el usuario ya se ha ido.
   static const int _umbralParado = 9;
 
+  /// ¿Lo paró el usuario?
+  ///
+  /// EL VIGILANTE NO PUEDE CONTAR MIENTRAS ESTA EN PAUSA.
+  ///
+  /// En pausa no entran bytes y la posicion no se mueve: para el vigilante era
+  /// exactamente igual que un servidor muerto, asi que a los 45 segundos de
+  /// haber pausado cambiaba de servidor solo. Y al cambiar, volvia a
+  /// reproducir — el usuario habia pulsado pausa y la pelicula arrancaba sola
+  /// por otro sitio.
+  ///
+  /// El estado `playing` de MPV no basta para distinguirlo: tambien se pone en
+  /// falso al bufferear o al cambiar de pista. Esta bandera dice quien lo paro,
+  /// que es lo unico que importa aqui.
+  bool _pausadoAdrede = false;
+
   // ── Vigilante de ARRANQUE ────────────────────────────────────────────────
   //
   // Es un fallo DISTINTO del de "se paro a mitad", y necesita su propio juez.
@@ -186,11 +202,38 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
     ]);
 
     // El titulo primero y sus alternativas despues, sin repetidos.
-    _urls =
-        <String>[
+    //
+    // FUERA LAS QUE NO SON UN VIDEO.
+    //
+    // Parte del contenido propio no guarda el enlace al fichero, sino la
+    // PAGINA de donde se saca. El telefono la resuelve con un navegador
+    // invisible; SE PROBO AQUI y en este aparato no sale a cuenta: cargar la
+    // pagina de cuevana se comio ~150 fotogramas de golpe, dejo la interfaz a
+    // tirones durante todo el proceso... y termino sin encontrar ningun video.
+    //
+    // Descartadas, el cambio de servidor va directo a una que si puede
+    // funcionar, y la reproduccion no se para a cargar paginas.
+    final todas =
+        <String>{
           widget.item.url,
           for (final alt in widget.item.alternatives) alt.url,
-        ].toSet().toList();
+        }.toList();
+
+    final reproducibles = [
+      for (final u in todas)
+        if (!DynamicScraperService().isSupported(u)) u,
+    ];
+
+    // Si TODAS necesitan navegador no se descarta ninguna: mas vale intentarlo
+    // y fallar que quedarse sin nada que abrir.
+    _urls = reproducibles.isEmpty ? todas : reproducibles;
+
+    if (reproducibles.length != todas.length) {
+      debugPrint(
+        'TvPlayer: ${todas.length - reproducibles.length} servidor(es) '
+        'descartados por no ser un video directo',
+      );
+    }
 
     _subs.add(
       _player.stream.log.listen((l) {
@@ -248,7 +291,15 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
     if (!mounted) return;
     if (desde > Duration.zero) setState(() => _reanudadoDesde = desde);
 
-    await _abrir(desde);
+    try {
+      await _abrir(desde);
+    } catch (e) {
+      // Si el PRIMER servidor no arranca —tipico del de la base de datos,
+      // cuya pagina puede no soltar el video— se pasa al siguiente en vez de
+      // quedarse en negro esperando a un vigilante que aun no existe.
+      debugPrint('TvPlayer: el primer servidor fallo ($e) — cambiando');
+      unawaited(_siguienteServidor('fallo al abrir'));
+    }
     _armarVigilante();
     _armarGuardado();
   }
@@ -260,6 +311,7 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
     _segundosDesdeAbrir = 0;
 
     final original = _urls[_idxServidor];
+
     String url = original;
 
     // ── TurboProxy, igual que en el telefono ────────────────────────────
@@ -338,6 +390,17 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
 
     _vigilante = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted || _cambiandoServidor) return;
+
+      // En pausa no se vigila NADA: ni la posicion, ni los bytes, ni el
+      // arranque. Se congela todo tal cual estaba para que al reanudar no
+      // arrastre segundos que el servidor no debe.
+      if (_pausadoAdrede) {
+        _segundosSinAvance = 0;
+        _segundosSinDatos = 0;
+        _segundosDesdeAbrir = 0;
+        _posVigilada = _posicion;
+        return;
+      }
 
       // Corrupcion: la prueba mas directa, y la que el detector de posicion
       // no puede ver.
@@ -454,6 +517,9 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
 
   @override
   void dispose() {
+    // Una extraccion a medias deja un WebView invisible corriendo: en un
+    // televisor de 1 GB eso es memoria que no vuelve.
+    unawaited(DynamicScraperService().stopCurrentScraping());
     for (final s in _subs) {
       s.cancel();
     }
@@ -505,7 +571,19 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
   }
 
   void _alternarReproduccion() {
-    _reproduciendo ? _player.pause() : _player.play();
+    if (_reproduciendo) {
+      _pausadoAdrede = true;
+      _player.pause();
+    } else {
+      _pausadoAdrede = false;
+      // Al reanudar, los contadores empiezan de cero: los segundos que estuvo
+      // en pausa no son culpa del servidor.
+      _segundosSinAvance = 0;
+      _segundosSinDatos = 0;
+      _segundosDesdeAbrir = 0;
+      _posVigilada = _posicion;
+      _player.play();
+    }
   }
 
   void _saltar(int segundos) {

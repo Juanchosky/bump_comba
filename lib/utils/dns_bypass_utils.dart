@@ -202,6 +202,23 @@ class DnsBypassUtils {
       return (uri: uri, headers: originalHeaders);
     }
 
+    // ── HTTPS NO SE PUEDE PUENTEAR ASI ────────────────────────────────────
+    //
+    // Cambiar el host de la URL por su IP arregla el DNS, pero rompe el TLS:
+    // el saludo inicial anuncia el nombre del servidor (SNI) tomandolo de la
+    // URI, asi que se acaba anunciando la IP. Cloudflare —y cualquier servidor
+    // con varios dominios en la misma IP— no sabe que certificado presentar y
+    // corta la conexion:
+    //
+    //   HandshakeException ... HANDSHAKE_FAILURE_ON_CLIENT_HELLO
+    //
+    // La cabecera `Host` no lo salva: llega DESPUES del saludo TLS, cuando la
+    // conexion ya se corto. Por eso en https se devuelve la URL tal cual y se
+    // deja que resuelva el sistema: peor es una conexion que nunca abre.
+    if (uri.scheme == 'https') {
+      return (uri: uri, headers: originalHeaders);
+    }
+
     // Skip DoH endpoints themselves to avoid circular dependencies
     if (uri.host.contains('cloudflare-dns.com') ||
         uri.host.contains('dns.google')) {

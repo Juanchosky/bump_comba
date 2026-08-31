@@ -101,7 +101,7 @@ class _TvCategoryScreenState extends State<TvCategoryScreen> {
                     // por arriba y las de los extremos por los lados. 6 de
                     // ancho y 10 de alto es lo que se ensancha una caratula de
                     // 120x180 al 5%.
-                    padding: const EdgeInsets.fromLTRB(6, 8, 6, 30),
+                    padding: const EdgeInsets.fromLTRB(11, 14, 11, 30),
                     gridDelegate:
                         const SliverGridDelegateWithMaxCrossAxisExtent(
                           // Algo mas pequeñas que las del catalogo: aqui hay
@@ -197,7 +197,7 @@ class _TarjetaState extends State<_Tarjeta> {
         //
         // Es una transformacion de PINTADO: no toca la distribucion, asi que al
         // crecer no se recoloca nada de alrededor.
-        scale: _foco ? 1.05 : 1.0,
+        scale: _foco ? 1.09 : 1.0,
         duration: const Duration(milliseconds: 140),
         curve: Curves.easeOut,
         child: GestureDetector(
