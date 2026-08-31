@@ -193,7 +193,6 @@ class _TvSearchScreenState extends State<TvSearchScreen> {
                     onBorrarTodo: _borrarTodo,
                     onCambiarModo: () => setState(() => _numeros = !_numeros),
                     onSalirDerecha: () => _foco.currentState?.enfocar(0),
-                    onSalirAtras: () => Navigator.of(context).maybePop(),
                   ),
                 ),
                 const SizedBox(width: 36),
@@ -228,7 +227,6 @@ class _Teclado extends StatefulWidget {
   final VoidCallback onBorrarTodo;
   final VoidCallback onCambiarModo;
   final VoidCallback onSalirDerecha;
-  final VoidCallback onSalirAtras;
 
   const _Teclado({
     super.key,
@@ -239,7 +237,6 @@ class _Teclado extends StatefulWidget {
     required this.onBorrarTodo,
     required this.onCambiarModo,
     required this.onSalirDerecha,
-    required this.onSalirAtras,
   });
 
   @override
@@ -370,14 +367,21 @@ class _TecladoState extends State<_Teclado> {
       return KeyEventResult.handled;
     }
     if (k == LogicalKeyboardKey.arrowLeft) {
-      // En la primera columna, izquierda es "volver": el teclado esta pegado
-      // al borde y ahi no hay nada mas a la izquierda. Es el mismo gesto que
-      // en el catalogo devuelve al menu.
-      if (_columna(i) == 0) {
-        widget.onSalirAtras();
-      } else {
-        _mover(i, 0, -1);
-      }
+      // EN LA PRIMERA COLUMNA, IZQUIERDA NO HACE NADA.
+      //
+      // Antes cerraba el buscador entero. Y la primera columna no es un sitio
+      // raro al que se llega por accidente: son la A, la H, la O, la V y la
+      // tecla de numeros — se pasa por ahi constantemente al escribir. Bastaba
+      // una pulsacion de mas hacia la izquierda para que la pantalla se
+      // cerrara sola en mitad de una busqueda.
+      //
+      // Se da por atendida igualmente: si se deja pasar, la traversal de
+      // Flutter busca "algo a la izquierda" y acaba sacando el foco del
+      // teclado, que es otra forma de lo mismo.
+      //
+      // Para salir esta el boton de atras del mando, que es donde todo el
+      // mundo lo busca.
+      if (_columna(i) > 0) _mover(i, 0, -1);
       return KeyEventResult.handled;
     }
     if (k == LogicalKeyboardKey.arrowUp) {

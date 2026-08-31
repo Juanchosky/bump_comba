@@ -72,7 +72,24 @@ class TvMpvConfig {
         'demuxer-max-bytes': '100663296',
         'demuxer-max-back-bytes': '50331648',
         'demuxer-readahead-secs': '90',
-        'cache-pause-initial': 'yes',
+        // ── ARRANCAR YA, NO CUANDO EL BUFER ESTE LLENO ────────────────────
+        //
+        // Estaba en 'yes', que le dice a MPV que NO empiece a reproducir hasta
+        // tener `cache-pause-wait` segundos —4— en el bufer. Con este proveedor
+        // dando 0,5-3 Mbps para un video de 8, llenar esos 4 segundos son diez
+        // o quince de pantalla negra: es exactamente el "en el telefono
+        // arranca al instante y en el televisor tarda muchisimo".
+        //
+        // En el telefono este prebufer solo se activa para premium, y con un
+        // aviso en pantalla que explica la espera. Aqui estaba puesto para
+        // todos y sin aviso.
+        //
+        // A cambio, el primer minuto puede tener algun corte mas: se arranca
+        // con lo poco que haya. Es el intercambio correcto — un corte se
+        // entiende, quince segundos en negro parecen una app rota. El
+        // `cache-pause-wait` de 4s se queda, que ese SI vale para recuperarse
+        // de un vaciado a mitad de pelicula.
+        'cache-pause-initial': 'no',
         'cache-pause-wait': '4',
         'cache-pause': 'yes',
         // Sin esto MPV RECHAZA entradas de playlist que considera inseguras,

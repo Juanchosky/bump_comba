@@ -80,9 +80,53 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
   /// Hasta donde hay datos cargados (posicion ABSOLUTA, no una duracion).
   Duration _bufer = Duration.zero;
 
+  /// Cuando avanzo la posicion por ultima vez.
+  DateTime _ultimoAvance = DateTime.now();
+
+  /// Si toca enseñar el spinner.
+  ///
+  /// EL JUEZ ES EL AVANCE, NO `buffering`.
+  ///
+  /// El spinner se quedaba puesto con el video ya corriendo, y el motivo es
+  /// que dependia de `_buffering`: MPV mantiene esa bandera levantada mientras
+  /// rellena el bufer, y con una lista HLS que reconecta cada pocos segundos
+  /// no la baja casi nunca. Preguntarle a MPV "¿estas cargando?" da una
+  /// respuesta que no coincide con lo que se ve.
+  ///
+  /// Si la posicion se movio hace menos de un segundo, hay imagen: no hay nada
+  /// que esperar y el spinner sobra, diga lo que diga la bandera.
+  bool get _cargando {
+    if (!_arranco) return true;
+    return DateTime.now().difference(_ultimoAvance) >
+        const Duration(milliseconds: 1000);
+  }
+
+  /// Lo ultimo que se pinto, para repintar solo cuando cambia.
+  bool _spinnerVisible = true;
+
+  // ── EL COLCHON CRECE SI LA LINEA NO DA ─────────────────────────────────
+  //
+  // Arrancar con el bufer vacio hace que el video empiece al instante, pero si
+  // el proveedor da 1,5 Mbps para un video de 8 se queda sin datos enseguida y
+  // aparecen los cortes cada pocos segundos.
+  //
+  // Un valor fijo no sirve para las dos cosas: alto, la primera imagen tarda
+  // quince segundos; bajo, la pelicula va a tirones. Asi que se empieza bajo
+  // —arranque rapido— y CADA VEZ QUE SE CORTA se pide mas colchon para
+  // reanudar. El resultado es menos cortes y mas largos en vez de muchos y
+  // cortos, que es lo que de verdad se nota mirando.
+  //
+  // Es lo mismo que hace un reproductor de streaming serio: adaptarse a la
+  // linea que hay, no a la que uno querria.
+  final List<DateTime> _cortes = [];
+  int _esperaBufer = _esperaBuferInicial;
+  static const int _esperaBuferInicial = 2;
+  static const int _esperaBuferMaxima = 20;
+
   /// Velocidad de descarga, para la esquina superior izquierda.
   double _kbps = 0;
   Timer? _sondeoVelocidad;
+  Timer? _diagnostico;
   Duration _posicion = Duration.zero;
   Duration _duracion = Duration.zero;
 
@@ -199,8 +243,12 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
       }),
       _player.stream.buffering.listen((v) {
         if (mounted) setState(() => _buffering = v);
+        if (v) _anotarCorte();
       }),
       _player.stream.position.listen((v) {
+        // Cada vez que la posicion se mueve de verdad se apunta la hora: es lo
+        // unico que prueba que el video esta corriendo.
+        if (v != _posicion) _ultimoAvance = DateTime.now();
         if (mounted && !_preparandoSalto) setState(() => _posicion = v);
       }),
       _player.stream.duration.listen((v) {
@@ -242,6 +290,20 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
 
     _subs.add(
       _player.stream.log.listen((l) {
+        // Fallo definitivo: no se espera a los 9 segundos, se pasa ya al
+        // siguiente y este se marca para no volver a probarlo.
+        // Ojo: solo si el servidor actual es ya una URL de video. Si es una
+        // pagina a medio resolver, los errores son de la pagina, no del video.
+        if (!_arranco &&
+            !_resolviendo.contains(_idxServidor) &&
+            _marcasFatales.any(l.text.contains)) {
+          debugPrint(
+            'TvPlayer: servidor $_idxServidor roto (${l.text.trim()})',
+          );
+          _rotos.add(_idxServidor);
+          unawaited(_siguienteServidor('el servidor no sirve el video'));
+          return;
+        }
         if (_marcasCorrupcion.any(l.text.contains)) {
           final ahora = DateTime.now();
           _corrupcion.add(ahora);
@@ -272,6 +334,19 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
   /// que nadie pidio: en el 95% de los casos se quiere continuar, y para el
   /// otro 5% ya esta la barra de tiempo.
   Future<void> _arrancar() async {
+    // PRIMERO SE PINTA, DESPUES SE TRABAJA.
+    //
+    // Todo lo que viene detras —las ~30 propiedades de MPV, leer el historial,
+    // levantar TurboProxy— corre por el canal de plataforma y en un Chromecast
+    // HD tarda lo suyo. Lanzandolo aqui mismo, el hilo de interfaz se queda
+    // ocupado ANTES de haber pintado un solo fotograma: se veia pantalla
+    // negra, sin spinner, y parecia que no estaba cargando.
+    //
+    // Esperar al final del primer fotograma cuesta ~16 ms y garantiza que el
+    // spinner ya este en pantalla cuando empieza lo pesado.
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
+
     // LA CONFIGURACION DE MPV SE ESPERA, no se lanza y se olvida.
     //
     // Estaba con `unawaited`, asi que el `open()` podia salir ANTES de que
@@ -309,14 +384,190 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
     _armarGuardado();
   }
 
+  /// Apunta un corte y, si se repiten, agranda el colchon de reanudacion.
+  void _anotarCorte() {
+    // Los primeros segundos no cuentan: ahi "bufferear" es cargar, no cortarse.
+    if (!_arranco) return;
+
+    final ahora = DateTime.now();
+    _cortes.add(ahora);
+    _cortes.removeWhere(
+      (t) => ahora.difference(t) > const Duration(minutes: 2),
+    );
+
+    // Tres cortes en dos minutos ya no es mala suerte: es que la linea no da.
+    if (_cortes.length < 3 || _esperaBufer >= _esperaBuferMaxima) return;
+    _cortes.clear();
+    _esperaBufer = (_esperaBufer * 2).clamp(
+      _esperaBuferInicial,
+      _esperaBuferMaxima,
+    );
+    debugPrint(
+      'TvPlayer: cortes repetidos -> colchon de reanudacion a ${_esperaBufer}s',
+    );
+    unawaited(_ponerEsperaBufer(_esperaBufer));
+  }
+
+  Future<void> _ponerEsperaBufer(int segundos) async {
+    try {
+      final mpv = _player.platform as dynamic;
+      await mpv?.setProperty('cache-pause-wait', '$segundos');
+    } catch (e) {
+      debugPrint('TvPlayer: no se pudo ajustar cache-pause-wait: $e');
+    }
+  }
+
+  /// La URL local que sirve TurboProxy para el servidor actual.
+  String? _urlTurbo;
+
+  /// Baja los topes del demuxer cuando la fuente es una lista HLS.
+  ///
+  /// Ver la nota de `_abrir`: el perfil VOD contra un `.m3u8` produce cortes
+  /// constantes. Es el mismo fallo que ya se corrigio en el receptor cuando el
+  /// telefono no mandaba `isLive`.
+  Future<void> _ajustarPerfilSegunFuente(String url) async {
+    final esHls = url.toLowerCase().contains('.m3u8');
+    try {
+      final mpv = _player.platform as dynamic;
+      if (mpv == null) return;
+      if (esHls) {
+        await mpv.setProperty('cache-secs', '60');
+        await mpv.setProperty('demuxer-readahead-secs', '20');
+        await mpv.setProperty('hls-bitrate', 'max');
+        await mpv.setProperty('hls-forward-cache-secs', '30');
+        await mpv.setProperty('hls-back-cache-secs', '10');
+        await mpv.setProperty('demuxer-cache-wait', 'no');
+        debugPrint('TvPlayer: perfil HLS aplicado');
+      } else {
+        // Fichero entero: se restauran los valores del perfil base, por si el
+        // servidor anterior era una lista HLS y los dejo bajados.
+        await mpv.setProperty('cache-secs', '120');
+        await mpv.setProperty('demuxer-readahead-secs', '90');
+      }
+    } catch (e) {
+      debugPrint('TvPlayer: no se pudo ajustar el perfil: $e');
+    }
+  }
+
+  /// Saca la URL del video de una pagina, con el extractor del telefono.
+  ///
+  /// SE HACE POR ADELANTADO, NO CUANDO YA HACE FALTA.
+  ///
+  /// Cargar la pagina en un navegador invisible cuesta lo suyo en un aparato
+  /// de 1 GB: si se hace en el momento del fallo, se suma a una pantalla que
+  /// ya lleva 9 segundos parada. Lanzandolo mientras el otro servidor va bien,
+  /// el trabajo caro ocurre cuando NO molesta, y si luego hace falta cambiar,
+  /// la URL ya esta lista y el cambio es inmediato.
+  Future<String?> _resolverPagina(int indice) async {
+    if (_resueltos.containsKey(indice)) return _resueltos[indice];
+    if (_resolviendo.contains(indice)) return null;
+
+    final pagina = _urls[indice];
+    if (!DynamicScraperService().isSupported(pagina)) return pagina;
+
+    _resolviendo.add(indice);
+    debugPrint('TvPlayer: resolviendo la pagina del servidor $indice...');
+    try {
+      final r = await DynamicScraperService()
+          .extractStreamResult(pagina)
+          .timeout(const Duration(seconds: 45));
+      if (r != null && r.videoUrl.isNotEmpty) {
+        _resueltos[indice] = r.videoUrl;
+        debugPrint('TvPlayer: servidor $indice resuelto');
+        return r.videoUrl;
+      }
+      debugPrint('TvPlayer: la pagina del servidor $indice no solto video');
+      _rotos.add(indice);
+    } catch (e) {
+      debugPrint('TvPlayer: no se pudo resolver el servidor $indice: $e');
+      _rotos.add(indice);
+    } finally {
+      _resolviendo.remove(indice);
+      await DynamicScraperService().stopCurrentScraping();
+    }
+    return null;
+  }
+
+  /// Deja listos, en segundo plano, los servidores que necesitan extractor.
+  void _prepararAlternativasEnSegundoPlano() {
+    for (var i = 0; i < _urls.length; i++) {
+      if (i == _idxServidor || _rotos.contains(i)) continue;
+      if (!DynamicScraperService().isSupported(_urls[i])) continue;
+      unawaited(_resolverPagina(i));
+    }
+  }
+
+  /// La URL de video REAL de cada servidor que guarda una pagina en vez de un
+  /// fichero (el contenido propio: cuevana, flixlat...).
+  ///
+  /// El telefono hace justo esto antes de reproducir; el televisor no lo hacia
+  /// y por eso ese servidor "no funcionaba aqui y en el movil si". No es que
+  /// el TV lo hiciera distinto: es que no lo hacia.
+  final Map<int, String> _resueltos = {};
+
+  /// Resoluciones en marcha, para no lanzar dos veces la misma pagina.
+  final Set<int> _resolviendo = {};
+
+  /// Servidores que ya se sabe que NO van a funcionar en esta reproduccion.
+  ///
+  /// Hay fallos que no son mala suerte ni lentitud: un 403, una cabecera que
+  /// no se puede leer, un fichero cortado. Reintentar eso a los 9 segundos es
+  /// perder 9 segundos con total seguridad. Se apunta y no se vuelve.
+  final Set<int> _rotos = {};
+
+  /// Cuantos servidores seguidos han fallado sin que ninguno arrancara.
+  ///
+  /// Cuando da la vuelta entera sin exito, se para: seguir girando entre dos
+  /// servidores que no funcionan no es tolerancia a fallos, es un bucle. Y
+  /// ademas cada vuelta creaba otra sesion de TurboProxy.
+  int _fallosSeguidos = 0;
+
+  /// Se acabaron los servidores. Se enseña y se deja de intentar.
+  bool _agotado = false;
+
+  /// Lo que dice MPV cuando el servidor no va a dar el video, pase lo que pase.
+  static const List<String> _marcasFatales = [
+    'HTTP error 403',
+    'HTTP error 404',
+    'HTTP error 401',
+    'error reading header',
+    'Failed to open',
+    'partial file',
+  ];
+
+  void _cerrarTurbo() {
+    final anterior = _urlTurbo;
+    _urlTurbo = null;
+    if (anterior != null) TurboProxy().cerrarSesion(anterior);
+  }
+
   Future<void> _abrir(Duration desde) async {
     // Servidor nuevo, cuenta nueva: lo que tardara el anterior no puede
     // condenar a este.
     _segundosDesdeAbrir = 0;
     _arranco = false;
     _posReferencia = null;
+    // Servidor nuevo, colchon nuevo: lo que no daba el anterior no condena a
+    // este, y arrancar rapido vuelve a ser lo primero.
+    _cortes.clear();
+    _esperaBufer = _esperaBuferInicial;
+    unawaited(_ponerEsperaBufer(_esperaBuferInicial));
 
-    final original = _urls[_idxServidor];
+    var original = _urls[_idxServidor];
+
+    // ── SI ESTE SERVIDOR ES UNA PAGINA, SE RESUELVE ANTES ───────────────
+    //
+    // Es lo que hace el telefono y lo que aqui faltaba. Si ya venia resuelto
+    // de la preparacion en segundo plano, esto no cuesta nada; si no, se
+    // resuelve ahora y se espera, que sigue siendo mejor que abrir HTML con
+    // MPV y ver como falla.
+    if (DynamicScraperService().isSupported(original)) {
+      final resuelto = await _resolverPagina(_idxServidor);
+      if (resuelto == null || resuelto.isEmpty) {
+        throw StateError('la pagina del servidor $_idxServidor no dio video');
+      }
+      original = resuelto;
+    }
 
     String url = original;
 
@@ -340,6 +591,16 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
     // proveedores que estrangulan al cliente que no reconocen.
     final cabeceras = cabecerasParaStream(original);
 
+    // LA SESION ANTERIOR SE CIERRA ANTES DE ABRIR OTRA.
+    //
+    // No se cerraba nunca, y el log lo cantaba: "9 sesiones, todas en uso —
+    // no se expulsa ninguna", luego 10, luego 11. Cada cambio de servidor
+    // dejaba una descarga zombi viva, peleando por el ancho de banda y por el
+    // puerto del VPS contra la reproduccion de verdad. Con un servidor que no
+    // arranca y otro roto, el bucle de failover fabricaba una fuga cada 9
+    // segundos: cuanto mas lo intentaba, peor iba.
+    _cerrarTurbo();
+
     if (!esEnVivoPorUrl(original)) {
       try {
         final local = await TurboProxy()
@@ -347,12 +608,26 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
             .timeout(const Duration(seconds: 7));
         if (local != null) {
           url = local;
+          _urlTurbo = local;
           debugPrint('TvPlayer: enrutado por TurboProxy');
         }
       } catch (e) {
         debugPrint('TvPlayer: TurboProxy fallo ($e) — URL directa');
       }
     }
+
+    // ── EL PERFIL SE AJUSTA AL TIPO DE FUENTE ──────────────────────────
+    //
+    // El perfil base es de VOD: 120s de cache y 90s de lectura adelantada,
+    // pensados para un fichero entero servido por rangos. Contra una lista
+    // HLS —que es lo que devuelve el extractor del contenido propio— eso es
+    // contraproducente: solo hay unos pocos segmentos publicados, MPV choca
+    // contra el final de la lista una y otra vez, y de ahi salen el
+    // "End of file" repetido y los cortes cada pocos segundos.
+    //
+    // Son los mismos valores que ya usa el receptor para HLS, y todos BAJAN
+    // respecto al perfil VOD, asi que no tocan el techo del VPS.
+    await _ajustarPerfilSegunFuente(original);
 
     await _player.open(
       Media(
@@ -396,6 +671,12 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
 
     _vigilante = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted || _cambiandoServidor) return;
+
+      // Repintar SOLO cuando el spinner cambia de estado. Un `setState` por
+      // segundo en un televisor de gama baja se nota.
+      if (_cargando != _spinnerVisible) {
+        setState(() => _spinnerVisible = _cargando);
+      }
 
       // En pausa no se vigila NADA: ni la posicion, ni los bytes, ni el
       // arranque. Se congela todo tal cual estaba para que al reanudar no
@@ -458,6 +739,12 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
         if (_reproduciendo &&
             _posicion > _posReferencia! + const Duration(milliseconds: 500)) {
           _arranco = true;
+          // Este servidor SI va: la cuenta de fallos seguidos vuelve a cero.
+          _fallosSeguidos = 0;
+          // Y con el video en marcha se aprovecha para dejar listas las
+          // alternativas que necesitan extractor: si mas tarde hay que
+          // cambiar, el cambio sera inmediato en vez de otros 40 segundos.
+          _prepararAlternativasEnSegundoPlano();
           return;
         }
 
@@ -495,8 +782,32 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
   }
 
   Future<void> _siguienteServidor(String motivo) async {
-    if (_urls.length < 2 || _cambiandoServidor) return;
+    if (_cambiandoServidor || _agotado) return;
 
+    // ── ¿QUEDA ALGUN SERVIDOR AL QUE IR? ────────────────────────────────
+    //
+    // Antes bastaba con "hay mas de uno". Con uno lento y otro roto, eso era
+    // un bucle infinito: 0 -> 1 -> 0 -> 1 cada 9 segundos, cada vuelta con su
+    // sesion de TurboProxy nueva, y en pantalla "Cambiando de servidor" para
+    // siempre. Girar entre servidores que no funcionan no es tolerancia a
+    // fallos.
+    final candidatos = [
+      for (var i = 1; i <= _urls.length; i++)
+        if (!_rotos.contains((_idxServidor + i) % _urls.length))
+          (_idxServidor + i) % _urls.length,
+    ];
+    if (candidatos.isEmpty || _fallosSeguidos >= _urls.length) {
+      debugPrint(
+        'TvPlayer: sin servidores utiles '
+        '(${_rotos.length} rotos de ${_urls.length}) — se deja de intentar',
+      );
+      _vigilante?.cancel();
+      _cerrarTurbo();
+      if (mounted) setState(() => _agotado = true);
+      return;
+    }
+
+    _fallosSeguidos++;
     _cambiandoServidor = true;
     // Servidor nuevo: vuelve a no haber imagen hasta que llegue la primera. Sin
     // esto, el vigilante seguiria contando desde el primer segundo del video
@@ -504,7 +815,7 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
     if (mounted) setState(() => _primerFrameListo = false);
     _segundosDesdeAbrir = 0;
     final desde = _posicion;
-    _idxServidor = (_idxServidor + 1) % _urls.length;
+    _idxServidor = candidatos.first;
     debugPrint('TvPlayer: cambio de servidor ($motivo) -> $_idxServidor');
 
     if (mounted) {
@@ -533,11 +844,12 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
   void dispose() {
     // Una extraccion a medias deja un WebView invisible corriendo: en un
     // televisor de 1 GB eso es memoria que no vuelve.
-    unawaited(DynamicScraperService().stopCurrentScraping());
+    _cerrarTurbo();
     for (final s in _subs) {
       s.cancel();
     }
     _ocultar?.cancel();
+    _diagnostico?.cancel();
     _confirmarSalto?.cancel();
     _sondeoVelocidad?.cancel();
     _vigilante?.cancel();
@@ -567,6 +879,45 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
         if (_buffering || !_primerFrameListo || _controlesVisibles) {
           setState(() {});
         }
+      } catch (_) {}
+    });
+
+    // ── DIAGNOSTICO: ¿falta red o no da el aparato? ──────────────────────
+    //
+    // Son dos averias distintas y desde fuera se ven parecidas: el video "va
+    // mal". Sin estos numeros no hay forma de separarlas, y se acaba tocando
+    // el bufer para arreglar un problema de decodificacion (o al reves).
+    //
+    // Como se leen las tres cifras, cada 5 segundos:
+    //
+    //  · bufer ~0s          -> FALTA RED. MPV se queda sin datos y para.
+    //    Se ve como cortes: la imagen se congela y sigue.
+    //
+    //  · bufer alto Y drops -> NO DA EL APARATO. Hay datos de sobra pero los
+    //    fotogramas se descartan sin llegar a pintarse. Se ve como tirones
+    //    con el video corriendo: la imagen avanza a saltos.
+    //
+    //  · drops que suben sin parar con bufer sano, en un .mkv de este
+    //    proveedor -> son los PTS rotos ("Input packet is missing PTS"): los
+    //    paquetes llegan sin marca de tiempo y MPV no sabe cuando pintarlos.
+    //    Ni es la red ni es el aparato; es el archivo.
+    _diagnostico = Timer.periodic(const Duration(seconds: 5), (_) async {
+      if (!mounted || !_arranco) return;
+      try {
+        final mpv = _player.platform as dynamic;
+        if (mpv == null) return;
+        final descartados = await mpv.getProperty('frame-drop-count');
+        final descartadosDec = await mpv.getProperty(
+          'decoder-frame-drop-count',
+        );
+        final segundosBufer = _bufer - _posicion;
+        debugPrint(
+          'TvPlayer diag: bufer=${segundosBufer.inSeconds}s '
+          '${_kbps.toStringAsFixed(0)}KB/s '
+          'descartados(vo)=${descartados ?? "?"} '
+          'descartados(dec)=${descartadosDec ?? "?"} '
+          'colchon=${_esperaBufer}s',
+        );
       } catch (_) {}
     });
   }
@@ -928,9 +1279,52 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
               // imagen hay un hueco, y ahi la pantalla se quedaba negra y
               // vacia: parecia colgada. Con `!_primerFrameListo` el spinner
               // cubre tambien ese tramo.
-              if (_buffering || !_primerFrameListo)
+              // El spinner, mientras haya algo que esperar. Si ya no queda
+              // servidor, esperar es mentir: se dice lo que pasa.
+              if (_cargando && !_agotado)
                 const Center(
                   child: TvLoadingAnimation(size: 54, strokeWidth: 4),
+                ),
+
+              // ── Se acabaron los servidores ────────────────────────────
+              //
+              // Antes esto era un bucle silencioso: "Cambiando de servidor"
+              // una y otra vez sobre negro, sin final. Un mensaje claro y la
+              // salida a mano valen mas que un intento numero cuarenta.
+              if (_agotado)
+                Center(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 80),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.cloud_off_rounded,
+                          color: Colors.white38,
+                          size: 54,
+                        ),
+                        const SizedBox(height: 20),
+                        Text(
+                          _urls.length > 1
+                              ? 'Ninguno de los ${_urls.length} servidores '
+                                  'pudo reproducir este título'
+                              : 'El servidor no pudo reproducir este título',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 21,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        const Text(
+                          'Pulsa atrás para volver e inténtalo más tarde.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.white54, fontSize: 16),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
 
               // Velocidad de descarga, arriba a la izquierda. Sale cuando

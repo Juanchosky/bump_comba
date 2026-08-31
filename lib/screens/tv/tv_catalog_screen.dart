@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -125,6 +127,38 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
 
   final ScrollController _scrollVertical = ScrollController();
 
+  /// Espera antes de rehacer "Seguir viendo". Ver `_alCambiarProgreso`.
+  Timer? _refrescoSeguirViendo;
+
+  /// Espera antes de recoger el menu lateral. Ver `_focoEnLateral`.
+  Timer? _cierreLateral;
+
+  /// El menu se abre al entrar y se recoge al salir. CON UN MATIZ.
+  ///
+  /// Cada item avisa por separado, y al bajar de uno a otro Flutter manda
+  /// primero el "he perdido el foco" del que sales y despues el "lo he
+  /// recibido" del que entras. Atendiendo los dos tal cual, el menu se
+  /// RECOGIA Y VOLVIA A ABRIRSE en cada pulsacion: 218 -> 90 -> 218, con su
+  /// animacion de 220 ms, mientras el texto de las secciones aparecia y
+  /// desaparecia. Bajar hasta BUSCAR eran cinco de esos vaivenes, y de ahi que
+  /// recorrer el menu se sintiera un lio.
+  ///
+  /// Al salir se espera un instante: si el foco solo esta saltando de un item
+  /// a otro, el siguiente avisa antes de que venza el plazo y el menu ni se
+  /// entera. Solo se recoge cuando el foco se va de verdad, al contenido.
+  void _focoEnLateral(bool dentro) {
+    _cierreLateral?.cancel();
+    if (dentro) {
+      if (!_lateralAbierto) setState(() => _lateralAbierto = true);
+      return;
+    }
+    _cierreLateral = Timer(const Duration(milliseconds: 80), () {
+      if (mounted && _lateralAbierto) {
+        setState(() => _lateralAbierto = false);
+      }
+    });
+  }
+
   /// Donde estaba el foco la ultima vez. Fila y columna.
   ///
   /// Es lo que hace que volver de una ficha te devuelva DONDE ESTABAS. Sin
@@ -231,12 +265,18 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     // indexar— y al terminar. La primera llena la pantalla en segundos; la
     // segunda añade las series agrupadas y el contenido propio.
     _servicio.addListener(_alLlegarDatos);
+    // El historial avisa cada vez que se guarda progreso: es lo que mantiene
+    // "Seguir viendo" al dia sin tener que reiniciar la app.
+    WatchProgressService().addListener(_alCambiarProgreso);
     _cargar();
   }
 
   @override
   void dispose() {
     _servicio.removeListener(_alLlegarDatos);
+    WatchProgressService().removeListener(_alCambiarProgreso);
+    _refrescoSeguirViendo?.cancel();
+    _cierreLateral?.cancel();
     for (final n in _nodosLateral) {
       n.dispose();
     }
@@ -394,6 +434,64 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     return salida;
   }
 
+  /// Lo que el usuario dejo a medias, del historial mas reciente al mas viejo.
+  List<M3UItem> _calcularSeguirViendo(List<dynamic> historial) {
+    final porUrl = <String, M3UItem>{
+      for (final it in _servicio.items) it.url: it,
+    };
+    final siguiendo = <M3UItem>[];
+    final vistos = <String>{};
+    for (final h in historial) {
+      if (h.isCompleted) continue; // terminado no es "seguir viendo"
+      final it = porUrl[h.url];
+      if (it == null) continue;
+      // Sin repetir: el historial guarda una entrada POR CADA URL alternativa
+      // del mismo titulo, asi que sin esto la fila salia con la misma pelicula
+      // dos y tres veces seguidas.
+      if (!vistos.add(it.seriesName ?? it.name)) continue;
+      siguiendo.add(it);
+      if (siguiendo.length >= 12) break;
+    }
+    return _agrupar(siguiendo);
+  }
+
+  /// "Seguir viendo" se rehace SOLO, en cuanto cambia el historial.
+  ///
+  /// Antes se calculaba una vez al cargar el catalogo y no se volvia a mirar:
+  /// veias media pelicula, salias, y la fila seguia diciendo lo de antes —o no
+  /// aparecia— hasta reiniciar la app. El telefono no tiene ese problema
+  /// porque escucha al servicio; esto es lo mismo aqui.
+  ///
+  /// Con un respiro de un segundo: el reproductor guarda progreso cada 5 s y
+  /// cada guardado avisa, asi que sin esperar se rehacia la fila entera a
+  /// mitad de reproduccion sin que nadie lo hubiera pedido.
+  void _alCambiarProgreso() {
+    _refrescoSeguirViendo?.cancel();
+    _refrescoSeguirViendo = Timer(const Duration(seconds: 1), () async {
+      if (!mounted) return;
+      try {
+        final historial = await WatchProgressService().getHistory();
+        if (!mounted) return;
+        final siguiendo = _calcularSeguirViendo(historial);
+        // Si no cambio nada, no se toca la pantalla: repintar el catalogo
+        // entero mueve el foco de sitio.
+        final igual =
+            siguiendo.length == _seguirViendo.length &&
+            List.generate(
+              siguiendo.length,
+              (i) => siguiendo[i].url == _seguirViendo[i].url,
+            ).every((x) => x);
+        if (igual) return;
+        setState(() {
+          _seguirViendo = siguiendo;
+          _filas = _armarFilas();
+        });
+      } catch (_) {
+        // Es una fila de mas: si falla, el catalogo se ve igual.
+      }
+    });
+  }
+
   /// Arma las filas con lo mejor que haya AHORA MISMO.
   List<({String titulo, List<M3UItem> items})> _armarFilas() {
     // Todavia sin indexar: se pinta lo que se puede en vez de dejar la pantalla
@@ -477,20 +575,10 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       // vivir dentro del armado, que corre tambien desde el listener.
       try {
         final historial = await WatchProgressService().getHistory();
-        final porUrl = <String, M3UItem>{
-          for (final it in _servicio.items) it.url: it,
-        };
-        final siguiendo = <M3UItem>[];
-        for (final h in historial) {
-          if (h.isCompleted) continue; // terminado no es "seguir viendo"
-          final it = porUrl[h.url];
-          if (it != null) siguiendo.add(it);
-          if (siguiendo.length >= 12) break;
-        }
-        _seguirViendo = siguiendo;
+        _seguirViendo = _calcularSeguirViendo(historial);
 
-        // Las recomendaciones salen del mismo historial que ya se acaba de
-        // leer: pedirlo dos veces seria pagar dos veces por lo mismo.
+        // Las recomendaciones salen del mismo historial que se acaba de leer:
+        // pedirlo dos veces seria pagar dos veces por lo mismo.
         _recomendados = _agrupar(_servicio.getRecommendedItems(historial));
       } catch (_) {
         // El historial es un extra: si falla, el catalogo sale igual.
@@ -758,11 +846,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                 },
                 onEntrarContenido: () => _nodoContenido.requestFocus(),
                 abierto: _lateralAbierto,
-                onFoco: (dentro) {
-                  if (dentro != _lateralAbierto) {
-                    setState(() => _lateralAbierto = dentro);
-                  }
-                },
+                onFoco: _focoEnLateral,
               ),
             ),
           ),
@@ -1399,11 +1483,20 @@ class _Lateral extends StatelessWidget {
               nodo: nodos[i],
               onElegir: () => onElegir(i),
               onDerecha: onEntrarContenido,
-              onArriba: i > 0 ? () => nodos[i - 1].requestFocus() : null,
-              onAbajo:
-                  i < secciones.length - 1
-                      ? () => nodos[i + 1].requestFocus()
-                      : null,
+              // EL MENU DA LA VUELTA.
+              //
+              // Antes las flechas se topaban con el final: para llegar a
+              // BUSCAR, que es la ultima, habia que bajar cinco veces desde
+              // INICIO. Dando la vuelta esta a UNA pulsacion hacia arriba, y
+              // volver de BUSCAR a INICIO es otra hacia abajo.
+              //
+              // Es una lista de seis, corta y siempre visible: aqui la vuelta
+              // no desorienta, ahorra.
+              onArriba:
+                  () =>
+                      nodos[(i - 1 + secciones.length) % secciones.length]
+                          .requestFocus(),
+              onAbajo: () => nodos[(i + 1) % secciones.length].requestFocus(),
             ),
 
           const Spacer(),
