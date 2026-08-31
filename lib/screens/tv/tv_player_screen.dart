@@ -77,6 +77,9 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
   /// NEGRA y sin nada, que es lo que hace pensar que se colgo.
   bool _primerFrameListo = false;
 
+  /// Hasta donde hay datos cargados (posicion ABSOLUTA, no una duracion).
+  Duration _bufer = Duration.zero;
+
   /// Velocidad de descarga, para la esquina superior izquierda.
   double _kbps = 0;
   Timer? _sondeoVelocidad;
@@ -198,6 +201,12 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
       }),
       _player.stream.duration.listen((v) {
         if (mounted) setState(() => _duracion = v);
+      }),
+      // Cuanto hay cargado por delante. Lo pinta la linea de tiempo como una
+      // pista mas clara, igual que el receptor: sin ella no se sabe si el
+      // video esta cargando o parado.
+      _player.stream.buffer.listen((v) {
+        if (mounted) setState(() => _bufer = v);
       }),
     ]);
 
@@ -586,7 +595,26 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
     }
   }
 
-  void _saltar(int segundos) {
+  /// Cuantos saltos seguidos se llevan sin aplicar. Manda el tamaño del paso.
+  int _saltosSeguidos = 0;
+
+  /// El paso crece si se sigue saltando: 10 s, 30 s, 60 s y 120 s.
+  ///
+  /// Es lo que hace que llegar al minuto 40 sea cuestion de mantener la flecha
+  /// un par de segundos en vez de dar cien toques. El primer toque sigue
+  /// siendo de 10 s para que un ajuste fino —te perdiste una frase— siga
+  /// siendo posible.
+  int get _paso {
+    if (_saltosSeguidos < 4) return 10;
+    if (_saltosSeguidos < 10) return 30;
+    if (_saltosSeguidos < 20) return 60;
+    return 120;
+  }
+
+  /// `direccion` es -1 o 1; el tamaño del paso lo decide la carrerilla.
+  void _saltar(int direccion) {
+    _saltosSeguidos++;
+    final segundos = direccion.sign * _paso;
     final base = _preparandoSalto ? _saltoPrevisto : _posicion;
     var destino = base + Duration(seconds: segundos);
     if (destino < Duration.zero) destino = Duration.zero;
@@ -601,12 +629,16 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
     // Se aplica 400 ms después de la ÚLTIMA pulsación. Saltar en cada
     // pulsación vacía el búfer una vez por tecla, y recorrer un minuto a base
     // de toques dejaba el vídeo inservible.
+    // Se aplica 500 ms despues de la ULTIMA pulsacion —antes 400—: con la
+    // flecha mantenida, 400 se quedaba corto y el salto se ejecutaba a mitad
+    // del recorrido, vaciando el bufer sin que hubieras terminado de elegir.
     _confirmarSalto?.cancel();
-    _confirmarSalto = Timer(const Duration(milliseconds: 400), _aplicarSalto);
+    _confirmarSalto = Timer(const Duration(milliseconds: 500), _aplicarSalto);
   }
 
   void _aplicarSalto() {
     if (!_preparandoSalto) return;
+    _saltosSeguidos = 0; // la carrerilla se pierde al soltar
     _player.seek(_saltoPrevisto);
     setState(() => _preparandoSalto = false);
   }
@@ -707,8 +739,26 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
   }
 
   KeyEventResult _tecla(FocusNode node, KeyEvent evento) {
-    if (evento is! KeyDownEvent) return KeyEventResult.ignored;
     final k = evento.logicalKey;
+
+    // ── MANTENER LA FLECHA ADELANTA ────────────────────────────────────
+    //
+    // Solo se atendia `KeyDownEvent`, o sea la pulsacion suelta: cada toque
+    // eran 10 segundos y adelantar veinte minutos salian 120 toques. Por eso
+    // moverse por la pelicula era una tortura.
+    //
+    // `KeyRepeatEvent` es lo que llega al DEJAR la flecha apretada. Se atiende
+    // solo para las flechas de la linea de tiempo: repetir "OK" o "atras"
+    // mantenidos no significa nada bueno.
+    final esFlecha =
+        k == LogicalKeyboardKey.arrowLeft || k == LogicalKeyboardKey.arrowRight;
+    if (evento is KeyRepeatEvent && esFlecha && !_menuAbierto) {
+      if (_foco == 0 || _foco == 1) {
+        _saltar(k == LogicalKeyboardKey.arrowLeft ? -1 : 1);
+        return KeyEventResult.handled;
+      }
+    }
+    if (evento is! KeyDownEvent) return KeyEventResult.ignored;
 
     final ok =
         k == LogicalKeyboardKey.select ||
@@ -765,11 +815,11 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
     // ── Línea de tiempo ───────────────────────────────────────────────────
     if (_foco == 1) {
       if (k == LogicalKeyboardKey.arrowLeft) {
-        _saltar(-10);
+        _saltar(-1);
         return KeyEventResult.handled;
       }
       if (k == LogicalKeyboardKey.arrowRight) {
-        _saltar(10);
+        _saltar(1);
         return KeyEventResult.handled;
       }
       if (k == LogicalKeyboardKey.arrowUp) {
@@ -816,11 +866,11 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
 
     // ── Botón de play ─────────────────────────────────────────────────────
     if (k == LogicalKeyboardKey.arrowLeft) {
-      _saltar(-10);
+      _saltar(-1);
       return KeyEventResult.handled;
     }
     if (k == LogicalKeyboardKey.arrowRight) {
-      _saltar(10);
+      _saltar(1);
       return KeyEventResult.handled;
     }
     if (k == LogicalKeyboardKey.arrowDown) {
@@ -922,31 +972,7 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
                   !_buffering &&
                   _primerFrameListo &&
                   !_menuAbierto)
-                Center(
-                  child: Container(
-                    width: 72,
-                    height: 72,
-                    decoration: const BoxDecoration(
-                      shape: BoxShape.circle,
-                      // Misma esfera roja glossy que el receptor.
-                      gradient: RadialGradient(
-                        center: Alignment(-0.4, -0.5),
-                        radius: 1.2,
-                        colors: [
-                          Color(0xFFFF6B5E),
-                          Color(0xFFE53935),
-                          Color(0xFFB71C1C),
-                        ],
-                        stops: [0.0, 0.55, 1.0],
-                      ),
-                    ),
-                    child: const Icon(
-                      Icons.play_arrow_rounded,
-                      color: Colors.white,
-                      size: 40,
-                    ),
-                  ),
-                ),
+                const Center(child: _BotonEsfera()),
 
               if (_controlesVisibles && !_menuAbierto)
                 _Controles(
@@ -954,6 +980,7 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
                   caratula: widget.item.logo,
                   posicion: _posicion,
                   duracion: _duracion,
+                  bufer: _bufer,
                   progreso: progreso,
                   reproduciendo: _reproduciendo,
                   foco: _foco,
@@ -987,11 +1014,74 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
 // ═══════════════════════════════════════════════════════════════════════════
 // Controles inferiores
 // ═══════════════════════════════════════════════════════════════════════════
+/// El botón de play del centro: la misma esfera roja del receptor.
+///
+/// Estaba "parecida" y no igual: le faltaba el brillo especular —la chispa
+/// blanca de arriba a la izquierda, que es lo que hace que se lea como una
+/// esfera y no como un circulo plano— y el icono iba a 40 en vez de 46.
+///
+/// Copiado de `_CtrlButton` del receptor a proposito: transmitir desde el
+/// telefono y ver desde el propio televisor tienen que verse igual, porque
+/// para quien mira son la misma app.
+class _BotonEsfera extends StatelessWidget {
+  const _BotonEsfera();
+
+  static const double _tamano = 72;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: _tamano,
+      height: _tamano,
+      decoration: const BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: RadialGradient(
+          center: Alignment(-0.4, -0.5),
+          radius: 1.2,
+          colors: [
+            Color(0xFFFF6B5E), // luz cálida arriba-izquierda
+            Color(0xFFE53935), // rojo principal
+            Color(0xFFB71C1C), // rojo profundo en el borde
+          ],
+          stops: [0.0, 0.55, 1.0],
+        ),
+      ),
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          // El brillo especular: la "chispa" blanca de la esfera.
+          Positioned(
+            top: _tamano * 0.13,
+            left: _tamano * 0.22,
+            child: Container(
+              width: _tamano * 0.26,
+              height: _tamano * 0.15,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(_tamano),
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.white.withValues(alpha: 0.85),
+                    Colors.white.withValues(alpha: 0.0),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 46),
+        ],
+      ),
+    );
+  }
+}
+
 class _Controles extends StatelessWidget {
   final String titulo;
   final String? caratula;
   final Duration posicion;
   final Duration duracion;
+  final Duration bufer;
   final double progreso;
   final bool reproduciendo;
   final int foco;
@@ -1002,6 +1092,7 @@ class _Controles extends StatelessWidget {
     required this.caratula,
     required this.posicion,
     required this.duracion,
+    required this.bufer,
     required this.progreso,
     required this.reproduciendo,
     required this.foco,
@@ -1011,6 +1102,18 @@ class _Controles extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final enBarra = foco == 1;
+
+    // Fraccion cargada. El `buffer` de MPV es la posicion ABSOLUTA hasta donde
+    // hay datos, no una duracion, asi que se divide igual que la posicion.
+    // Nunca por detras de lo ya reproducido: si el bufer se vacia, la pista
+    // secundaria se esconde bajo la principal en vez de dibujarse al reves.
+    final double cargado =
+        duracion.inMilliseconds > 0
+            ? (bufer.inMilliseconds / duracion.inMilliseconds).clamp(
+              progreso,
+              1.0,
+            )
+            : 0.0;
 
     return Container(
       decoration: const BoxDecoration(
@@ -1059,98 +1162,150 @@ class _Controles extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Row(
-                      children: [
-                        Text(
-                          fmt(posicion),
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 17,
+                    // La barra NO se pinta hasta saber la duracion.
+                    //
+                    // Mismo criterio que el receptor y que el telefono: un
+                    // "00:00 / 00:00" no se lee como "cargando", se lee como
+                    // "esto dura cero". `maintainSize` reserva el alto para
+                    // que el titulo de debajo no pegue un salto al aparecer.
+                    Visibility(
+                      visible: duracion > Duration.zero,
+                      maintainSize: true,
+                      maintainAnimation: true,
+                      maintainState: true,
+                      child: Row(
+                        children: [
+                          Text(
+                            fmt(posicion),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 19,
+                              fontWeight: FontWeight.w400,
+                            ),
                           ),
-                        ),
-                        const SizedBox(width: 18),
-                        Expanded(
-                          child: LayoutBuilder(
-                            builder: (context, c) {
-                              const alto = 6.0;
-                              const tirador = 20.0;
-                              final x = c.maxWidth * progreso;
-                              return SizedBox(
-                                height: 28,
-                                child: Stack(
-                                  alignment: Alignment.centerLeft,
-                                  children: [
-                                    Container(
-                                      height: alto,
-                                      decoration: BoxDecoration(
-                                        color: Colors.white24,
-                                        borderRadius: BorderRadius.circular(4),
-                                      ),
-                                    ),
-                                    FractionallySizedBox(
-                                      widthFactor: progreso,
-                                      child: Container(
+                          const SizedBox(width: 18),
+                          Expanded(
+                            child: LayoutBuilder(
+                              builder: (context, c) {
+                                const alto = 6.0;
+                                const tirador = 20.0;
+                                final x = c.maxWidth * progreso;
+                                return SizedBox(
+                                  height: 28,
+                                  child: Stack(
+                                    alignment: Alignment.centerLeft,
+                                    children: [
+                                      // Pista vacia.
+                                      Container(
                                         height: alto,
                                         decoration: BoxDecoration(
-                                          color:
-                                              enBarra
-                                                  ? const Color(0xFFE50914)
-                                                  : const Color(
-                                                    0xFFE50914,
-                                                  ).withValues(alpha: 0.6),
+                                          color: Colors.white24,
                                           borderRadius: BorderRadius.circular(
                                             4,
                                           ),
                                         ),
                                       ),
-                                    ),
-                                    Positioned(
-                                      left: (x - tirador / 2).clamp(
-                                        0.0,
-                                        (c.maxWidth - tirador).clamp(
-                                          0.0,
-                                          double.infinity,
-                                        ),
-                                      ),
-                                      child: AnimatedOpacity(
-                                        duration: const Duration(
-                                          milliseconds: 150,
-                                        ),
-                                        opacity: enBarra ? 1.0 : 0.5,
+                                      // Pista de BUFER: por debajo de la
+                                      // reproducida, para que esta la tape. Mas
+                                      // opaca que la vacia y mas tenue que el
+                                      // acento, igual que el receptor. Faltaba
+                                      // aqui, y es lo que dice si el video esta
+                                      // cargando o parado.
+                                      FractionallySizedBox(
+                                        alignment: Alignment.centerLeft,
+                                        widthFactor: cargado,
                                         child: Container(
-                                          width: tirador,
-                                          height: tirador,
-                                          decoration: const BoxDecoration(
-                                            shape: BoxShape.circle,
-                                            gradient: RadialGradient(
-                                              center: Alignment(-0.4, -0.5),
-                                              radius: 1.2,
-                                              colors: [
-                                                Color(0xFFFF6B5E),
-                                                Color(0xFFE53935),
-                                                Color(0xFFB71C1C),
-                                              ],
-                                              stops: [0.0, 0.55, 1.0],
+                                          height: alto,
+                                          decoration: BoxDecoration(
+                                            color: Colors.white.withValues(
+                                              alpha: 0.45,
+                                            ),
+                                            borderRadius: BorderRadius.circular(
+                                              4,
                                             ),
                                           ),
                                         ),
                                       ),
-                                    ),
-                                  ],
-                                ),
-                              );
-                            },
+                                      // Lo reproducido: BLANCO, no rojo.
+                                      //
+                                      // El receptor lo pinta en blanco y aqui
+                                      // iba en rojo: la misma pelicula se veia
+                                      // distinta segun la hubieras abierto desde
+                                      // el catalogo o transmitido. El rojo se
+                                      // queda para el tirador y el boton de
+                                      // play, que son los controles.
+                                      //
+                                      // Sin foco se apaga un poco: es la marca
+                                      // que sustituye al cambio de grosor, que
+                                      // haria "saltar" la barra al entrar y
+                                      // salir el foco.
+                                      FractionallySizedBox(
+                                        alignment: Alignment.centerLeft,
+                                        widthFactor: progreso,
+                                        child: Container(
+                                          height: alto,
+                                          decoration: BoxDecoration(
+                                            color:
+                                                enBarra
+                                                    ? Colors.white
+                                                    : Colors.white.withValues(
+                                                      alpha: 0.6,
+                                                    ),
+                                            borderRadius: BorderRadius.circular(
+                                              4,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                      Positioned(
+                                        left: (x - tirador / 2).clamp(
+                                          0.0,
+                                          (c.maxWidth - tirador).clamp(
+                                            0.0,
+                                            double.infinity,
+                                          ),
+                                        ),
+                                        child: AnimatedOpacity(
+                                          duration: const Duration(
+                                            milliseconds: 150,
+                                          ),
+                                          opacity: enBarra ? 1.0 : 0.5,
+                                          child: Container(
+                                            width: tirador,
+                                            height: tirador,
+                                            decoration: const BoxDecoration(
+                                              shape: BoxShape.circle,
+                                              gradient: RadialGradient(
+                                                center: Alignment(-0.4, -0.5),
+                                                radius: 1.2,
+                                                colors: [
+                                                  Color(0xFFFF6B5E),
+                                                  Color(0xFFE53935),
+                                                  Color(0xFFB71C1C),
+                                                ],
+                                                stops: [0.0, 0.55, 1.0],
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
+                            ),
                           ),
-                        ),
-                        const SizedBox(width: 18),
-                        Text(
-                          fmt(duracion),
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 17,
+                          const SizedBox(width: 18),
+                          Text(
+                            fmt(duracion),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 19,
+                              fontWeight: FontWeight.w400,
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                     const SizedBox(height: 14),
 
