@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../../services/m3u_service.dart';
 import '../../services/watch_progress_service.dart';
+import 'tv_category_screen.dart';
 import 'tv_detail_screen.dart';
 
 /// Catálogo del televisor: filas por categoría, navegación con el mando.
@@ -34,6 +35,13 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   /// Lo que el usuario dejo a medias. Se cruza el historial con el catalogo
   /// por URL: el historial guarda donde te quedaste, pero no la caratula.
   List<M3UItem> _seguirViendo = const [];
+
+  /// "Recomendados para ti", lo mismo que calcula el telefono.
+  ///
+  /// Sale del historial cruzado con las categorias mas vistas, y lo resuelve
+  /// el propio servicio: aqui solo se guarda el resultado, para no recalcularlo
+  /// en cada repintado.
+  List<M3UItem> _recomendados = const [];
 
   // Techos deliberados. Un proveedor puede traer cientos de categorías y miles
   // de títulos; pintarlos todos en un aparato de 1 GB de RAM es cómo se cuelga
@@ -130,6 +138,25 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       _cargando = false;
       if (_filas.isNotEmpty) _error = null;
     });
+
+    // Las recomendaciones necesitan el catalogo YA indexado, y la primera vez
+    // se calculan antes de que lo este: salen vacias y la fila no aparece.
+    // Aqui se reintenta cuando llegan los datos buenos, una sola vez.
+    if (_recomendados.isEmpty) _recalcularRecomendados();
+  }
+
+  Future<void> _recalcularRecomendados() async {
+    try {
+      final historial = await WatchProgressService().getHistory();
+      final r = _agrupar(_servicio.getRecommendedItems(historial));
+      if (!mounted || r.isEmpty) return;
+      setState(() {
+        _recomendados = r;
+        _filas = _armarFilas();
+      });
+    } catch (_) {
+      // Es una fila de mas: si no sale, el catalogo se ve igual.
+    }
   }
 
   /// Filas de una seccion concreta del lateral.
@@ -162,14 +189,18 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
 
     for (final it in fuente) {
       if (it.isLive) continue;
+      // El mismo filtro que el inicio y que el telefono: fuera deportes,
+      // religion, canales en directo y las categorias de cada pais.
+      if (!_servicio.categoriaVisible(it.category)) continue;
       if (filtro != null && !filtro(it.category)) continue;
       (porCategoria[it.category] ??= <M3UItem>[]).add(it);
     }
 
-    for (final e in porCategoria.entries) {
+    for (final cat in _servicio.ordenarCategorias(porCategoria.keys)) {
       if (filas.length >= _maxFilas) break;
-      if (e.value.length < 3) continue;
-      filas.add((titulo: e.key, items: e.value.take(_maxPorFila).toList()));
+      final items = porCategoria[cat]!;
+      if (items.length < 3) continue;
+      filas.add((titulo: cat, items: items));
     }
     return filas;
   }
@@ -186,14 +217,48 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
 
     for (final it in _servicio.itemsPreliminares) {
       if (it.isLive || it.seriesName != null) continue;
+      if (!_servicio.categoriaVisible(it.category)) continue;
       (porCategoria[it.category] ??= <M3UItem>[]).add(it);
     }
-    for (final e in porCategoria.entries) {
+    // EN EL MISMO ORDEN QUE TENDRAN DESPUES.
+    //
+    // Recorrer el mapa tal cual daba el orden del proveedor, que empieza por
+    // donde le parece. Se veian diez segundos de categorias en un orden y de
+    // golpe la pantalla se recolocaba entera al terminar el indexado. Con la
+    // misma prioridad aplicada aqui, lo que llega despues encaja donde ya
+    // estaba en vez de mover todo de sitio.
+    for (final cat in _servicio.ordenarCategorias(porCategoria.keys)) {
       if (filas.length >= _maxFilas) break;
-      if (e.value.length < 3) continue;
-      filas.add((titulo: e.key, items: e.value.take(_maxPorFila).toList()));
+      final items = porCategoria[cat]!;
+      if (items.length < 3) continue;
+      filas.add((titulo: cat, items: items));
     }
     return filas;
+  }
+
+  /// Cambia los episodios sueltos por SU SERIE, sin repetir.
+  ///
+  /// Las listas del servicio —recientes, recomendados, una categoria— traen
+  /// episodios uno a uno. Un "Capitulo 7" suelto en una fila no dice de que
+  /// serie es y al abrirlo no hay temporadas donde elegir. Aqui se sustituye
+  /// por la serie entera, que es lo que la ficha sabe manejar.
+  /// Con `tope` a null no recorta: es lo que necesita la pantalla de
+  /// categoria completa, que existe justo para enseñar lo que no cabe en la
+  /// fila.
+  List<M3UItem> _agrupar(List<M3UItem> origen, {int? tope = _maxPorFila}) {
+    final porNombreSerie = {
+      for (final se in _servicio.series)
+        if (se.seriesName != null) se.seriesName!: se,
+    };
+    final salida = <M3UItem>[];
+    final vistos = <String>{};
+    for (final it in origen) {
+      final elegido = porNombreSerie[it.seriesName] ?? it;
+      if (elegido.isLive || !vistos.add(elegido.url)) continue;
+      salida.add(elegido);
+      if (tope != null && salida.length >= tope) break;
+    }
+    return salida;
   }
 
   /// Arma las filas con lo mejor que haya AHORA MISMO.
@@ -208,100 +273,48 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     // siempre; el resto filtra.
     if (_seccion != 0) return _filasDeSeccion();
 
-    // Cuantas peliculas y cuantas series hay de verdad, y cuantas de esas
-    // series traen episodios. Sin este dato es imposible saber si una serie
-    // sale mal porque esta mal agrupada o porque nunca llego a la fila.
-    final conEpisodios =
-        _servicio.series.where((e) => e.episodes.isNotEmpty).length;
-    debugPrint(
-      'TvCatalogo: peliculas=${_servicio.movies.length} '
-      'series=${_servicio.series.length} (con episodios: $conEpisodios)',
-    );
-
     final filas = <({String titulo, List<M3UItem> items})>[];
 
-    // Seguir viendo. Se calcula aparte porque el historial es una lectura
-    // asincrona y esto tiene que poder correr en cualquier momento.
+    // ── EL MISMO INICIO QUE EL TELEFONO, EN EL MISMO ORDEN ────────────────
+    //
+    // Ultimamente nuevo, Recomendados para ti, Seguir viendo y despues las
+    // categorias del proveedor. Antes aqui habia un orden propio —Seguir
+    // viendo primero, luego "Novedades", luego peliculas y series
+    // intercaladas por categoria— y el resultado era que las dos pantallas de
+    // la misma app enseñaban cosas distintas en sitios distintos.
+    //
+    // Las tres primeras filas salen de los MISMOS metodos del servicio que usa
+    // el telefono, no de un calculo parecido hecho aqui: parecido no basta,
+    // porque en cuanto uno de los dos cambie volveran a separarse.
+    final recientes = _agrupar(_servicio.getRecentItems());
+    if (recientes.isNotEmpty) {
+      filas.add((titulo: 'Últimamente nuevo', items: recientes));
+    }
+
+    if (_recomendados.isNotEmpty) {
+      filas.add((titulo: 'Recomendados para ti', items: _recomendados));
+    }
+
     if (_seguirViendo.isNotEmpty) {
       filas.add((titulo: 'Seguir viendo', items: _seguirViendo));
     }
 
-    // Novedades, con los episodios sustituidos por SU SERIE.
-    //
-    // `latestItems` mezcla peliculas y episodios recien anadidos. Un episodio
-    // suelto en la fila de novedades no sirve de nada: no se sabe de que
-    // serie es y al abrirlo no hay donde elegir. Se cambia por la serie
-    // entera, sin repetir.
-    final porNombreSerie = {
-      for (final se in _servicio.series)
-        if (se.seriesName != null) se.seriesName!: se,
-    };
-    final novedades = <M3UItem>[];
-    final vistos = <String>{};
-    for (final it in _servicio.latestItems) {
-      final elegido = porNombreSerie[it.seriesName] ?? it;
-      if (elegido.isLive || !vistos.add(elegido.url)) continue;
-      novedades.add(elegido);
-      if (novedades.length >= _maxPorFila) break;
-    }
-    if (novedades.isNotEmpty) {
-      filas.add((titulo: 'Novedades', items: novedades));
-    }
-
-    // PELICULAS y SERIES, INTERCALADAS.
-    //
-    // `items` no vale: trae los episodios SUELTOS, uno por tarjeta, asi que
-    // la lista salia llena de "Capitulo 3" y una serie no se distinguia de
-    // una pelicula. `series` los trae ya agrupados, con sus episodios dentro,
-    // que es lo que la ficha necesita para ofrecer temporadas.
-    //
-    // Y se INTERCALAN. Al concatenar peliculas y luego series, el mapa
-    // quedaba con todas las categorias de peliculas primero: con el tope de
-    // filas, las series no llegaban a pintarse NUNCA. Alternando una y una,
-    // ambas entran pase lo que pase.
-    final catPelis = <String, List<M3UItem>>{};
-    for (final it in _servicio.movies) {
-      if (it.isLive) continue;
-      (catPelis[it.category] ??= <M3UItem>[]).add(it);
-    }
-    final catSeries = <String, List<M3UItem>>{};
-    for (final it in _servicio.series) {
-      if (it.isLive) continue;
-      (catSeries[it.category] ??= <M3UItem>[]).add(it);
-    }
-
-    final colaPelis = catPelis.entries.toList();
-    final colaSeries = catSeries.entries.toList();
-    int ip = 0, iss = 0;
-
-    while (filas.length < _maxFilas &&
-        (ip < colaPelis.length || iss < colaSeries.length)) {
-      for (final cola in [colaPelis, colaSeries]) {
-        final esPelis = identical(cola, colaPelis);
-        var i = esPelis ? ip : iss;
-        // Una fila de dos se ve rota, asi que se salta.
-        while (i < cola.length && cola[i].value.length < 3) {
-          i++;
-        }
-        if (i >= cola.length) {
-          if (esPelis) {
-            ip = i;
-          } else {
-            iss = i;
-          }
-          continue;
-        }
-        filas.add((
-          titulo: cola[i].key,
-          items: cola[i].value.take(_maxPorFila).toList(),
-        ));
-        if (esPelis) {
-          ip = i + 1;
-        } else {
-          iss = i + 1;
-        }
-        if (filas.length >= _maxFilas) break;
-      }
+    // Y las categorias del proveedor, en el orden que manda el servicio y ya
+    // sin las de deportes, religion, canales en directo ni las de cada pais:
+    // ese filtro es el que le faltaba al televisor y por el que aparecian de
+    // primeras categorias que en el telefono no salen.
+    for (final cat in _servicio.categoriasParaMostrar()) {
+      if (filas.length >= _maxFilas) break;
+      // Sin tope: la fila enseña las primeras y el boton "Más" abre el resto.
+      // Recortar aqui era lo que dejaba fuera medio catalogo sin manera de
+      // llegar a el.
+      final items = _agrupar(
+        _servicio.filterValidItems(_servicio.getItemsByCategory(cat)),
+        tope: null,
+      );
+      // Una fila de dos se ve rota, asi que se salta.
+      if (items.length < 3) continue;
+      filas.add((titulo: cat, items: items));
     }
 
     return filas;
@@ -338,6 +351,10 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
           if (siguiendo.length >= 12) break;
         }
         _seguirViendo = siguiendo;
+
+        // Las recomendaciones salen del mismo historial que ya se acaba de
+        // leer: pedirlo dos veces seria pagar dos veces por lo mismo.
+        _recomendados = _agrupar(_servicio.getRecommendedItems(historial));
       } catch (_) {
         // El historial es un extra: si falla, el catalogo sale igual.
       }
@@ -587,8 +604,18 @@ class _Fila extends StatelessWidget {
     required this.onSalirIzquierda,
   });
 
+  /// Cuantas caben en la fila antes de mandar al catalogo completo.
+  ///
+  /// Treinta ya son treinta pulsaciones a la derecha; mas alla de eso nadie
+  /// llega con un mando, y para eso esta la rejilla.
+  static const int _maxEnFila = 30;
+
   @override
   Widget build(BuildContext context) {
+    final visibles =
+        items.length > _maxEnFila ? items.take(_maxEnFila).toList() : items;
+    final hayMas = items.length > visibles.length;
+
     return Padding(
       // 18 y no 34. Con el titulo ya debajo de cada caratula, la separacion
       // anterior dejaba un vacio que hacia parecer que faltaba algo entre una
@@ -603,31 +630,174 @@ class _Fila extends StatelessWidget {
               titulo,
               style: const TextStyle(
                 color: Colors.white,
-                fontSize: 21,
+                fontSize: 18,
                 fontWeight: FontWeight.w600,
               ),
             ),
           ),
-          SizedBox(
-            // Caratula (222) + separacion + titulo debajo.
-            height: 262,
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              // Empieza donde acaba el menu: las caratulas pasan POR DEBAJO de
-              // el al desplazarse, pero la primera nunca queda tapada.
-              padding: const EdgeInsets.only(left: 106, right: 20),
-              itemCount: items.length,
-              itemBuilder:
-                  (context, i) => _Tarjeta(
-                    item: items[i],
+          // ── El margen izquierdo va FUERA del `ListView` ────────────────
+          //
+          // No es lo mismo que ponerlo en su `padding`: el padding se desplaza
+          // con el contenido, asi que las caratulas se seguian pintando por
+          // debajo del menu y asomaban por su lateral al recorrer la fila.
+          // Puesto fuera, lo que se estrecha es la ventana y la fila se
+          // recorta limpia justo donde empieza el titulo de la seccion.
+          //
+          // A la DERECHA no se toca: ahi las caratulas llegan al filo de la
+          // pantalla a proposito, que es lo que dice que la fila sigue y
+          // invita a seguir moviendose.
+          Padding(
+            padding: const EdgeInsets.only(left: 106),
+            child: SizedBox(
+              // Caratula (222) + hueco (8) + titulo (~15), con holgura.
+              //
+              // La holgura NO sobra: el televisor aplica su propia escala de
+              // texto, asi que el titulo de debajo sale un pelo mas alto que
+              // la cuenta de aqui. Sin ese margen, el pelo desborda la columna
+              // y Flutter pinta las rayas amarillas.
+              height: 252,
+              child: ListView.builder(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.only(right: 20),
+                // Una tarjeta mas cuando la categoria no cabe entera: la de
+                // "Más", que abre el catalogo completo. Solo aparece si hay
+                // algo detras — ponerla siempre seria prometer contenido que
+                // no existe.
+                itemCount: visibles.length + (hayMas ? 1 : 0),
+                itemBuilder: (context, i) {
+                  if (i == visibles.length) {
+                    return _TarjetaMas(
+                      restantes: items.length - visibles.length,
+                      onOk:
+                          () => Navigator.of(context).push(
+                            MaterialPageRoute<void>(
+                              builder:
+                                  (_) => TvCategoryScreen(
+                                    titulo: titulo,
+                                    items: items,
+                                  ),
+                            ),
+                          ),
+                    );
+                  }
+                  return _Tarjeta(
+                    item: visibles[i],
                     autofoco: autofocoPrimero && i == 0,
-                    // Solo la primera de cada fila vuelve al lateral: desde las
-                    // de en medio, izquierda tiene que seguir recorriendo.
+                    // Solo la primera de cada fila vuelve al lateral: desde
+                    // las de en medio, izquierda tiene que seguir
+                    // recorriendo.
                     onSalirIzquierda: i == 0 ? onSalirIzquierda : null,
-                  ),
+                  );
+                },
+              ),
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// La última tarjeta de una fila: abre la categoría entera.
+///
+/// Se ve distinta a proposito —sin caratula, con el icono y el numero de lo
+/// que queda—: si pareciera un titulo mas, uno la abriria pensando que va a
+/// ver una pelicula.
+class _TarjetaMas extends StatefulWidget {
+  final int restantes;
+  final VoidCallback onOk;
+
+  const _TarjetaMas({required this.restantes, required this.onOk});
+
+  @override
+  State<_TarjetaMas> createState() => _TarjetaMasState();
+}
+
+class _TarjetaMasState extends State<_TarjetaMas> {
+  bool _foco = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Focus(
+      onFocusChange: (v) {
+        setState(() => _foco = v);
+        if (v) {
+          Scrollable.ensureVisible(
+            context,
+            alignment: 0.5,
+            duration: const Duration(milliseconds: 180),
+          );
+        }
+      },
+      onKeyEvent: (node, event) {
+        if (event is! KeyDownEvent) return KeyEventResult.ignored;
+        final k = event.logicalKey;
+        if (k == LogicalKeyboardKey.select ||
+            k == LogicalKeyboardKey.enter ||
+            k == LogicalKeyboardKey.gameButtonA) {
+          widget.onOk();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: GestureDetector(
+        onTap: widget.onOk,
+        child: SizedBox(
+          width: 148,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 140),
+                width: 148,
+                height: 222,
+                margin: const EdgeInsets.only(right: 14),
+                foregroundDecoration: BoxDecoration(
+                  border: Border.all(
+                    color: _foco ? Colors.white : Colors.transparent,
+                    width: 2,
+                  ),
+                ),
+                decoration: BoxDecoration(
+                  color: _foco ? Colors.white12 : const Color(0xFF1A1A1E),
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.more_horiz_rounded,
+                      color: _foco ? Colors.white : Colors.white54,
+                      size: 40,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '+${widget.restantes}',
+                      style: TextStyle(
+                        color: _foco ? Colors.white : Colors.white38,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: 134,
+                child: AnimatedDefaultTextStyle(
+                  duration: const Duration(milliseconds: 130),
+                  style: TextStyle(
+                    color: _foco ? Colors.white : Colors.white54,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w400,
+                  ),
+                  child: const Text('Ver todo'),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -788,7 +958,7 @@ class _TarjetaState extends State<_Tarjeta> {
                   duration: const Duration(milliseconds: 130),
                   style: TextStyle(
                     color: _foco ? Colors.white : Colors.white54,
-                    fontSize: 13,
+                    fontSize: 12,
                     fontWeight: FontWeight.w400,
                   ),
                   child: Text(

@@ -2961,6 +2961,176 @@ class M3UService extends ChangeNotifier {
   // QUERY HELPERS
   // ===========================================================================
 
+  /// Las categorias que se enseñan en la pantalla de inicio, EN ORDEN.
+  ///
+  /// UNA SOLA LISTA PARA EL TELEFONO Y PARA EL TELEVISOR.
+  ///
+  /// Este filtro vivia escrito dentro de la pantalla del telefono, y el
+  /// televisor no lo tenia: por eso en la tele aparecian de primeras
+  /// categorias religiosas, de deportes y de canales por pais que en el
+  /// telefono nunca se han visto. No era un fallo de datos, era que cada
+  /// pantalla decidia por su cuenta. Aqui solo se decide una vez.
+  ///
+  /// Se quitan tres grupos: las categorias de un pais concreto (el proveedor
+  /// trae una por cada uno y llenan la pantalla), las de television en directo
+  /// —esta app no reproduce canales— y las que no vienen a cuento en un
+  /// catalogo de peliculas y series (adultos, deportes, religion, noticias).
+  ///
+  /// Y las que se quedan con dos titulos o menos: una fila de dos se ve rota.
+  List<String> categoriasParaMostrar() {
+    return categories.where((cat) {
+      if (!categoriaVisible(cat)) return false;
+      return filterValidItems(getItemsByCategory(cat)).length > 2;
+    }).toList();
+  }
+
+  /// Ordena unas categorias por la misma prioridad que usa el catalogo ya
+  /// indexado: primero estrenos y generos, al final musica, noticias y lo
+  /// religioso.
+  ///
+  /// Existe para que la PRIMERA pasada del televisor —la que se pinta con los
+  /// items en crudo, antes de terminar el indexado— salga ya en el orden
+  /// bueno. Sin esto se enseñaba el orden tal cual lo manda el proveedor
+  /// durante unos diez segundos y luego la pantalla se reordenaba sola delante
+  /// del usuario.
+  List<String> ordenarCategorias(Iterable<String> cats) =>
+      _sortCategoriesByPriority(cats.toSet());
+
+  /// Si una categoria pinta algo en un catalogo de peliculas y series.
+  ///
+  /// Suelta del recuento de titulos a proposito: asi tambien sirve para
+  /// decidir sobre listas ya armadas —las secciones del televisor— sin volver
+  /// a recorrer el catalogo entero por cada una.
+  bool categoriaVisible(String cat) {
+    if (cat == 'Inicio' || cat == 'Sin categoría') return false;
+    final catLower = cat.toLowerCase();
+    if (catLower.contains('apostarias')) return false;
+    for (final country in _paisesExcluidos) {
+      if (catLower.contains(country)) return false;
+    }
+    for (final keyword in _palabrasExcluidas) {
+      if (catLower.contains(keyword)) return false;
+    }
+    return true;
+  }
+
+  static const List<String> _paisesExcluidos = [
+    'arabia',
+    'argentina',
+    'australia',
+    'austria',
+    'alemania',
+    'brasil',
+    'belgium',
+    'bolivia',
+    'bulgaria',
+    'canada',
+    'chile',
+    'china',
+    'colombia',
+    'costa rica',
+    'cuba',
+    'croacia',
+    'dinamarca',
+    'dominicana',
+    'ecuador',
+    'egipto',
+    'españa',
+    'estados unidos',
+    'filipinas',
+    'finlandia',
+    'francia',
+    'grecia',
+    'guatemala',
+    'holanda',
+    'honduras',
+    'hungria',
+    'india',
+    'indonesia',
+    'iran',
+    'iraq',
+    'irlanda',
+    'israel',
+    'italia',
+    'japon',
+    'jordania',
+    'korea',
+    'kuwait',
+    'libano',
+    'libia',
+    'marruecos',
+    'mexico',
+    'myanmar',
+    'nicaragua',
+    'nigeria',
+    'noruega',
+    'pakistan',
+    'panama',
+    'paraguay',
+    'peru',
+    'polonia',
+    'portugal',
+    'puerto rico',
+    'qatar',
+    'republica',
+    'romania',
+    'rusia',
+    'salvador',
+    'serbia',
+    'singapur',
+    'siria',
+    'suecia',
+    'suiza',
+    'tailandia',
+    'taiwan',
+    'tunisia',
+    'turquia',
+    'ucrania',
+    'uk',
+    'uruguay',
+    'usa',
+    'venezuela',
+    'vietnam',
+    'yemen',
+  ];
+
+  static const List<String> _palabrasExcluidas = [
+    'adulto',
+    'adultos',
+    'xxx',
+    '+18',
+    '18+',
+    '24/7',
+    '24 7',
+    '24-7',
+    'canales exclusivos',
+    'exclusivo',
+    'en vivo',
+    'live',
+    'tv en vivo',
+    'canales',
+    'channel',
+    'deportes',
+    'sport',
+    'futbol',
+    'football',
+    'eventos deportivos',
+    'evento',
+    'liga',
+    'streaming',
+    'gratis',
+    'free tv',
+    'test',
+    'ppv',
+    'lucha libre',
+    'religion',
+    'noticias',
+    'news',
+    'radio',
+    'broadcast',
+    'directo',
+  ];
+
   List<M3UItem> getItemsByCategory(String category) {
     if (_is4kTitle(category)) return [];
     if (category == 'Todos' || category == 'Inicio') {
@@ -4541,8 +4711,20 @@ const List<String> _categoryPriorityPatterns = [
 ];
 
 const List<String> _categoryLowPriorityPatterns = [
+  // El proveedor nombra lo religioso de siete maneras y solo se reconocia
+  // 'religion': "Cine Cristiano" o "Peliculas Catolicas" se colaban con
+  // prioridad normal y acababan las PRIMERAS de la lista. Van todas las
+  // formas, para que caigan al final como cualquier otra de este grupo.
   'religion',
   'religión',
+  'religios',
+  'cristian',
+  'catolic',
+  'católic',
+  'evangel',
+  'biblic',
+  'bíblic',
+  'iglesia',
   'musica',
   'música',
   'music',
