@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import '../../services/fast_image_service.dart';
 import '../../services/m3u_service.dart';
@@ -95,7 +96,22 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   /// geometria, y con las filas moviendose por su cuenta la geometria cambia
   /// mientras decide. De ahi que a veces subieras y acabaras dos filas mas
   /// abajo, o en la de al lado.
-  final List<GlobalKey<_FilaState>> _llavesFila = [];
+  ///
+  /// POR TITULO Y NO POR POSICION.
+  ///
+  /// "Recomendados para ti" tarda en llegar —depende del historial y del
+  /// catalogo ya indexado— y al aparecer se mete ENTRE las que ya estaban.
+  /// Con llaves por posicion, esa fila nueva le pasaba su estado a la
+  /// siguiente: la de la posicion 1 pasaba a ser otra categoria conservando el
+  /// desplazamiento y el foco de la anterior. Se veia como que el foco saltaba
+  /// solo a una fila que no habias tocado.
+  ///
+  /// Con la llave atada al titulo, cada fila se lleva SU estado adonde la
+  /// muevan.
+  final Map<String, GlobalKey<_FilaState>> _llavesFila = {};
+
+  GlobalKey<_FilaState> _llaveDe(String titulo) =>
+      _llavesFila.putIfAbsent(titulo, () => GlobalKey<_FilaState>());
 
   final ScrollController _scrollVertical = ScrollController();
 
@@ -110,16 +126,16 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   /// dejo la fila 3 pixeles corta y las rayas amarillas de desbordamiento.
   static const double _altoFila = 304;
 
-  void _prepararLlaves(int cuantas) {
-    while (_llavesFila.length < cuantas) {
-      _llavesFila.add(GlobalKey<_FilaState>());
-    }
-  }
-
   /// Mueve el foco a la fila `destino`, conservando la columna.
-  void _irAFila(int destino, int columna) {
+  ///
+  /// PRIMERO SE DESPLAZA Y DESPUES SE PIDE EL FOCO. La lista vertical tambien
+  /// es perezosa: una fila que no se ve NO existe, asi que su `currentState`
+  /// es null y pedirle el foco no hace nada. Por eso bajar dos filas seguidas
+  /// rapido se quedaba a medias. Se desplaza, se espera al fotograma en que la
+  /// fila ya esta armada, y entonces se le da el foco.
+  void _irAFila(int destino, int columna, {int intento = 0}) {
     if (destino < 0 || destino >= _filas.length) return;
-    _llavesFila[destino].currentState?.enfocar(columna);
+
     if (_scrollVertical.hasClients) {
       // La fila de destino, arrimada al borde de arriba pero sin pegarse: se
       // ve entera y se intuye la siguiente.
@@ -127,12 +143,41 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
         0.0,
         _scrollVertical.position.maxScrollExtent,
       );
-      _scrollVertical.animateTo(
-        objetivo,
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeOut,
-      );
+      if (intento > 0) {
+        // En los reintentos se salta de golpe: volver a animar en cada
+        // fotograma reinicia la animacion y la lista no llega nunca.
+        _scrollVertical.jumpTo(objetivo);
+      } else {
+        _scrollVertical.animateTo(
+          objetivo,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+        );
+      }
     }
+
+    final fila = _llaveDe(_filas[destino].titulo).currentState;
+    if (fila != null) {
+      fila.enfocar(columna);
+      return;
+    }
+    if (intento >= 8) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _irAFila(destino, columna, intento: intento + 1);
+    });
+  }
+
+  /// Devuelve el foco al contenido cuando se ha quedado sin dueño.
+  ///
+  /// Pasa al cambiar de seccion o al llegar el catalogo indexado: las filas se
+  /// rehacen y la tarjeta que tenia el foco desaparece. Sin esto la pantalla
+  /// queda muerta —ninguna tecla responde— y solo se sale apagando. Es la red
+  /// de seguridad, no el camino normal.
+  KeyEventResult _rescatarFoco(KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    if (_filas.isEmpty) return KeyEventResult.ignored;
+    _irAFila(0, 0);
+    return KeyEventResult.handled;
   }
 
   static const Set<String> _clavesNovela = {'novela', 'telenovela', 'turca'};
@@ -183,7 +228,6 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     if (!hayPreliminares && !hayIndexado) return;
     setState(() {
       _filas = _armarFilas();
-      _prepararLlaves(_filas.length);
       _cargando = false;
       if (_filas.isNotEmpty) _error = null;
     });
@@ -202,7 +246,6 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       setState(() {
         _recomendados = r;
         _filas = _armarFilas();
-        _prepararLlaves(_filas.length);
       });
     } catch (_) {
       // Es una fila de mas: si no sale, el catalogo se ve igual.
@@ -429,7 +472,6 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       if (!mounted) return;
       setState(() {
         _filas = _armarFilas();
-        _prepararLlaves(_filas.length);
         _cargando = false;
         // Sin fuentes el mensaje del servicio habla de "URL M3U", que al
         // usuario de un televisor no le dice nada: el nunca configuro ninguna
@@ -514,6 +556,9 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
             child: FocusTraversalGroup(
               child: Focus(
                 focusNode: _nodoContenido,
+                // Si una tecla llega hasta aqui es que ninguna tarjeta tenia el
+                // foco: se rescata en vez de dejar la pantalla muerta.
+                onKeyEvent: (node, event) => _rescatarFoco(event),
                 // Al recibir el foco lo pasa a la primera tarjeta: este nodo
                 // es solo la puerta de entrada desde el lateral.
                 //
@@ -522,11 +567,15 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                 // desplazadas podia dejarlo en cualquier tarjeta del medio.
                 onFocusChange: (v) {
                   if (!v) return;
-                  if (_llavesFila.isEmpty) {
+                  if (_filas.isEmpty) {
                     _nodoContenido.nextFocus();
                     return;
                   }
-                  _llavesFila.first.currentState?.enfocar(0);
+                  // Por `_irAFila` y no directo a la fila: si todavia no esta
+                  // construida —se entra desde el lateral nada mas cargar— el
+                  // reintento espera a que exista en vez de perder la
+                  // pulsacion.
+                  _irAFila(0, 0);
                 },
                 child:
                     _filas.isEmpty
@@ -551,11 +600,17 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                           // deja de ver.
                           padding: const EdgeInsets.fromLTRB(0, 40, 0, 40),
                           itemExtent: _altoFila,
+                          // Una fila de margen construida arriba y abajo: al
+                          // bajar, la siguiente ya existe y el foco entra sin
+                          // esperar a que se arme.
+                          scrollCacheExtent: const ScrollCacheExtent.pixels(
+                            320,
+                          ),
                           itemCount: _filas.length,
                           itemBuilder: (context, i) {
                             final fila = _filas[i];
                             return _Fila(
-                              key: _llavesFila[i],
+                              key: _llaveDe(fila.titulo),
                               titulo: fila.titulo,
                               items: fila.items,
                               // Solo la primerísima tarjeta pide el foco: si lo
@@ -642,7 +697,6 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                   setState(() {
                     _seccion = i;
                     _filas = _armarFilas();
-                    _prepararLlaves(_filas.length);
                   });
                 },
                 onEntrarContenido: () => _nodoContenido.requestFocus(),
@@ -753,11 +807,34 @@ class _FilaState extends State<_Fila> {
   }
 
   /// Pone el foco en la celda `i` de esta fila y la trae a la vista.
-  void enfocar(int i) {
+  /// Pone el foco en la celda `i` de esta fila y la trae a la vista.
+  ///
+  /// PRIMERO SE DESPLAZA Y DESPUES SE PIDE EL FOCO, y si hace falta se espera
+  /// un fotograma.
+  ///
+  /// La lista es perezosa: las tarjetas que no se ven NO estan construidas, y
+  /// un `FocusNode` de una tarjeta sin construir no acepta el foco — la
+  /// llamada no falla, sencillamente no pasa nada. Eso era el "se traba": al
+  /// llegar al borde de lo construido, la flecha dejaba de responder y el foco
+  /// se quedaba clavado en la ultima tarjeta viva.
+  ///
+  /// Desplazando primero, la tarjeta se construye; el `postFrame` espera a que
+  /// exista y entonces le da el foco. Los intentos estan acotados para que un
+  /// destino imposible no deje un bucle dando vueltas.
+  void enfocar(int i, {int intento = 0}) {
     if (_celdas == 0) return;
     final destino = i.clamp(0, _celdas - 1);
-    _nodos[destino].requestFocus();
-    _traerALaVista(destino);
+    _traerALaVista(destino, inmediato: intento > 0);
+
+    final nodo = _nodos[destino];
+    if (nodo.context != null) {
+      nodo.requestFocus();
+      return;
+    }
+    if (intento >= 8) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) enfocar(destino, intento: intento + 1);
+    });
   }
 
   /// Desplaza la fila por CUENTA, no persiguiendo al widget.
@@ -766,7 +843,7 @@ class _FilaState extends State<_Fila> {
   /// desplazables que encuentra: al enfocar una tarjeta movia tambien la lista
   /// vertical, y ese era medio baile. Aqui solo se mueve esta fila, y a una
   /// posicion que se sabe antes de empezar.
-  void _traerALaVista(int i) {
+  void _traerALaVista(int i, {bool inmediato = false}) {
     if (!_scroll.hasClients) return;
     final ancho = _scroll.position.viewportDimension;
     // Un hueco de cortesia a cada lado: deja ver que hay algo mas alla y evita
@@ -782,15 +859,27 @@ class _FilaState extends State<_Fila> {
     } else {
       return;
     }
+    final objetivo = destino.clamp(0.0, _scroll.position.maxScrollExtent);
+    // `inmediato` es para el reintento: si se vuelve a animar en cada
+    // fotograma, la animacion se reinicia sola y la fila no llega nunca.
+    if (inmediato) {
+      _scroll.jumpTo(objetivo);
+      return;
+    }
     _scroll.animateTo(
-      destino.clamp(0.0, _scroll.position.maxScrollExtent),
+      objetivo,
       duration: const Duration(milliseconds: 160),
       curve: Curves.easeOut,
     );
   }
 
   KeyEventResult _tecla(int i, KeyEvent event) {
-    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    // `KeyRepeatEvent` tambien cuenta: es lo que llega al MANTENER pulsada la
+    // flecha. Sin atenderlo habia que dar treinta pulsaciones sueltas para
+    // recorrer una fila, y mantener el mando no hacia nada.
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
     final k = event.logicalKey;
 
     if (k == LogicalKeyboardKey.arrowRight) {
@@ -874,6 +963,10 @@ class _FilaState extends State<_Fila> {
                 // cada tarjeta sin medir nada, y de paso le ahorra a la lista
                 // el trabajo de ir midiendo hijo por hijo mientras se mueve.
                 itemExtent: _paso,
+                // Dos pantallas de margen construidas por delante y por
+                // detras: al llegar al borde la siguiente tarjeta ya existe y
+                // el foco entra sin esperar a que se arme.
+                scrollCacheExtent: const ScrollCacheExtent.pixels(900),
                 itemCount: _celdas,
                 itemBuilder: (context, i) {
                   if (i == visibles.length) {
@@ -881,22 +974,25 @@ class _FilaState extends State<_Fila> {
                       nodo: _nodos[i],
                       restantes: widget.items.length - visibles.length,
                       onTecla: (e) => _tecla(i, e),
-                      onOk:
-                          () => Navigator.of(context).push(
-                            MaterialPageRoute<void>(
-                              builder:
-                                  (_) => TvCategoryScreen(
-                                    titulo: widget.titulo,
-                                    items: widget.items,
-                                  ),
-                            ),
+                      onOk: () async {
+                        await Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder:
+                                (_) => TvCategoryScreen(
+                                  titulo: widget.titulo,
+                                  items: widget.items,
+                                ),
                           ),
+                        );
+                        if (mounted) enfocar(i);
+                      },
                     );
                   }
                   return _Tarjeta(
                     item: visibles[i],
                     nodo: _nodos[i],
                     onTecla: (e) => _tecla(i, e),
+                    onVolver: () => enfocar(i),
                   );
                 },
               ),
@@ -1024,10 +1120,14 @@ class _Tarjeta extends StatefulWidget {
   final FocusNode nodo;
   final KeyEventResult Function(KeyEvent) onTecla;
 
+  /// Se llama al volver de la ficha, para recuperar el foco.
+  final VoidCallback onVolver;
+
   const _Tarjeta({
     required this.item,
     required this.nodo,
     required this.onTecla,
+    required this.onVolver,
   });
 
   @override
@@ -1037,12 +1137,23 @@ class _Tarjeta extends StatefulWidget {
 class _TarjetaState extends State<_Tarjeta> {
   bool _foco = false;
 
-  void _abrir() {
-    Navigator.of(context).push(
+  /// Abre la ficha y, AL VOLVER, se queda con el foco.
+  ///
+  /// Flutter no lo devuelve solo: mientras la ficha esta encima, esta fila se
+  /// queda fuera de pantalla y la lista la desmonta, asi que el nodo con el
+  /// foco deja de existir. Al cerrar la ficha, el foco no tenia adonde volver
+  /// y aparecia en la primera tarjeta viva — que casi nunca era la que habias
+  /// abierto.
+  ///
+  /// El aviso sube a la fila, que es quien sabe en que columna estaba y sabe
+  /// esperar a que la tarjeta se vuelva a construir.
+  Future<void> _abrir() async {
+    await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => TvDetailScreen(item: widget.item),
       ),
     );
+    if (mounted) widget.onVolver();
   }
 
   @override
