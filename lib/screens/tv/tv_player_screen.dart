@@ -66,6 +66,7 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
     ),
   );
   final List<StreamSubscription> _subs = [];
+  final FocusNode _playerFocusNode = FocusNode(debugLabel: 'TvPlayerKeys');
 
   bool _reproduciendo = false;
   bool _buffering = true;
@@ -249,7 +250,10 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
         // Cada vez que la posicion se mueve de verdad se apunta la hora: es lo
         // unico que prueba que el video esta corriendo.
         if (v != _posicion) _ultimoAvance = DateTime.now();
-        if (mounted && !_preparandoSalto) setState(() => _posicion = v);
+        _posicion = v;
+        if (mounted && (_controlesVisibles || _preparandoSalto)) {
+          setState(() {});
+        }
       }),
       _player.stream.duration.listen((v) {
         if (mounted) setState(() => _duracion = v);
@@ -258,7 +262,10 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
       // pista mas clara, igual que el receptor: sin ella no se sabe si el
       // video esta cargando o parado.
       _player.stream.buffer.listen((v) {
-        if (mounted) setState(() => _bufer = v);
+        _bufer = v;
+        if (mounted && (_controlesVisibles || _preparandoSalto)) {
+          setState(() {});
+        }
       }),
     ]);
 
@@ -857,6 +864,7 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
     // Un ultimo guardado al salir: sin el se pierden hasta 5 s, y salir es
     // justo cuando el usuario espera que quede anotado por donde iba.
     _guardar();
+    _playerFocusNode.dispose();
     _player.dispose();
     super.dispose();
   }
@@ -1256,21 +1264,40 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
               1.0,
             );
 
+    // Asegurar que el foco esté en NUESTRO nodo, no en el del widget Video
+    // de media_kit. Sin esto el Video reclama el foco, nuestro onKeyEvent
+    // deja de recibir las teclas, y el framework las propaga a la ruta de
+    // debajo (TvDetailScreen) — que actúa sobre ellas y navega a otro
+    // contenido o hace cosas del detalle mientras se ve el reproductor.
+    if (!_playerFocusNode.hasFocus && !_playerFocusNode.hasPrimaryFocus) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _playerFocusNode.requestFocus();
+      });
+    }
+
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (hecho, _) {
         if (hecho) return;
         if (!_manejarAtras()) Navigator.of(context).pop();
       },
-      child: Focus(
+      child: FocusScope(
         autofocus: true,
-        onKeyEvent: _tecla,
-        child: Scaffold(
-          backgroundColor: Colors.black,
-          body: Stack(
-            fit: StackFit.expand,
-            children: [
-              Video(controller: _controlador, controls: NoVideoControls),
+        child: Focus(
+          focusNode: _playerFocusNode,
+          autofocus: true,
+          onKeyEvent: _tecla,
+          child: Scaffold(
+            backgroundColor: Colors.black,
+            body: Stack(
+              fit: StackFit.expand,
+              children: [
+                RepaintBoundary(
+                  child: Video(
+                    controller: _controlador,
+                    controls: NoVideoControls,
+                  ),
+                ),
 
               // MISMO SPINNER Y MISMA CONDICION QUE EL RECEPTOR.
               //
@@ -1402,6 +1429,7 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
                   subtituloActivo: _indiceActual(1),
                 ),
             ],
+            ),
           ),
         ),
       ),
@@ -1549,6 +1577,8 @@ class _Controles extends StatelessWidget {
                   width: 90,
                   height: 130,
                   fit: BoxFit.cover,
+                  cacheWidth: 180,
+                  cacheHeight: 260,
                   // Si la carátula falla no se deja hueco: mejor sin ella que
                   // con un rectángulo vacío.
                   errorBuilder: (_, _, _) => const SizedBox.shrink(),

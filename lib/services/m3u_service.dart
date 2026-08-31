@@ -162,7 +162,7 @@ class M3UService extends ChangeNotifier {
   static const String _cacheTimestampKey = 'm3u_cache_timestamp';
   static const String _cacheFileName = 'm3u_cache.txt';
   static const String _customCacheTimestampKey = 'm3u_custom_cache_timestamp';
-  static const String _customCacheFileName = 'm3u_custom_cache.json';
+  static const String _customCacheFileName = 'm3u_custom_cache.bin';
   static const String _unifiedCacheTimestampKey = 'm3u_unified_cache_timestamp';
   static const String _unifiedCachePrefix = 'm3u_cache_unified_';
   static const String _m3uUrlKey = 'local_m3u_url';
@@ -1140,87 +1140,80 @@ class M3UService extends ChangeNotifier {
   /// `/catalogo/vod.json`, asi que no hizo falta tocar la config de nginx.
   static const String _urlVolcadoBd = 'http://217.216.80.212/catalogo/bd.json';
 
-  /// Baja el volcado de la BD desde el VPS. Devuelve lista vacia ante
-  /// cualquier problema, que el llamador interpreta como "usa Supabase".
-  Future<List<dynamic>> _fetchCustomContentDesdeVps() async {
+  /// Baja el volcado de la BD desde el VPS en formato de bytes para procesarlo en isolate.
+  Future<Uint8List?> _fetchCustomContentBytesDesdeVps() async {
     try {
       final res = await http
           .get(
             Uri.parse(_urlVolcadoBd),
-            // Sin esto Dart igual pide gzip y descomprime solo, pero dejarlo
-            // explicito documenta que el archivo servido es el .gz.
             headers: const {'Accept-Encoding': 'gzip'},
           )
-          .timeout(const Duration(seconds: 20));
+          .timeout(const Duration(seconds: 5));
 
       if (res.statusCode != 200) {
         debugPrint('custom_content: VPS respondio ${res.statusCode}');
-        return const [];
+        return null;
       }
 
-      // `res.body` decodifica como UTF-8; el JSON trae titulos con acentos.
-      final decodificado = jsonDecode(utf8.decode(res.bodyBytes));
-      if (decodificado is! Map) return const [];
-      final items = decodificado['items'];
-      if (items is! List || items.isEmpty) return const [];
-
-      debugPrint('custom_content: ${items.length} filas desde el VPS');
-      return items;
+      return res.bodyBytes;
     } catch (e) {
       debugPrint('custom_content: fallo el VPS ($e) — se usa Supabase');
-      return const [];
+      return null;
     }
   }
 
   Future<List<M3UItem>> fetchCustomContent({bool forceRefresh = false}) async {
     if (_supabase == null) return [];
 
-    // Local Cache evaluation
+    // Local Cache evaluation - Instant Binary Cache via BipbSerializer
     if (!forceRefresh) {
       final cacheTimestamp = _prefs?.getInt(_customCacheTimestampKey);
-      if (cacheTimestamp != null &&
+      final hasCachedTimestamp = cacheTimestamp != null;
+      final isFresh = hasCachedTimestamp &&
           DateTime.now().millisecondsSinceEpoch - cacheTimestamp <
-              _customCacheDuration.inMilliseconds) {
-        try {
-          final file = await _getCustomCacheFile();
-          if (await file.exists()) {
-            final raw = await file.readAsString();
-            final securityKey =
-                dotenv.env['SECURITY_KEY'] ?? 'bump_comba_v1_secure_layer_2026';
-            final cachedItems = await compute(_decodeJsonCacheInBackground, {
-              'raw': raw,
-              'key': securityKey,
-            });
+              _customCacheDuration.inMilliseconds;
+
+      try {
+        final file = await _getCustomCacheFile();
+        if (await file.exists()) {
+          final bytes = await file.readAsBytes();
+          if (bytes.isNotEmpty) {
+            final cachedItems = await compute(
+              _deserializeCustomCacheInBackground,
+              bytes,
+            );
             if (cachedItems.isNotEmpty) {
               debugPrint(
-                'Loaded ${cachedItems.length} custom items from local cache',
+                'Loaded ${cachedItems.length} custom items from local binary cache',
               );
+              // Stale-while-revalidate: si expiró, devolver de inmediato y refrescar en segundo plano
+              if (!isFresh) {
+                unawaited(fetchCustomContent(forceRefresh: true));
+              }
               return cachedItems;
             }
           }
-        } catch (e) {
-          debugPrint('Error loading custom cache: $e');
         }
+      } catch (e) {
+        debugPrint('Error loading custom binary cache: $e');
       }
     }
 
     try {
-      // ── Primero el VPS, Supabase solo como respaldo ──────────────────────
-      //
-      // Bajar esta tabla de Supabase con 500-600 usuarios diarios cerro el
-      // ciclo de agosto de 2026 en 6,4 GB sobre una cuota de 5 GB. El VPS
-      // tiene trafico ilimitado y ya sirve el catalogo de Xtream igual, con
-      // gzip y ETag: si el volcado no cambio, la respuesta es un 304 de ~200
-      // bytes en vez de megabytes.
-      //
-      // El respaldo a Supabase se conserva a proposito y NO se quita: si el
-      // VPS se cae, o `bd.sh` deja de correr, o el archivo todavia no existe
-      // porque el volcado no se instalo, la app sigue funcionando igual que
-      // antes. El coste de ese respaldo es cero mientras el VPS responda.
-      List<dynamic> list = await _fetchCustomContentDesdeVps();
+      // 1. Primero intentar volcado desde VPS
+      final bytesVps = await _fetchCustomContentBytesDesdeVps();
+      List<M3UItem> finalItems = [];
 
-      if (list.isEmpty) {
-        list = <dynamic>[];
+      if (bytesVps != null && bytesVps.isNotEmpty) {
+        finalItems = await compute(_parseCustomContentInBackground, {
+          'bytes': bytesVps,
+          'favorites': _favorites.toList(),
+        });
+      }
+
+      // 2. Si el VPS falló o devolvió vacío, respaldo a Supabase
+      if (finalItems.isEmpty) {
+        final list = <dynamic>[];
         bool hasMore = true;
         int from = 0;
         const int batchSize = 1000;
@@ -1230,7 +1223,8 @@ class M3UService extends ChangeNotifier {
               .from('custom_content')
               .select()
               .eq('is_active', true)
-              .range(from, from + batchSize - 1);
+              .range(from, from + batchSize - 1)
+              .timeout(const Duration(seconds: 8));
 
           final List<dynamic> batch = response as List;
           list.addAll(batch);
@@ -1244,155 +1238,33 @@ class M3UService extends ChangeNotifier {
         debugPrint(
           'custom_content: ${list.length} filas desde Supabase (respaldo)',
         );
-      }
 
-      final Map<String, List<Map<String, dynamic>>> episodesMap = {};
-      final List<Map<String, dynamic>> seriesRows = [];
-      final List<Map<String, dynamic>> movieRows = [];
-
-      for (final dynamic rawRow in list) {
-        if (rawRow is! Map) continue;
-        final row = Map<String, dynamic>.from(rawRow);
-
-        final type = (row['type'] ?? 'movie').toString().toLowerCase();
-        if (type == 'episode') {
-          final pId = row['parent_id']?.toString();
-          if (pId != null) {
-            episodesMap.putIfAbsent(pId, () => []).add(row);
-          }
-        } else if (type == 'series') {
-          seriesRows.add(row);
-        } else {
-          movieRows.add(row);
+        if (list.isNotEmpty) {
+          finalItems = await compute(_parseCustomContentInBackground, {
+            'list': list,
+            'favorites': _favorites.toList(),
+          });
         }
       }
 
-      final List<M3UItem> finalItems = [];
+      if (finalItems.isNotEmpty) {
+        debugPrint('Loaded ${finalItems.length} custom items total');
 
-      String? sanitizeLogoUrl(dynamic rawLogo) {
-        if (rawLogo == null) return null;
-        final str = rawLogo.toString().trim();
-        if (str.isEmpty) return null;
+        // Guardar en caché binario instantáneo
         try {
-          return Uri.encodeFull(str);
-        } catch (_) {
-          return str;
-        }
-      }
-
-      // Add Movies
-      for (final row in movieRows) {
-        final name = (row['title'] ?? '').toString();
-        final url = (row['video_url'] ?? '').toString();
-        final rawCat = (row['category'] ?? 'Recomendados').toString();
-
-        // Normalize Category
-        final category =
-            rawCat.isNotEmpty
-                ? rawCat[0].toUpperCase() + rawCat.substring(1).toLowerCase()
-                : 'Recomendados';
-
-        final isDynamic = DynamicScraperService().isSupported(url);
-
-        finalItems.add(
-          M3UItem(
-            name: name,
-            url: url,
-            logo: sanitizeLogoUrl(row['thumbnail_url']),
-            category: category,
-            isFavorite: _favorites.contains('${name}_$url'),
-            isLive: false,
-            isDynamic: isDynamic,
-            sourceName: 'Supabase',
-            titleAliases: _parseTitleAliases(row['title_aliases']),
-          ),
-        );
-      }
-
-      // Add Series with episodes
-      for (final row in seriesRows) {
-        final sId = row['id']?.toString() ?? '';
-        final name = (row['title'] ?? '').toString();
-        final rawCat = (row['category'] ?? 'Recomendados').toString();
-
-        final category =
-            rawCat.isNotEmpty
-                ? rawCat[0].toUpperCase() + rawCat.substring(1).toLowerCase()
-                : 'Recomendados';
-
-        final url = (row['video_url'] ?? '').toString();
-        final isDynamic = DynamicScraperService().isSupported(url);
-
-        final sEpisodes = <M3UItem>[];
-        final epRows = episodesMap[sId] ?? [];
-
-        for (final ep in epRows) {
-          final epName = (ep['title'] ?? '').toString();
-          final epUrl = (ep['video_url'] ?? '').toString();
-          final epIsDynamic = DynamicScraperService().isSupported(epUrl);
-
-          sEpisodes.add(
-            M3UItem(
-              name: epName,
-              url: epUrl,
-              logo:
-                  ep['thumbnail_url']?.toString() ??
-                  row['thumbnail_url']?.toString(),
-              category: category,
-              seriesName: name,
-              seasonNumber: int.tryParse(ep['season']?.toString() ?? ''),
-              episodeNumber: int.tryParse(ep['episode']?.toString() ?? ''),
-              isLive: false,
-              isDynamic: epIsDynamic,
-              sourceName: 'Supabase',
-            ),
+          final file = await _getCustomCacheFile();
+          final binaryBytes = await compute(
+            _serializeCustomCacheInBackground,
+            finalItems,
           );
+          await file.writeAsBytes(binaryBytes);
+          await _prefs?.setInt(
+            _customCacheTimestampKey,
+            DateTime.now().millisecondsSinceEpoch,
+          );
+        } catch (e) {
+          debugPrint('Error saving custom binary cache: $e');
         }
-
-        // Sort episodes by season and number
-        sEpisodes.sort((a, b) {
-          if (a.seasonNumber != b.seasonNumber) {
-            return (a.seasonNumber ?? 0).compareTo(b.seasonNumber ?? 0);
-          }
-          return (a.episodeNumber ?? 0).compareTo(b.episodeNumber ?? 0);
-        });
-
-        finalItems.add(
-          M3UItem(
-            name: name,
-            url: '', // Header doesn't have a URL
-            logo: row['thumbnail_url']?.toString(),
-            category: category,
-            isFavorite: _favorites.contains('${name}_'),
-            episodes: sEpisodes,
-            seriesName: name,
-            isSeries: true,
-            isLive: false,
-            isDynamic: isDynamic,
-            sourceName: 'Supabase',
-            titleAliases: _parseTitleAliases(row['title_aliases']),
-          ),
-        );
-      }
-
-      debugPrint('Loaded ${finalItems.length} custom items from Supabase');
-
-      // Save custom items to JSON Cache
-      try {
-        final file = await _getCustomCacheFile();
-        final securityKey =
-            dotenv.env['SECURITY_KEY'] ?? 'bump_comba_v1_secure_layer_2026';
-        final obfuscated = await compute(_encodeJsonCacheInBackground, {
-          'items': finalItems,
-          'key': securityKey,
-        });
-        await file.writeAsString(obfuscated);
-        await _prefs?.setInt(
-          _customCacheTimestampKey,
-          DateTime.now().millisecondsSinceEpoch,
-        );
-      } catch (e) {
-        debugPrint('Error saving custom cache: $e');
       }
 
       return finalItems;
@@ -4202,46 +4074,161 @@ class M3UService extends ChangeNotifier {
 }
 
 @pragma('vm:entry-point')
-String _encodeJsonCacheInBackground(Map<String, dynamic> data) {
-  try {
-    final items = data['items'] as List<M3UItem>;
-    final secureKey = data['key'] as String;
-    final jsonStr = json.encode(items.map((i) => i.toMap()).toList());
-
-    // Manual XOR for isolate purity
-    final bytes = utf8.encode(jsonStr);
-    final keyBytes = utf8.encode(secureKey);
-    final obfuscated = List<int>.generate(bytes.length, (i) {
-      return bytes[i] ^ keyBytes[i % keyBytes.length];
-    });
-    return 'obf:${base64.encode(obfuscated)}';
-  } catch (e) {
-    return '';
-  }
+Uint8List _serializeCustomCacheInBackground(List<M3UItem> items) {
+  return BipbSerializer.serialize(items);
 }
 
 @pragma('vm:entry-point')
-List<M3UItem> _decodeJsonCacheInBackground(Map<String, dynamic> data) {
+List<M3UItem> _deserializeCustomCacheInBackground(Uint8List bytes) {
+  return BipbSerializer.deserialize(bytes);
+}
+
+@pragma('vm:entry-point')
+List<M3UItem> _parseCustomContentInBackground(Map<String, dynamic> args) {
   try {
-    final String raw = data['raw'];
-    final String secureKey = data['key'];
+    final List<dynamic> list;
+    if (args['bytes'] != null) {
+      final Uint8List rawBytes = args['bytes'];
+      final decodificado = jsonDecode(utf8.decode(rawBytes));
+      if (decodificado is! Map || decodificado['items'] is! List) return [];
+      list = decodificado['items'];
+    } else if (args['list'] != null) {
+      list = args['list'];
+    } else {
+      return [];
+    }
 
-    if (!raw.startsWith('obf:')) return [];
+    final Set<String> favorites = Set<String>.from(args['favorites'] ?? []);
+    final Map<String, List<Map<String, dynamic>>> episodesMap = {};
+    final List<Map<String, dynamic>> seriesRows = [];
+    final List<Map<String, dynamic>> movieRows = [];
 
-    // Manual XOR for isolate purity
-    final actualData = raw.substring(4);
-    final bytes = base64.decode(actualData);
-    final keyBytes = utf8.encode(secureKey);
-    final decodedBytes = List<int>.generate(bytes.length, (i) {
-      return bytes[i] ^ keyBytes[i % keyBytes.length];
-    });
-    final jsonStr = utf8.decode(decodedBytes);
+    for (final dynamic rawRow in list) {
+      if (rawRow is! Map) continue;
+      final row = Map<String, dynamic>.from(rawRow);
 
-    final List<dynamic> decoded = json.decode(jsonStr);
-    return decoded
-        .map((item) => M3UItem.fromMap(item as Map<String, dynamic>))
-        .toList();
+      final type = (row['type'] ?? 'movie').toString().toLowerCase();
+      if (type == 'episode') {
+        final pId = row['parent_id']?.toString();
+        if (pId != null) {
+          episodesMap.putIfAbsent(pId, () => []).add(row);
+        }
+      } else if (type == 'series') {
+        seriesRows.add(row);
+      } else {
+        movieRows.add(row);
+      }
+    }
+
+    final List<M3UItem> finalItems = [];
+
+    String? sanitizeLogoUrl(dynamic rawLogo) {
+      if (rawLogo == null) return null;
+      final str = rawLogo.toString().trim();
+      if (str.isEmpty) return null;
+      try {
+        return Uri.encodeFull(str);
+      } catch (_) {
+        return str;
+      }
+    }
+
+    // Add Movies
+    for (final row in movieRows) {
+      final name = (row['title'] ?? '').toString();
+      final url = (row['video_url'] ?? '').toString();
+      final rawCat = (row['category'] ?? 'Recomendados').toString();
+
+      final category =
+          rawCat.isNotEmpty
+              ? rawCat[0].toUpperCase() + rawCat.substring(1).toLowerCase()
+              : 'Recomendados';
+
+      final isDynamic = DynamicScraperService().isSupported(url);
+
+      finalItems.add(
+        M3UItem(
+          name: name,
+          url: url,
+          logo: sanitizeLogoUrl(row['thumbnail_url']),
+          category: category,
+          isFavorite: favorites.contains('${name}_$url'),
+          isLive: false,
+          isDynamic: isDynamic,
+          sourceName: 'Supabase',
+          titleAliases: _parseTitleAliases(row['title_aliases']),
+        ),
+      );
+    }
+
+    // Add Series with episodes
+    for (final row in seriesRows) {
+      final sId = row['id']?.toString() ?? '';
+      final name = (row['title'] ?? '').toString();
+      final rawCat = (row['category'] ?? 'Recomendados').toString();
+
+      final category =
+          rawCat.isNotEmpty
+              ? rawCat[0].toUpperCase() + rawCat.substring(1).toLowerCase()
+              : 'Recomendados';
+
+      final url = (row['video_url'] ?? '').toString();
+      final isDynamic = DynamicScraperService().isSupported(url);
+
+      final sEpisodes = <M3UItem>[];
+      final epRows = episodesMap[sId] ?? [];
+
+      for (final ep in epRows) {
+        final epName = (ep['title'] ?? '').toString();
+        final epUrl = (ep['video_url'] ?? '').toString();
+        final epIsDynamic = DynamicScraperService().isSupported(epUrl);
+
+        sEpisodes.add(
+          M3UItem(
+            name: epName,
+            url: epUrl,
+            logo:
+                ep['thumbnail_url']?.toString() ??
+                row['thumbnail_url']?.toString(),
+            category: category,
+            seriesName: name,
+            seasonNumber: int.tryParse(ep['season']?.toString() ?? ''),
+            episodeNumber: int.tryParse(ep['episode']?.toString() ?? ''),
+            isLive: false,
+            isDynamic: epIsDynamic,
+            sourceName: 'Supabase',
+          ),
+        );
+      }
+
+      sEpisodes.sort((a, b) {
+        if (a.seasonNumber != b.seasonNumber) {
+          return (a.seasonNumber ?? 0).compareTo(b.seasonNumber ?? 0);
+        }
+        return (a.episodeNumber ?? 0).compareTo(b.episodeNumber ?? 0);
+      });
+
+      finalItems.add(
+        M3UItem(
+          name: name,
+          url: '',
+          logo: sanitizeLogoUrl(row['thumbnail_url']),
+          category: category,
+          isFavorite: favorites.contains('${name}_'),
+          episodes: sEpisodes,
+          seriesName: name,
+          isSeries: true,
+          isLive: false,
+          isDynamic: isDynamic,
+          sourceName: 'Supabase',
+          titleAliases: _parseTitleAliases(row['title_aliases']),
+        ),
+      );
+    }
+
+    return finalItems;
   } catch (e) {
+    debugPrint('Error in _parseCustomContentInBackground: $e');
     return [];
   }
 }

@@ -68,10 +68,10 @@ class TvMpvConfig {
         // ~1 GB de RAM. Solo se reparte distinto: 48 MB atras son ~64s, de
         // sobra para cualquier cambio de pista, y bajar el readahead evita que
         // la cabeza se aleje tanto de la posicion de reproduccion.
-        'cache-secs': '120',
-        'demuxer-max-bytes': '100663296',
-        'demuxer-max-back-bytes': '50331648',
-        'demuxer-readahead-secs': '90',
+        'cache-secs': '60',
+        'demuxer-max-bytes': '50331648',
+        'demuxer-max-back-bytes': '16777216',
+        'demuxer-readahead-secs': '45',
         // ── ARRANCAR YA, NO CUANDO EL BUFER ESTE LLENO ────────────────────
         //
         // Estaba en 'yes', que le dice a MPV que NO empiece a reproducir hasta

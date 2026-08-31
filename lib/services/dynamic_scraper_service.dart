@@ -258,7 +258,32 @@ class DynamicScraperService {
     if (url.isEmpty) return false;
     final lowUrl = url.toLowerCase();
 
-    // 123flms / 123movies / flmsfree / 123flmsfree / subtitles
+    // 1. Archivos directos de vídeo NUNCA deben tratarse como páginas dinámicas
+    if (lowUrl.endsWith('.m3u8') ||
+        lowUrl.endsWith('.mp4') ||
+        lowUrl.endsWith('.mkv') ||
+        lowUrl.endsWith('.ts') ||
+        lowUrl.endsWith('.avi') ||
+        lowUrl.endsWith('.mov') ||
+        lowUrl.endsWith('.flv') ||
+        lowUrl.endsWith('.webm') ||
+        lowUrl.contains('.m3u8?') ||
+        lowUrl.contains('.mp4?') ||
+        lowUrl.contains('.mkv?') ||
+        lowUrl.contains('.ts?') ||
+        lowUrl.contains('.avi?')) {
+      return false;
+    }
+
+    // 2. Streams de Xtream Codes o IPTV por puerto/ruta directa NUNCA son páginas dinámicas
+    if (RegExp(r':\d+/(?:movie|series|live)/').hasMatch(lowUrl) ||
+        (lowUrl.contains('/movie/') && RegExp(r'/[^/]+/[^/]+/\d+').hasMatch(lowUrl)) ||
+        (lowUrl.contains('/series/') && RegExp(r'/[^/]+/[^/]+/\d+').hasMatch(lowUrl)) ||
+        (lowUrl.contains('/live/') && RegExp(r'/[^/]+/[^/]+/\d+').hasMatch(lowUrl))) {
+      return false;
+    }
+
+    // 3. 123flms / 123movies / flmsfree / 123flmsfree / subtitles
     if (lowUrl.contains('123flms') ||
         lowUrl.contains('123movies') ||
         lowUrl.contains('flmsfree') ||
@@ -266,7 +291,7 @@ class DynamicScraperService {
       return true;
     }
 
-    // Playspelis variants
+    // 4. Playspelis variants
     if (lowUrl.contains('playspelis.com') ||
         lowUrl.contains('playspelis.org') ||
         lowUrl.contains('playspelis.net') ||
@@ -275,7 +300,7 @@ class DynamicScraperService {
       return true;
     }
 
-    // Cuevana variants
+    // 5. Cuevana variants
     if (lowUrl.contains('cuevana4br.com') ||
         lowUrl.contains('cuevana') ||
         lowUrl.contains('cuevana3') ||
@@ -284,7 +309,7 @@ class DynamicScraperService {
       return true;
     }
 
-    // FlixLat variants
+    // 6. FlixLat variants
     if (lowUrl.contains('flixlat.com') ||
         lowUrl.contains('flixlat.org') ||
         lowUrl.contains('flixlat.am') ||
@@ -295,7 +320,7 @@ class DynamicScraperService {
       return true;
     }
 
-    // DramasFree variants
+    // 7. DramasFree variants
     if (lowUrl.contains('dramasfree.com') ||
         lowUrl.contains('dramasfree.cc') ||
         lowUrl.contains('dramasfree.org') ||
@@ -303,30 +328,14 @@ class DynamicScraperService {
       return true;
     }
 
-    // PeliculaPlay / VidSrc / Embed / SuperEmbed
+    // 8. PeliculaPlay / VidSrc / Embed / SuperEmbed
     if (lowUrl.contains('peliculaplay') ||
         lowUrl.contains('vidsrc') ||
         lowUrl.contains('superembed') ||
         lowUrl.contains('2embed') ||
-        lowUrl.contains('embed')) {
+        lowUrl.contains('/embed/') ||
+        lowUrl.contains('embed.')) {
       return true;
-    }
-
-    // Universal Fallback: If URL contains common movie detail patterns
-    // and is NOT a direct video filename, treat as dynamic.
-    if (!lowUrl.endsWith('.m3u8') &&
-        !lowUrl.endsWith('.mp4') &&
-        !lowUrl.endsWith('.mkv') &&
-        !lowUrl.contains('.m3u8?') &&
-        !lowUrl.contains('.mp4?')) {
-      if (lowUrl.contains('/detail/') ||
-          lowUrl.contains('/movie/') ||
-          lowUrl.contains('/serie/') ||
-          lowUrl.contains('/watch/') ||
-          lowUrl.contains('/ver/') ||
-          lowUrl.startsWith('http')) {
-        return true;
-      }
     }
 
     return false;
@@ -642,7 +651,7 @@ class DynamicScraperService {
         }
       });
 
-      if (bestUrl != null && (maxScore >= 720 || force)) {
+      if (bestUrl != null && (maxScore >= 480 || force || candidateUrls.isNotEmpty)) {
         debugPrint(
           'DynamicScraperService: Best candidate resolved (Score: $maxScore P): $bestUrl',
         );
@@ -669,6 +678,8 @@ class DynamicScraperService {
           mediaPlaybackRequiresUserGesture: false,
           offscreenPreRaster: false,
           transparentBackground: true,
+          blockNetworkImage: true,
+          loadsImagesAutomatically: false,
           hardwareAcceleration:
               false, // CRITICAL: Release Surface buffers for the Video Player
         ),
@@ -701,6 +712,24 @@ class DynamicScraperService {
             'mgid',
           ];
           if (adList.any((domain) => urlStr.contains(domain))) {
+            return WebResourceResponse(
+              contentType: 'text/plain',
+              data: Uint8List(0),
+            );
+          }
+
+          // Block heavy media/images/fonts that waste memory in headless mode
+          final lower = urlStr.toLowerCase();
+          if (lower.endsWith('.png') ||
+              lower.endsWith('.jpg') ||
+              lower.endsWith('.jpeg') ||
+              lower.endsWith('.webp') ||
+              lower.endsWith('.gif') ||
+              lower.endsWith('.svg') ||
+              lower.endsWith('.woff') ||
+              lower.endsWith('.woff2') ||
+              lower.endsWith('.ttf') ||
+              lower.contains('/fonts/')) {
             return WebResourceResponse(
               contentType: 'text/plain',
               data: Uint8List(0),
