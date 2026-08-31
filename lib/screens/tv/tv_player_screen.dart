@@ -153,15 +153,19 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
   //
   // Lo que se mide aqui es si ENTRAN DATOS. Con `cache-speed` a cero no esta
   // cargando lento: no esta cargando.
-  int _segundosSinDatos = 0;
   int _segundosDesdeAbrir = 0;
 
-  /// Segundos SIN QUE ENTRE UN SOLO BYTE antes de dar el servidor por muerto.
-  static const int _umbralSinDatos = 12;
+  /// Segundos que se le dan a un servidor para EMPEZAR antes de pasar al
+  /// siguiente. Los mismos 9 que usa el telefono, para que la espera se sienta
+  /// igual se abra desde donde se abra.
+  static const int _umbralArranque = 9;
 
-  /// Tope absoluto: aunque entren datos, si a los 45s no hay imagen es que algo
-  /// va mal —un archivo corrupto, un servidor que gotea— y se prueba otro.
-  static const int _topeArranque = 45;
+  /// La primera posicion observada tras abrir. La referencia contra la que se
+  /// mide si el video avanza de verdad.
+  Duration? _posReferencia;
+
+  /// Si este servidor llego a arrancar. Se reinicia en cada apertura.
+  bool _arranco = false;
 
   /// Avisos de MPV de que los bytes que llegan estan rotos.
   ///
@@ -212,36 +216,28 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
 
     // El titulo primero y sus alternativas despues, sin repetidos.
     //
-    // FUERA LAS QUE NO SON UN VIDEO.
+    // TODAS, tambien las del contenido propio. Estaban descartadas —no son un
+    // fichero de video sino la pagina de donde sale— y el efecto era que el
+    // servidor de la BD no existia: el failover no tenia adonde ir y se
+    // quedaba dando vueltas al de Xtream, que era justo el que fallaba.
     //
-    // Parte del contenido propio no guarda el enlace al fichero, sino la
-    // PAGINA de donde se saca. El telefono la resuelve con un navegador
-    // invisible; SE PROBO AQUI y en este aparato no sale a cuenta: cargar la
-    // pagina de cuevana se comio ~150 fotogramas de golpe, dejo la interfaz a
-    // tirones durante todo el proceso... y termino sin encontrar ningun video.
-    //
-    // Descartadas, el cambio de servidor va directo a una que si puede
-    // funcionar, y la reproduccion no se para a cargar paginas.
-    final todas =
+    // Mismo orden que el telefono: `[item, ...alternatives]`. Asi "el primer
+    // fallo pasa a la BD" significa lo mismo en las dos pantallas.
+    _urls =
         <String>{
           widget.item.url,
           for (final alt in widget.item.alternatives) alt.url,
         }.toList();
 
-    final reproducibles = [
-      for (final u in todas)
-        if (!DynamicScraperService().isSupported(u)) u,
-    ];
-
-    // Si TODAS necesitan navegador no se descarta ninguna: mas vale intentarlo
-    // y fallar que quedarse sin nada que abrir.
-    _urls = reproducibles.isEmpty ? todas : reproducibles;
-
-    if (reproducibles.length != todas.length) {
+    if (_urls.length <= 1) {
+      // Queda dicho en el log: sin alternativa, a los 9s NO va a pasar nada, y
+      // el sintoma es indistinguible de un fallo del cambio de servidor.
       debugPrint(
-        'TvPlayer: ${todas.length - reproducibles.length} servidor(es) '
-        'descartados por no ser un video directo',
+        'TvPlayer: "${widget.item.name}" no tiene servidor alternativo '
+        '— no hay failover posible',
       );
+    } else {
+      debugPrint('TvPlayer: ${_urls.length} servidores disponibles');
     }
 
     _subs.add(
@@ -316,8 +312,9 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
   Future<void> _abrir(Duration desde) async {
     // Servidor nuevo, cuenta nueva: lo que tardara el anterior no puede
     // condenar a este.
-    _segundosSinDatos = 0;
     _segundosDesdeAbrir = 0;
+    _arranco = false;
+    _posReferencia = null;
 
     final original = _urls[_idxServidor];
 
@@ -405,7 +402,6 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
       // arrastre segundos que el servidor no debe.
       if (_pausadoAdrede) {
         _segundosSinAvance = 0;
-        _segundosSinDatos = 0;
         _segundosDesdeAbrir = 0;
         _posVigilada = _posicion;
         return;
@@ -438,25 +434,35 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
       // Mientras bufferea tampoco: bufferear es estar cargando, no estar
       // atascado. El caso de "no arranca" tiene su propio remedio — si el video
       // nunca empieza, no hay nada que vigilar aqui.
-      // ── Todavia ARRANCANDO ─────────────────────────────────────────────
-      if (!_primerFrameListo) {
+      // ── Todavia ARRANCANDO: el failover de 9s del telefono ─────────────
+      //
+      // Copiado de `video_player_screen`, donde ya esta probado. La clave es
+      // COMO se decide que "arranco", porque las dos formas evidentes fallan:
+      //
+      //  - Mirar `posicion < 300ms` asume que se empieza en cero. Al reanudar,
+      //    el video abre en el minuto 40 y la condicion no se cumple nunca.
+      //  - Mirar `playing` tampoco vale: MPV se considera reproduciendo en
+      //    cuanto se le dijo que reprodujera, aunque este llenando el bufer.
+      //
+      // Con las dos fallando, el failover no disparaba y se quedaba en Xtream
+      // indefinidamente — exactamente el sintoma. Aqui la unica prueba que se
+      // acepta es que la posicion AVANCE de verdad respecto a la PRIMERA
+      // observada, sea cual sea. Asi reanudar a las dos horas funciona igual
+      // que empezar de cero.
+      if (!_arranco) {
         _segundosSinAvance = 0;
         _posVigilada = _posicion;
         _segundosDesdeAbrir++;
 
-        // Sin un solo byte entrando: el servidor no esta lento, esta muerto.
-        if (_kbps <= 0) {
-          _segundosSinDatos++;
-        } else {
-          _segundosSinDatos = 0;
+        _posReferencia ??= _posicion;
+        if (_reproduciendo &&
+            _posicion > _posReferencia! + const Duration(milliseconds: 500)) {
+          _arranco = true;
+          return;
         }
 
-        if (_segundosSinDatos >= _umbralSinDatos) {
-          unawaited(
-            _siguienteServidor('sin datos en ${_umbralSinDatos}s al arrancar'),
-          );
-        } else if (_segundosDesdeAbrir >= _topeArranque) {
-          unawaited(_siguienteServidor('sin imagen tras ${_topeArranque}s'));
+        if (_segundosDesdeAbrir >= _umbralArranque) {
+          unawaited(_siguienteServidor('no arranco en ${_umbralArranque}s'));
         }
         return;
       }
@@ -496,7 +502,6 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
     // esto, el vigilante seguiria contando desde el primer segundo del video
     // nuevo y encadenaria otro cambio.
     if (mounted) setState(() => _primerFrameListo = false);
-    _segundosSinDatos = 0;
     _segundosDesdeAbrir = 0;
     final desde = _posicion;
     _idxServidor = (_idxServidor + 1) % _urls.length;
@@ -588,7 +593,6 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
       // Al reanudar, los contadores empiezan de cero: los segundos que estuvo
       // en pausa no son culpa del servidor.
       _segundosSinAvance = 0;
-      _segundosSinDatos = 0;
       _segundosDesdeAbrir = 0;
       _posVigilada = _posicion;
       _player.play();
@@ -1168,144 +1172,144 @@ class _Controles extends StatelessWidget {
                     // "00:00 / 00:00" no se lee como "cargando", se lee como
                     // "esto dura cero". `maintainSize` reserva el alto para
                     // que el titulo de debajo no pegue un salto al aparecer.
-                    Visibility(
-                      visible: duracion > Duration.zero,
-                      maintainSize: true,
-                      maintainAnimation: true,
-                      maintainState: true,
-                      child: Row(
-                        children: [
-                          Text(
-                            fmt(posicion),
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 19,
-                              fontWeight: FontWeight.w400,
-                            ),
+                    // La barra se pinta SIEMPRE, tambien mientras carga.
+                    //
+                    // Antes se escondia hasta saber la duracion, para no
+                    // enseñar un "00:00 / 00:00". Pero esconderla sale mas
+                    // caro: al pulsar el mando durante la carga no habia linea
+                    // de tiempo y la pantalla parecia otra. Que ponga ceros un
+                    // momento se entiende; que el control desaparezca y vuelva,
+                    // no.
+                    Row(
+                      children: [
+                        Text(
+                          fmt(posicion),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 19,
+                            fontWeight: FontWeight.w400,
                           ),
-                          const SizedBox(width: 18),
-                          Expanded(
-                            child: LayoutBuilder(
-                              builder: (context, c) {
-                                const alto = 6.0;
-                                const tirador = 20.0;
-                                final x = c.maxWidth * progreso;
-                                return SizedBox(
-                                  height: 28,
-                                  child: Stack(
-                                    alignment: Alignment.centerLeft,
-                                    children: [
-                                      // Pista vacia.
-                                      Container(
+                        ),
+                        const SizedBox(width: 18),
+                        Expanded(
+                          child: LayoutBuilder(
+                            builder: (context, c) {
+                              const alto = 6.0;
+                              const tirador = 20.0;
+                              final x = c.maxWidth * progreso;
+                              return SizedBox(
+                                height: 28,
+                                child: Stack(
+                                  alignment: Alignment.centerLeft,
+                                  children: [
+                                    // Pista vacia.
+                                    Container(
+                                      height: alto,
+                                      decoration: BoxDecoration(
+                                        color: Colors.white24,
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                    ),
+                                    // Pista de BUFER: por debajo de la
+                                    // reproducida, para que esta la tape. Mas
+                                    // opaca que la vacia y mas tenue que el
+                                    // acento, igual que el receptor. Faltaba
+                                    // aqui, y es lo que dice si el video esta
+                                    // cargando o parado.
+                                    FractionallySizedBox(
+                                      alignment: Alignment.centerLeft,
+                                      widthFactor: cargado,
+                                      child: Container(
                                         height: alto,
                                         decoration: BoxDecoration(
-                                          color: Colors.white24,
+                                          color: Colors.white.withValues(
+                                            alpha: 0.45,
+                                          ),
                                           borderRadius: BorderRadius.circular(
                                             4,
                                           ),
                                         ),
                                       ),
-                                      // Pista de BUFER: por debajo de la
-                                      // reproducida, para que esta la tape. Mas
-                                      // opaca que la vacia y mas tenue que el
-                                      // acento, igual que el receptor. Faltaba
-                                      // aqui, y es lo que dice si el video esta
-                                      // cargando o parado.
-                                      FractionallySizedBox(
-                                        alignment: Alignment.centerLeft,
-                                        widthFactor: cargado,
-                                        child: Container(
-                                          height: alto,
-                                          decoration: BoxDecoration(
-                                            color: Colors.white.withValues(
-                                              alpha: 0.45,
-                                            ),
-                                            borderRadius: BorderRadius.circular(
-                                              4,
-                                            ),
+                                    ),
+                                    // Lo reproducido: BLANCO, no rojo.
+                                    //
+                                    // El receptor lo pinta en blanco y aqui
+                                    // iba en rojo: la misma pelicula se veia
+                                    // distinta segun la hubieras abierto desde
+                                    // el catalogo o transmitido. El rojo se
+                                    // queda para el tirador y el boton de
+                                    // play, que son los controles.
+                                    //
+                                    // Sin foco se apaga un poco: es la marca
+                                    // que sustituye al cambio de grosor, que
+                                    // haria "saltar" la barra al entrar y
+                                    // salir el foco.
+                                    FractionallySizedBox(
+                                      alignment: Alignment.centerLeft,
+                                      widthFactor: progreso,
+                                      child: Container(
+                                        height: alto,
+                                        decoration: BoxDecoration(
+                                          color:
+                                              enBarra
+                                                  ? Colors.white
+                                                  : Colors.white.withValues(
+                                                    alpha: 0.6,
+                                                  ),
+                                          borderRadius: BorderRadius.circular(
+                                            4,
                                           ),
                                         ),
                                       ),
-                                      // Lo reproducido: BLANCO, no rojo.
-                                      //
-                                      // El receptor lo pinta en blanco y aqui
-                                      // iba en rojo: la misma pelicula se veia
-                                      // distinta segun la hubieras abierto desde
-                                      // el catalogo o transmitido. El rojo se
-                                      // queda para el tirador y el boton de
-                                      // play, que son los controles.
-                                      //
-                                      // Sin foco se apaga un poco: es la marca
-                                      // que sustituye al cambio de grosor, que
-                                      // haria "saltar" la barra al entrar y
-                                      // salir el foco.
-                                      FractionallySizedBox(
-                                        alignment: Alignment.centerLeft,
-                                        widthFactor: progreso,
-                                        child: Container(
-                                          height: alto,
-                                          decoration: BoxDecoration(
-                                            color:
-                                                enBarra
-                                                    ? Colors.white
-                                                    : Colors.white.withValues(
-                                                      alpha: 0.6,
-                                                    ),
-                                            borderRadius: BorderRadius.circular(
-                                              4,
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                      Positioned(
-                                        left: (x - tirador / 2).clamp(
+                                    ),
+                                    Positioned(
+                                      left: (x - tirador / 2).clamp(
+                                        0.0,
+                                        (c.maxWidth - tirador).clamp(
                                           0.0,
-                                          (c.maxWidth - tirador).clamp(
-                                            0.0,
-                                            double.infinity,
-                                          ),
+                                          double.infinity,
                                         ),
-                                        child: AnimatedOpacity(
-                                          duration: const Duration(
-                                            milliseconds: 150,
-                                          ),
-                                          opacity: enBarra ? 1.0 : 0.5,
-                                          child: Container(
-                                            width: tirador,
-                                            height: tirador,
-                                            decoration: const BoxDecoration(
-                                              shape: BoxShape.circle,
-                                              gradient: RadialGradient(
-                                                center: Alignment(-0.4, -0.5),
-                                                radius: 1.2,
-                                                colors: [
-                                                  Color(0xFFFF6B5E),
-                                                  Color(0xFFE53935),
-                                                  Color(0xFFB71C1C),
-                                                ],
-                                                stops: [0.0, 0.55, 1.0],
-                                              ),
+                                      ),
+                                      child: AnimatedOpacity(
+                                        duration: const Duration(
+                                          milliseconds: 150,
+                                        ),
+                                        opacity: enBarra ? 1.0 : 0.5,
+                                        child: Container(
+                                          width: tirador,
+                                          height: tirador,
+                                          decoration: const BoxDecoration(
+                                            shape: BoxShape.circle,
+                                            gradient: RadialGradient(
+                                              center: Alignment(-0.4, -0.5),
+                                              radius: 1.2,
+                                              colors: [
+                                                Color(0xFFFF6B5E),
+                                                Color(0xFFE53935),
+                                                Color(0xFFB71C1C),
+                                              ],
+                                              stops: [0.0, 0.55, 1.0],
                                             ),
                                           ),
                                         ),
                                       ),
-                                    ],
-                                  ),
-                                );
-                              },
-                            ),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
                           ),
-                          const SizedBox(width: 18),
-                          Text(
-                            fmt(duracion),
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 19,
-                              fontWeight: FontWeight.w400,
-                            ),
+                        ),
+                        const SizedBox(width: 18),
+                        Text(
+                          fmt(duracion),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 19,
+                            fontWeight: FontWeight.w400,
                           ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 14),
 

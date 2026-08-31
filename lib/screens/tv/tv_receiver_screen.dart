@@ -2141,166 +2141,157 @@ class _TvControlsOverlay extends StatelessWidget {
                           //
                           // `maintainSize` reserva la altura para que el titulo de debajo no
                           // pegue un salto cuando aparece la barra.
-                          Visibility(
-                            visible: duration > Duration.zero,
-                            maintainSize: true,
-                            maintainAnimation: true,
-                            maintainState: true,
-                            child: Row(
-                              children: [
-                                Text(
-                                  _fmt(position),
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 19,
-                                    fontWeight: FontWeight.w400,
-                                  ),
+                          // La barra se pinta SIEMPRE, tambien mientras carga.
+                          //
+                          // Antes se escondia hasta saber la duracion, para no
+                          // enseñar un "00:00 / 00:00". Pero esconderla sale
+                          // mas caro: al pulsar el mando durante la carga no
+                          // habia linea de tiempo y la pantalla parecia otra.
+                          // Que ponga ceros un momento se entiende; que el
+                          // control desaparezca y vuelva, no.
+                          Row(
+                            children: [
+                              Text(
+                                _fmt(position),
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 19,
+                                  fontWeight: FontWeight.w400,
                                 ),
-                                const SizedBox(width: 18),
-                                Expanded(
-                                  child: LayoutBuilder(
-                                    builder: (context, constraints) {
-                                      final barWidth = constraints.maxWidth;
-                                      final thumbX = barWidth * progress;
-                                      // Un punto mas gruesa de lo que era
-                                      // (6/8 en vez de 5/7). Sube tambien la
-                                      // enfocada para no perder el salto de
-                                      // grosor, que es la senal de "estas
-                                      // aqui" de la barra.
-                                      // NI LA BARRA NI EL TIRADOR CAMBIAN DE
-                                      // TAMANO AL ENFOCARSE.
-                                      //
-                                      // Crecer llama la atencion, pero tambien
-                                      // hace que la linea de tiempo "salte"
-                                      // cada vez que el foco entra o sale, y
-                                      // eso se nota mucho mas de lo que ayuda.
-                                      // El foco se marca abajo con brillo, que
-                                      // no mueve ni un pixel.
-                                      const barHeight = 6.0;
-                                      const thumbSize = 20.0;
-                                      return SizedBox(
-                                        height: 28,
-                                        child: Stack(
-                                          alignment: Alignment.centerLeft,
-                                          children: [
-                                            // Pista: mismo blanco translúcido
-                                            // que el botón sin foco (white24).
-                                            Container(
+                              ),
+                              const SizedBox(width: 18),
+                              Expanded(
+                                child: LayoutBuilder(
+                                  builder: (context, constraints) {
+                                    final barWidth = constraints.maxWidth;
+                                    final thumbX = barWidth * progress;
+                                    // Un punto mas gruesa de lo que era
+                                    // (6/8 en vez de 5/7). Sube tambien la
+                                    // enfocada para no perder el salto de
+                                    // grosor, que es la senal de "estas
+                                    // aqui" de la barra.
+                                    // NI LA BARRA NI EL TIRADOR CAMBIAN DE
+                                    // TAMANO AL ENFOCARSE.
+                                    //
+                                    // Crecer llama la atencion, pero tambien
+                                    // hace que la linea de tiempo "salte"
+                                    // cada vez que el foco entra o sale, y
+                                    // eso se nota mucho mas de lo que ayuda.
+                                    // El foco se marca abajo con brillo, que
+                                    // no mueve ni un pixel.
+                                    const barHeight = 6.0;
+                                    const thumbSize = 20.0;
+                                    return SizedBox(
+                                      height: 28,
+                                      child: Stack(
+                                        alignment: Alignment.centerLeft,
+                                        children: [
+                                          // Pista: mismo blanco translúcido
+                                          // que el botón sin foco (white24).
+                                          Container(
+                                            height: barHeight,
+                                            decoration: BoxDecoration(
+                                              color: Colors.white24,
+                                              borderRadius:
+                                                  BorderRadius.circular(4),
+                                            ),
+                                          ),
+                                          // Pista de bufer: por DEBAJO de la
+                                          // reproducida, para que esta la
+                                          // tape. Mas opaca que la pista
+                                          // vacia (white24) y mas tenue que
+                                          // el acento, igual que YouTube.
+                                          FractionallySizedBox(
+                                            alignment: Alignment.centerLeft,
+                                            widthFactor: buffered0a1,
+                                            child: Container(
                                               height: barHeight,
                                               decoration: BoxDecoration(
-                                                color: Colors.white24,
+                                                color: Colors.white.withValues(
+                                                  alpha: 0.45,
+                                                ),
                                                 borderRadius:
                                                     BorderRadius.circular(4),
                                               ),
                                             ),
-                                            // Pista de bufer: por DEBAJO de la
-                                            // reproducida, para que esta la
-                                            // tape. Mas opaca que la pista
-                                            // vacia (white24) y mas tenue que
-                                            // el acento, igual que YouTube.
-                                            FractionallySizedBox(
-                                              alignment: Alignment.centerLeft,
-                                              widthFactor: buffered0a1,
-                                              child: Container(
-                                                height: barHeight,
-                                                decoration: BoxDecoration(
-                                                  color: Colors.white
-                                                      .withValues(alpha: 0.45),
-                                                  borderRadius:
-                                                      BorderRadius.circular(4),
-                                                ),
+                                          ),
+                                          FractionallySizedBox(
+                                            alignment: Alignment.centerLeft,
+                                            widthFactor: progress,
+                                            child: Container(
+                                              height: barHeight,
+                                              decoration: BoxDecoration(
+                                                // Sin foco, el acento se
+                                                // apaga un poco: es la marca
+                                                // que sustituye al cambio de
+                                                // grosor.
+                                                color:
+                                                    timelineFocused
+                                                        ? accent
+                                                        : accent.withValues(
+                                                          alpha: 0.6,
+                                                        ),
+                                                borderRadius:
+                                                    BorderRadius.circular(4),
                                               ),
                                             ),
-                                            FractionallySizedBox(
-                                              alignment: Alignment.centerLeft,
-                                              widthFactor: progress,
-                                              child: Container(
-                                                height: barHeight,
-                                                decoration: BoxDecoration(
-                                                  // Sin foco, el acento se
-                                                  // apaga un poco: es la marca
-                                                  // que sustituye al cambio de
-                                                  // grosor.
-                                                  color:
-                                                      timelineFocused
-                                                          ? accent
-                                                          : accent.withValues(
-                                                            alpha: 0.6,
-                                                          ),
-                                                  borderRadius:
-                                                      BorderRadius.circular(4),
+                                          ),
+                                          Positioned(
+                                            left: (thumbX - thumbSize / 2)
+                                                .clamp(
+                                                  0.0,
+                                                  barWidth - thumbSize,
                                                 ),
+                                            child: AnimatedOpacity(
+                                              duration: const Duration(
+                                                milliseconds: 150,
                                               ),
-                                            ),
-                                            Positioned(
-                                              left: (thumbX - thumbSize / 2)
-                                                  .clamp(
-                                                    0.0,
-                                                    barWidth - thumbSize,
+                                              // El tirador es lo que se
+                                              // arrastra, asi que es donde
+                                              // mas se agradece saber si el
+                                              // mando esta aqui.
+                                              opacity:
+                                                  timelineFocused ? 1.0 : 0.5,
+                                              child: Container(
+                                                width: thumbSize,
+                                                height: thumbSize,
+                                                // Mismo estilo glossy rojo que
+                                                // el botón de play.
+                                                decoration: const BoxDecoration(
+                                                  shape: BoxShape.circle,
+                                                  gradient: RadialGradient(
+                                                    center: Alignment(
+                                                      -0.4,
+                                                      -0.5,
+                                                    ),
+                                                    radius: 1.2,
+                                                    colors: [
+                                                      Color(0xFFFF6B5E),
+                                                      Color(0xFFE53935),
+                                                      Color(0xFFB71C1C),
+                                                    ],
+                                                    stops: [0.0, 0.55, 1.0],
                                                   ),
-                                              child: AnimatedOpacity(
-                                                duration: const Duration(
-                                                  milliseconds: 150,
-                                                ),
-                                                // El tirador es lo que se
-                                                // arrastra, asi que es donde
-                                                // mas se agradece saber si el
-                                                // mando esta aqui.
-                                                opacity:
-                                                    timelineFocused ? 1.0 : 0.5,
-                                                child: Container(
-                                                  width: thumbSize,
-                                                  height: thumbSize,
-                                                  // Mismo estilo glossy rojo que
-                                                  // el botón de play.
-                                                  decoration:
-                                                      const BoxDecoration(
-                                                        shape: BoxShape.circle,
-                                                        gradient:
-                                                            RadialGradient(
-                                                              center: Alignment(
-                                                                -0.4,
-                                                                -0.5,
-                                                              ),
-                                                              radius: 1.2,
-                                                              colors: [
-                                                                Color(
-                                                                  0xFFFF6B5E,
-                                                                ),
-                                                                Color(
-                                                                  0xFFE53935,
-                                                                ),
-                                                                Color(
-                                                                  0xFFB71C1C,
-                                                                ),
-                                                              ],
-                                                              stops: [
-                                                                0.0,
-                                                                0.55,
-                                                                1.0,
-                                                              ],
-                                                            ),
-                                                      ),
                                                 ),
                                               ),
                                             ),
-                                          ],
-                                        ),
-                                      );
-                                    },
-                                  ),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  },
                                 ),
-                                const SizedBox(width: 18),
-                                Text(
-                                  _fmt(duration),
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 19,
-                                    fontWeight: FontWeight.w400,
-                                  ),
+                              ),
+                              const SizedBox(width: 18),
+                              Text(
+                                _fmt(duration),
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 19,
+                                  fontWeight: FontWeight.w400,
                                 ),
-                              ],
-                            ),
+                              ),
+                            ],
                           ),
                           const SizedBox(height: 14),
                           // Título a la izquierda, pistas a la derecha, en la
