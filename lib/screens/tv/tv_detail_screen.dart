@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -39,7 +42,6 @@ class TvDetailScreen extends StatefulWidget {
 
 class _TvDetailScreenState extends State<TvDetailScreen> {
   Map<String, dynamic>? _ficha;
-  bool _buscando = true;
 
   /// Los episodios, que casi nunca vienen con el item.
   ///
@@ -51,7 +53,6 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
   ///
   /// Es lo mismo que ya hace la ficha del telefono con `fetchEpisodesForItem`.
   List<M3UItem> _episodiosCargados = const [];
-  bool _cargandoEpisodios = false;
 
   /// Temporada elegida. `null` hasta que se sabe cual es la primera.
   int? _temporada;
@@ -66,18 +67,77 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
   /// Otros titulos de la misma categoria. Se calcula una vez.
   late final List<M3UItem> _sugerencias = _calcularSugerencias();
 
+  /// Si la ficha ya se puede enseñar.
+  ///
+  /// LA FICHA NO SE PINTA A CACHOS.
+  ///
+  /// Antes cada dato entraba por su cuenta: primero el titulo, luego la
+  /// sinopsis, luego los episodios, y las caratulas de abajo aparecian en un
+  /// hueco que hasta entonces estaba vacio. Cada aparicion movia lo de debajo,
+  /// y una pantalla que se recoloca sola tres veces se siente rota aunque
+  /// funcione.
+  ///
+  /// Ahora se espera a tenerlo TODO —TMDB, episodios y las caratulas ya
+  /// descargadas— y entra de una vez con un fundido corto. Mientras tanto solo
+  /// hay fondo: nada que se mueva, nada a medias.
+  bool _listo = false;
+
   @override
   void initState() {
     super.initState();
-    _buscarFicha();
-    _cargarEpisodios();
+    _prepararFicha();
+  }
+
+  /// Junta las tres esperas y enseña la ficha cuando estan las tres.
+  ///
+  /// Con un PLAZO MAXIMO de dos segundos y medio. Es la parte que no puede
+  /// faltar: el proveedor a veces tarda una eternidad en dar los episodios y
+  /// alguna caratula no llega nunca. Sin el plazo, esos casos dejarian la
+  /// pantalla en el fondo vacio para siempre — cambiar un parpadeo feo por un
+  /// cuelgue no es un arreglo. Cumplido el plazo se enseña lo que haya.
+  Future<void> _prepararFicha() async {
+    final todo = Future.wait([
+      // La imagen grande se baja detras de TMDB, que es quien dice cual es.
+      // Sin esto la ficha aparecia entera menos el recuadro de la derecha, que
+      // es justo el que tiene el foco: entrar y ver el hueco gris del sitio
+      // que vas a pulsar es peor que esperar un instante mas.
+      _buscarFicha().then((_) => _precargarImagen()),
+      _cargarEpisodios(),
+      _precargarSugerencias(),
+    ]);
+    await Future.any([todo, Future<void>.delayed(_plazoMaximo)]);
+    if (mounted) setState(() => _listo = true);
+  }
+
+  static const Duration _plazoMaximo = Duration(milliseconds: 2500);
+
+  /// Baja la imagen apaisada de la cabecera.
+  Future<void> _precargarImagen() async {
+    final url = _imagen;
+    if (url == null || url.isEmpty || !mounted) return;
+    await precacheImage(NetworkImage(url), context, onError: (_, _) {});
+  }
+
+  /// Baja las caratulas de "Quizás te guste" ANTES de enseñar la fila.
+  ///
+  /// Es lo que quita el efecto de fila vacia que se va rellenando sola. Los
+  /// fallos se tragan a proposito: una caratula que no baja no puede retener
+  /// la ficha entera.
+  ///
+  /// Se espera al primer fotograma antes de tocar el `context`: `precacheImage`
+  /// lo consulta hacia arriba y hacerlo desde `initState` es justo lo que
+  /// Flutter no deja.
+  Future<void> _precargarSugerencias() async {
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
+    await Future.wait([
+      for (final e in _sugerencias.take(8))
+        if ((e.logo ?? '').isNotEmpty)
+          precacheImage(NetworkImage(e.logo!), context, onError: (_, _) {}),
+    ]);
   }
 
   /// Pide los episodios al proveedor si el item no los trae.
-  ///
-  /// No bloquea la ficha: el titulo, la imagen y el boton de reproducir se
-  /// pintan al instante y los episodios entran cuando llegan. Quien solo
-  /// queria darle a play no espera a nada.
   Future<void> _cargarEpisodios() async {
     // Los que ya vienen puestos son los buenos: no se vuelve a pedir nada.
     if (widget.item.episodes.isNotEmpty) {
@@ -87,14 +147,11 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
     // Una pelicula no tiene episodios que pedir.
     if (!widget.item.isSeries && widget.item.seriesName == null) return;
 
-    setState(() => _cargandoEpisodios = true);
     try {
       final eps = await M3UService().fetchEpisodesForItem(widget.item);
       if (mounted) setState(() => _episodiosCargados = eps);
     } catch (e) {
       debugPrint('TvDetalle: no se pudieron traer los episodios: $e');
-    } finally {
-      if (mounted) setState(() => _cargandoEpisodios = false);
     }
   }
 
@@ -110,8 +167,6 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
       if (mounted) setState(() => _ficha = d.isEmpty ? null : d);
     } catch (_) {
       if (mounted) setState(() => _ficha = null);
-    } finally {
-      if (mounted) setState(() => _buscando = false);
     }
   }
 
@@ -244,6 +299,11 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
 
   String get _sinopsis => _texto('overview') ?? '';
   String? get _pais => _texto('country');
+
+  /// La clasificacion por edades: "TV-MA", "16", "PG-13"... TMDB la da por
+  /// pais y `_getDetails` ya se queda con la de España, o la de EEUU si no la
+  /// hay. No siempre existe, y cuando no existe no se enseña nada.
+  String? get _clasificacion => _texto('rating');
   String? get _tituloOriginal => _texto('original_title');
   String? get _fondo => _texto('backdrop_url');
 
@@ -307,65 +367,112 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
             child: SizedBox.expand(),
           ),
 
-          SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(48, 26, 48, 30),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // ── Cabecera: texto a la izquierda, imagen a la derecha ────
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(child: _cabeceraTexto(esSerie, episodios)),
-                    const SizedBox(width: 36),
-
-                    // La imagen ES el boton de reproducir.
-                    //
-                    // Antes habia un "Reproducir" aparte debajo, y sobraba: en
-                    // la ficha ya hay una imagen grande justo donde mira el
-                    // ojo, asi que darle el foco a ella quita un control de la
-                    // pantalla sin quitar nada de lo que se puede hacer. Es
-                    // ademas el primer foco, asi que entrar y pulsar OK
-                    // reproduce, sin mover el mando.
-                    _ImagenFicha(
-                      url: _imagen,
-                      autofocus: true,
-                      onOk:
-                          () =>
-                              _reproducir(_queSeReproduce(esSerie, episodios)),
-                    ),
-                  ],
+          // ── Señal de que se esta cargando ────────────────────────────
+          //
+          // La espera puede llegar a dos segundos y medio, y dos segundos de
+          // fondo quieto no se leen como "cargando", se leen como "se colgo".
+          // El spinner es lo unico que separa una cosa de la otra.
+          //
+          // Se va con su propio fundido, mas rapido que el de la ficha, para
+          // que los dos no se crucen a media opacidad.
+          IgnorePointer(
+            child: AnimatedOpacity(
+              opacity: _listo ? 0 : 1,
+              duration: const Duration(milliseconds: 180),
+              child: const Center(
+                child: CupertinoActivityIndicator(
+                  radius: 16,
+                  color: Colors.white,
                 ),
+              ),
+            ),
+          ),
 
-                const SizedBox(height: 22),
+          // ── Todo de golpe ────────────────────────────────────────────
+          //
+          // Un fundido corto de 260 ms y un empujoncito hacia arriba. Corto a
+          // proposito: esto no es una entrada, es tapar el momento en que la
+          // ficha aparece armada. Cualquier cosa mas larga o mas vistosa se
+          // interpone entre el usuario y el boton de reproducir, que es a lo
+          // que venia.
+          AnimatedOpacity(
+            opacity: _listo ? 1 : 0,
+            duration: const Duration(milliseconds: 260),
+            curve: Curves.easeOut,
+            child: AnimatedSlide(
+              offset: _listo ? Offset.zero : const Offset(0, 0.02),
+              duration: const Duration(milliseconds: 260),
+              curve: Curves.easeOut,
+              // Hasta que no esta lista no se construye: asi el foco inicial
+              // cae en la imagen justo cuando aparece, y no antes, sobre una
+              // pantalla que el usuario todavia no ve.
+              child:
+                  !_listo
+                      ? const SizedBox.expand()
+                      : SingleChildScrollView(
+                        padding: const EdgeInsets.fromLTRB(48, 26, 48, 30),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            // ── Cabecera: texto a la izquierda, imagen a la derecha ────
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(
+                                  child: _cabeceraTexto(esSerie, episodios),
+                                ),
+                                const SizedBox(width: 36),
 
-                if (esSerie) _bloqueEpisodios(episodios),
+                                // La imagen ES el boton de reproducir.
+                                //
+                                // Antes habia un "Reproducir" aparte debajo, y sobraba: en
+                                // la ficha ya hay una imagen grande justo donde mira el
+                                // ojo, asi que darle el foco a ella quita un control de la
+                                // pantalla sin quitar nada de lo que se puede hacer. Es
+                                // ademas el primer foco, asi que entrar y pulsar OK
+                                // reproduce, sin mover el mando.
+                                _ImagenFicha(
+                                  url: _imagen,
+                                  autofocus: true,
+                                  onOk:
+                                      () => _reproducir(
+                                        _queSeReproduce(esSerie, episodios),
+                                      ),
+                                ),
+                              ],
+                            ),
 
-                if (_sugerencias.isNotEmpty) ...[
-                  const SizedBox(height: 26),
-                  const Text(
-                    'Quizás te guste',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 17,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  SizedBox(
-                    height: 176,
-                    child: ListView.builder(
-                      scrollDirection: Axis.horizontal,
-                      itemCount: _sugerencias.length,
-                      itemBuilder:
-                          (context, i) => _CardSugerencia(
-                            item: _sugerencias[i],
-                            onOk: () => _abrir(_sugerencias[i]),
-                          ),
-                    ),
-                  ),
-                ],
-              ],
+                            const SizedBox(height: 22),
+
+                            if (esSerie) _bloqueEpisodios(episodios),
+
+                            if (_sugerencias.isNotEmpty) ...[
+                              const SizedBox(height: 26),
+                              const Text(
+                                'Quizás te guste',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 17,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              SizedBox(
+                                height: 176,
+                                child: ListView.builder(
+                                  scrollDirection: Axis.horizontal,
+                                  itemCount: _sugerencias.length,
+                                  itemBuilder:
+                                      (context, i) => _CardSugerencia(
+                                        item: _sugerencias[i],
+                                        onOk: () => _abrir(_sugerencias[i]),
+                                      ),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
             ),
           ),
         ],
@@ -419,7 +526,7 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
         SizedBox(
           height: 20,
           child: Text(
-            linea.isNotEmpty ? linea : (_buscando ? '' : widget.item.category),
+            linea.isNotEmpty ? linea : widget.item.category,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: const TextStyle(
@@ -449,7 +556,11 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
           ),
         ],
 
-        // Marca de servidor: V1+ (hay de donde tirar si falla) o BD (propio).
+        // Marca de servidor y clasificacion, en la misma linea.
+        //
+        // Van juntas porque son la misma clase de dato: dos apuntes tecnicos
+        // que se consultan, no que se leen. Repartidas en dos lineas ocupaban
+        // el doble para decir lo mismo.
         Builder(
           builder: (context) {
             final hayAlternativas =
@@ -457,11 +568,21 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
                 _episodios.any((e) => e.alternatives.isNotEmpty);
             final deLaBD =
                 widget.item.esDeLaBD || _episodios.any((e) => e.esDeLaBD);
-            final texto = hayAlternativas ? 'V1+' : (deLaBD ? 'BD' : null);
-            if (texto == null) return const SizedBox.shrink();
+            final servidor = hayAlternativas ? 'V1+' : (deLaBD ? 'BD' : null);
+            final edad = _clasificacion;
+            if (servidor == null && edad == null) {
+              return const SizedBox.shrink();
+            }
             return Padding(
               padding: const EdgeInsets.only(top: 10),
-              child: _Distintivo(texto: texto),
+              child: Row(
+                children: [
+                  if (servidor != null) _Distintivo(texto: servidor),
+                  if (servidor != null && edad != null)
+                    const SizedBox(width: 8),
+                  if (edad != null) _Distintivo(texto: edad),
+                ],
+              ),
             );
           },
         ),
@@ -489,10 +610,7 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
                 ),
               ),
               TextSpan(
-                text:
-                    _sinopsis.isNotEmpty
-                        ? _sinopsis
-                        : (_buscando ? 'Cargando…' : 'Sin datos'),
+                text: _sinopsis.isNotEmpty ? _sinopsis : 'Sin datos',
                 style: const TextStyle(
                   color: Colors.white70,
                   fontSize: 14,
@@ -502,32 +620,6 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
             ],
           ),
         ),
-
-        // Mientras llegan los episodios se dice, en vez de dejar un hueco que
-        // parece que falta algo. Ocupa poco y desaparece solo.
-        if (_cargandoEpisodios) ...[
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              const SizedBox(
-                width: 13,
-                height: 13,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: Colors.white38,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Text(
-                'Buscando episodios...',
-                style: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.4),
-                  fontSize: 14,
-                ),
-              ),
-            ],
-          ),
-        ],
       ],
     );
   }
@@ -881,7 +973,7 @@ class _CardSugerenciaState extends State<_CardSugerencia> {
         foregroundDecoration: BoxDecoration(
           border: Border.all(
             color: _foco ? Colors.white : Colors.transparent,
-            width: 1.5,
+            width: 2.5,
           ),
         ),
         child: Image.network(
@@ -971,29 +1063,30 @@ class _ChipTemporadaState extends State<_ChipTemporada> {
 }
 
 /// Marca de servidor: V1+ (hay alternativas) o BD (contenido propio).
+///
+/// En blanco y pequeña, a proposito. En el telefono va en rojo y verde, pero
+/// alli es una lista de fichas y el color ayuda a distinguirlas de un vistazo.
+/// Aqui hay UNA sola ficha y el rojo se llevaba la mirada por encima del
+/// titulo, para decir algo que no manda nada: la marca es un dato tecnico, no
+/// una llamada de atencion. La sigue leyendo quien la busca, y ya no compite.
 class _Distintivo extends StatelessWidget {
   final String texto;
   const _Distintivo({required this.texto});
 
   @override
   Widget build(BuildContext context) {
-    final esV1 = texto == 'V1+';
-    // Rojo para V1+ y verde para BD, igual que en el telefono: son dos cosas
-    // distintas y el color es lo que las separa de un vistazo desde el sofa.
-    final color = esV1 ? const Color(0xFFE50914) : const Color(0xFF34C759);
-
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.16),
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: color.withValues(alpha: 0.55)),
+        color: Colors.white.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.35)),
       ),
       child: Text(
         texto,
-        style: TextStyle(
-          color: color,
-          fontSize: 13,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 10,
           fontWeight: FontWeight.w700,
           letterSpacing: 0.5,
         ),
