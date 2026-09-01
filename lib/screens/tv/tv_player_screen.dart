@@ -128,6 +128,7 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
   double _kbps = 0;
   Timer? _sondeoVelocidad;
   Timer? _diagnostico;
+  Timer? _prepararAlternativas;
   Duration _posicion = Duration.zero;
   Duration _duracion = Duration.zero;
 
@@ -146,8 +147,6 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
   bool _menuAbierto = false;
   int _menuTab = 0;
   int _menuIdx = 0;
-
-  DateTime? _ultimoAtras;
 
   // ── Seguir viendo ────────────────────────────────────────────────────────
   final _progreso = WatchProgressService();
@@ -406,6 +405,26 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
       debugPrint('TvPlayer: el primer servidor fallo ($e) — cambiando');
       unawaited(_siguienteServidor('fallo al abrir'));
     }
+    // ── LAS ALTERNATIVAS SE PREPARAN DESDE EL PRINCIPIO ─────────────────
+    //
+    // Antes esto solo arrancaba cuando el primer servidor ECHABA A ANDAR. Pero
+    // el caso en que hace falta cambiar es justo el contrario: el primero no
+    // arranca, a los 9 segundos toca saltar, y ahi es cuando se ponia a cargar
+    // la pagina en el navegador invisible — con el usuario mirando una pantalla
+    // parada. De ahi el "al cambiar de servidor se pone lentisimo".
+    //
+    // Lanzandolo a los 3 segundos de abrir, cuando el failover llegue la
+    // pagina lleva 6 segundos resolviendose y lo normal es que ya este lista:
+    // el cambio es inmediato y el trabajo caro ya paso.
+    //
+    // 3 y no 0: el primer servidor se merece unos segundos de pista libre para
+    // arrancar sin competencia. Si arranca, no se pierde nada — el trabajo
+    // queda hecho para cuando haga falta.
+    _prepararAlternativas = Timer(
+      const Duration(seconds: 3),
+      _prepararAlternativasEnSegundoPlano,
+    );
+
     _armarVigilante();
     _armarGuardado();
   }
@@ -625,6 +644,28 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
     // puerto del VPS contra la reproduccion de verdad. Con un servidor que no
     // arranca y otro roto, el bucle de failover fabricaba una fuga cada 9
     // segundos: cuanto mas lo intentaba, peor iba.
+    // ── PRIMERO SE PARA MPV, DESPUES SE CIERRA LA SESION ────────────────
+    //
+    // El orden importa, y al reves hace daño de verdad. Cerrando la sesion
+    // antes, la URL local `127.0.0.1/t/N` deja de existir mientras MPV SIGUE
+    // enganchado a ella: se pasa los siguientes segundos —el envoltorio tarda
+    // hasta 7s, y resolver una pagina bastante mas— reconectando contra un
+    // endpoint muerto. Eso es lo que llenaba el log de
+    //
+    //   http: HTTP error 404 Not Found
+    //   http: Stream ends prematurely at 14211
+    //
+    // y lo que ponia el aparato de rodillas justo al cambiar de servidor: no
+    // era el cambio, era MPV martilleando una direccion que ya no existia
+    // mientras el resto de la app intentaba trabajar.
+    //
+    // Parando MPV primero, ademas, se suelta enseguida la conexion del
+    // proveedor — que con un tope de 4 por linea no es un detalle menor.
+    try {
+      await _player.stop();
+    } catch (_) {
+      // Si no se puede parar, seguir igualmente: `open()` lo reemplaza.
+    }
     _cerrarTurbo();
 
     if (!esEnVivoPorUrl(original)) {
@@ -814,6 +855,9 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
     if (_urls.length <= 1) {
       debugPrint('TvPlayer: el único servidor disponible falló ($motivo)');
       _vigilante?.cancel();
+      // Parar antes de cerrar, por el mismo motivo que en `_abrir`: si no, MPV
+      // se queda reconectando contra la sesion cerrada.
+      unawaited(_player.stop());
       _cerrarTurbo();
       if (mounted) setState(() => _agotado = true);
       return;
@@ -833,6 +877,9 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
         '(${_rotos.length} rotos de ${_urls.length}) — se deja de intentar',
       );
       _vigilante?.cancel();
+      // Parar antes de cerrar, por el mismo motivo que en `_abrir`: si no, MPV
+      // se queda reconectando contra la sesion cerrada.
+      unawaited(_player.stop());
       _cerrarTurbo();
       if (mounted) setState(() => _agotado = true);
       return;
@@ -881,6 +928,7 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
     }
     _ocultar?.cancel();
     _diagnostico?.cancel();
+    _prepararAlternativas?.cancel();
     _confirmarSalto?.cancel();
     _sondeoVelocidad?.cancel();
     _vigilante?.cancel();
