@@ -5,9 +5,13 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import '../../services/fast_image_service.dart';
 import '../../services/m3u_service.dart';
+import '../../services/tmdb_service.dart';
+import '../../utils/titulo_tmdb.dart';
 import '../../services/watch_progress_service.dart';
 import 'tv_category_screen.dart';
+import 'tv_destacado.dart';
 import 'tv_detail_screen.dart';
+import 'tv_player_screen.dart';
 import 'tv_search_screen.dart';
 
 /// Catálogo del televisor: filas por categoría, navegación con el mando.
@@ -133,6 +137,174 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   /// Espera antes de recoger el menu lateral. Ver `_focoEnLateral`.
   Timer? _cierreLateral;
 
+  // ── El destacado de arriba ───────────────────────────────────────────────
+  //
+  // Los cinco titulos que se turnan salen de la PRIMERA FILA de la seccion:
+  // en INICIO son los de "Últimamente nuevo", en PELÍCULAS los de su primera
+  // categoria, y asi. No hace falta una lista aparte ni otra llamada: lo que
+  // encabeza la seccion ya es lo que la seccion quiere destacar.
+  final GlobalKey<TvDestacadoState> _llaveHero = GlobalKey<TvDestacadoState>();
+  List<M3UItem> _destacados = const [];
+  int _idxDestacado = 0;
+
+  /// Lo que TMDB dice de cada destacado, para no repetir la llamada cada vez
+  /// que el turno vuelve a pasar por el mismo titulo.
+  ///
+  /// LA CLAVE ES LO QUE SE BUSCA, NO LA URL.
+  ///
+  /// Estaba guardado por `item.url`, y las series del catalogo se crean con
+  /// `url: ''` — todas. Asi que las cinco compartian la clave vacia: la
+  /// primera en resolverse dejaba su imagen puesta para las demas, mientras el
+  /// titulo si salia de cada item. Era exactamente lo que se veia en SERIES,
+  /// TELENOVELAS y ANIMACION: la misma imagen de fondo con distinto titulo.
+  ///
+  /// En INICIO no se notaba porque las peliculas si traen url.
+  final Map<String, Map<String, dynamic>> _fichasHero = {};
+
+  /// Identifica un destacado por lo que se le va a preguntar a TMDB: el titulo
+  /// limpio y si es serie. Dos titulos distintos nunca comparten clave, y el
+  /// mismo titulo no se pregunta dos veces.
+  String _claveHero(M3UItem item) {
+    final esSerie = item.isSeries || item.seriesName != null;
+    return '${esSerie ? "s" : "p"}|'
+        '${limpiarTituloParaTmdb(item.seriesName ?? item.name)}';
+  }
+
+  /// El turno de destacados. Solo corre con el foco arriba: una imagen que
+  /// cambia sola mientras miras las filas distrae en vez de ayudar.
+  Timer? _turnoHero;
+
+  static const int _cuantosDestacados = 5;
+  static const Duration _cadaTurno = Duration(seconds: 8);
+
+  /// Recalcula los destacados.
+  ///
+  /// EN INICIO MANDA EL MISMO BANNER QUE EL TELEFONO.
+  ///
+  /// `getTrendingBannerItems()` es lo que alimenta el banner principal del
+  /// movil: lo que TMDB marca como tendencia, cruzado con lo que hay en el
+  /// catalogo y quedandose con lo que tiene caratula. Llamarlo desde aqui
+  /// —sin tocar una linea del telefono— hace que las dos pantallas destaquen
+  /// lo mismo, que es lo que se espera de la misma app.
+  ///
+  /// Llega tarde (TMDB es una llamada de red) y a veces vuelve vacio. Por eso
+  /// hay respaldo: la primera fila de la seccion. Y en las demas secciones
+  /// manda siempre esa primera fila, porque una tendencia global no dice nada
+  /// dentro de TELENOVELAS.
+  void _prepararDestacados() {
+    final primera = _filas.isEmpty ? const <M3UItem>[] : _filas.first.items;
+
+    var fuente = primera;
+    if (_seccion == 0) {
+      final tendencia = _servicio.getTrendingBannerItems();
+      if (tendencia.isNotEmpty) fuente = _agrupar(tendencia, tope: null);
+    }
+
+    final nuevos =
+        [
+          for (final e in fuente)
+            if ((e.logo ?? '').isNotEmpty) e,
+        ].take(_cuantosDestacados).toList();
+
+    // Si son los mismos, no se toca nada: reasignar reiniciaria el turno y
+    // haria parpadear la imagen sin motivo.
+    final iguales =
+        nuevos.length == _destacados.length &&
+        List.generate(
+          nuevos.length,
+          (i) => nuevos[i].url == _destacados[i].url,
+        ).every((x) => x);
+    if (iguales) return;
+
+    _destacados = nuevos;
+    if (_idxDestacado >= _destacados.length) _idxDestacado = 0;
+    _pedirFichaHero();
+  }
+
+  /// Trae de TMDB la imagen apaisada y la sinopsis del destacado actual.
+  Future<void> _pedirFichaHero() async {
+    if (_destacados.isEmpty) return;
+    final item = _destacados[_idxDestacado.clamp(0, _destacados.length - 1)];
+    final clave = _claveHero(item);
+    if (_fichasHero.containsKey(clave)) return;
+
+    try {
+      final d = await TMDBService().searchAndGetDetails(
+        // LIMPIO, como en la ficha. Con el titulo crudo del proveedor
+        // —"... (HDTS) (2026)"— TMDB no devuelve nada, y sin resultado el
+        // destacado se queda sin imagen apaisada: lo que se ve entonces es el
+        // fondo de la app estirado, que es justo lo que parecia "pixelado".
+        limpiarTituloParaTmdb(item.seriesName ?? item.name),
+        isSeries: item.isSeries || item.seriesName != null,
+      );
+      if (!mounted || d.isEmpty) return;
+      _fichasHero[clave] = d;
+      setState(() {});
+    } catch (_) {
+      // Sin ficha el destacado se ve igual, solo que con menos texto.
+    }
+  }
+
+  void _turnoDestacados(bool conFoco) {
+    _turnoHero?.cancel();
+    if (!conFoco || _destacados.length < 2) return;
+    _turnoHero = Timer.periodic(_cadaTurno, (_) {
+      if (!mounted) return;
+      setState(() => _idxDestacado = (_idxDestacado + 1) % _destacados.length);
+      _pedirFichaHero();
+    });
+  }
+
+  /// Pasa al siguiente destacado, a mano.
+  ///
+  /// Reinicia el turno automatico: si acabas de elegir tu el titulo, que la
+  /// cuenta atras te lo cambie dos segundos despues es de todo menos util.
+  void _siguienteDestacado() {
+    if (_destacados.length < 2) return;
+    setState(() => _idxDestacado = (_idxDestacado + 1) % _destacados.length);
+    _pedirFichaHero();
+    _turnoDestacados(true);
+  }
+
+  /// Abre el destacado actual: al reproductor o a la ficha.
+  ///
+  /// "Reproducir" va DIRECTO al reproductor, sin pasar por la ficha: es el
+  /// camino corto y para eso esta el boton. Quien quiera ver de que va el
+  /// titulo tiene el otro al lado.
+  ///
+  /// Con una serie no vale el atajo: hay que elegir episodio, asi que los dos
+  /// botones llevan a la ficha. Reproducir "la serie" no significa nada.
+  Future<void> _abrirDestacado(bool reproducir) async {
+    if (_destacados.isEmpty) return;
+    final item = _destacados[_idxDestacado.clamp(0, _destacados.length - 1)];
+    final esSerie = item.isSeries || item.seriesName != null;
+
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder:
+            (_) =>
+                (reproducir && !esSerie)
+                    ? TvPlayerScreen(item: item, titulo: item.name)
+                    : TvDetailScreen(item: item),
+      ),
+    );
+    // Al volver, el foco vuelve al destacado: es de donde saliste.
+    if (mounted) _irAlHero();
+  }
+
+  /// Sube al destacado: el foco a "Reproducir" y la lista arriba del todo.
+  void _irAlHero() {
+    _filaActual = -1;
+    if (_scrollVertical.hasClients) {
+      _scrollVertical.animateTo(
+        0,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+      );
+    }
+    _llaveHero.currentState?.enfocar();
+  }
+
   /// El menu se abre al entrar y se recoge al salir. CON UN MATIZ.
   ///
   /// Cada item avisa por separado, y al bajar de uno a otro Flutter manda
@@ -148,6 +320,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   /// entera. Solo se recoge cuando el foco se va de verdad, al contenido.
   void _focoEnLateral(bool dentro) {
     _cierreLateral?.cancel();
+    _turnoHero?.cancel();
     if (dentro) {
       if (!_lateralAbierto) setState(() => _lateralAbierto = true);
       return;
@@ -165,15 +338,10 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   /// esto, al cerrar la ficha el foco recaia en el contenedor del contenido,
   /// que lo mandaba a la primera tarjeta de la primera fila: la pantalla se
   /// iba sola al principio del catalogo y habias perdido por donde ibas.
-  int _filaActual = 0;
+  /// -1 mientras el foco esta en el destacado de arriba, que es donde entra
+  /// al abrir el catalogo.
+  int _filaActual = -1;
   int _columnaActual = 0;
-
-  /// El hueco de arriba de la lista. Entra en la cuenta del desplazamiento:
-  /// sin sumarlo, la fila de destino quedaba 40 pixeles mas arriba de lo
-  /// pedido — medio tapada por el borde de la pantalla. Por eso al subir a
-  /// "Últimamente nuevo" o a "Recomendados para ti" el foco parecia perderse:
-  /// estaba puesto, pero fuera de la vista.
-  static const double _huecoArriba = 40;
 
   /// Alto exacto de una fila: titulo (33 con su hueco) + caratulas (248) +
   /// separacion (18), y 5 de holgura.
@@ -201,7 +369,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     if (_scrollVertical.hasClients) {
       // La fila de destino, arrimada al borde de arriba pero sin pegarse: se
       // ve entera y se intuye la siguiente.
-      final objetivo = (_huecoArriba + destino * _altoFila - 24).clamp(
+      final objetivo = (TvDestacado.altura + destino * _altoFila - 24).clamp(
         0.0,
         _scrollVertical.position.maxScrollExtent,
       );
@@ -238,7 +406,11 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   KeyEventResult _rescatarFoco(KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
     if (_filas.isEmpty) return KeyEventResult.ignored;
-    _irAFila(_filaActual, _columnaActual);
+    if (_filaActual < 0) {
+      _irAlHero();
+    } else {
+      _irAFila(_filaActual, _columnaActual);
+    }
     return KeyEventResult.handled;
   }
 
@@ -296,6 +468,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     if (!hayPreliminares && !hayIndexado) return;
     setState(() {
       _filas = _armarFilas();
+      _prepararDestacados();
       _cargando = false;
       if (_filas.isNotEmpty) _error = null;
     });
@@ -314,6 +487,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       setState(() {
         _recomendados = r;
         _filas = _armarFilas();
+        _prepararDestacados();
       });
     } catch (_) {
       // Es una fila de mas: si no sale, el catalogo se ve igual.
@@ -485,6 +659,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
         setState(() {
           _seguirViendo = siguiendo;
           _filas = _armarFilas();
+          _prepararDestacados();
         });
       } catch (_) {
         // Es una fila de mas: si falla, el catalogo se ve igual.
@@ -588,6 +763,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       if (!mounted) return;
       setState(() {
         _filas = _armarFilas();
+        _prepararDestacados();
         _cargando = false;
         // Sin fuentes el mensaje del servicio habla de "URL M3U", que al
         // usuario de un televisor no le dice nada: el nunca configuro ninguna
@@ -687,7 +863,15 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                     _nodoContenido.nextFocus();
                     return;
                   }
-                  // A DONDE ESTABAS, no al principio.
+                  // El destacado es el sitio por defecto: es lo primero de la
+                  // pantalla y donde se entra al abrir el catalogo o al
+                  // volver del menu sin haber bajado todavia.
+                  if (_filaActual < 0) {
+                    _irAlHero();
+                    return;
+                  }
+
+                  // Y si ya estabas abajo, A DONDE ESTABAS, no al principio.
                   //
                   // Este nodo recibe el foco tanto al entrar desde el menu
                   // como al volver de una ficha, y mandar siempre a la fila 0
@@ -720,41 +904,82 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                           // una franja vacia en lo alto de la pantalla, y en
                           // un televisor eso es una fila de caratulas que se
                           // deja de ver.
-                          padding: const EdgeInsets.fromLTRB(
-                            0,
-                            _huecoArriba,
-                            0,
-                            40,
-                          ),
-                          itemExtent: _altoFila,
+                          // Sin hueco arriba: el destacado empieza pegado al
+                          // borde, como en cualquier app de television. El
+                          // hueco solo tenia sentido cuando lo primero era una
+                          // fila de caratulas.
+                          padding: const EdgeInsets.only(bottom: 40),
+                          // Sin `itemExtent`: ahora la lista tiene dos alturas
+                          // —el destacado y las filas— y cada elemento declara
+                          // la suya. El desplazamiento se sigue CALCULANDO en
+                          // `_irAFila`, que es lo que importaba.
                           // Una fila de margen construida arriba y abajo: al
                           // bajar, la siguiente ya existe y el foco entra sin
                           // esperar a que se arme.
                           scrollCacheExtent: const ScrollCacheExtent.pixels(
                             320,
                           ),
-                          itemCount: _filas.length,
-                          itemBuilder: (context, i) {
+                          itemCount: _filas.length + 1,
+                          itemBuilder: (context, indice) {
+                            // ── 0: el destacado ─────────────────────────
+                            if (indice == 0) {
+                              return TvDestacado(
+                                key: _llaveHero,
+                                items: _destacados,
+                                indice: _idxDestacado,
+                                ficha:
+                                    _destacados.isEmpty
+                                        ? null
+                                        : _fichasHero[_claveHero(
+                                          _destacados[_idxDestacado.clamp(
+                                            0,
+                                            _destacados.length - 1,
+                                          )],
+                                        )],
+                                onReproducir: () => _abrirDestacado(true),
+                                onFicha: () => _abrirDestacado(false),
+                                onAbajo: () => _irAFila(0, 0),
+                                onSiguiente: _siguienteDestacado,
+                                onSalirIzquierda:
+                                    () =>
+                                        _nodosLateral[_seccion].requestFocus(),
+                                onFoco: (dentro) {
+                                  if (dentro) _filaActual = -1;
+                                  _turnoDestacados(dentro);
+                                },
+                              );
+                            }
+
+                            final i = indice - 1;
                             final fila = _filas[i];
-                            return _Fila(
-                              key: _llaveDe(fila.titulo),
-                              titulo: fila.titulo,
-                              items: fila.items,
-                              // Solo la primerísima tarjeta pide el foco: si lo
-                              // pidieran las primeras de cada fila, el foco
-                              // saltaría a la última en construirse y la
-                              // pantalla arrancaría por el medio.
-                              autofocoPrimero: i == 0,
-                              onSalirIzquierda:
-                                  () => _nodosLateral[_seccion].requestFocus(),
-                              onArriba: (col) => _irAFila(i - 1, col),
-                              onAbajo: (col) => _irAFila(i + 1, col),
-                              // Cada vez que el foco cae en una tarjeta se
-                              // apunta donde: es lo que se restaura al volver.
-                              onFocoEn: (col) {
-                                _filaActual = i;
-                                _columnaActual = col;
-                              },
+                            return SizedBox(
+                              height: _altoFila,
+                              child: _Fila(
+                                key: _llaveDe(fila.titulo),
+                                titulo: fila.titulo,
+                                items: fila.items,
+                                // Ya no hay autofoco en la primera tarjeta: al
+                                // abrir el catalogo manda el destacado, que es
+                                // lo primero que se ve.
+                                autofocoPrimero: false,
+                                onSalirIzquierda:
+                                    () =>
+                                        _nodosLateral[_seccion].requestFocus(),
+                                // Arriba desde la primera fila sube al
+                                // destacado, no a otra fila.
+                                onArriba:
+                                    (col) =>
+                                        i == 0
+                                            ? _irAlHero()
+                                            : _irAFila(i - 1, col),
+                                onAbajo: (col) => _irAFila(i + 1, col),
+                                // Cada vez que el foco cae en una tarjeta se
+                                // apunta donde: es lo que se restaura al volver.
+                                onFocoEn: (col) {
+                                  _filaActual = i;
+                                  _columnaActual = col;
+                                },
+                              ),
                             );
                           },
                         ),
@@ -842,6 +1067,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                   setState(() {
                     _seccion = i;
                     _filas = _armarFilas();
+                    _prepararDestacados();
                   });
                 },
                 onEntrarContenido: () => _nodoContenido.requestFocus(),

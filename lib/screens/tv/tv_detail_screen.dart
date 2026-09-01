@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import '../../services/fast_image_service.dart';
 import '../../services/m3u_service.dart';
 import '../../services/tmdb_service.dart';
+import '../../utils/titulo_tmdb.dart';
 import 'tv_player_screen.dart';
 
 /// Ficha de un título en el televisor.
@@ -170,7 +171,7 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
         // De una serie se busca la serie, no el episodio: "Capítulo 4" no
         // existe en TMDB, pero el nombre de la serie sí. Y limpio, porque los
         // titulos del proveedor vienen con basura pegada.
-        _paraBuscar(widget.item.seriesName ?? widget.item.name),
+        limpiarTituloParaTmdb(widget.item.seriesName ?? widget.item.name),
         isSeries: widget.item.isSeries || widget.item.seriesName != null,
       );
       if (mounted) setState(() => _ficha = d.isEmpty ? null : d);
@@ -221,35 +222,6 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
     return lista;
   }
 
-  /// Deja el titulo en algo que TMDB pueda encontrar.
-  ///
-  /// Los nombres del proveedor llegan asi: "Spider Man - Un Nuevo Día (HDTS)
-  /// (2026)". Con la marca de calidad y el año pegados, TMDB no devuelve nada
-  /// —la ficha salia siempre vacia— y no es un fallo de TMDB: le estabamos
-  /// pasando un nombre que no existe.
-  ///
-  /// Se quitan las marcas de calidad, el año entre parentesis y los corchetes
-  /// del proveedor. El año NO se pierde del todo: `searchAndGetDetails` ya lo
-  /// extrae por su cuenta del texto original para afinar la busqueda.
-  static final RegExp _basura = RegExp(
-    r'\((?:HDTS|CAM|TS|HDRIP|BRRIP|WEBRIP|WEB-?DL|HD|SD|4K|FHD|UHD|LAT|CAST|'
-    r'SUB|VOSE|DUAL|REMUX|BLURAY|DVDRIP|SCREENER|LINE)\)|\[[^\]]*\]|'
-    r'(?:19|20)\d{2}|\(\s*\)',
-    caseSensitive: false,
-  );
-
-  static String _paraBuscar(String bruto) {
-    var t = bruto.replaceAll(_basura, ' ');
-    // Los parentesis que quedan vacios tras vaciar su contenido.
-    t = t.replaceAll(RegExp(r'\(\s*\)'), ' ');
-    // Separadores del proveedor al final: " - ", " | ", puntos sueltos.
-    t = t.replaceAll(RegExp(r'\s*[|·]\s*'), ' ');
-    t = t.replaceAll(RegExp(r'\s{2,}'), ' ').trim();
-    // Un guion suelto al final no aporta y estorba a la busqueda.
-    t = t.replaceAll(RegExp(r'\s*-\s*$'), '').trim();
-    return t.isEmpty ? bruto : t;
-  }
-
   /// Las temporadas que trae esta serie, ordenadas.
   List<int> get _temporadas {
     final t = <int>{};
@@ -275,9 +247,10 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
   }
 
   void _reproducir(M3UItem queVer) {
-    final alts = queVer.alternatives.isNotEmpty
-        ? queVer.alternatives
-        : M3UService().getAlternativesFor(queVer);
+    final alts =
+        queVer.alternatives.isNotEmpty
+            ? queVer.alternatives
+            : M3UService().getAlternativesFor(queVer);
     final itemConAlts =
         alts.isNotEmpty && queVer.alternatives.isEmpty
             ? queVer.copyWith(alternatives: alts)
@@ -285,10 +258,8 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
 
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => TvPlayerScreen(
-          item: itemConAlts,
-          titulo: itemConAlts.name,
-        ),
+        builder:
+            (_) => TvPlayerScreen(item: itemConAlts, titulo: itemConAlts.name),
       ),
     );
   }

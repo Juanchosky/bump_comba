@@ -951,6 +951,13 @@ class FastThumbnail extends StatefulWidget {
   final VoidCallback? onError;
   final bool isHD;
 
+  /// La imagen ocupa el ancho ENTERO de un televisor.
+  ///
+  /// Un escalón por encima de `isHD`: `w500` sobra en un móvil y se queda
+  /// corto en una pantalla de 1920. Solo lo usa el destacado del catálogo del
+  /// televisor.
+  final bool pantallaCompleta;
+
   const FastThumbnail({
     super.key,
     required this.url,
@@ -964,6 +971,7 @@ class FastThumbnail extends StatefulWidget {
     this.useTMDBFallback = false,
     this.onError,
     this.isHD = false,
+    this.pantallaCompleta = false,
   });
 
   @override
@@ -1233,9 +1241,21 @@ class _FastThumbnailState extends State<FastThumbnail>
       clean = '$clean$separator$targetParams';
     }
 
-    // Optimizar URLs directas de TMDB asignando w185 (para cuadrículas, ~18KB) o w500 (pantalla de detalle)
+    // ── TAMAÑO DE LA IMAGEN EN TMDB ────────────────────────────────────
+    //
+    // `w185` para las cuadrículas (~18 KB) y `w500` para la ficha del
+    // teléfono. OJO: esto REESCRIBE la URL que le pasen, asi que pedir
+    // `original` desde fuera no sirve de nada — se sustituye aquí.
+    //
+    // `w1280` es nuevo, y es para el destacado del televisor: ahí la imagen
+    // ocupa 1920 px de ancho, y con `w500` se estira casi cuatro veces. Eso
+    // era lo que se veía pixelado en la tele por mucho que se pidiera grande
+    // en la pantalla.
+    //
+    // El teléfono no cambia: `pantallaCompleta` solo lo pone el televisor.
     if (clean.contains('image.tmdb.org/t/p/')) {
-      final String tmdbTargetSize = widget.isHD ? 'w500' : 'w185';
+      final String tmdbTargetSize =
+          widget.pantallaCompleta ? 'w1280' : (widget.isHD ? 'w500' : 'w185');
       clean = clean.replaceAll(
         RegExp(r'\/t\/p\/(w\d+(_and_h\d+_\w+)?|original)\/'),
         '/t/p/$tmdbTargetSize/',
