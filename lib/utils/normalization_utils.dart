@@ -42,8 +42,9 @@ class NormalizationUtils {
   static bool is4kTitle(String name) {
     if (name.isEmpty) return false;
     final n = name.toLowerCase();
-    if (n.contains('4k') || n.contains('4 k') || n.contains('2160p'))
+    if (n.contains('4k') || n.contains('4 k') || n.contains('2160p')) {
       return true;
+    }
     if (_reUhd.hasMatch(n)) return true;
     return false;
   }

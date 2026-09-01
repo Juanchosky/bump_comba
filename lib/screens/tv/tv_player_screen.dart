@@ -6,13 +6,13 @@ import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
-import '../../models/m3u_item.dart';
 import '../../services/dynamic_scraper_service.dart';
 import '../../services/turbo_proxy.dart';
 import '../../services/tv/tv_mpv_config.dart';
 import '../../utils/cabeceras_stream.dart';
 import '../../utils/clasificacion_stream.dart';
 import 'tv_loading_animation.dart';
+import '../../services/m3u_service.dart';
 import '../../services/watch_progress_service.dart';
 
 /// Reproductor del televisor en modo autónomo (sin teléfono).
@@ -160,6 +160,7 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
   // estar en varios sitios y el primero no siempre responde.
   late final List<String> _urls;
   int _idxServidor = 0;
+  VoidCallback? _m3uListener;
 
   Timer? _vigilante;
   Duration _posVigilada = Duration.zero;
@@ -271,29 +272,47 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
 
     // El titulo primero y sus alternativas despues, sin repetidos.
     //
-    // TODAS, tambien las del contenido propio. Estaban descartadas —no son un
-    // fichero de video sino la pagina de donde sale— y el efecto era que el
-    // servidor de la BD no existia: el failover no tenia adonde ir y se
-    // quedaba dando vueltas al de Xtream, que era justo el que fallaba.
-    //
-    // Mismo orden que el telefono: `[item, ...alternatives]`. Asi "el primer
-    // fallo pasa a la BD" significa lo mismo en las dos pantallas.
-    _urls =
-        <String>{
-          widget.item.url,
-          for (final alt in widget.item.alternatives) alt.url,
-        }.toList();
+    // Si el item fue abierto antes de que terminara el cruce en segundo plano,
+    // se consulta M3UService para obtener las alternativas ya conocidas o de la BD.
+    final alts =
+        widget.item.alternatives.isNotEmpty
+            ? widget.item.alternatives
+            : M3UService().getAlternativesFor(widget.item);
+
+    _urls = <String>{widget.item.url, for (final alt in alts) alt.url}.toList();
 
     if (_urls.length <= 1) {
-      // Queda dicho en el log: sin alternativa, a los 9s NO va a pasar nada, y
-      // el sintoma es indistinguible de un fallo del cambio de servidor.
       debugPrint(
         'TvPlayer: "${widget.item.name}" no tiene servidor alternativo '
-        '— no hay failover posible',
+        '— esperando si el indexado de BD encuentra alguno',
       );
     } else {
       debugPrint('TvPlayer: ${_urls.length} servidores disponibles');
     }
+
+    // Escuchar a M3UService por si el indexado en segundo plano termina mientras
+    // se reproduce y añade alternativas desde la BD (Supabase).
+    _m3uListener = () {
+      if (_urls.length <= 1 && mounted) {
+        final freshAlts = M3UService().getAlternativesFor(widget.item);
+        if (freshAlts.isNotEmpty) {
+          final nuevasUrls =
+              <String>{
+                widget.item.url,
+                for (final alt in freshAlts) alt.url,
+              }.toList();
+          if (nuevasUrls.length > _urls.length) {
+            setState(() {
+              _urls = nuevasUrls;
+            });
+            debugPrint(
+              'TvPlayer: ${_urls.length} servidores disponibles (actualizado tras indexado de BD)',
+            );
+          }
+        }
+      }
+    };
+    M3UService().addListener(_m3uListener!);
 
     _subs.add(
       _player.stream.log.listen((l) {
@@ -791,15 +810,20 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
   Future<void> _siguienteServidor(String motivo) async {
     if (_cambiandoServidor || _agotado) return;
 
+    // Si solo hay un servidor, no hay adonde saltar
+    if (_urls.length <= 1) {
+      debugPrint('TvPlayer: el único servidor disponible falló ($motivo)');
+      _vigilante?.cancel();
+      _cerrarTurbo();
+      if (mounted) setState(() => _agotado = true);
+      return;
+    }
+
     // ── ¿QUEDA ALGUN SERVIDOR AL QUE IR? ────────────────────────────────
     //
-    // Antes bastaba con "hay mas de uno". Con uno lento y otro roto, eso era
-    // un bucle infinito: 0 -> 1 -> 0 -> 1 cada 9 segundos, cada vuelta con su
-    // sesion de TurboProxy nueva, y en pantalla "Cambiando de servidor" para
-    // siempre. Girar entre servidores que no funcionan no es tolerancia a
-    // fallos.
+    // Se buscan los otros servidores disponibles (excluyendo el actual _idxServidor)
     final candidatos = [
-      for (var i = 1; i <= _urls.length; i++)
+      for (var i = 1; i < _urls.length; i++)
         if (!_rotos.contains((_idxServidor + i) % _urls.length))
           (_idxServidor + i) % _urls.length,
     ];
@@ -825,14 +849,14 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
     _idxServidor = candidatos.first;
     debugPrint('TvPlayer: cambio de servidor ($motivo) -> $_idxServidor');
 
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Cambiando de servidor...'),
-          duration: Duration(seconds: 2),
-        ),
-      );
-    }
+    // SIN AVISO EN PANTALLA.
+    //
+    // El cambio de servidor es cosa interna: al usuario le da igual de donde
+    // salgan los bytes, y ver "Cambiando de servidor..." tres veces seguidas
+    // solo transmite que algo va mal. Lo que si se ve es el spinner, que ya
+    // dice lo unico importante — que todavia no hay imagen.
+    //
+    // Queda en el log, que es donde sirve.
 
     try {
       // Se retoma por donde iba, no desde cero: cambiar de servidor no puede
@@ -864,6 +888,9 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
     // Un ultimo guardado al salir: sin el se pierden hasta 5 s, y salir es
     // justo cuando el usuario espera que quede anotado por donde iba.
     _guardar();
+    if (_m3uListener != null) {
+      M3UService().removeListener(_m3uListener!);
+    }
     _playerFocusNode.dispose();
     _player.dispose();
     super.dispose();
@@ -1084,21 +1111,14 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
       setState(() => _controlesVisibles = false);
       return true;
     }
-    // Dos veces para salir: con una sola, un roce del pulgar te saca de la
-    // película y hay que volver a buscarla en el catálogo.
-    final ahora = DateTime.now();
-    final previo = _ultimoAtras;
-    _ultimoAtras = ahora;
-    if (previo != null && ahora.difference(previo).inSeconds < 3) {
-      return false; // que salga de verdad
-    }
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Pulsa atrás otra vez para salir'),
-        duration: Duration(seconds: 2),
-      ),
-    );
-    return true;
+    // ATRAS SALE A LA PRIMERA.
+    //
+    // Antes pedia dos pulsaciones, para que un roce no te sacara de la
+    // pelicula. Pero con el mando en la mano no hay roces —hay que apuntar y
+    // pulsar—, asi que la proteccion no protegia de nada y si obligaba a
+    // pulsar dos veces cada vez que querias salir. Y donde se vuelve es al
+    // catalogo, con la posicion guardada: salir no cuesta nada.
+    return false;
   }
 
   KeyEventResult _tecla(FocusNode node, KeyEvent evento) {
@@ -1299,136 +1319,142 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
                   ),
                 ),
 
-              // MISMO SPINNER Y MISMA CONDICION QUE EL RECEPTOR.
-              //
-              // Antes era el `CircularProgressIndicator` de Material y solo
-              // con `_buffering`. Entre que MPV deja de bufferear y llega la
-              // imagen hay un hueco, y ahi la pantalla se quedaba negra y
-              // vacia: parecia colgada. Con `!_primerFrameListo` el spinner
-              // cubre tambien ese tramo.
-              // El spinner, mientras haya algo que esperar. Si ya no queda
-              // servidor, esperar es mentir: se dice lo que pasa.
-              if (_cargando && !_agotado)
-                const Center(
-                  child: TvLoadingAnimation(size: 54, strokeWidth: 4),
-                ),
+                // MISMO SPINNER Y MISMA CONDICION QUE EL RECEPTOR.
+                //
+                // Antes era el `CircularProgressIndicator` de Material y solo
+                // con `_buffering`. Entre que MPV deja de bufferear y llega la
+                // imagen hay un hueco, y ahi la pantalla se quedaba negra y
+                // vacia: parecia colgada. Con `!_primerFrameListo` el spinner
+                // cubre tambien ese tramo.
+                // El spinner, mientras haya algo que esperar. Si ya no queda
+                // servidor, esperar es mentir: se dice lo que pasa.
+                if (_cargando && !_agotado)
+                  const Center(
+                    child: TvLoadingAnimation(size: 54, strokeWidth: 4),
+                  ),
 
-              // ── Se acabaron los servidores ────────────────────────────
-              //
-              // Antes esto era un bucle silencioso: "Cambiando de servidor"
-              // una y otra vez sobre negro, sin final. Un mensaje claro y la
-              // salida a mano valen mas que un intento numero cuarenta.
-              if (_agotado)
-                Center(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 80),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(
-                          Icons.cloud_off_rounded,
-                          color: Colors.white38,
-                          size: 54,
-                        ),
-                        const SizedBox(height: 20),
-                        Text(
-                          _urls.length > 1
-                              ? 'Ninguno de los ${_urls.length} servidores '
-                                  'pudo reproducir este título'
-                              : 'El servidor no pudo reproducir este título',
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 21,
-                            fontWeight: FontWeight.w600,
+                // ── Se acabaron los servidores ────────────────────────────
+                //
+                // Antes esto era un bucle silencioso: "Cambiando de servidor"
+                // una y otra vez sobre negro, sin final. Un mensaje claro y la
+                // salida a mano valen mas que un intento numero cuarenta.
+                if (_agotado)
+                  Center(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 80),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.cloud_off_rounded,
+                            color: Colors.white38,
+                            size: 54,
                           ),
-                        ),
-                        const SizedBox(height: 12),
-                        const Text(
-                          'Pulsa atrás para volver e inténtalo más tarde.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(color: Colors.white54, fontSize: 16),
-                        ),
-                      ],
+                          const SizedBox(height: 20),
+                          Text(
+                            _urls.length > 1
+                                ? 'Ninguno de los ${_urls.length} servidores '
+                                    'pudo reproducir este título'
+                                : 'El servidor no pudo reproducir este título',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 21,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          const Text(
+                            'Pulsa atrás para volver e inténtalo más tarde.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Colors.white54,
+                              fontSize: 16,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                ),
 
-              // Velocidad de descarga, arriba a la izquierda. Sale cuando
-              // ACOMPAÑA a algo: mientras carga, o con los controles abiertos.
-              if (_buffering || !_primerFrameListo || _controlesVisibles)
-                Positioned(
-                  top: 40,
-                  left: 48,
-                  child: Text(
-                    '${_kbps.toStringAsFixed(0)} KB/s',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w500,
-                      backgroundColor: Color(0x99000000),
-                      shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                // Velocidad de descarga, arriba a la izquierda. Sale cuando
+                // ACOMPAÑA a algo: mientras carga, o con los controles abiertos.
+                if (_buffering || !_primerFrameListo || _controlesVisibles)
+                  Positioned(
+                    top: 40,
+                    left: 48,
+                    child: Text(
+                      '${_kbps.toStringAsFixed(0)} KB/s',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w500,
+                        backgroundColor: Color(0x99000000),
+                        shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                      ),
                     ),
                   ),
-                ),
 
-              // Se avisa de que se reanudo, pero no se pregunta. Enterarse
-              // es util; tener que decidir con el mando, no.
-              if (_reanudadoDesde != null && _controlesVisibles)
-                Positioned(
-                  top: 44,
-                  left: 56,
-                  child: Text(
-                    'Reanudado desde ${_fmt(_reanudadoDesde!)}',
-                    style: const TextStyle(color: Colors.white54, fontSize: 15),
+                // Se avisa de que se reanudo, pero no se pregunta. Enterarse
+                // es util; tener que decidir con el mando, no.
+                if (_reanudadoDesde != null && _controlesVisibles)
+                  Positioned(
+                    top: 44,
+                    left: 56,
+                    child: Text(
+                      'Reanudado desde ${_fmt(_reanudadoDesde!)}',
+                      style: const TextStyle(
+                        color: Colors.white54,
+                        fontSize: 15,
+                      ),
+                    ),
                   ),
-                ),
 
-              // ── Play, SOLO EN PAUSA ─────────────────────────────────
-              //
-              // Es lo que hace el receptor, y tenia razon de ser: no es un
-              // control permanente sino un "dale para seguir". Mientras se
-              // reproduce no pinta nada en mitad de la pantalla; en cuanto
-              // pausas, aparece y dice que hacer.
-              //
-              // Yo lo habia quitado del todo al malinterpretar que no debia
-              // salir "ahi" — no salia SIEMPRE, que es distinto.
-              if (!_reproduciendo &&
-                  !_buffering &&
-                  _primerFrameListo &&
-                  !_menuAbierto)
-                const Center(child: _BotonEsfera()),
+                // ── Play, SOLO EN PAUSA ─────────────────────────────────
+                //
+                // Es lo que hace el receptor, y tenia razon de ser: no es un
+                // control permanente sino un "dale para seguir". Mientras se
+                // reproduce no pinta nada en mitad de la pantalla; en cuanto
+                // pausas, aparece y dice que hacer.
+                //
+                // Yo lo habia quitado del todo al malinterpretar que no debia
+                // salir "ahi" — no salia SIEMPRE, que es distinto.
+                if (!_reproduciendo &&
+                    !_buffering &&
+                    _primerFrameListo &&
+                    !_menuAbierto)
+                  const Center(child: _BotonEsfera()),
 
-              if (_controlesVisibles && !_menuAbierto)
-                _Controles(
-                  titulo: widget.titulo,
-                  caratula: widget.item.logo,
-                  posicion: _posicion,
-                  duracion: _duracion,
-                  bufer: _bufer,
-                  progreso: progreso,
-                  reproduciendo: _reproduciendo,
-                  foco: _foco,
-                  fmt: _fmt,
-                ),
+                if (_controlesVisibles && !_menuAbierto)
+                  _Controles(
+                    titulo: widget.titulo,
+                    caratula: widget.item.logo,
+                    posicion: _posicion,
+                    duracion: _duracion,
+                    bufer: _bufer,
+                    progreso: progreso,
+                    reproduciendo: _reproduciendo,
+                    foco: _foco,
+                    fmt: _fmt,
+                  ),
 
-              if (_menuAbierto)
-                _MenuPistas(
-                  tab: _menuTab,
-                  indice: _menuIdx,
-                  audio: [
-                    for (final t in _pistasAudio)
-                      _etiqueta(t.title, t.language, t.id),
-                  ],
-                  subtitulos: [
-                    'Desactivados',
-                    for (final t in _pistasSubs)
-                      _etiqueta(t.title, t.language, t.id),
-                  ],
-                  audioActivo: _indiceActual(0),
-                  subtituloActivo: _indiceActual(1),
-                ),
-            ],
+                if (_menuAbierto)
+                  _MenuPistas(
+                    tab: _menuTab,
+                    indice: _menuIdx,
+                    audio: [
+                      for (final t in _pistasAudio)
+                        _etiqueta(t.title, t.language, t.id),
+                    ],
+                    subtitulos: [
+                      'Desactivados',
+                      for (final t in _pistasSubs)
+                        _etiqueta(t.title, t.language, t.id),
+                    ],
+                    audioActivo: _indiceActual(0),
+                    subtituloActivo: _indiceActual(1),
+                  ),
+              ],
             ),
           ),
         ),

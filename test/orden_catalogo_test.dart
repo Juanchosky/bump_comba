@@ -1,5 +1,4 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:bump_comba/models/m3u_item.dart';
 import 'package:bump_comba/services/m3u_service.dart';
 
 M3UItem xtream(String nombre, {required bool serie, String cat = 'Recomendados'}) =>

@@ -887,8 +887,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // Con la transmision activa manda el vigilante del televisor, que ya tiene
     // su propio detector: dos failovers a la vez se pisarian.
     if (CastService().isCasting.value) return;
-    if (_serverItems.length < 2)
+    if (_serverItems.length < 2) {
       return; // sin alternativa no hay nada que hacer
+    }
 
     _cambiandoPorCorrupcion = true;
     try {

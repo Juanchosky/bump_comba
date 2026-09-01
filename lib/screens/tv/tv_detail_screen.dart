@@ -5,7 +5,6 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../models/m3u_item.dart';
 import '../../services/fast_image_service.dart';
 import '../../services/m3u_service.dart';
 import '../../services/tmdb_service.dart';
@@ -276,9 +275,20 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
   }
 
   void _reproducir(M3UItem queVer) {
+    final alts = queVer.alternatives.isNotEmpty
+        ? queVer.alternatives
+        : M3UService().getAlternativesFor(queVer);
+    final itemConAlts =
+        alts.isNotEmpty && queVer.alternatives.isEmpty
+            ? queVer.copyWith(alternatives: alts)
+            : queVer;
+
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => TvPlayerScreen(item: queVer, titulo: queVer.name),
+        builder: (_) => TvPlayerScreen(
+          item: itemConAlts,
+          titulo: itemConAlts.name,
+        ),
       ),
     );
   }

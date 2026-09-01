@@ -13,7 +13,7 @@ class TvLoadingAnimation extends StatefulWidget {
   final double size;
   final double strokeWidth;
 
-  const TvLoadingAnimation({this.size = 60, this.strokeWidth = 4});
+  const TvLoadingAnimation({super.key, this.size = 60, this.strokeWidth = 4});
 
   @override
   State<TvLoadingAnimation> createState() => TvLoadingAnimationState();

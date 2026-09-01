@@ -277,9 +277,12 @@ class DynamicScraperService {
 
     // 2. Streams de Xtream Codes o IPTV por puerto/ruta directa NUNCA son páginas dinámicas
     if (RegExp(r':\d+/(?:movie|series|live)/').hasMatch(lowUrl) ||
-        (lowUrl.contains('/movie/') && RegExp(r'/[^/]+/[^/]+/\d+').hasMatch(lowUrl)) ||
-        (lowUrl.contains('/series/') && RegExp(r'/[^/]+/[^/]+/\d+').hasMatch(lowUrl)) ||
-        (lowUrl.contains('/live/') && RegExp(r'/[^/]+/[^/]+/\d+').hasMatch(lowUrl))) {
+        (lowUrl.contains('/movie/') &&
+            RegExp(r'/[^/]+/[^/]+/\d+').hasMatch(lowUrl)) ||
+        (lowUrl.contains('/series/') &&
+            RegExp(r'/[^/]+/[^/]+/\d+').hasMatch(lowUrl)) ||
+        (lowUrl.contains('/live/') &&
+            RegExp(r'/[^/]+/[^/]+/\d+').hasMatch(lowUrl))) {
       return false;
     }
 
@@ -651,7 +654,8 @@ class DynamicScraperService {
         }
       });
 
-      if (bestUrl != null && (maxScore >= 480 || force || candidateUrls.isNotEmpty)) {
+      if (bestUrl != null &&
+          (maxScore >= 480 || force || candidateUrls.isNotEmpty)) {
         debugPrint(
           'DynamicScraperService: Best candidate resolved (Score: $maxScore P): $bestUrl',
         );
@@ -776,8 +780,24 @@ class DynamicScraperService {
           }
 
           try {
-            // Multi-pass evaluation to catch async player hydration (600ms, 1400ms, 2200ms)
-            for (int pass = 1; pass <= 3; pass++) {
+            // ── PASADAS PARA CAZAR AL REPRODUCTOR MIENTRAS SE MONTA ─────
+            //
+            // Eran 3 pasadas (600 + 800 + 800 ms) y despues se aceptaba el
+            // mejor candidato que hubiera, FUERA CUAL FUERA su calidad. Ahi
+            // estaba el "la maxima es 720p y no veo que lo sea": estas paginas
+            // publican primero la variante ligera (`-ld`, 960x520, puntua 540)
+            // y la buena llega un pelo mas tarde. Con la ventana justa, unas
+            // veces se pillaba la buena y otras se cerraba con la mala — de
+            // ahi que fuera aleatorio.
+            //
+            // Ahora hay hasta 6 pasadas, pero NO alargan la espera cuando no
+            // hace falta: `resolveBestCandidate()` cierra en cuanto aparece
+            // una de 720 o mas, y el bucle sale al ver el completer cerrado.
+            // Solo se sigue mirando cuando lo unico que hay es una variante
+            // pobre, que es justo el caso que queremos mejorar.
+            //
+            // El tope de 15s de la extraccion sigue mandando por encima.
+            for (int pass = 1; pass <= 6; pass++) {
               if (completer.isCompleted ||
                   _currentSessionId != sessionId ||
                   _headlessWebView == null) {

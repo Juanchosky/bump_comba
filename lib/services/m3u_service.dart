@@ -86,6 +86,33 @@ class M3USource {
   );
 }
 
+class _CustomMatchMeta {
+  final M3UItem item;
+  final int? year;
+  final String normKey;
+  final String canonKey;
+  final String canonNoSpace;
+  final Set<String> numbers;
+  final Set<String> words;
+
+  _CustomMatchMeta({
+    required this.item,
+    required this.year,
+    required this.normKey,
+    required this.canonKey,
+    required this.canonNoSpace,
+    required this.numbers,
+    required this.words,
+  });
+}
+
+const Set<String> _commonStopWords = {
+  'the', 'del', 'los', 'las', 'por', 'una', 'uno', 'con', 'que', 'and',
+  'for', 'von', 'der', 'die', 'das', 'les', 'des', 'san', 'sur', 'para',
+  'from', 'with', 'about', 'over', 'into', 'after', 'pelicula', 'movie',
+  'film', 'version', 'edition', 'edicion', 'latino', 'castellano', 'subtitulado',
+};
+
 // ===========================================================================
 // SERVICE
 // ===========================================================================
@@ -210,6 +237,8 @@ class M3UService extends ChangeNotifier {
   List<M3UItem> _items = [];
   List<M3UItem> _movies = [];
   List<M3UItem> _series = [];
+  List<M3UItem> _customItems = [];
+  List<M3UItem> get customItems => _customItems;
   Set<String> _favorites = {};
   List<M3UItem> _favoriteItems = [];
   List<FilterRule> _filterRules = [];
@@ -1183,6 +1212,7 @@ class M3UService extends ChangeNotifier {
               bytes,
             );
             if (cachedItems.isNotEmpty) {
+              _customItems = cachedItems;
               debugPrint(
                 'Loaded ${cachedItems.length} custom items from local binary cache',
               );
@@ -1248,6 +1278,7 @@ class M3UService extends ChangeNotifier {
       }
 
       if (finalItems.isNotEmpty) {
+        _customItems = finalItems;
         debugPrint('Loaded ${finalItems.length} custom items total');
 
         // Guardar en caché binario instantáneo
@@ -2074,6 +2105,7 @@ class M3UService extends ChangeNotifier {
   // INTELLIGENT CUSTOM CONTENT INTERLEAVING
   // ===========================================================================
 
+
   /// Vincula items de la base de datos (custom_content) como alternativas BD (Más rápida)
   /// a items coincidentes de Xtream en lugar de crear tarjetas duplicadas.
   static (List<M3UItem>, List<M3UItem>) _linkCustomContentAlternatives(
@@ -2090,45 +2122,39 @@ class M3UService extends ChangeNotifier {
     final Set<M3UItem> matchedCustomItems = {};
 
     // Mapas primarios para búsqueda ultra-rápida O(1)
-    final Map<String, List<M3UItem>> customByNormTitle = {};
-    final Map<String, List<M3UItem>> customByCanonTitle = {};
-    final Map<String, List<M3UItem>> customByWord = {};
+    final Map<String, List<_CustomMatchMeta>> customByNormTitle = {};
+    final Map<String, List<_CustomMatchMeta>> customByCanonTitle = {};
+    final Map<String, List<_CustomMatchMeta>> customByWord = {};
 
     for (final cItem in customItems) {
-      // ── DONDE ENTRAN LOS ALIAS, Y DONDE NO ──────────────────────────────
-      //
-      // Los alias se indexan en los DOS mapas O(1) —normalizado y canonico—,
-      // que es donde de verdad hacen falta: una consulta de tabla hash por
-      // titulo de Xtream, coste cero. Ahi es donde engancha "Captain America:
-      // The First Avenger" con la fila en espanol.
-      //
-      // En `customByWord` va SOLO el titulo principal, a proposito. Esa cubeta
-      // alimenta el bucle de comparacion difusa, que es cuadratico en la
-      // practica: meter ahi las palabras de 8 alias por fila multiplicaba los
-      // candidatos, y ademas cada candidato se acababa comparando contra su
-      // titulo principal —que no coincide— asi que era trabajo tirado.
-      //
-      // Medido en dispositivo: con los alias en las cubetas, el cruce de
-      // 28.448 items contra 563 de la BD tardaba 164 SEGUNDOS. La app se
-      // quedaba en "cargando contenido" varios minutos.
+      final cCanonPrincipal = _canonicalTitleKey(cItem.name);
+      final meta = _CustomMatchMeta(
+        item: cItem,
+        year: _extractYearFromTitle(cItem.name),
+        normKey: _normalizeTitleForMatching(cItem.name),
+        canonKey: cCanonPrincipal,
+        canonNoSpace: cCanonPrincipal.replaceAll(' ', ''),
+        numbers: _extractNumbersFromTitle(cCanonPrincipal),
+        words: cCanonPrincipal
+            .split(' ')
+            .where((w) => w.length >= 3 && !_commonStopWords.contains(w))
+            .toSet(),
+      );
+
       for (final titulo in _titulosDeMatch(cItem)) {
         final normKey = _normalizeTitleForMatching(titulo);
         if (normKey.isNotEmpty) {
-          customByNormTitle.putIfAbsent(normKey, () => []).add(cItem);
+          customByNormTitle.putIfAbsent(normKey, () => []).add(meta);
         }
         final canonKey = _canonicalTitleKey(titulo);
         final canonNoSpace = canonKey.replaceAll(' ', '');
         if (canonNoSpace.isNotEmpty) {
-          customByCanonTitle.putIfAbsent(canonNoSpace, () => []).add(cItem);
+          customByCanonTitle.putIfAbsent(canonNoSpace, () => []).add(meta);
         }
       }
 
-      // Cubetas de palabras: solo el titulo principal (ver arriba).
-      final canonPrincipal = _canonicalTitleKey(cItem.name);
-      final words =
-          canonPrincipal.split(' ').where((w) => w.length >= 3).toSet();
-      for (final w in words) {
-        customByWord.putIfAbsent(w, () => []).add(cItem);
+      for (final w in meta.words) {
+        customByWord.putIfAbsent(w, () => []).add(meta);
       }
     }
 
@@ -2139,51 +2165,131 @@ class M3UService extends ChangeNotifier {
       final regCanonNoSpace = regCanonKey.replaceAll(' ', '');
 
       // 1. Intentar match rápido O(1) por mapa directo o canónico
-      List<M3UItem> candidates = [
-        ...?customByNormTitle[regNormKey],
-        ...?customByCanonTitle[regCanonNoSpace],
-      ];
-
       M3UItem? matchedCustom;
-      for (final candidate in candidates) {
-        if (regItem.isSeries == candidate.isSeries &&
-            regItem.isLive == candidate.isLive) {
-          matchedCustom = candidate;
-          break;
+
+      final normMatches = customByNormTitle[regNormKey];
+      if (normMatches != null) {
+        for (final m in normMatches) {
+          if (regItem.isSeries == m.item.isSeries &&
+              regItem.isLive == m.item.isLive) {
+            matchedCustom = m.item;
+            break;
+          }
         }
       }
 
-      // 2. Si no hubo match O(1), consultar ÚNICAMENTE los candidatos que comparten
-      // al menos una palabra clave significativa (filtrado O(k) ultrarrápido).
-      // Evita recorrer linealmente los cientos de customItems y previene bloqueos/ANR.
       if (matchedCustom == null) {
-        final regWords =
-            regCanonKey.split(' ').where((w) => w.length >= 3).toSet();
-        final Set<M3UItem> smartCandidates = {};
-        for (final w in regWords) {
-          final bucket = customByWord[w];
-          if (bucket != null) {
-            smartCandidates.addAll(bucket);
-          }
-        }
-
-        for (final candidate in smartCandidates) {
-          if (regItem.isSeries == candidate.isSeries &&
-              regItem.isLive == candidate.isLive) {
-            // Solo el titulo principal: los alias ya se resolvieron arriba
-            // por los mapas O(1). Probarlos aqui multiplicaba por ~9 el coste
-            // del bucle mas caro del arranque, sin ganar practicamente nada.
-            if (_isSmartTitleMatch(regItem.name, candidate.name)) {
-              matchedCustom = candidate;
+        final canonMatches = customByCanonTitle[regCanonNoSpace];
+        if (canonMatches != null) {
+          for (final m in canonMatches) {
+            if (regItem.isSeries == m.item.isSeries &&
+                regItem.isLive == m.item.isLive) {
+              matchedCustom = m.item;
               break;
             }
           }
         }
       }
 
+      // 2. Si no hubo match O(1), consultar candidatos por palabras clave
+      if (matchedCustom == null) {
+        final regWords = regCanonKey
+            .split(' ')
+            .where((w) => w.length >= 3 && !_commonStopWords.contains(w))
+            .toSet();
+
+        if (regWords.isNotEmpty) {
+          final Set<_CustomMatchMeta> smartCandidates = {};
+          for (final w in regWords) {
+            final bucket = customByWord[w];
+            if (bucket != null) {
+              smartCandidates.addAll(bucket);
+            }
+          }
+
+          if (smartCandidates.isNotEmpty) {
+            int? regYear;
+            bool calculatedYear = false;
+            Set<String>? regNumbers;
+            bool calculatedNumbers = false;
+
+            for (final candidate in smartCandidates) {
+              if (regItem.isSeries != candidate.item.isSeries ||
+                  regItem.isLive != candidate.item.isLive) {
+                continue;
+              }
+
+              // Año de estreno
+              if (candidate.year != null) {
+                if (!calculatedYear) {
+                  regYear = _extractYearFromTitle(regItem.name);
+                  calculatedYear = true;
+                }
+                if (regYear != null && (regYear - candidate.year!).abs() > 1) {
+                  continue;
+                }
+              }
+
+              // Números en título (secuelas: 1 vs 2)
+              if (candidate.numbers.isNotEmpty) {
+                if (!calculatedNumbers) {
+                  regNumbers = _extractNumbersFromTitle(regCanonKey);
+                  calculatedNumbers = true;
+                }
+                if (regNumbers!.length != candidate.numbers.length ||
+                    !regNumbers.containsAll(candidate.numbers)) {
+                  continue;
+                }
+              } else {
+                if (!calculatedNumbers) {
+                  regNumbers = _extractNumbersFromTitle(regCanonKey);
+                  calculatedNumbers = true;
+                }
+                if (regNumbers!.isNotEmpty) {
+                  continue;
+                }
+              }
+
+              // Match por inclusión o similitud de palabras
+              if (candidate.words.isNotEmpty) {
+                final intersectionCount =
+                    regWords.where(candidate.words.contains).length;
+                final unionCount =
+                    regWords.length + candidate.words.length - intersectionCount;
+                final jaccard =
+                    unionCount > 0 ? intersectionCount / unionCount : 0.0;
+
+                if (jaccard >= 0.75) {
+                  matchedCustom = candidate.item;
+                  break;
+                }
+
+                if ((regWords.length >= 2 && intersectionCount == regWords.length) ||
+                    (candidate.words.length >= 2 &&
+                        intersectionCount == candidate.words.length)) {
+                  matchedCustom = candidate.item;
+                  break;
+                }
+              }
+
+              // Levenshtein fuzzy match
+              if (regCanonNoSpace.length >= 6 &&
+                  candidate.canonNoSpace.length >= 6 &&
+                  (regCanonNoSpace.length - candidate.canonNoSpace.length).abs() <= 3) {
+                final dist = _levenshtein(regCanonNoSpace, candidate.canonNoSpace);
+                final maxLen =
+                    max(regCanonNoSpace.length, candidate.canonNoSpace.length);
+                if (1.0 - (dist / maxLen) >= 0.85) {
+                  matchedCustom = candidate.item;
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+
       if (matchedCustom != null) {
-        // Registrar como enlazado (para que no aparezca como tarjeta huérfana al final),
-        // pero NO impedir que otros items de Xtream del mismo contenido también lo enlacen.
         matchedCustomItems.add(matchedCustom);
 
         final labeledCustom = matchedCustom.copyWith(
@@ -2832,6 +2938,63 @@ class M3UService extends ChangeNotifier {
   // ===========================================================================
   // QUERY HELPERS
   // ===========================================================================
+
+  /// Devuelve el item correspondiente desde el índice global por su URL.
+  M3UItem? findItemByUrl(String url) {
+    if (url.isEmpty || _urlIndex == null) return null;
+    return _urlIndex![url];
+  }
+
+  /// Devuelve las fuentes/servidores alternativos para un item.
+  ///
+  /// Si el item ya trae alternativas las devuelve directamente. Si no las trae
+  /// (por ejemplo porque se abrió antes de que terminara el indexado en segundo
+  /// plano), busca en los índices de películas/series ya clasificados o en el
+  /// catálogo propio de la BD por nombre o URL.
+  List<M3UItem> getAlternativesFor(M3UItem item) {
+    if (item.alternatives.isNotEmpty) return item.alternatives;
+
+    // 1. Buscar en el índice por URL
+    if (item.url.isNotEmpty && _urlIndex != null) {
+      final indexed = _urlIndex![item.url];
+      if (indexed != null && indexed.alternatives.isNotEmpty) {
+        return indexed.alternatives;
+      }
+    }
+
+    // 2. Buscar por nombre en series o películas indexadas
+    final normName = NormalizationUtils.normalizeSeriesName(item.name);
+    if (item.isSeries && _seriesNameIndex != null) {
+      final indexed = _seriesNameIndex![normName];
+      if (indexed != null && indexed.alternatives.isNotEmpty) {
+        return indexed.alternatives;
+      }
+    } else if (!item.isSeries && _movieNameIndex != null) {
+      final indexed = _movieNameIndex![normName];
+      if (indexed != null && indexed.alternatives.isNotEmpty) {
+        return indexed.alternatives;
+      }
+    }
+
+    // 3. Si aún no hay match en los índices, buscar en el contenido propio de la BD
+    if (_customItems.isNotEmpty) {
+      final norm = _normalizeTitleForMatching(item.name);
+      final canon = _canonicalTitleKey(item.name).replaceAll(' ', '');
+      for (final c in _customItems) {
+        if (c.isSeries == item.isSeries && c.isLive == item.isLive) {
+          for (final t in _titulosDeMatch(c)) {
+            if ((norm.isNotEmpty && _normalizeTitleForMatching(t) == norm) ||
+                (canon.isNotEmpty &&
+                    _canonicalTitleKey(t).replaceAll(' ', '') == canon)) {
+              return [c.copyWith(sourceName: 'BD (Más rápida)')];
+            }
+          }
+        }
+      }
+    }
+
+    return const [];
+  }
 
   /// Las categorias que se enseñan en la pantalla de inicio, EN ORDEN.
   ///

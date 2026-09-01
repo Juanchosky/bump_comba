@@ -1,6 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:bump_comba/models/m3u_item.dart';
 import 'package:bump_comba/services/m3u_service.dart';
 
 /// Fila de la BD (custom_content) con sus alias declarados.
@@ -157,6 +156,15 @@ void main() {
         ),
         isTrue,
       );
+    });
+
+    test('getAlternativesFor resuelve alternativas directamente si el item las trae o por match', () {
+      final itemConAlts = xtream('Spider-Man').copyWith(
+        alternatives: [bd('Spider-Man')],
+      );
+      final alts = M3UService().getAlternativesFor(itemConAlts);
+      expect(alts.isNotEmpty, isTrue);
+      expect(alts.first.url, 'https://bd.example/x.mp4');
     });
   });
 }
