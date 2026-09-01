@@ -275,14 +275,31 @@ class DynamicScraperService {
       return false;
     }
 
-    // 2. Streams de Xtream Codes o IPTV por puerto/ruta directa NUNCA son páginas dinámicas
+    // 2. Streams de Xtream Codes o IPTV por puerto/ruta directa NUNCA son páginas
+    //    dinámicas.
+    //
+    //    EL PATRON TIENE QUE SER EL DE XTREAM ENTERO, NO UN PEDAZO.
+    //
+    //    Antes se comprobaba `/movie/` + el regex `/[^/]+/[^/]+/\d+`, y ese
+    //    `\d+` NO exige que el segmento sea numerico: le basta una barra
+    //    seguida de UN digito. En
+    //
+    //      flixlat.com/es/detail/movie/9YyHEfKN2wTk9jnrAH5fa-The-Last-House
+    //
+    //    encontraba `/detail` + `/movie` + `/9` y daba la pagina por "video
+    //    directo": no pasaba por el extractor, se le entregaba el HTML a MPV y
+    //    salia un 403. Y como dependia de si el id de la pagina empezaba por
+    //    numero o por letra, unos titulos de la BD funcionaban y otros no —
+    //    sin patron aparente.
+    //
+    //    Una URL de Xtream es `/movie|series|live/USUARIO/CLAVE/12345.ext`:
+    //    dos segmentos y luego uno TODO numerico, al final. Eso es lo que se
+    //    exige ahora, anclado, para que ninguna ruta de pagina la imite por
+    //    casualidad.
     if (RegExp(r':\d+/(?:movie|series|live)/').hasMatch(lowUrl) ||
-        (lowUrl.contains('/movie/') &&
-            RegExp(r'/[^/]+/[^/]+/\d+').hasMatch(lowUrl)) ||
-        (lowUrl.contains('/series/') &&
-            RegExp(r'/[^/]+/[^/]+/\d+').hasMatch(lowUrl)) ||
-        (lowUrl.contains('/live/') &&
-            RegExp(r'/[^/]+/[^/]+/\d+').hasMatch(lowUrl))) {
+        RegExp(
+          r'/(?:movie|series|live)/[^/]+/[^/]+/\d+(?:\.[a-z0-9]+)?(?:\?|$)',
+        ).hasMatch(lowUrl)) {
       return false;
     }
 

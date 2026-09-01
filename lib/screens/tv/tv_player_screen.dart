@@ -1049,8 +1049,29 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
     return 120;
   }
 
+  /// Cuando se atendio el ultimo salto. Ver `_saltar`.
+  DateTime? _ultimoSalto;
+
+  /// Ritmo maximo al mantener la flecha.
+  ///
+  /// `KeyRepeatEvent` llega CADA 40-50 ms. Sin frenarlo, un segundo de flecha
+  /// mantenida eran ~20 saltos, y para entonces la carrerilla ya iba por 120 s
+  /// cada uno: unos QUINCE MINUTOS de pelicula en un segundo de pulsacion.
+  /// Imposible de apuntar, y de ahi que recorrer la pelicula no funcionara.
+  ///
+  /// A 150 ms salen 6-7 pasos por segundo, que es un ritmo que la vista sigue
+  /// — y ademas hace que la carrerilla se mida en tiempo real: 10 s por paso
+  /// el primer medio segundo, 30 s hasta el segundo y medio, 60 s hasta los
+  /// tres, y 120 s de ahi en adelante.
+  static const Duration _ritmoSalto = Duration(milliseconds: 150);
+
   /// `direccion` es -1 o 1; el tamaño del paso lo decide la carrerilla.
   void _saltar(int direccion) {
+    final ahora = DateTime.now();
+    final previo = _ultimoSalto;
+    if (previo != null && ahora.difference(previo) < _ritmoSalto) return;
+    _ultimoSalto = ahora;
+
     _saltosSeguidos++;
     final segundos = direccion.sign * _paso;
     final base = _preparandoSalto ? _saltoPrevisto : _posicion;
@@ -1064,12 +1085,10 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
       _posicion = destino;
     });
 
-    // Se aplica 400 ms después de la ÚLTIMA pulsación. Saltar en cada
-    // pulsación vacía el búfer una vez por tecla, y recorrer un minuto a base
-    // de toques dejaba el vídeo inservible.
-    // Se aplica 500 ms despues de la ULTIMA pulsacion —antes 400—: con la
-    // flecha mantenida, 400 se quedaba corto y el salto se ejecutaba a mitad
-    // del recorrido, vaciando el bufer sin que hubieras terminado de elegir.
+    // Se aplica 500 ms despues de la ULTIMA pulsacion, no en cada una: saltar
+    // por cada tecla vacia el bufer una vez por pulsacion y recorrer un minuto
+    // a base de toques dejaba el video inservible. Con la flecha mantenida,
+    // ademas, 500 da margen a soltar antes de que se ejecute.
     _confirmarSalto?.cancel();
     _confirmarSalto = Timer(const Duration(milliseconds: 500), _aplicarSalto);
   }
@@ -1077,6 +1096,7 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
   void _aplicarSalto() {
     if (!_preparandoSalto) return;
     _saltosSeguidos = 0; // la carrerilla se pierde al soltar
+    _ultimoSalto = null;
     _player.seek(_saltoPrevisto);
     setState(() => _preparandoSalto = false);
   }
@@ -1185,6 +1205,10 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
         k == LogicalKeyboardKey.arrowLeft || k == LogicalKeyboardKey.arrowRight;
     if (evento is KeyRepeatEvent && esFlecha && !_menuAbierto) {
       if (_foco == 0 || _foco == 1) {
+        // Los controles siguen a la vista mientras se recorre. Sin esto, el
+        // temporizador de 5s no se refrescaba y la linea de tiempo
+        // desaparecia justo mientras la estabas usando.
+        _mostrarControles();
         _saltar(k == LogicalKeyboardKey.arrowLeft ? -1 : 1);
         return KeyEventResult.handled;
       }
