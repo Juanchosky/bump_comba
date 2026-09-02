@@ -1430,9 +1430,10 @@ class _FilaState extends State<_Fila> {
   /// llega con un mando, y para eso esta la rejilla de "ver todo".
   static const int _maxEnFila = 30;
 
-  /// Ancho de tarjeta mas separacion. Con esto el desplazamiento se calcula en
-  /// vez de buscarse: la tarjeta `i` esta en `i * _paso`, siempre.
-  static const double _paso = 150;
+  /// Ancho de tarjeta (126) más separación (8). Con esto el desplazamiento
+  /// se calcula en vez de buscarse: la tarjeta `i` está en `i * _paso`, siempre.
+  /// Antes 150 dejaba 24 px de hueco; con 134 las carátulas quedan a 8 px entre sí.
+  static const double _paso = 132;
 
   final ScrollController _scroll = ScrollController();
   final List<FocusNode> _nodos = [];
