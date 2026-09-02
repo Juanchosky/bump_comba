@@ -341,7 +341,10 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
         try {
           await precacheImage(
             CachedNetworkImageProvider(
-              fondo.replaceFirst('/w500/', '/w1280/'),
+              // El mismo tamaño que pide el destacado (`pantallaCompleta`).
+              // Si no coincide, se precarga una imagen y se pinta otra: el
+              // trabajo se tira y el banner sigue entrando en dos pasos.
+              fondo.replaceFirst('/w500/', '/original/'),
               cacheManager: AppCacheManager.instance,
             ),
             context,

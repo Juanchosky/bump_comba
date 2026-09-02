@@ -1049,9 +1049,23 @@ class _FastThumbnailState extends State<FastThumbnail>
   }
 
   int? _computeCacheWidth() {
-    // Return null to ensure cover arts are always rendered at full resolution/original size,
-    // avoiding any pixelation or low-quality scaling as requested by the user.
-    return null;
+    // Por defecto, sin tope: las carátulas se descodifican al tamaño original
+    // para que no se vean escaladas.
+    //
+    // EN EL TELEVISOR SÍ HAY TOPE, y por un motivo concreto: es un aparato de
+    // 1 GB. Un backdrop original de 3840 px son ~33 MB de mapa de bits, y con
+    // varios en memoria se cierra la app. 1920 es exactamente lo que muestra
+    // un panel 1080p, así que el tope no le quita nada visible.
+    //
+    // El teléfono no entra aquí: `modoTelevisor` solo lo pone el televisor, y
+    // allí las medidas que ya pasan las pantallas se siguen ignorando igual
+    // que antes.
+    if (!FastImageService.modoTelevisor) return null;
+    if (widget.pantallaCompleta) return 1920;
+    // Y en el televisor sí se respeta la medida que pida quien lo usa: la
+    // copia desenfocada del resplandor pide 400 y va a 30 de desenfoque, así
+    // que descodificarla entera era pagar memoria por un detalle que no se ve.
+    return widget.cacheWidth;
   }
 
   @override
@@ -1247,15 +1261,23 @@ class _FastThumbnailState extends State<FastThumbnail>
     // teléfono. OJO: esto REESCRIBE la URL que le pasen, asi que pedir
     // `original` desde fuera no sirve de nada — se sustituye aquí.
     //
-    // `w1280` es nuevo, y es para el destacado del televisor: ahí la imagen
-    // ocupa 1920 px de ancho, y con `w500` se estira casi cuatro veces. Eso
-    // era lo que se veía pixelado en la tele por mucho que se pidiera grande
-    // en la pantalla.
+    // `original` es para el destacado del televisor. Estuvo en `w1280`, que
+    // son 1280x720: en un televisor 1080p el banner ocupa los 1920 px de
+    // ancho, así que eso NO era 1080p — se estiraba un 50%. TMDB no tiene
+    // ningún tamaño intermedio entre `w1280` y `original`, de modo que para
+    // ver 1080p de verdad hay que pedir el original.
+    //
+    // El original puede venir en 3840 px. Se descarga entero, pero NO se
+    // descodifica entero: `_computeCacheWidth` lo limita a 1920 en el
+    // televisor. Sin ese tope, un 4K son ~33 MB de mapa de bits en un aparato
+    // de 1 GB, y ahí es donde se queda sin memoria.
     //
     // El teléfono no cambia: `pantallaCompleta` solo lo pone el televisor.
     if (clean.contains('image.tmdb.org/t/p/')) {
       final String tmdbTargetSize =
-          widget.pantallaCompleta ? 'w1280' : (widget.isHD ? 'w500' : 'w185');
+          widget.pantallaCompleta
+              ? 'original'
+              : (widget.isHD ? 'w500' : 'w185');
       clean = clean.replaceAll(
         RegExp(r'\/t\/p\/(w\d+(_and_h\d+_\w+)?|original)\/'),
         '/t/p/$tmdbTargetSize/',
