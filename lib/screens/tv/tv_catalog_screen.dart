@@ -1477,14 +1477,22 @@ class _FilaState extends State<_Fila> {
     final visibles = _visibles;
 
     return Padding(
-      // 11 y no 34. Con el titulo ya debajo de cada caratula, la separacion
-      // anterior dejaba un vacio que hacia parecer que faltaba algo entre una
-      // fila y otra. Lo justo para que se lean como grupos distintos.
+      // 3, desde los 34 del principio.
       //
-      // No baja mas de aqui: la caratula enfocada crece, y ese crecimiento
-      // sale por abajo. Con menos hueco, la fila de arriba invadiria el
-      // titulo de la de abajo cada vez que se mueve el mando.
-      padding: const EdgeInsets.only(bottom: 11),
+      // ── ESTE NUMERO NO SE PODIA BAJAR SOLO ────────────────────────────
+      //
+      // Lo que limita el hueco no es el hueco: es que la celda enfocada CRECE
+      // desde su centro, y la mitad de ese crecimiento se va por abajo. Con
+      // el zoom al 9% eran ~11 px, asi que por debajo de 6 la caratula
+      // enfocada empezaba a pisar el titulo de la fila siguiente.
+      //
+      // Por eso el zoom baja a la vez, ahora al 4%: se van ~5 px por abajo y
+      // caben enteros en el espacio muerto que la linea de texto deja ENCIMA
+      // de las letras. Por eso el hueco puede ser CERO sin que nada se pise.
+      //
+      // Es un intercambio: el foco se nota menos y las filas quedan pegadas.
+      // Los dos numeros van atados; subir el zoom obliga a devolver hueco.
+      padding: EdgeInsets.zero,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -1496,7 +1504,7 @@ class _FilaState extends State<_Fila> {
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
                 color: Colors.white,
-                fontSize: 18.7,
+                fontSize: 17.5,
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -1519,7 +1527,12 @@ class _FilaState extends State<_Fila> {
               // Caratula (204) + hueco (8) + titulo (~15), y 12 mas de aire:
               // al crecer un 5%, la caratula gana 10 de alto y sin ese margen
               // se comia el titulo de la fila de arriba.
-              height: 248,
+              // 232: la caratula (204), su separacion (8) y el titulo (~17)
+              // suman ~229, y el 4% que crece al enfocarse cabe en lo que
+              // queda. Estaba en 248, y esos ~19 px de sobra eran el hueco
+              // que se veia entre una categoria y la siguiente — no la
+              // separacion entre filas, que ya estaba a cero.
+              height: 232,
               child: ListView.builder(
                 controller: _scroll,
                 scrollDirection: Axis.horizontal,
@@ -1622,7 +1635,9 @@ class _TarjetaMasState extends State<_TarjetaMas> {
         return widget.onTecla(event);
       },
       child: AnimatedScale(
-        scale: _foco ? 1.09 : 1.0,
+        // 1.04: ver el comentario del hueco entre filas. El crecimiento sale
+        // por abajo y es lo unico que impide juntarlas del todo.
+        scale: _foco ? 1.04 : 1.0,
         duration: const Duration(milliseconds: 140),
         curve: Curves.easeOut,
         child: GestureDetector(
@@ -1762,7 +1777,9 @@ class _TarjetaState extends State<_Tarjeta> {
         // Un 5%, no mas: lo justo para que la vista encuentre sola donde esta
         // el foco desde el sofa. Es una transformacion de PINTADO, asi que no
         // recoloca nada de alrededor al crecer.
-        scale: _foco ? 1.09 : 1.0,
+        // 1.04, igual que la tarjeta de "Ver todo": el crecimiento sale por
+        // abajo y es lo que impide juntar las filas.
+        scale: _foco ? 1.04 : 1.0,
         duration: const Duration(milliseconds: 140),
         curve: Curves.easeOut,
         child: GestureDetector(

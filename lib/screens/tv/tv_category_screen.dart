@@ -235,7 +235,7 @@ class _TarjetaState extends State<_Tarjeta> {
                   ),
                 ),
               ),
-              const SizedBox(height: 6),
+              const SizedBox(height: 11),
               AnimatedDefaultTextStyle(
                 duration: const Duration(milliseconds: 130),
                 style: TextStyle(

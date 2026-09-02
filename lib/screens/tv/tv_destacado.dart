@@ -635,8 +635,8 @@ class _Tarjeta extends StatelessWidget {
                         // una etiqueta que cambia de tamaño según dónde caiga se
                         // lee como un descuido. El tamaño de las imágenes ya
                         // marca la jerarquía de sobra.
-                        fontSize: 14,
-                        fontWeight: FontWeight.w400,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w500,
                       ),
                     ),
                   ),
