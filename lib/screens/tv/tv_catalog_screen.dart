@@ -186,6 +186,15 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   /// esos cinco se decide al entrar en la app.
   final Map<int, List<M3UItem>> _destacadosPorSeccion = {};
 
+  /// ¿Están ya TODAS las imágenes del mosaico?
+  ///
+  /// Las fichas de TMDB se piden en cadena, así que las piezas se iban
+  /// rellenando de una en una: seis cajas oscuras que se convertían en
+  /// portadas a destiempo. Eso se ve como una pantalla a medio montar.
+  ///
+  /// Con esto el mosaico espera callado y aparece de una vez, ya completo.
+  bool _heroListo = false;
+
   /// Claves cuya consulta a TMDB sigue en camino. El destacado las usa para
   /// dejar el hueco limpio en vez de enseñar la caratula del proveedor.
   final Set<String> _fichasEnCamino = {};
@@ -270,7 +279,15 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       if (_destacados != yaElegidos) {
         _destacados = yaElegidos;
         _idxDestacado = 0;
-        _pedirFichaHero();
+        // Al volver a una seccion ya elegida sus imagenes suelen estar en
+        // cache, asi que puede darse por listo de inmediato. Y si falta
+        // alguna, la carga la completa y avisa igual: por este camino tambien
+        // hay que pasar por `_cargarImagenesHero`, o el mosaico se quedaria
+        // invisible al volver.
+        _heroListo = _destacados.every(
+          (e) => _fichasHero.containsKey(_claveHero(e)),
+        );
+        _cargarImagenesHero();
       }
       return;
     }
@@ -298,12 +315,39 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       if (!vistos.add(item.seriesName ?? item.name)) continue;
       elegidos.add(item);
     }
+    // ── SI EL SORTEO NO LLENA EL MOSAICO, SE COMPLETA ────────────────────
+    //
+    // El sorteo tira del pool por años, y ese pool sale de leer el año en el
+    // TITULO. En TELENOVELAS casi ningun titulo lo lleva, asi que el pool se
+    // queda corto y salian siete piezas: las dos grandes y solo TRES pequeñas
+    // en vez de cuatro. Un mosaico al que le falta un hueco se ve roto, y el
+    // motivo no tiene nada que ver con lo que el usuario esta mirando.
+    //
+    // Se completa en ORDEN, sin sortear: lo de arriba de la seccion es lo mas
+    // reciente, que es justo lo que el pool por años buscaba. Y respetando lo
+    // ya elegido, para no descolocar lo que el sorteo decidio.
+    if (elegidos.length < _cuantosDestacados) {
+      for (final item in fuente) {
+        if (elegidos.length >= _cuantosDestacados) break;
+        if (item.isLive) continue;
+        if ((item.logo ?? '').isEmpty) continue;
+        if (!vistos.add(item.seriesName ?? item.name)) continue;
+        elegidos.add(item);
+      }
+    }
+
     if (elegidos.isEmpty) return;
 
     _destacadosPorSeccion[_seccion] = elegidos;
     _destacados = elegidos;
+    // Destacados nuevos: se vuelve a esperar a que estén todas sus imágenes.
+    // Si no, la sección nueva heredaría el "ya está" de la anterior y se vería
+    // rellenar pieza a pieza, que es justo lo que se quiere evitar.
+    _heroListo = _destacados.every(
+      (e) => _fichasHero.containsKey(_claveHero(e)),
+    );
     _idxDestacado = 0;
-    _pedirFichaHero();
+    _cargarImagenesHero();
   }
 
   /// La imagen apaisada de cada tarjeta, en el orden de `_destacados`.
@@ -319,7 +363,33 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       (_fichasHero[_claveHero(item)]?['backdrop_url'] as String?),
   ];
 
-  /// Trae de TMDB la imagen apaisada y la sinopsis del destacado actual.
+  /// Trae las imagenes de las seis piezas del mosaico y avisa cuando estan.
+  ///
+  /// ── POR QUE ES UN METODO APARTE ───────────────────────────────────────
+  ///
+  /// Este bucle vivia dentro de `_pedirFichaHero`, y esa funcion SALE ANTES
+  /// DE TIEMPO cuando la ficha ya esta en cache o ya se esta pidiendo. En
+  /// cuanto una sola imagen estaba cacheada, la salida temprana se saltaba el
+  /// aviso de "ya estan todas" y el mosaico se quedaba invisible para siempre.
+  ///
+  /// Aqui fuera el final se alcanza pase lo que pase con cada pieza.
+  ///
+  /// EN CADENA Y NO DE GOLPE: cada peticion arranca cuando termina la
+  /// anterior. Seis a la vez contra TMDB desde un aparato de 1 GB compiten
+  /// entre ellas y con las imagenes que se estan bajando, y el mosaico entero
+  /// tarda mas en estar listo que yendo en fila.
+  Future<void> _cargarImagenesHero() async {
+    for (var i = 0; i < _destacados.length; i++) {
+      if (!mounted) return;
+      await _pedirFichaHero(indice: i);
+    }
+    // Ya no queda ninguna por pedir. Con imagen o sin ella —TMDB puede no
+    // tener el titulo—, esperar mas seria dejar la pantalla vacia por algo que
+    // no va a llegar.
+    if (mounted && !_heroListo) setState(() => _heroListo = true);
+  }
+
+  /// Trae de TMDB la imagen apaisada y la sinopsis de una pieza.
   ///
   /// Y ADEMAS LA DEL SIGUIENTE, en cuanto termina con esta.
   ///
@@ -386,25 +456,6 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       // SIEMPRE, tambien si fallo: si no, el destacado se quedaria esperando
       // una ficha que ya no viene y no enseñaria ni la caratula del proveedor.
       if (mounted) setState(() => _fichasEnCamino.remove(clave));
-
-      // ── Y LAS DEMAS, EN CADENA ────────────────────────────────────────
-      //
-      // Con la portada unica bastaba con la actual y la siguiente. Ahora las
-      // cinco tarjetas se ven a la vez, asi que las cinco necesitan su imagen
-      // o saldrian cajas oscuras al lado de la elegida.
-      //
-      // EN CADENA Y NO DE GOLPE: cada una arranca cuando termina la anterior.
-      // Cinco peticiones simultaneas a TMDB desde un aparato de 1 GB compiten
-      // entre ellas y con la imagen que se esta bajando, y la primera tarjeta
-      // —la que se mira— tarda mas en aparecer que si van en fila.
-      if (mounted && indice == null) {
-        for (var i = 0; i < _destacados.length; i++) {
-          final clave = _claveHero(_destacados[i]);
-          if (_fichasHero.containsKey(clave)) continue;
-          if (_fichasEnCamino.contains(clave)) continue;
-          await _pedirFichaHero(indice: i);
-        }
-      }
     }
   }
 
@@ -1075,6 +1126,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                                 items: _destacados,
                                 indice: _idxDestacado,
                                 imagenes: _imagenesHero,
+                                listo: _heroListo,
                                 onElegir: (i) {
                                   _idxDestacado = i;
                                   _abrirDestacado(false);

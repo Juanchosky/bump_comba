@@ -49,6 +49,19 @@ class TvDestacado extends StatefulWidget {
   /// carátula vertical del proveedor recortada a la fuerza.
   final List<String?> imagenes;
 
+  /// ¿Están ya todas las imágenes?
+  ///
+  /// Mientras es `false` se pintan siluetas en lugar de las portadas.
+  ///
+  /// Las fichas de TMDB llegan en cadena y tardan, así que hay un rato largo
+  /// sin nada. Dejar el sitio en blanco parecía que la app se había colgado;
+  /// las siluetas dicen "esto viene ahora" y de paso enseñan la forma del
+  /// mosaico antes de que llegue.
+  ///
+  /// Se rellenan las seis A LA VEZ, no según van llegando: ver piezas
+  /// aparecer a destiempo es justo lo que se quiere evitar.
+  final bool listo;
+
   /// Abrir el título `i` de [items].
   final ValueChanged<int> onElegir;
 
@@ -69,6 +82,7 @@ class TvDestacado extends StatefulWidget {
     required this.items,
     required this.indice,
     required this.imagenes,
+    required this.listo,
     required this.onElegir,
     required this.onIndice,
     required this.onAbajo,
@@ -121,6 +135,13 @@ class TvDestacado extends StatefulWidget {
   /// hubiera desbordado por ahí. 48 le da sitio para respirar.
   static const double margenSup = 48;
 
+  /// Aire por abajo, entre el mosaico y la primera categoría.
+  ///
+  /// Sobraban más de cien píxeles y ahora quedaban pegados: sin nada de aire,
+  /// el título de la primera fila parece parte del mosaico en vez del
+  /// principio de otra cosa. Esto es lo justo para que se separen.
+  static const double margenInf = 26;
+
   /// Tope de alto. El mosaico no pasa de aquí ni aunque la pantalla dé para
   /// más: por encima se comería la primera fila de carátulas.
   ///
@@ -153,14 +174,25 @@ class TvDestacado extends StatefulWidget {
     // juntas son una vez y media la grande.
     final porAlto = (alturaMaxima - margenSup) / 1.5;
     final altoGrande = porAncho < porAlto ? porAncho : porAlto;
-    return margenSup + altoGrande * 1.5;
+    return margenSup + altoGrande * 1.5 + margenInf;
   }
 
   @override
   State<TvDestacado> createState() => TvDestacadoState();
 }
 
-class TvDestacadoState extends State<TvDestacado> {
+class TvDestacadoState extends State<TvDestacado>
+    with SingleTickerProviderStateMixin {
+  /// El latido de las siluetas.
+  ///
+  /// Quietas parecen un fallo de carga; latiendo despacio se leen como algo
+  /// que está en marcha. Un solo controlador para las seis: en un aparato de
+  /// 1 GB, seis animaciones sueltas se notan.
+  late final AnimationController _pulso = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1100),
+  );
+
   /// Un nodo por HUECO, no por título: los que se turnan comparten sitio.
   final List<FocusNode> _nodos = List.generate(
     TvDestacado.huecos,
@@ -176,6 +208,7 @@ class TvDestacadoState extends State<TvDestacado> {
   @override
   void initState() {
     super.initState();
+    if (!widget.listo) _pulso.repeat(reverse: true);
     _reloj = Timer.periodic(TvDestacado.cadaTurno, (_) {
       if (!mounted) return;
       // ── NO SE MUEVE MIENTRAS LO MIRAS ─────────────────────────────────
@@ -189,7 +222,20 @@ class TvDestacadoState extends State<TvDestacado> {
   }
 
   @override
+  void didUpdateWidget(TvDestacado oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // El latido se para en cuanto hay portadas: seguir animando algo que ya
+    // no se ve es gastar batería y CPU por nada.
+    if (widget.listo && _pulso.isAnimating) {
+      _pulso.stop();
+    } else if (!widget.listo && !_pulso.isAnimating) {
+      _pulso.repeat(reverse: true);
+    }
+  }
+
+  @override
   void dispose() {
+    _pulso.dispose();
     _reloj?.cancel();
     for (final n in _nodos) {
       n.dispose();
@@ -371,6 +417,7 @@ class TvDestacadoState extends State<TvDestacado> {
         return Padding(
           padding: const EdgeInsets.only(
             top: TvDestacado.margenSup,
+            bottom: TvDestacado.margenInf,
             left: TvDestacado.margenIzq,
             right: TvDestacado.margenDer,
           ),
@@ -421,6 +468,17 @@ class TvDestacadoState extends State<TvDestacado> {
       imagen: _imagen(i),
       titulo: _titulo(i),
       conFoco: _foco == h,
+      // LA SILUETA VA DENTRO DE LA PIEZA, no en lugar de ella.
+      //
+      // Estaba en su sitio, como widget aparte, y eso dejaba el mosaico SIN
+      // NODOS DE FOCO mientras cargaba: el mando no encontraba dónde
+      // agarrarse y la navegación se volvía impredecible justo en los
+      // primeros segundos.
+      //
+      // Metiéndola dentro, la pieza es la misma con foco, teclas y borde;
+      // solo cambia lo que se pinta.
+      cargando: !widget.listo,
+      pulso: _pulso,
       // Las rayitas solo en el hueco que se turna: en los fijos no habría nada
       // que contar.
       total: h == 0 ? _rotantesReales : 0,
@@ -440,6 +498,12 @@ class _Tarjeta extends StatelessWidget {
   final String titulo;
   final bool conFoco;
 
+  /// Todavía no hay portada: se pinta la silueta.
+  final bool cargando;
+
+  /// El latido de la silueta.
+  final Animation<double> pulso;
+
   /// Cuántos se turnan aquí. 0 o 1 = no se turna, así que sin rayitas.
   final int total;
   final int posicion;
@@ -454,6 +518,8 @@ class _Tarjeta extends StatelessWidget {
     required this.imagen,
     required this.titulo,
     required this.conFoco,
+    required this.cargando,
+    required this.pulso,
     required this.total,
     required this.posicion,
     required this.onTecla,
@@ -491,7 +557,25 @@ class _Tarjeta extends StatelessWidget {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            if (imagen != null && imagen!.isNotEmpty)
+            if (cargando)
+              // Sin título ni icono a propósito: un texto que aparece y a los
+              // dos segundos lo tapa otra cosa distrae más de lo que informa.
+              AnimatedBuilder(
+                animation: pulso,
+                builder: (context, _) {
+                  // Entre 0.06 y 0.13 de blanco: se nota que respira sin
+                  // llegar a parpadear. Más contraste cansa con seis a la vez.
+                  return ColoredBox(
+                    color:
+                        Color.lerp(
+                          const Color(0xFF15151A),
+                          Colors.white,
+                          0.06 + 0.07 * pulso.value,
+                        )!,
+                  );
+                },
+              )
+            else if (imagen != null && imagen!.isNotEmpty)
               FastThumbnail(
                 url: imagen!,
                 width: ancho,
@@ -507,15 +591,15 @@ class _Tarjeta extends StatelessWidget {
             // y partía el bloque en dos. Pegado al filo, con el aire justo
             // para que la letra no toque el borde.
             //
-            // SOLO CON EL FOCO porque las portadas ya llevan su nombre
-            // impreso. Ponerlo en las seis sería escribir encima de un texto
-            // que ya está ahí, seis veces. Con el foco sí vale: confirma qué
-            // vas a abrir, que es justo lo que la portada no puede decirte.
-            //
-            // El velo oscuro va DEBAJO del texto: una portada clara —un
-            // cielo, una nieve— se come la letra blanca. Solo el tramo de
-            // abajo, para no ensuciar la imagen.
-            if (conFoco)
+            if (!cargando)
+              // SIEMPRE, no solo con el foco. Muchas portadas del proveedor no
+              // traen el nombre impreso, o lo traen en un idioma distinto al del
+              // catálogo, así que sin el rótulo hay piezas que no se sabe qué
+              // son hasta pasar el mando por encima.
+              //
+              // El velo oscuro va DEBAJO del texto: una portada clara —un cielo,
+              // una nieve— se come la letra blanca. Solo el tramo de abajo, para
+              // no ensuciar la imagen.
               Positioned(
                 left: 0,
                 right: 0,
@@ -523,11 +607,14 @@ class _Tarjeta extends StatelessWidget {
                 child: IgnorePointer(
                   child: Container(
                     padding: EdgeInsets.fromLTRB(10, 26, 10, 8),
+                    // El velo, más suave. Estaba casi opaco y se veía como una
+                    // banda negra pegada al pie de cada pieza; ahora solo
+                    // oscurece lo justo para que la letra se lea.
                     decoration: const BoxDecoration(
                       gradient: LinearGradient(
                         begin: Alignment.topCenter,
                         end: Alignment.bottomCenter,
-                        colors: [Color(0x00000000), Color(0xCC000000)],
+                        colors: [Color(0x00000000), Color(0x8A000000)],
                       ),
                     ),
                     child: Text(
@@ -535,11 +622,20 @@ class _Tarjeta extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        color: Colors.white,
-                        // Las grandes mandan por tamaño, también en la letra: si
-                        // las seis llevaran el mismo cuerpo, la jerarquía del
-                        // mosaico se perdería.
-                        fontSize: ancho > 400 ? 19 : 14,
+                        // NO blanco puro. El rótulo es una ayuda, no el asunto
+                        // de la pieza: a plena intensidad compite con la portada
+                        // y en seis piezas a la vez cansa la vista. Bajado, se
+                        // lee igual pero deja de llamar.
+                        color: Colors.white.withValues(alpha: 0.72),
+                        // EL MISMO CUERPO EN LAS SEIS.
+                        //
+                        // Las grandes lo llevaban a 19 y las pequeñas a 14, para
+                        // reforzar la jerarquía. Pero el rótulo no es el título
+                        // de la pieza: es una etiqueta que dice qué hay ahí, y
+                        // una etiqueta que cambia de tamaño según dónde caiga se
+                        // lee como un descuido. El tamaño de las imágenes ya
+                        // marca la jerarquía de sobra.
+                        fontSize: 14,
                         fontWeight: FontWeight.w400,
                       ),
                     ),
@@ -549,7 +645,7 @@ class _Tarjeta extends StatelessWidget {
 
             // Por cuál de los que se turnan va. Visible siempre, con foco o
             // sin él: es lo que avisa de que ese hueco no es fijo.
-            if (total > 1)
+            if (!cargando && total > 1)
               Positioned(
                 right: 10,
                 bottom: 34,
