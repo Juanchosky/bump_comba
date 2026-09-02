@@ -403,7 +403,15 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
                   !_listo
                       ? const SizedBox.expand()
                       : SingleChildScrollView(
-                        padding: const EdgeInsets.fromLTRB(48, 26, 48, 30),
+                        // 50 arriba y no 26: el título quedaba pegado al
+                        // borde de la pantalla.
+                        //
+                        // Se toca aquí, en el relleno del scroll, y no en el
+                        // título: así bajan con él la clasificación y los
+                        // datos que lo rodean, la imagen que va al lado y todo
+                        // lo de debajo, conservando la separación que ya
+                        // tienen entre sí.
+                        padding: const EdgeInsets.fromLTRB(48, 50, 48, 30),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
@@ -509,7 +517,7 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(
             color: Colors.white,
-            fontSize: 26.6,
+            fontSize: 24,
             fontWeight: FontWeight.w700,
             height: 1.15,
           ),
@@ -800,7 +808,13 @@ class _ImagenFichaState extends State<_ImagenFicha> {
             // Con `FastThumbnail`, igual que el catalogo: guarda en disco, asi
             // que volver a una ficha ya vista no vuelve a bajar la imagen.
             if (url != null && url.isNotEmpty)
-              FastThumbnail(url: url, width: 360, height: 203)
+              // `isHD` PORQUE SE VE A 360 px DE ANCHO.
+              //
+              // Sin esta marca, `FastThumbnail` pide `w185` a TMDB: 185 px
+              // estirados a 360 es justo el doble, y eso era lo que se veía
+              // pixelado nada más entrar. Con `isHD` pide `w500`, que sobra
+              // para este tamaño y pesa poco.
+              FastThumbnail(url: url, width: 360, height: 203, isHD: true)
             else
               const Icon(Icons.movie_outlined, color: Colors.white24, size: 52),
 
