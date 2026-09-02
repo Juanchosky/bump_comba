@@ -372,7 +372,9 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
               duration: const Duration(milliseconds: 180),
               child: const Center(
                 child: CupertinoActivityIndicator(
-                  radius: 16,
+                  // 22 y no 16: a distancia de sofá, las aspas de este spinner
+                  // son finas y a 16 apenas se distinguen del fondo.
+                  radius: 22,
                   color: Colors.white,
                 ),
               ),

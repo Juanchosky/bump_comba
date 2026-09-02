@@ -448,7 +448,7 @@ class TvDestacadoState extends State<TvDestacado> {
                       children: [
                         _Boton(
                           nodo: _nodos[0],
-                          texto: 'Reproducir',
+                          texto: 'Ver',
                           icono: Icons.play_arrow_rounded,
                           principal: true,
                           onTecla: (e) => _tecla(0, e),
