@@ -538,8 +538,8 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     if (_scrollVertical.hasClients) {
       _scrollVertical.animateTo(
         0,
-        duration: const Duration(milliseconds: 220),
-        curve: Curves.easeOut,
+        duration: const Duration(milliseconds: 260),
+        curve: Curves.easeOutCubic,
       );
     }
     _llaveHero.currentState?.enfocar();
@@ -623,27 +623,33 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     _columnaActual = columna;
 
     if (_scrollVertical.hasClients) {
-      // La fila de destino, arrimada al borde de arriba pero sin pegarse: se
-      // ve entera y se intuye la siguiente.
-      // Lo que el mosaico ocupa DE VERDAD en esta pantalla, no un tope fijo.
-      // Con el tope, el catalogo se desplazaba de mas y dejaba una franja
-      // vacia justo donde deberia estar la primera categoria.
       final altoDestacado = TvDestacado.alturaPara(
         MediaQuery.sizeOf(context).width,
       );
-      final objetivo = (altoDestacado + destino * _altoFila - 24).clamp(
+      final altoViewport =
+          _scrollVertical.position.hasContentDimensions
+              ? _scrollVertical.position.viewportDimension
+              : MediaQuery.sizeOf(context).height;
+      // Centra la fila activa en la pantalla con espacio arriba y abajo
+      // en vez de pegarla al filo superior bajo el velo negro.
+      final margenSuperior = ((altoViewport - _altoFila) / 2).clamp(
         0.0,
-        _scrollVertical.position.maxScrollExtent,
+        altoViewport / 2,
       );
-      if (intento > 0) {
-        // En los reintentos se salta de golpe: volver a animar en cada
-        // fotograma reinicia la animacion y la lista no llega nunca.
-        _scrollVertical.jumpTo(objetivo);
-      } else {
+      final maxScroll =
+          _scrollVertical.position.hasContentDimensions
+              ? _scrollVertical.position.maxScrollExtent
+              : double.infinity;
+      final objetivo = (altoDestacado + destino * _altoFila - margenSuperior)
+          .clamp(0.0, maxScroll);
+
+      // Solo se inicia la animación en el intento 0: en los reintentos la
+      // animación ya corre suavemente y no se interrumpe con jumpTo.
+      if (intento == 0) {
         _scrollVertical.animateTo(
           objetivo,
-          duration: const Duration(milliseconds: 200),
-          curve: Curves.easeOut,
+          duration: const Duration(milliseconds: 260),
+          curve: Curves.easeOutCubic,
         );
       }
     }
@@ -1214,14 +1220,10 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                             // borde, como en cualquier app de television. El
                             // hueco solo tenia sentido cuando lo primero era una
                             // fila de caratulas.
-                            padding: const EdgeInsets.only(bottom: 40),
-                            // Sin `itemExtent`: ahora la lista tiene dos alturas
-                            // —el destacado y las filas— y cada elemento declara
-                            // la suya. El desplazamiento se sigue CALCULANDO en
-                            // `_irAFila`, que es lo que importaba.
+                            padding: const EdgeInsets.only(bottom: 120),
                             // Una fila de margen construida arriba y abajo: al
                             // bajar, la siguiente ya existe y el foco entra sin
-                            // esperar a que se arme.
+                            // esperar a que se arme, sin saturar la RAM del TV.
                             scrollCacheExtent: const ScrollCacheExtent.pixels(
                               320,
                             ),
