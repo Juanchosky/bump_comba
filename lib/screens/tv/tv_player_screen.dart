@@ -286,12 +286,27 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
       }),
       _player.stream.position.listen((v) {
         // Cada vez que la posicion se mueve de verdad se apunta la hora: es lo
-        // unico que prueba que el video esta corriendo.
+        // unico que prueba que el video esta corriendo. Se apunta SIEMPRE,
+        // tambien mientras se apunta un salto: el vigilante necesita saber que
+        // el video sigue vivo pase lo que pase.
         if (v != _posicion) _ultimoAvance = DateTime.now();
+
+        // ── MIENTRAS SE APUNTA UN SALTO, MANDA EL USUARIO ────────────────
+        //
+        // Aqui estaba el tiron de la linea de tiempo. `_saltar` escribe en
+        // `_posicion` el sitio al que vas, pero el salto no se ejecuta hasta
+        // 500 ms despues de soltar. En ese medio segundo MPV sigue
+        // reproduciendo y mandando su posicion REAL, que caia justo aqui y
+        // pisaba la del usuario.
+        //
+        // Resultado: la marca saltaba adelante al pulsar y volvia atras al
+        // instante siguiente, decenas de veces por segundo. Eso es el
+        // "glitch" — no era el dibujo, eran dos sitios distintos escribiendo
+        // la misma variable a la vez.
+        if (_preparandoSalto) return;
+
         _posicion = v;
-        if (mounted && (_controlesVisibles || _preparandoSalto)) {
-          setState(() {});
-        }
+        if (mounted && _controlesVisibles) setState(() {});
       }),
       _player.stream.duration.listen((v) {
         if (mounted) setState(() => _duracion = v);
@@ -1472,7 +1487,21 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         fit: StackFit.expand,
         children: [
           RepaintBoundary(
-            child: Video(controller: _controlador, controls: NoVideoControls),
+            child: Video(
+              controller: _controlador,
+              controls: NoVideoControls,
+              // EN PEQUEÑO LLENA EL RECUADRO; EN GRANDE, NO.
+              //
+              // Por defecto el vídeo se ajusta entero (`contain`), así que si
+              // su proporción no es la del hueco deja franjas negras — el
+              // recuadro de la ficha se veía a medio ocupar.
+              //
+              // Ahí `cover` es lo correcto: es una vista previa, se recorta un
+              // poco por los lados y llena el hueco. A pantalla completa se
+              // vuelve a `contain`, porque recortar una película para que
+              // cuadre con el televisor sí sería quitarle imagen al usuario.
+              fit: grande ? BoxFit.contain : BoxFit.cover,
+            ),
           ),
 
           // MISMO SPINNER Y MISMA CONDICION QUE EL RECEPTOR.
@@ -1551,23 +1580,6 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
 
           // Velocidad de descarga, arriba a la izquierda. Sale cuando
           // ACOMPAÑA a algo: mientras carga, o con los controles abiertos.
-          if (grande &&
-              (_buffering || !_primerFrameListo || _controlesVisibles))
-            Positioned(
-              top: 40,
-              left: 48,
-              child: Text(
-                '${_kbps.toStringAsFixed(0)} KB/s',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w500,
-                  backgroundColor: Color(0x99000000),
-                  shadows: [Shadow(color: Colors.black, blurRadius: 6)],
-                ),
-              ),
-            ),
-
           // Se avisa de que se reanudo, pero no se pregunta. Enterarse
           // es util; tener que decidir con el mando, no.
           if (grande && _reanudadoDesde != null && _controlesVisibles)

@@ -303,9 +303,30 @@ class DynamicScraperService {
       return false;
     }
 
+    // 2.bis LA FORMA DE LA PAGINA, NO EL DOMINIO
+    //
+    // Todo lo que sigue es una lista de dominios escrita a mano, y el
+    // proveedor los CAMBIA: cuevana.life, dramasfree.com, 123pelicula.com...
+    // Cada dominio nuevo entra sin estar en la lista, `isSupported` dice que
+    // no, y la pagina HTML se le entrega tal cual a MPV — que responde con un
+    // 403 y parece que el servidor esta caido. Eso fue lo que paso con
+    // `ver.123pelicula.com`.
+    //
+    // Todas esas paginas tienen la MISMA forma: `/detail/<tipo>/<id>-<slug>`.
+    // Reconocerla cubre tambien el proximo dominio, sin tener que enterarse
+    // del cambio a base de fallos.
+    //
+    // Va DESPUES de las dos exclusiones de arriba a proposito: los archivos
+    // directos y las rutas de Xtream ya se han descartado, asi que aqui solo
+    // llega algo que se parece a una pagina.
+    if (RegExp(r'^https?://').hasMatch(lowUrl) && lowUrl.contains('/detail/')) {
+      return true;
+    }
+
     // 3. 123flms / 123movies / flmsfree / 123flmsfree / subtitles
     if (lowUrl.contains('123flms') ||
         lowUrl.contains('123movies') ||
+        lowUrl.contains('123pelicula') ||
         lowUrl.contains('flmsfree') ||
         lowUrl.contains('subtitles.')) {
       return true;
