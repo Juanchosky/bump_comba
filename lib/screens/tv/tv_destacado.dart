@@ -311,160 +311,186 @@ class TvDestacadoState extends State<TvDestacado> {
             // es un único Padding: mover esto los mueve todos a la vez y
             // conserva la separación que ya tienen entre sí.
             padding: const EdgeInsets.fromLTRB(106, 80, 0, 0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                SizedBox(
-                  width: 520,
-                  child: Text(
-                    titulo,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 30,
-                      fontWeight: FontWeight.w700,
-                      height: 1.05,
-                      letterSpacing: -0.5,
-                      shadows: [Shadow(color: Colors.black54, blurRadius: 16)],
-                    ),
-                  ),
-                ),
-
-                const SizedBox(height: 9),
-
-                // Año · clasificación · categoría. Alto reservado: TMDB llega
-                // tarde y sin reservarlo, los botones darían un salto hacia
-                // abajo justo cuando el usuario va a pulsarlos.
-                SizedBox(
-                  height: 20,
-                  child: Row(
-                    children: [
-                      if (_anio != null) ...[
-                        Text(
-                          _anio!,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const _Punto(),
-                      ],
-                      if (clasificacion != null) ...[
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 1,
-                          ),
-                          decoration: BoxDecoration(
-                            border: Border.all(
-                              color: Colors.white.withValues(alpha: 0.38),
-                            ),
-                            borderRadius: BorderRadius.circular(3),
-                          ),
-                          child: Text(
-                            clasificacion,
-                            style: const TextStyle(
-                              color: Colors.white70,
-                              fontSize: 10,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                        const _Punto(),
-                      ],
-                      Flexible(
-                        child: Text(
-                          item.category,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white60,
-                            fontSize: 13,
-                          ),
+            // ── O ENTERO, O NADA ──────────────────────────────────────────
+            //
+            // Antes salía el título al instante y un segundo después caían la
+            // clasificación y la sinopsis, con un hueco vacío mientras tanto.
+            // Eso es enseñar el banner a medio montar, y se nota.
+            //
+            // Netflix no llega antes a sus datos: los espera y pinta la
+            // portada ya completa. Aquí igual — el bloque entero aparece de
+            // una vez, cuando ya está todo, subiendo un poco al entrar.
+            //
+            // Si TMDB falla, `esperandoFicha` se apaga igual y sale lo que
+            // haya (título y categoría): completo dentro de lo que existe,
+            // que es distinto de estar a medias.
+            child: AnimatedSlide(
+              offset:
+                  widget.esperandoFicha ? const Offset(0, 0.06) : Offset.zero,
+              duration: const Duration(milliseconds: 420),
+              curve: Curves.easeOutCubic,
+              child: AnimatedOpacity(
+                opacity: widget.esperandoFicha ? 0 : 1,
+                duration: const Duration(milliseconds: 380),
+                curve: Curves.easeOut,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(
+                      width: 520,
+                      child: Text(
+                        titulo,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 30,
+                          fontWeight: FontWeight.w700,
+                          height: 1.05,
+                          letterSpacing: -0.5,
+                          shadows: [
+                            Shadow(color: Colors.black54, blurRadius: 16),
+                          ],
                         ),
                       ),
-                    ],
-                  ),
-                ),
+                    ),
 
-                const SizedBox(height: 11),
+                    const SizedBox(height: 9),
 
-                // Dos líneas de sinopsis. Con hueco reservado, por lo mismo
-                // que la línea de arriba.
-                SizedBox(
-                  width: 440,
-                  height: 38,
-                  child:
-                      sinopsis == null
-                          ? null
-                          : Text(
-                            sinopsis,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: Colors.white70,
-                              fontSize: 13,
-                              height: 1.45,
+                    // Año · clasificación · categoría. Alto reservado: TMDB llega
+                    // tarde y sin reservarlo, los botones darían un salto hacia
+                    // abajo justo cuando el usuario va a pulsarlos.
+                    SizedBox(
+                      height: 20,
+                      child: Row(
+                        children: [
+                          if (_anio != null) ...[
+                            Text(
+                              _anio!,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const _Punto(),
+                          ],
+                          if (clasificacion != null) ...[
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 1,
+                              ),
+                              decoration: BoxDecoration(
+                                border: Border.all(
+                                  color: Colors.white.withValues(alpha: 0.38),
+                                ),
+                                borderRadius: BorderRadius.circular(3),
+                              ),
+                              child: Text(
+                                clasificacion,
+                                style: const TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                            const _Punto(),
+                          ],
+                          Flexible(
+                            child: Text(
+                              item.category,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.white60,
+                                fontSize: 13,
+                              ),
                             ),
                           ),
-                ),
-
-                // Algo más de aire antes de los botones que entre las líneas
-                // de texto: separa lo que se lee de lo que se pulsa.
-                //
-                // Basta con este hueco: los botones y las rayitas van seguidos
-                // en la misma columna, así que bajan juntos y conservan su
-                // separación.
-                const SizedBox(height: 36),
-
-                Row(
-                  children: [
-                    _Boton(
-                      nodo: _nodos[0],
-                      texto: 'Reproducir',
-                      icono: Icons.play_arrow_rounded,
-                      principal: true,
-                      onTecla: (e) => _tecla(0, e),
-                      onFoco: (v) => _cambioFoco(0, v),
-                      onOk: widget.onReproducir,
+                        ],
+                      ),
                     ),
-                    const SizedBox(width: 12),
-                    _Boton(
-                      nodo: _nodos[1],
-                      texto: 'Ver ficha',
-                      icono: Icons.info_outline_rounded,
-                      principal: false,
-                      onTecla: (e) => _tecla(1, e),
-                      onFoco: (v) => _cambioFoco(1, v),
-                      onOk: widget.onFicha,
+
+                    const SizedBox(height: 11),
+
+                    // Dos líneas de sinopsis. Con hueco reservado, por lo mismo
+                    // que la línea de arriba.
+                    SizedBox(
+                      width: 440,
+                      height: 38,
+                      child:
+                          sinopsis == null
+                              ? null
+                              : Text(
+                                sinopsis,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 13,
+                                  height: 1.45,
+                                ),
+                              ),
+                    ),
+
+                    // Algo más de aire antes de los botones que entre las líneas
+                    // de texto: separa lo que se lee de lo que se pulsa.
+                    //
+                    // Basta con este hueco: los botones y las rayitas van seguidos
+                    // en la misma columna, así que bajan juntos y conservan su
+                    // separación.
+                    const SizedBox(height: 36),
+
+                    Row(
+                      children: [
+                        _Boton(
+                          nodo: _nodos[0],
+                          texto: 'Reproducir',
+                          icono: Icons.play_arrow_rounded,
+                          principal: true,
+                          onTecla: (e) => _tecla(0, e),
+                          onFoco: (v) => _cambioFoco(0, v),
+                          onOk: widget.onReproducir,
+                        ),
+                        const SizedBox(width: 12),
+                        _Boton(
+                          nodo: _nodos[1],
+                          texto: 'Ver ficha',
+                          icono: Icons.info_outline_rounded,
+                          principal: false,
+                          onTecla: (e) => _tecla(1, e),
+                          onFoco: (v) => _cambioFoco(1, v),
+                          onOk: widget.onFicha,
+                        ),
+                      ],
+                    ),
+
+                    const SizedBox(height: 14),
+
+                    // Cuál de los destacados se está viendo. Rayas y no puntos:
+                    // desde el sofá, un punto de 6 píxeles no se ve.
+                    Row(
+                      children: [
+                        for (var i = 0; i < widget.items.length; i++) ...[
+                          AnimatedContainer(
+                            duration: const Duration(milliseconds: 200),
+                            width: i == widget.indice ? 24 : 15,
+                            height: 3,
+                            color:
+                                i == widget.indice
+                                    ? Colors.white
+                                    : Colors.white.withValues(alpha: 0.28),
+                          ),
+                          const SizedBox(width: 5),
+                        ],
+                      ],
                     ),
                   ],
                 ),
-
-                const SizedBox(height: 14),
-
-                // Cuál de los destacados se está viendo. Rayas y no puntos:
-                // desde el sofá, un punto de 6 píxeles no se ve.
-                Row(
-                  children: [
-                    for (var i = 0; i < widget.items.length; i++) ...[
-                      AnimatedContainer(
-                        duration: const Duration(milliseconds: 200),
-                        width: i == widget.indice ? 24 : 15,
-                        height: 3,
-                        color:
-                            i == widget.indice
-                                ? Colors.white
-                                : Colors.white.withValues(alpha: 0.28),
-                      ),
-                      const SizedBox(width: 5),
-                    ],
-                  ],
-                ),
-              ],
+              ),
             ),
           ),
         ],

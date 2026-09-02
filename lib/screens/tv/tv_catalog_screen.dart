@@ -309,9 +309,20 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   }
 
   /// Trae de TMDB la imagen apaisada y la sinopsis del destacado actual.
-  Future<void> _pedirFichaHero() async {
+  ///
+  /// Y ADEMAS LA DEL SIGUIENTE, en cuanto termina con esta.
+  ///
+  /// El banner ya no se pinta a medias: mientras espera a TMDB deja el hueco
+  /// y aparece entero. Bien la primera vez — pero el turno cambia de titulo
+  /// cada 8 segundos, y si cada uno se pidiera al llegarle su turno, el banner
+  /// se vaciaria y se rellenaria una y otra vez.
+  ///
+  /// Pidiendo el siguiente por adelantado, cuando le toca ya esta en
+  /// `_fichasHero` y con su imagen en cache: entra directo, sin espera.
+  Future<void> _pedirFichaHero({int? indice}) async {
     if (_destacados.isEmpty) return;
-    final item = _destacados[_idxDestacado.clamp(0, _destacados.length - 1)];
+    final i = (indice ?? _idxDestacado).clamp(0, _destacados.length - 1);
+    final item = _destacados[i];
     final clave = _claveHero(item);
     if (_fichasHero.containsKey(clave)) return;
     if (_fichasEnCamino.contains(clave)) return;
@@ -364,6 +375,12 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       // SIEMPRE, tambien si fallo: si no, el destacado se quedaria esperando
       // una ficha que ya no viene y no enseñaria ni la caratula del proveedor.
       if (mounted) setState(() => _fichasEnCamino.remove(clave));
+
+      // El siguiente, ya en marcha. Solo desde el actual: encadenar desde el
+      // precargado pediria los cinco de golpe, y TMDB no es gratis.
+      if (mounted && indice == null && _destacados.length > 1) {
+        _pedirFichaHero(indice: (_idxDestacado + 1) % _destacados.length);
+      }
     }
   }
 
