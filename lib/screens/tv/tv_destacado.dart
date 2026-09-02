@@ -28,6 +28,15 @@ class TvDestacado extends StatefulWidget {
   /// apaisada. Llega tarde y puede no llegar: la cabecera se pinta igual.
   final Map<String, dynamic>? ficha;
 
+  /// TMDB todavia no ha contestado para este titulo.
+  ///
+  /// Mientras es cierto NO se enseña la caratula del proveedor. Esa caratula
+  /// es VERTICAL y el hueco del banner es apaisado, asi que entraba recortada
+  /// —"cortada", como se veia— y un segundo despues la sustituia la imagen
+  /// buena. Dos imagenes distintas seguidas se ven como un fallo. Mejor el
+  /// hueco oscuro un momento y luego la imagen definitiva, ya bien.
+  final bool esperandoFicha;
+
   final VoidCallback onReproducir;
   final VoidCallback onFicha;
 
@@ -50,6 +59,7 @@ class TvDestacado extends StatefulWidget {
     required this.items,
     required this.indice,
     required this.ficha,
+    this.esperandoFicha = false,
     required this.onReproducir,
     required this.onFicha,
     required this.onAbajo,
@@ -204,7 +214,9 @@ class TvDestacadoState extends State<TvDestacado> {
     final fondo =
         _grande(_texto('backdrop_url')) ??
         _grande(_texto('poster_url')) ??
-        item.logo;
+        // Solo cuando ya sabemos que TMDB no tiene nada que darnos: si sigue
+        // en camino, la caratula vertical seria un parpadeo, no un respaldo.
+        (widget.esperandoFicha ? null : item.logo);
     final esApaisada = _texto('backdrop_url') != null;
 
     return SizedBox(
@@ -292,9 +304,13 @@ class TvDestacadoState extends State<TvDestacado> {
           // haya un corte recto entre las dos zonas.
           // ── El contenido ─────────────────────────────────────────────
           Padding(
-            // 58 arriba: el texto tiene que respirar. Pegado al borde se lee
+            // 80 arriba: el texto tiene que respirar. Pegado al borde se lee
             // como si se hubiera desbordado, no como una portada.
-            padding: const EdgeInsets.fromLTRB(106, 58, 0, 0),
+            //
+            // Baja el bloque entero —título, datos, sinopsis y botones— porque
+            // es un único Padding: mover esto los mueve todos a la vez y
+            // conserva la separación que ya tienen entre sí.
+            padding: const EdgeInsets.fromLTRB(106, 80, 0, 0),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
@@ -307,7 +323,7 @@ class TvDestacadoState extends State<TvDestacado> {
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                       color: Colors.white,
-                      fontSize: 34,
+                      fontSize: 30,
                       fontWeight: FontWeight.w700,
                       height: 1.05,
                       letterSpacing: -0.5,
@@ -316,13 +332,13 @@ class TvDestacadoState extends State<TvDestacado> {
                   ),
                 ),
 
-                const SizedBox(height: 10),
+                const SizedBox(height: 9),
 
                 // Año · clasificación · categoría. Alto reservado: TMDB llega
                 // tarde y sin reservarlo, los botones darían un salto hacia
                 // abajo justo cuando el usuario va a pulsarlos.
                 SizedBox(
-                  height: 22,
+                  height: 20,
                   child: Row(
                     children: [
                       if (_anio != null) ...[
@@ -330,7 +346,7 @@ class TvDestacadoState extends State<TvDestacado> {
                           _anio!,
                           style: const TextStyle(
                             color: Colors.white,
-                            fontSize: 14,
+                            fontSize: 13,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
@@ -352,7 +368,7 @@ class TvDestacadoState extends State<TvDestacado> {
                             clasificacion,
                             style: const TextStyle(
                               color: Colors.white70,
-                              fontSize: 11,
+                              fontSize: 10,
                               fontWeight: FontWeight.w700,
                             ),
                           ),
@@ -366,7 +382,7 @@ class TvDestacadoState extends State<TvDestacado> {
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
                             color: Colors.white60,
-                            fontSize: 14,
+                            fontSize: 13,
                           ),
                         ),
                       ),
@@ -374,13 +390,13 @@ class TvDestacadoState extends State<TvDestacado> {
                   ),
                 ),
 
-                const SizedBox(height: 12),
+                const SizedBox(height: 11),
 
                 // Dos líneas de sinopsis. Con hueco reservado, por lo mismo
                 // que la línea de arriba.
                 SizedBox(
                   width: 440,
-                  height: 42,
+                  height: 38,
                   child:
                       sinopsis == null
                           ? null
@@ -390,13 +406,19 @@ class TvDestacadoState extends State<TvDestacado> {
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
                               color: Colors.white70,
-                              fontSize: 14,
+                              fontSize: 13,
                               height: 1.45,
                             ),
                           ),
                 ),
 
-                const SizedBox(height: 14),
+                // Algo más de aire antes de los botones que entre las líneas
+                // de texto: separa lo que se lee de lo que se pulsa.
+                //
+                // Basta con este hueco: los botones y las rayitas van seguidos
+                // en la misma columna, así que bajan juntos y conservan su
+                // separación.
+                const SizedBox(height: 36),
 
                 Row(
                   children: [
@@ -527,18 +549,18 @@ class _BotonState extends State<_Boton> {
         alignment: Alignment.centerLeft,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 140),
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 17, vertical: 8),
           decoration: BoxDecoration(color: fondo),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(widget.icono, color: tinta, size: 20),
-              const SizedBox(width: 8),
+              Icon(widget.icono, color: tinta, size: 18),
+              const SizedBox(width: 7),
               Text(
                 widget.texto,
                 style: TextStyle(
                   color: tinta,
-                  fontSize: 15,
+                  fontSize: 14,
                   fontWeight: FontWeight.w600,
                 ),
               ),

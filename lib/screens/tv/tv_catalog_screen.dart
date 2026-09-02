@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import '../../services/fast_image_service.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import '../../services/m3u_service.dart';
 import '../../services/tmdb_service.dart';
 import '../../utils/titulo_tmdb.dart';
@@ -172,10 +173,80 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
 
   /// El turno de destacados. Solo corre con el foco arriba: una imagen que
   /// cambia sola mientras miras las filas distrae en vez de ayudar.
+  /// El turno de destacados. Solo corre con el foco arriba: una imagen que
+  /// cambia sola mientras miras las filas distrae en vez de ayudar.
   Timer? _turnoHero;
 
   static const int _cuantosDestacados = 5;
   static const Duration _cadaTurno = Duration(seconds: 8);
+
+  /// Los cinco de cada seccion, para no volver a sortear al ir y volver.
+  ///
+  /// `_prepararDestacados` se llama en CADA aviso del servicio. Sin esto, los
+  /// destacados se resorteaban con cada dato nuevo que llegaba, encima del
+  /// turno de 8 segundos. Lo que rota es cual de los cinco se ve; cuales son
+  /// esos cinco se decide al entrar en la app.
+  final Map<int, List<M3UItem>> _destacadosPorSeccion = {};
+
+  /// Claves cuya consulta a TMDB sigue en camino. El destacado las usa para
+  /// dejar el hueco limpio en vez de enseñar la caratula del proveedor.
+  final Set<String> _fichasEnCamino = {};
+
+  /// De donde sale el destacado, con el algoritmo del telefono.
+  ///
+  /// Copiado de `_buildHeroRandomLatest` del movil, que es donde ya esta
+  /// probado. Hace tres cosas:
+  ///
+  ///  1. QUITA lo que no es pelicula ni serie. Un canal en la portada de la
+  ///     app no es un descuido menor.
+  ///
+  ///  2. AGRUPA POR AÑO, leido del titulo: el catalogo no trae el año en un
+  ///     campo aparte, asi que se saca de ahi — como en el telefono.
+  ///
+  ///  3. PESA TRIPLE EL AÑO MAS RECIENTE y suma años hacia atras hasta juntar
+  ///     diez titulos. Asi la portada son estrenos sin quedarse en cuatro
+  ///     titulos cuando el año va empezando.
+  List<M3UItem> _poolPorAnio(List<M3UItem> origen) {
+    final validos =
+        origen.where((i) => !i.isLive).where((i) {
+          final n = i.name.toLowerCase();
+          return !n.contains('canal ') &&
+              !n.contains('tv ') &&
+              !n.contains('en vivo');
+        }).toList();
+    if (validos.isEmpty) return const [];
+
+    final porAnio = <int, List<M3UItem>>{};
+    final reAnio = RegExp(r'(\d{4})');
+    for (final item in validos) {
+      final coincidencias = reAnio.allMatches(item.name);
+      if (coincidencias.isEmpty) continue;
+      final anio = int.tryParse(coincidencias.last.group(1) ?? '');
+      if (anio == null || anio < 1950 || anio > 2100) continue;
+      porAnio.putIfAbsent(anio, () => []).add(item);
+    }
+    if (porAnio.isEmpty) return validos;
+
+    final anios = porAnio.keys.toList()..sort((a, b) => b.compareTo(a));
+    final pool = <M3UItem>[];
+    var unicos = 0;
+    for (var i = 0; i < anios.length; i++) {
+      final delAnio = porAnio[anios[i]]!;
+      unicos += delAnio.length;
+      if (i == 0) {
+        for (final item in delAnio) {
+          pool
+            ..add(item)
+            ..add(item)
+            ..add(item);
+        }
+      } else {
+        pool.addAll(delAnio);
+      }
+      if (unicos >= 10) break;
+    }
+    return pool.isEmpty ? validos : pool;
+  }
 
   /// Recalcula los destacados.
   ///
@@ -192,6 +263,20 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   /// manda siempre esa primera fila, porque una tendencia global no dice nada
   /// dentro de TELENOVELAS.
   void _prepararDestacados() {
+    // ── SE ELIGE UNA VEZ Y SE QUEDA ──────────────────────────────────────
+    //
+    // Guardado por seccion: ir a SERIES y volver a INICIO devuelve el mismo
+    // titulo que dejaste, y solo cambia al volver a entrar en la app.
+    final yaElegidos = _destacadosPorSeccion[_seccion];
+    if (yaElegidos != null && yaElegidos.isNotEmpty) {
+      if (_destacados != yaElegidos) {
+        _destacados = yaElegidos;
+        _idxDestacado = 0;
+        _pedirFichaHero();
+      }
+      return;
+    }
+
     final primera = _filas.isEmpty ? const <M3UItem>[] : _filas.first.items;
 
     var fuente = primera;
@@ -200,24 +285,26 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       if (tendencia.isNotEmpty) fuente = _agrupar(tendencia, tope: null);
     }
 
-    final nuevos =
-        [
-          for (final e in fuente)
-            if ((e.logo ?? '').isNotEmpty) e,
-        ].take(_cuantosDestacados).toList();
+    // El pool del telefono: años recientes, con peso triple al ultimo.
+    final pool = _poolPorAnio(fuente);
+    if (pool.isEmpty) return;
 
-    // Si son los mismos, no se toca nada: reasignar reiniciaria el turno y
-    // haria parpadear la imagen sin motivo.
-    final iguales =
-        nuevos.length == _destacados.length &&
-        List.generate(
-          nuevos.length,
-          (i) => nuevos[i].url == _destacados[i].url,
-        ).every((x) => x);
-    if (iguales) return;
+    final elegidos = <M3UItem>[];
+    final vistos = <String>{};
+    var semilla = DateTime.now().microsecond;
+    for (var intento = 0; intento < pool.length * 3; intento++) {
+      if (elegidos.length >= _cuantosDestacados) break;
+      final item = pool[semilla % pool.length];
+      semilla = semilla * 31 + 17;
+      if ((item.logo ?? '').isEmpty) continue;
+      if (!vistos.add(item.seriesName ?? item.name)) continue;
+      elegidos.add(item);
+    }
+    if (elegidos.isEmpty) return;
 
-    _destacados = nuevos;
-    if (_idxDestacado >= _destacados.length) _idxDestacado = 0;
+    _destacadosPorSeccion[_seccion] = elegidos;
+    _destacados = elegidos;
+    _idxDestacado = 0;
     _pedirFichaHero();
   }
 
@@ -227,6 +314,8 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     final item = _destacados[_idxDestacado.clamp(0, _destacados.length - 1)];
     final clave = _claveHero(item);
     if (_fichasHero.containsKey(clave)) return;
+    if (_fichasEnCamino.contains(clave)) return;
+    setState(() => _fichasEnCamino.add(clave));
 
     try {
       final d = await TMDBService().searchAndGetDetails(
@@ -238,10 +327,40 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
         isSeries: item.isSeries || item.seriesName != null,
       );
       if (!mounted || d.isEmpty) return;
+
+      // ── LA IMAGEN SE BAJA ANTES DE ENSEÑARLA ────────────────────────
+      //
+      // Sin esto, el banner cambia a la URL nueva y la descarga empieza con el
+      // hueco ya en pantalla. Precargandola, cuando el banner la pide ya esta
+      // en memoria y entra de una vez, sin pasos intermedios.
+      //
+      // Con plazo: una imagen que no llega no puede dejar el banner vacio para
+      // siempre.
+      final fondo = (d['backdrop_url'] ?? d['poster_url'])?.toString();
+      if (fondo != null && fondo.isNotEmpty && mounted) {
+        try {
+          await precacheImage(
+            CachedNetworkImageProvider(
+              fondo.replaceFirst('/w500/', '/w1280/'),
+              cacheManager: AppCacheManager.instance,
+            ),
+            context,
+            onError: (_, _) {},
+          ).timeout(const Duration(seconds: 8));
+        } catch (_) {
+          // Da igual: se enseña y que termine de bajar en pantalla.
+        }
+      }
+
+      if (!mounted) return;
       _fichasHero[clave] = d;
       setState(() {});
     } catch (_) {
       // Sin ficha el destacado se ve igual, solo que con menos texto.
+    } finally {
+      // SIEMPRE, tambien si fallo: si no, el destacado se quedaria esperando
+      // una ficha que ya no viene y no enseñaria ni la caratula del proveedor.
+      if (mounted) setState(() => _fichasEnCamino.remove(clave));
     }
   }
 
@@ -259,6 +378,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   ///
   /// Reinicia el turno automatico: si acabas de elegir tu el titulo, que la
   /// cuenta atras te lo cambie dos segundos despues es de todo menos util.
+  ///
   void _siguienteDestacado() {
     if (_destacados.length < 2) return;
     setState(() => _idxDestacado = (_idxDestacado + 1) % _destacados.length);
@@ -449,6 +569,8 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     WatchProgressService().removeListener(_alCambiarProgreso);
     _refrescoSeguirViendo?.cancel();
     _cierreLateral?.cancel();
+    // Es periodico: sin esto sigue latiendo con la pantalla ya cerrada.
+    _turnoHero?.cancel();
     for (final n in _nodosLateral) {
       n.dispose();
     }
@@ -927,6 +1049,16 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                                 key: _llaveHero,
                                 items: _destacados,
                                 indice: _idxDestacado,
+                                esperandoFicha:
+                                    _destacados.isNotEmpty &&
+                                    _fichasEnCamino.contains(
+                                      _claveHero(
+                                        _destacados[_idxDestacado.clamp(
+                                          0,
+                                          _destacados.length - 1,
+                                        )],
+                                      ),
+                                    ),
                                 ficha:
                                     _destacados.isEmpty
                                         ? null
