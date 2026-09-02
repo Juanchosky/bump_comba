@@ -65,15 +65,15 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   // ningun sitio es peor que no tenerla.
   //
   // Telenovelas y Animacion se resuelven por el NOMBRE de la categoria del
-  // proveedor, que es el unico dato que hay. Es aproximado a proposito: mas
+  // proveedor, que es elunico dato que hay. Es aproximado a proposito: mas
   // vale que caiga alguna de mas a que la seccion salga vacia.
   static const List<({String texto, IconData icono})> _secciones = [
-    (texto: 'INICIO', icono: Icons.home_outlined),
-    (texto: 'PELÍCULAS', icono: Icons.movie_outlined),
-    (texto: 'SERIES', icono: Icons.smart_display_outlined),
-    (texto: 'TELENOVELAS', icono: Icons.favorite_outline),
-    (texto: 'ANIMACIÓN', icono: Icons.child_care_outlined),
-    (texto: 'BUSCAR', icono: Icons.search),
+    (texto: 'Inicio', icono: Icons.home_outlined),
+    (texto: 'Peliculas', icono: Icons.movie_outlined),
+    (texto: 'Series', icono: Icons.smart_display_outlined),
+    (texto: 'Telenovelas', icono: Icons.favorite_outline),
+    (texto: 'Animacion', icono: Icons.child_care_outlined),
+    (texto: 'Buscar', icono: Icons.search),
   ];
 
   /// BUSCAR no es una seccion del catalogo: es una pantalla aparte.
@@ -1819,7 +1819,10 @@ class _Lateral extends StatelessWidget {
       // Recogido caben los iconos; abierto, iconos y texto. La transicion es
       // de 220 ms: lo bastante para que se lea como un movimiento y no como un
       // salto, y lo bastante corta para no estorbar a quien va rapido.
-      width: abierto ? 218 : 90,
+      // 236 y no 218: el texto crecio a 16 px con mas espacio entre letras, y
+      // "TELENOVELAS" se quedaba al filo. Como recorta sin avisar
+      // (`overflow: clip`), no habria dado error — solo una palabra cortada.
+      width: abierto ? 236 : 90,
       padding: const EdgeInsets.only(left: 30, top: 26, bottom: 26),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1836,6 +1839,7 @@ class _Lateral extends StatelessWidget {
 
           for (int i = 0; i < secciones.length; i++)
             _ItemLateral(
+              indice: i,
               texto: secciones[i].texto,
               icono: secciones[i].icono,
               activa: i == activa,
@@ -1868,6 +1872,10 @@ class _Lateral extends StatelessWidget {
 }
 
 class _ItemLateral extends StatefulWidget {
+  /// Su sitio en la lista. Solo sirve para retrasar su entrada: ver seis
+  /// textos aparecer a la vez es un interruptor; verlos caer de arriba abajo
+  /// es un movimiento, y se lee como que el menu se despliega.
+  final int indice;
   final String texto;
   final IconData icono;
   final bool activa;
@@ -1880,6 +1888,7 @@ class _ItemLateral extends StatefulWidget {
   final VoidCallback? onAbajo;
 
   const _ItemLateral({
+    required this.indice,
     required this.texto,
     required this.icono,
     required this.activa,
@@ -1915,7 +1924,11 @@ class _ItemLateralState extends State<_ItemLateral> {
     } else if (widget.activa) {
       color = const Color(0xFFE50914);
     } else {
-      color = Colors.white38;
+      // Estaba en `white38`. En un panel de televisor, a tres metros y con la
+      // imagen del destacado detras, ese gris se lee como texto deshabilitado
+      // — de ahi que el menu pareciera de relleno. Sube lo justo para que se
+      // lea como una opcion mas, sin competir con la seccion abierta.
+      color = Colors.white.withValues(alpha: 0.52);
     }
 
     return Focus(
@@ -1955,25 +1968,66 @@ class _ItemLateralState extends State<_ItemLateral> {
         padding: const EdgeInsets.only(bottom: 26),
         child: Row(
           children: [
-            Icon(widget.icono, size: 20, color: color),
-            const SizedBox(width: 13),
+            AnimatedScale(
+              // El icono acompaña al foco. Muy poco: es una señal de apoyo,
+              // el color ya hace el trabajo.
+              scale: _foco ? 1.12 : 1.0,
+              duration: const Duration(milliseconds: 180),
+              curve: Curves.easeOutBack,
+              child: Icon(widget.icono, size: 21, color: color),
+            ),
+            const SizedBox(width: 16),
             Expanded(
-              // Recogido el texto se desvanece en vez de desaparecer de golpe:
-              // el ancho del menu y la opacidad viajan juntos y el movimiento
-              // se lee como uno solo.
-              child: AnimatedOpacity(
-                duration: const Duration(milliseconds: 180),
-                opacity: widget.abierto ? 1 : 0,
+              // ── LA ENTRADA, EN CASCADA ────────────────────────────────
+              //
+              // Antes los seis textos se desvanecian a la vez y con el mismo
+              // plazo: el menu se encendia como un interruptor. Ahora cada uno
+              // entra un poco despues que el de arriba y llega deslizandose
+              // desde la izquierda, siguiendo al panel que se abre.
+              //
+              // El retraso se hace con la DURACION, no con un temporizador:
+              // todos arrancan juntos pero cada uno tarda mas, asi que llegan
+              // escalonados. Sin temporizadores no hay nada que cancelar si el
+              // menu se cierra a medias — y con un mando eso pasa a menudo.
+              //
+              // 34 ms por escalon: seis items son 170 ms de diferencia entre
+              // el primero y el ultimo. Mas que eso y el ultimo llega tarde
+              // para alguien que ya esta bajando con el mando.
+              child: TweenAnimationBuilder<double>(
+                tween: Tween<double>(begin: 0, end: widget.abierto ? 1.0 : 0.0),
+                duration: Duration(milliseconds: 230 + widget.indice * 34),
+                curve: Curves.easeOutCubic,
+                builder: (context, t, hijo) {
+                  return Opacity(
+                    opacity: t.clamp(0.0, 1.0),
+                    child: Transform.translate(
+                      // Entra desde la izquierda, desde debajo del icono, que
+                      // es de donde viene el panel. Corto a proposito: un
+                      // recorrido largo se nota lento aunque dure lo mismo.
+                      offset: Offset((1 - t) * -22, 0),
+                      child: hijo,
+                    ),
+                  );
+                },
                 child: AnimatedDefaultTextStyle(
                   duration: const Duration(milliseconds: 130),
+                  // TODO EN MAYUSCULAS necesita mas espacio entre letras que
+                  // el texto normal: las mayusculas no tienen ascendentes ni
+                  // descendentes que separen unas de otras, y apretadas se
+                  // leen como un bloque. Estaba en 0.7, que para 15 px en
+                  // versales es poco — eso es lo que le daba el aire de
+                  // plantilla sin rematar. 1.6 las separa de verdad.
+                  //
+                  // Y el grosor base sube de w500 a w600: a distancia de sofa
+                  // los trazos finos se deshacen contra el fondo.
                   style: TextStyle(
                     color: color,
                     fontSize: 15,
                     fontWeight:
                         widget.activa || _foco
-                            ? FontWeight.w700
+                            ? FontWeight.w500
                             : FontWeight.w500,
-                    letterSpacing: 0.7,
+                    letterSpacing: 0.4,
                   ),
                   child: Text(
                     widget.texto,
