@@ -485,17 +485,31 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     // la pagina en el navegador invisible — con el usuario mirando una pantalla
     // parada. De ahi el "al cambiar de servidor se pone lentisimo".
     //
-    // Lanzandolo a los 3 segundos de abrir, cuando el failover llegue la
-    // pagina lleva 6 segundos resolviendose y lo normal es que ya este lista:
-    // el cambio es inmediato y el trabajo caro ya paso.
+    // ── SOLO SI EL VIDEO VA BIEN DE VERDAD ────────────────────────────────
     //
-    // 3 y no 0: el primer servidor se merece unos segundos de pista libre para
-    // arrancar sin competencia. Si arranca, no se pierde nada — el trabajo
-    // queda hecho para cuando haga falta.
-    _prepararAlternativas = Timer(
-      const Duration(seconds: 3),
-      _prepararAlternativasEnSegundoPlano,
-    );
+    // Esto abre un WebView para resolver la pagina de OTRO servidor por
+    // adelantado. Un WebView es un Chromium entero: carga la web del proveedor
+    // con sus fuentes, su JavaScript y su analitica.
+    //
+    // Estaba lanzado a los 3 segundos de abrir, SIEMPRE. Y en el log se ve lo
+    // que eso provoca en un televisor de gama baja: el bufer ya venia justo
+    // —"acelerando mid-stream, 1.7 Mbps"—, arranca el navegador encima, y MPV
+    // empieza con "End of file" y "Packet corrupt". El adelanto que pretendia
+    // ahorrar tiempo era justo lo que tumbaba la reproduccion.
+    //
+    // Ahora se comprueba cada 8 segundos y solo se dispara cuando el video
+    // lleva un rato largo yendo fino. Si nunca va fino, no se prepara nada:
+    // ese aparato no da para las dos cosas a la vez, y el video es lo que el
+    // usuario esta mirando.
+    _prepararAlternativas = Timer.periodic(const Duration(seconds: 8), (t) {
+      if (_muerto) {
+        t.cancel();
+        return;
+      }
+      if (!_reproduccionSana) return;
+      t.cancel();
+      _prepararAlternativasEnSegundoPlano();
+    });
 
     _armarVigilante();
     _armarGuardado();
@@ -585,15 +599,50 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     _resolviendo.add(indice);
     debugPrint('TvPlayer: resolviendo la pagina del servidor $indice...');
     try {
-      final r = await DynamicScraperService()
-          .extractStreamResult(pagina)
-          .timeout(const Duration(seconds: 45));
-      if (r != null && r.videoUrl.isNotEmpty) {
-        _resueltos[indice] = r.videoUrl;
-        debugPrint('TvPlayer: servidor $indice resuelto');
-        return r.videoUrl;
+      // ── DOS INTENTOS, COMO EN EL TELEFONO ──────────────────────────────
+      //
+      // Aqui se probaba UNA vez y, si fallaba, el servidor se daba por roto.
+      // Pero la extraccion no falla solo cuando el servidor esta caido: falla
+      // cuando la web tarda de mas, cuando el WebView arranca justo con poca
+      // memoria, cuando un anuncio se cuela antes que el reproductor... y a la
+      // segunda sale. El telefono reintenta por eso, y era la diferencia por
+      // la que en el televisor habia titulos de la BD que "no funcionaban" y
+      // en el movil si.
+      for (var intento = 0; intento < 2; intento++) {
+        if (_muerto) return null;
+        if (intento > 0) {
+          debugPrint('TvPlayer: reintentando la pagina del servidor $indice');
+          // Un respiro antes de repetir: reintentar al instante suele repetir
+          // el mismo fallo, porque lo que fallo sigue ocupado.
+          await Future<void>.delayed(const Duration(seconds: 2));
+          if (_muerto) return null;
+        }
+
+        final r = await DynamicScraperService()
+            .extractStreamResult(pagina)
+            .timeout(const Duration(seconds: 45));
+
+        if (r != null && r.videoUrl.isNotEmpty) {
+          _resueltos[indice] = r.videoUrl;
+          // LOS SUBTITULOS SE GUARDAN, no se tiran.
+          //
+          // El extractor los devuelve junto al video —el telefono los recoge
+          // en `_scrapedSubtitles`— y aqui se estaba usando solo `videoUrl`.
+          // Por eso el contenido de la BD salia siempre sin subtitulos en el
+          // televisor: no es que no los tuviera, es que se descartaban al
+          // resolver.
+          if (r.subtitles.isNotEmpty) {
+            _subsWeb[indice] = r.subtitles;
+            debugPrint(
+              'TvPlayer: servidor $indice trae ${r.subtitles.length} '
+              'pistas de subtitulos',
+            );
+          }
+          debugPrint('TvPlayer: servidor $indice resuelto');
+          return r.videoUrl;
+        }
+        debugPrint('TvPlayer: la pagina del servidor $indice no solto video');
       }
-      debugPrint('TvPlayer: la pagina del servidor $indice no solto video');
       _rotos.add(indice);
     } catch (e) {
       debugPrint('TvPlayer: no se pudo resolver el servidor $indice: $e');
@@ -605,12 +654,55 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     return null;
   }
 
+  /// Los subtitulos que trajo el extractor de cada servidor.
+  final Map<int, List<ScrapedSubtitle>> _subsWeb = {};
+
+  /// Registra en MPV los subtitulos que venian con la pagina.
+  ///
+  /// Va DESPUES de `open`: antes no hay medio al que engancharlos.
+  Future<void> _cargarSubsWeb() async {
+    final subs = _subsWeb[_idxServidor];
+    if (subs == null || subs.isEmpty || _muerto) return;
+    for (final sub in subs) {
+      if (_muerto) return;
+      try {
+        await _player.setSubtitleTrack(
+          SubtitleTrack.uri(sub.url, title: sub.label, language: sub.language),
+        );
+      } catch (e) {
+        // Una pista que no carga no puede tumbar la reproduccion.
+        debugPrint('TvPlayer: no se pudo añadir el subtitulo ${sub.label}: $e');
+      }
+    }
+  }
+
   /// Deja listos, en segundo plano, los servidores que necesitan extractor.
-  void _prepararAlternativasEnSegundoPlano() {
+  /// ¿La reproduccion va lo bastante bien como para robarle recursos?
+  ///
+  /// Estricta a proposito: `_cortes` vacio significa que NO ha habido ni un
+  /// tiron desde que se abrio este servidor. Con un solo corte ya no se
+  /// adelanta nada — en un aparato justo, el que ha tenido un tiron tendra
+  /// otro, y lo ultimo que necesita es un navegador arrancando al lado.
+  bool get _reproduccionSana =>
+      _reproduciendo &&
+      _primerFrameListo &&
+      !_buffering &&
+      _cortes.isEmpty &&
+      _segundosDesdeAbrir >= 25;
+
+  Future<void> _prepararAlternativasEnSegundoPlano() async {
+    // DE UNA EN UNA, no todas de golpe.
+    //
+    // Antes se lanzaban todas a la vez con `unawaited`: con tres servidores
+    // eran tres Chromium simultaneos. Y entre una y otra se vuelve a mirar si
+    // el video sigue fino, para parar en cuanto empiece a sufrir.
     for (var i = 0; i < _urls.length; i++) {
+      if (_muerto) return;
       if (i == _idxServidor || _rotos.contains(i)) continue;
       if (!DynamicScraperService().isSupported(_urls[i])) continue;
-      unawaited(_resolverPagina(i));
+      if (_resueltos.containsKey(i)) continue;
+      if (!_reproduccionSana) return;
+      await _resolverPagina(i);
     }
   }
 
@@ -772,6 +864,19 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     if (_muerto) return;
     await _ajustarPerfilSegunFuente(original);
 
+    // ── QUE EL EXTRACTOR SE HAYA IDO DEL TODO ─────────────────────────────
+    //
+    // Es lo que hace el telefono justo antes de abrir, y su comentario dice
+    // que es el paso mas importante para que el bufer se comporte. Tiene
+    // sentido: el WebView de extraccion es un Chromium entero: aunque se le
+    // haya dicho que pare, tarda un momento en soltar memoria y CPU. Abrir
+    // MPV en ese momento es hacerle competir con lo que se esta muriendo, y
+    // en un aparato de 1 GB eso se nota en los primeros segundos de video.
+    //
+    // 300 ms de margen cuestan menos que un arranque a tirones.
+    await DynamicScraperService().stopCurrentScraping();
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+
     if (_muerto) return;
     await _player.open(
       Media(
@@ -782,6 +887,9 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         start: desde > Duration.zero ? desde : null,
       ),
     );
+
+    // Y los subtitulos que vinieran con la pagina, ya con el medio abierto.
+    await _cargarSubsWeb();
   }
 
   // ── Guardar por donde va ─────────────────────────────────────────────────
@@ -885,10 +993,11 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
           _arranco = true;
           // Este servidor SI va: la cuenta de fallos seguidos vuelve a cero.
           _fallosSeguidos = 0;
-          // Y con el video en marcha se aprovecha para dejar listas las
-          // alternativas que necesitan extractor: si mas tarde hay que
-          // cambiar, el cambio sera inmediato en vez de otros 40 segundos.
-          _prepararAlternativasEnSegundoPlano();
+          // Aqui NO se preparan alternativas. Se hacia, y era el segundo
+          // camino por el que el navegador arrancaba encima del video: basta
+          // con detectar medio segundo de avance, que no dice nada de si la
+          // reproduccion aguanta. De eso se ocupa el temporizador de arriba,
+          // que exige 25 segundos sin un solo tiron.
           return;
         }
 

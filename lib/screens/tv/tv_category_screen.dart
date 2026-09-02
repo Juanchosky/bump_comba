@@ -115,10 +115,20 @@ class _TvCategoryScreenState extends State<TvCategoryScreen> {
                           // en cada televisor. Diciendo cuanto mide la
                           // tarjeta, es la rejilla la que decide cuantas caben.
                           maxCrossAxisExtent: 132,
-                          // Caratula (180) + hueco (6) + titulo, con holgura.
+                          // Caratula (~186) + hueco (5) + titulo (~17).
                           mainAxisExtent: 208,
                           crossAxisSpacing: 12,
-                          mainAxisSpacing: 14,
+                          // 24 y no 14: entre una fila y la siguiente hacía
+                          // falta aire.
+                          //
+                          // Aquí es al revés que en el catálogo. Allí las
+                          // categorías se leen como bloques y cuanto más
+                          // juntas, mejor. En una rejilla no hay bloques: son
+                          // todo carátulas iguales, y si las filas se tocan el
+                          // ojo no sabe si el título de abajo pertenece a la
+                          // de arriba o a la de abajo. El hueco es lo que
+                          // agrupa cada carátula con SU nombre.
+                          mainAxisSpacing: 24,
                         ),
                     itemCount: widget.items.length,
                     itemBuilder:
@@ -235,7 +245,11 @@ class _TarjetaState extends State<_Tarjeta> {
                   ),
                 ),
               ),
-              const SizedBox(height: 11),
+              // 5, el mismo hueco que en el catálogo. Estaba en 11 y el título
+              // se leía como algo suelto debajo, no como el nombre de esa
+              // carátula. Las dos pantallas enseñan lo mismo: tienen que
+              // separarlo igual.
+              const SizedBox(height: 5),
               AnimatedDefaultTextStyle(
                 duration: const Duration(milliseconds: 130),
                 style: TextStyle(

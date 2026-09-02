@@ -104,15 +104,16 @@ class TvDestacado extends StatefulWidget {
   /// Cada cuánto pasa al siguiente el hueco que se turna.
   static const Duration cadaTurno = Duration(seconds: 8);
 
-  /// Separación entre huecos: NINGUNA.
+  /// Separación entre huecos: la mínima.
   ///
-  /// Las seis piezas se tocan. Es lo que las hace leerse como UN bloque —la
-  /// cabecera— en vez de como seis tarjetas puestas cerca. Con 6 todavía se
-  /// veía la rendija y el conjunto no cuajaba.
+  /// Las seis piezas casi se tocan, que es lo que las hace leerse como UN
+  /// bloque —la cabecera— en vez de como seis tarjetas puestas cerca. Con 6
+  /// se veía la rendija y el conjunto no cuajaba; con 0, dos portadas de
+  /// colores parecidos se fundían en una sola imagen.
   ///
-  /// Lo que separa una pieza de otra es el propio corte entre imágenes, y el
-  /// borde blanco cuando una tiene el foco.
-  static const double hueco = 0;
+  /// 3 es la raya justa para distinguir dónde acaba una y empieza otra, sin
+  /// llegar a separarlas.
+  static const double hueco = 3;
 
   /// Márgenes.
   ///
@@ -181,18 +182,7 @@ class TvDestacado extends StatefulWidget {
   State<TvDestacado> createState() => TvDestacadoState();
 }
 
-class TvDestacadoState extends State<TvDestacado>
-    with SingleTickerProviderStateMixin {
-  /// El latido de las siluetas.
-  ///
-  /// Quietas parecen un fallo de carga; latiendo despacio se leen como algo
-  /// que está en marcha. Un solo controlador para las seis: en un aparato de
-  /// 1 GB, seis animaciones sueltas se notan.
-  late final AnimationController _pulso = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1100),
-  );
-
+class TvDestacadoState extends State<TvDestacado> {
   /// Un nodo por HUECO, no por título: los que se turnan comparten sitio.
   final List<FocusNode> _nodos = List.generate(
     TvDestacado.huecos,
@@ -208,7 +198,6 @@ class TvDestacadoState extends State<TvDestacado>
   @override
   void initState() {
     super.initState();
-    if (!widget.listo) _pulso.repeat(reverse: true);
     _reloj = Timer.periodic(TvDestacado.cadaTurno, (_) {
       if (!mounted) return;
       // ── NO SE MUEVE MIENTRAS LO MIRAS ─────────────────────────────────
@@ -222,20 +211,7 @@ class TvDestacadoState extends State<TvDestacado>
   }
 
   @override
-  void didUpdateWidget(TvDestacado oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    // El latido se para en cuanto hay portadas: seguir animando algo que ya
-    // no se ve es gastar batería y CPU por nada.
-    if (widget.listo && _pulso.isAnimating) {
-      _pulso.stop();
-    } else if (!widget.listo && !_pulso.isAnimating) {
-      _pulso.repeat(reverse: true);
-    }
-  }
-
-  @override
   void dispose() {
-    _pulso.dispose();
     _reloj?.cancel();
     for (final n in _nodos) {
       n.dispose();
@@ -478,7 +454,6 @@ class TvDestacadoState extends State<TvDestacado>
       // Metiéndola dentro, la pieza es la misma con foco, teclas y borde;
       // solo cambia lo que se pinta.
       cargando: !widget.listo,
-      pulso: _pulso,
       // Las rayitas solo en el hueco que se turna: en los fijos no habría nada
       // que contar.
       total: h == 0 ? _rotantesReales : 0,
@@ -501,9 +476,6 @@ class _Tarjeta extends StatelessWidget {
   /// Todavía no hay portada: se pinta la silueta.
   final bool cargando;
 
-  /// El latido de la silueta.
-  final Animation<double> pulso;
-
   /// Cuántos se turnan aquí. 0 o 1 = no se turna, así que sin rayitas.
   final int total;
   final int posicion;
@@ -519,7 +491,6 @@ class _Tarjeta extends StatelessWidget {
     required this.titulo,
     required this.conFoco,
     required this.cargando,
-    required this.pulso,
     required this.total,
     required this.posicion,
     required this.onTecla,
@@ -557,33 +528,35 @@ class _Tarjeta extends StatelessWidget {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            if (cargando)
-              // Sin título ni icono a propósito: un texto que aparece y a los
-              // dos segundos lo tapa otra cosa distrae más de lo que informa.
-              AnimatedBuilder(
-                animation: pulso,
-                builder: (context, _) {
-                  // Entre 0.06 y 0.13 de blanco: se nota que respira sin
-                  // llegar a parpadear. Más contraste cansa con seis a la vez.
-                  return ColoredBox(
-                    color:
-                        Color.lerp(
-                          const Color(0xFF15151A),
-                          Colors.white,
-                          0.06 + 0.07 * pulso.value,
-                        )!,
-                  );
-                },
-              )
-            else if (imagen != null && imagen!.isNotEmpty)
-              FastThumbnail(
-                url: imagen!,
-                width: ancho,
-                height: alto,
-                // El servicio reescribe las URLs de TMDB; sin esta marca la
-                // imagen llegaría a 185 px de ancho para un hueco de 550.
-                pantallaCompleta: true,
-              ),
+            // ── EL HUECO MIENTRAS NO HAY PORTADA ──────────────────────────
+            //
+            // Una caja oscura y QUIETA. Antes latía —seis piezas subiendo y
+            // bajando de brillo a la vez— y eso era lo que se veía raro al
+            // arrancar: parecía que la pantalla estuviera fallando, no
+            // cargando.
+            //
+            // Y cuando llega la portada, entra fundiéndose en vez de aparecer
+            // de golpe. Seis cambios secos simultáneos dan un salto; medio
+            // segundo de fundido lo convierte en algo que se posa.
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 450),
+              child:
+                  cargando || imagen == null || imagen!.isEmpty
+                      ? const ColoredBox(
+                        key: ValueKey('vacio'),
+                        color: Color(0xFF15151A),
+                      )
+                      : FastThumbnail(
+                        key: const ValueKey('portada'),
+                        url: imagen!,
+                        width: ancho,
+                        height: alto,
+                        // El servicio reescribe las URLs de TMDB; sin esta
+                        // marca la imagen llegaría a 185 px de ancho para un
+                        // hueco de 550.
+                        pantallaCompleta: true,
+                      ),
+            ),
 
             // ── EL TÍTULO, DENTRO Y SOLO EN LA SELECCIONADA ───────────────
             //
@@ -636,7 +609,7 @@ class _Tarjeta extends StatelessWidget {
                         // lee como un descuido. El tamaño de las imágenes ya
                         // marca la jerarquía de sobra.
                         fontSize: 16,
-                        fontWeight: FontWeight.w500,
+                        fontWeight: FontWeight.w400,
                       ),
                     ),
                   ),

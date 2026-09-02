@@ -125,6 +125,21 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
   /// recuadro todavía no está en pantalla: medirlo ahora daría `null`.
   bool _vistaPreviaPedida = false;
 
+  /// La URL EXACTA con la que se montó la vista previa.
+  ///
+  /// ── POR QUE SE GUARDA EN VEZ DE VOLVER A CALCULARLA ────────────────────
+  ///
+  /// Al cerrar se recalculaba con `_queSeReproduce(...)`, y ese cálculo mira
+  /// `_episodios`, que se llena DESPUES de montar la vista previa. Si mientras
+  /// tanto llegaba la lista de episodios, el resultado ya no era el mismo
+  /// título — y `cerrarSi` no cerraba nada, porque lo que sonaba no coincidía
+  /// con lo que se le pedía cerrar.
+  ///
+  /// Resultado: salías de la ficha y el vídeo SEGUIA reproduciéndose, con su
+  /// recuadro flotando sobre el catálogo. Eso es lo que se veía como que la
+  /// app se había colgado.
+  String? _urlVistaPrevia;
+
   void _arrancarVistaPrevia() {
     // Una sola vez por ficha: montarla de nuevo destruiria el reproductor que
     // ya esta resolviendo.
@@ -137,11 +152,9 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
       if (hueco == null) return;
 
       final esSerie = widget.item.isSeries || widget.item.seriesName != null;
-      TvVistaPrevia.instancia.mostrar(
-        context,
-        _queSeReproduce(esSerie, _episodios),
-        hueco,
-      );
+      final queVer = _queSeReproduce(esSerie, _episodios);
+      _urlVistaPrevia = queVer.url;
+      TvVistaPrevia.instancia.mostrar(context, queVer, hueco);
     });
   }
 
@@ -165,8 +178,9 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
     // Volver del reproductor grande a la ficha no pasa por este `dispose` —la
     // ficha nunca se fue— así que la reproducción sigue. Salir de la ficha sí,
     // y entonces se para. Que es lo que se pidió.
-    final esSerie = widget.item.isSeries || widget.item.seriesName != null;
-    TvVistaPrevia.instancia.cerrarSi(_queSeReproduce(esSerie, _episodios).url);
+    // Con la URL guardada, no con una recalculada: ver `_urlVistaPrevia`.
+    final mia = _urlVistaPrevia;
+    if (mia != null) TvVistaPrevia.instancia.cerrarSi(mia);
     super.dispose();
   }
 
@@ -315,12 +329,31 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
             ? queVer.copyWith(alternatives: alts)
             : queVer;
 
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder:
-            (_) => TvPlayerScreen(item: itemConAlts, titulo: itemConAlts.name),
-      ),
-    );
+    // ── PRIMERO SE CIERRA LA VISTA PREVIA ─────────────────────────────────
+    //
+    // Esto abre un reproductor NUEVO a pantalla completa, y hasta ahora lo
+    // hacia con la vista previa todavia viva y reproduciendo por detras. Eran
+    // DOS instancias de MPV y DOS WebViews de extraccion a la vez en un
+    // aparato de 1 GB: por eso la app se volvia lenta cada vez que se ponia
+    // algo, y de paso los dos peleaban por el ancho de banda del proveedor.
+    //
+    // Con `.then` se vuelve a montar al regresar, asi que la ficha sigue
+    // enseñando su recuadro reproduciendo como si no se hubiera ido.
+    TvVistaPrevia.instancia.cerrar();
+
+    Navigator.of(context)
+        .push(
+          MaterialPageRoute<void>(
+            builder:
+                (_) =>
+                    TvPlayerScreen(item: itemConAlts, titulo: itemConAlts.name),
+          ),
+        )
+        .then((_) {
+          if (!mounted) return;
+          _vistaPreviaPedida = false;
+          _arrancarVistaPrevia();
+        });
   }
 
   /// Saltar de una ficha a otra desde "Quizás te guste".

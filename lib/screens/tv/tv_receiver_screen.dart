@@ -1493,6 +1493,21 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
                       padding: EdgeInsets.fromLTRB(48, 0, 48, 56),
                     ),
                   )
+                  // ── MIENTRAS SE COMPRUEBA, NI UNA COSA NI LA OTRA ─────
+                  //
+                  // `_tvVinculado` es `null` hasta que termina de validarse el
+                  // token, y eso incluye una llamada de red. Antes ese `null`
+                  // caia en el `else` y se enseñaba la pantalla de transmitir
+                  // un segundo largo, para cambiar de golpe al catalogo en
+                  // cuanto contestaba el servidor.
+                  //
+                  // Al usuario le decia que tenia que transmitir desde el
+                  // telefono —que es justo lo que NO tiene que hacer si el
+                  // televisor ya esta vinculado— y encima el cambio brusco
+                  // parece un fallo. Ahora esa espera se ve como lo que es:
+                  // una espera.
+                  : _tvVinculado == null
+                  ? const TvPantallaMarca()
                   : _tvVinculado == true
                   // Activado: el catalogo entero, sin teléfono.
                   //
@@ -1623,9 +1638,15 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
                   bottom: 64,
                   child: Center(
                     child: Container(
+                      // MAS PEQUENO QUE ANTES.
+                      //
+                      // Estaba a 20 con relleno de 26x14 y ocupaba media
+                      // pantalla. Es un aviso de paso —dice como salir y se va
+                      // solo—, no un mensaje que haya que leer con atencion:
+                      // a ese tamano competia con el contenido de detras.
                       padding: const EdgeInsets.symmetric(
-                        horizontal: 26,
-                        vertical: 14,
+                        horizontal: 14,
+                        vertical: 7,
                       ),
                       decoration: BoxDecoration(
                         color: Colors.black.withValues(alpha: 0.85),
@@ -1636,7 +1657,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
                         'Pulsa atrás otra vez para salir',
                         style: TextStyle(
                           color: Colors.white,
-                          fontSize: 20,
+                          fontSize: 12,
                           fontWeight: FontWeight.w500,
                         ),
                       ),

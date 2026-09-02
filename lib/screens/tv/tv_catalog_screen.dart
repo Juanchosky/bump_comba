@@ -10,6 +10,7 @@ import '../../services/tmdb_service.dart';
 import '../../utils/titulo_tmdb.dart';
 import '../../services/watch_progress_service.dart';
 import 'tv_category_screen.dart';
+import 'tv_loading_animation.dart';
 import 'tv_destacado.dart';
 import 'tv_detail_screen.dart';
 import 'tv_player_screen.dart';
@@ -86,7 +87,23 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   // Techos deliberados. Un proveedor puede traer cientos de categorías y miles
   // de títulos; pintarlos todos en un aparato de 1 GB de RAM es cómo se cuelga
   // un televisor. Nadie baja de la fila veinte con un mando, tampoco.
-  static const int _maxFilas = 20;
+  /// Tope de filas por sección.
+  ///
+  /// ── ERA 20, Y ESO ESCONDIA CATEGORIAS ──────────────────────────────────
+  ///
+  /// El teléfono no tiene tope: enseña TODAS las de `categoriasParaMostrar()`,
+  /// cargándolas de a poco según bajas. El televisor cortaba en veinte, así
+  /// que de la veintiuna en adelante no existían — no había forma de llegar a
+  /// ellas ni sabiendo que estaban.
+  ///
+  /// 80 es un tope de seguridad, no un recorte: está por encima de lo que
+  /// devuelve el proveedor, así que en la práctica no corta nada. Se deja
+  /// porque una lista sin límite ninguno depende de que el proveedor se porte
+  /// bien, y ya sabemos que a veces no.
+  ///
+  /// El coste está acotado: la lista es perezosa y solo construye las filas
+  /// que se ven.
+  static const int _maxFilas = 80;
   static const int _maxPorFila = 30;
 
   // ── Secciones del lateral ────────────────────────────────────────────────
@@ -565,16 +582,33 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   int _filaActual = -1;
   int _columnaActual = 0;
 
-  /// Alto exacto de una fila: titulo (33 con su hueco) + caratulas (248) +
-  /// separacion (18), y 5 de holgura.
+  /// Alto exacto de una fila.
+  ///
+  /// ── AQUI ESTABA EL HUECO ENTRE CATEGORIAS ─────────────────────────────
+  ///
+  /// Cada fila se mete en una caja de ESTE alto, y estaba en 304 desde cuando
+  /// las caratulas ocupaban 248 y habia 18 de separacion. Al ir recortando
+  /// esas piezas —la lista bajo a 226 y la separacion a 0— el contenido se
+  /// quedo en unos 254, pero la caja seguia midiendo 304: ~50 pixeles muertos
+  /// por categoria que ningun otro ajuste podia quitar, porque no estaban en
+  /// ningun `padding` sino en el propio alto reservado.
+  ///
+  /// Ese era el motivo de que bajar los huecos apenas se notara.
+  ///
+  /// El desglose de ahora: titulo de la categoria (24 medidos, no calculados
+  /// —un texto de 18.7 con la altura de linea del tema ocupa 24, no 18.7—),
+  /// su hueco inferior (4), y la fila de caratulas (211 = caratula 189 + hueco
+  /// 5 + titulo 17). Total 239.
+  ///
+  /// Al encoger las caratulas de 204 a 189, este numero baja los mismos 15
+  /// para conservar la holgura que ya estaba elegida — no se recalcula desde
+  /// cero, que seria pisar un ajuste hecho a ojo sobre el aparato.
   ///
   /// Fijo a proposito — con `itemExtent` la lista sabe donde esta cada fila sin
-  /// medirlas, y bajar a la fila N es una cuenta en vez de una busqueda.
-  ///
-  /// Los 33 del titulo son MEDIDOS en el aparato, no calculados: un texto de 16
-  /// con la altura de linea del tema ocupa 23, no 16. Ponerlos a ojo fue lo que
-  /// dejo la fila 3 pixeles corta y las rayas amarillas de desbordamiento.
-  static const double _altoFila = 304;
+  /// medirlas, y bajar a la fila N es una cuenta en vez de una busqueda. El
+  /// precio es este: cuando cambian las piezas de dentro, hay que actualizarlo
+  /// A MANO o vuelve a sobrar hueco.
+  static const double _altoFila = 255;
 
   /// Mueve el foco a la fila `destino`, conservando la columna.
   ///
@@ -1024,7 +1058,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (!_todoListo) return const _PantallaCarga();
+    if (!_todoListo) return const TvPantallaMarca();
     if (_error != null) {
       return _Centrado(
         child: Column(
@@ -1128,13 +1162,42 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                   },
                   child:
                       _filas.isEmpty
-                          ? const Center(
-                            child: Text(
-                              'Nada por aquí todavía.',
-                              style: TextStyle(
-                                color: Colors.white38,
-                                fontSize: 18,
-                              ),
+                          // ── SIN FILAS NO SIEMPRE ES "NO HAY NADA" ────────
+                          //
+                          // El servicio avisa DOS veces: primero con lo que
+                          // trae en crudo y luego, segundos despues, con las
+                          // series agrupadas y el contenido propio. Entre
+                          // medias la lista puede estar vacia, y ahi salia
+                          // "Nada por aquí todavía" — que suena a que no va a
+                          // llegar nada y hace cerrar la app justo cuando
+                          // faltaba un momento.
+                          //
+                          // Mientras el plazo de carga sigue corriendo, se
+                          // dice lo que de verdad pasa: se esta preparando. El
+                          // mensaje seco se guarda para cuando el plazo vence
+                          // y sigue sin haber nada, que ya si es un vacio de
+                          // verdad.
+                          ? Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (!_plazoCargaVencido) ...[
+                                  const TvLoadingAnimation(
+                                    size: 34,
+                                    strokeWidth: 3,
+                                  ),
+                                  const SizedBox(height: 18),
+                                ],
+                                Text(
+                                  _plazoCargaVencido
+                                      ? 'Nada por aquí todavía.'
+                                      : 'Cargando, un momento…',
+                                  style: const TextStyle(
+                                    color: Colors.white38,
+                                    fontSize: 18,
+                                  ),
+                                ),
+                              ],
                             ),
                           )
                           : ListView.builder(
@@ -1545,7 +1608,10 @@ class _FilaState extends State<_Fila> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding: const EdgeInsets.only(left: 106, bottom: 10),
+            // 4 y no 10: es lo que separa el nombre de la categoria de sus
+            // caratulas. Justo lo suficiente para que no se toquen; mas aire
+            // aqui era el hueco que hacia parecer las filas separadas.
+            padding: const EdgeInsets.only(left: 106, bottom: 4),
             child: Text(
               widget.titulo,
               maxLines: 1,
@@ -1580,7 +1646,7 @@ class _FilaState extends State<_Fila> {
               // queda. Estaba en 248, y esos ~19 px de sobra eran el hueco
               // que se veia entre una categoria y la siguiente — no la
               // separacion entre filas, que ya estaba a cero.
-              height: 232,
+              height: 211,
               child: ListView.builder(
                 controller: _scroll,
                 scrollDirection: Axis.horizontal,
@@ -1691,15 +1757,15 @@ class _TarjetaMasState extends State<_TarjetaMas> {
         child: GestureDetector(
           onTap: widget.onOk,
           child: SizedBox(
-            width: 136,
+            width: 126,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
                 AnimatedContainer(
                   duration: const Duration(milliseconds: 140),
-                  width: 136,
-                  height: 204,
+                  width: 126,
+                  height: 189,
                   foregroundDecoration: BoxDecoration(
                     border: Border.all(
                       color: _foco ? Colors.white : Colors.transparent,
@@ -1731,7 +1797,7 @@ class _TarjetaMasState extends State<_TarjetaMas> {
                 ),
                 const SizedBox(height: 8),
                 SizedBox(
-                  width: 122,
+                  width: 114,
                   child: AnimatedDefaultTextStyle(
                     duration: const Duration(milliseconds: 130),
                     style: TextStyle(
@@ -1833,7 +1899,7 @@ class _TarjetaState extends State<_Tarjeta> {
         child: GestureDetector(
           onTap: _abrir,
           child: SizedBox(
-            width: 136,
+            width: 126,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
@@ -1849,8 +1915,8 @@ class _TarjetaState extends State<_Tarjeta> {
                 // sobre una fila ya vista no vuelve a bajar nada.
                 AnimatedContainer(
                   duration: const Duration(milliseconds: 140),
-                  width: 136,
-                  height: 204,
+                  width: 126,
+                  height: 189,
                   foregroundDecoration: BoxDecoration(
                     border: Border.all(
                       color: _foco ? Colors.white : Colors.transparent,
@@ -1860,12 +1926,12 @@ class _TarjetaState extends State<_Tarjeta> {
                   decoration: const BoxDecoration(color: Color(0xFF1A1A1E)),
                   child: FastThumbnail(
                     url: widget.item.logo,
-                    width: 136,
-                    height: 204,
+                    width: 126,
+                    height: 189,
                   ),
                 ),
 
-                const SizedBox(height: 8),
+                const SizedBox(height: 5),
 
                 // ── El título, SIEMPRE debajo ────────────────────────────
                 //
@@ -1874,7 +1940,7 @@ class _TarjetaState extends State<_Tarjeta> {
                 // tarjeta. Mismo grosor con foco y sin el: la negrita
                 // ensancharia el texto y movería las tarjetas al recorrerla.
                 SizedBox(
-                  width: 122,
+                  width: 114,
                   child: AnimatedDefaultTextStyle(
                     duration: const Duration(milliseconds: 130),
                     style: TextStyle(
@@ -1909,51 +1975,6 @@ class _TarjetaState extends State<_Tarjeta> {
 /// Lo que hacen las apps de television es enseñar su marca mientras cargan.
 /// Aqui igual: el logo sobre negro, latiendo despacio para que se note que la
 /// app esta viva. Cuando el catalogo esta entero, sustituye a esto de una vez.
-class _PantallaCarga extends StatefulWidget {
-  const _PantallaCarga();
-
-  @override
-  State<_PantallaCarga> createState() => _PantallaCargaState();
-}
-
-class _PantallaCargaState extends State<_PantallaCarga>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _pulso = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1400),
-  )..repeat(reverse: true);
-
-  @override
-  void dispose() {
-    _pulso.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return ColoredBox(
-      color: Colors.black,
-      child: Center(
-        child: FadeTransition(
-          // Entre 0.45 y 1: se nota el latido sin llegar a parpadear. Lento a
-          // proposito —1,4 s por ciclo—; rapido transmite prisa, y aqui lo que
-          // toca es esperar.
-          opacity: Tween<double>(
-            begin: 0.45,
-            end: 1.0,
-          ).animate(CurvedAnimation(parent: _pulso, curve: Curves.easeInOut)),
-          child: Image.asset(
-            'assets/images/logo.png',
-            height: 96,
-            // Si el logo faltara, la pantalla no puede quedarse en blanco.
-            errorBuilder: (_, _, _) => const SizedBox.shrink(),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _Centrado extends StatelessWidget {
   final Widget child;
   const _Centrado({required this.child});
