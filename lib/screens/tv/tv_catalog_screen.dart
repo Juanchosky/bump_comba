@@ -1437,10 +1437,14 @@ class _FilaState extends State<_Fila> {
     final visibles = _visibles;
 
     return Padding(
-      // 18 y no 34. Con el titulo ya debajo de cada caratula, la separacion
+      // 11 y no 34. Con el titulo ya debajo de cada caratula, la separacion
       // anterior dejaba un vacio que hacia parecer que faltaba algo entre una
       // fila y otra. Lo justo para que se lean como grupos distintos.
-      padding: const EdgeInsets.only(bottom: 18),
+      //
+      // No baja mas de aqui: la caratula enfocada crece, y ese crecimiento
+      // sale por abajo. Con menos hueco, la fila de arriba invadiria el
+      // titulo de la de abajo cada vez que se mueve el mando.
+      padding: const EdgeInsets.only(bottom: 11),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
