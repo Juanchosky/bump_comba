@@ -106,6 +106,25 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
   final List<StreamSubscription> _subs = [];
   final FocusNode _playerFocusNode = FocusNode(debugLabel: 'TvPlayerKeys');
 
+  /// La pantalla ya se fue y el `Player` esta destruido.
+  ///
+  /// ── POR QUE HACE FALTA ADEMAS DE `mounted` ─────────────────────────────
+  ///
+  /// Resolver la pagina de un servidor tarda SEGUNDOS: se abre un WebView, se
+  /// carga la web del proveedor entera y se espera a pillar el enlace del
+  /// video. En ese rato el usuario puede salir de la ficha de sobra.
+  ///
+  /// Cuando la resolucion termina, el `State` ya esta destruido y el `Player`
+  /// con el; tocarlo entonces revienta con `[Player] has been disposed`. Y lo
+  /// peor no es el error: es que ese fallo se tomaba por un servidor caido y
+  /// disparaba el failover sobre un reproductor que ya no existe, dejando en
+  /// el log "el unico servidor disponible fallo" cuando el servidor no habia
+  /// dicho nada.
+  ///
+  /// `mounted` no basta: el `Player` se destruye en `dispose`, y hay tramos
+  /// `async` que siguen despues. Esto es explicito y no depende del orden.
+  bool _muerto = false;
+
   bool _reproduciendo = false;
   bool _buffering = true;
 
@@ -661,6 +680,9 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     // MPV y ver como falla.
     if (DynamicScraperService().isSupported(original)) {
       final resuelto = await _resolverPagina(_idxServidor);
+      // Aqui se ha ido el tiempo largo. Si ya no hay pantalla, se abandona en
+      // silencio: no es un fallo del servidor, es que nadie esta mirando.
+      if (_muerto) return;
       if (resuelto == null || resuelto.isEmpty) {
         throw StateError('la pagina del servidor $_idxServidor no dio video');
       }
@@ -747,8 +769,10 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     //
     // Son los mismos valores que ya usa el receptor para HLS, y todos BAJAN
     // respecto al perfil VOD, asi que no tocan el techo del VPS.
+    if (_muerto) return;
     await _ajustarPerfilSegunFuente(original);
 
+    if (_muerto) return;
     await _player.open(
       Media(
         url,
@@ -902,6 +926,9 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
   }
 
   Future<void> _siguienteServidor(String motivo) async {
+    // Sin pantalla no hay nada que rescatar: cambiar de servidor aqui solo
+    // abriria otro WebView para nadie.
+    if (_muerto) return;
     if (_cambiandoServidor || _agotado) return;
 
     // Si solo hay un servidor, no hay adonde saltar
@@ -973,6 +1000,10 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
 
   @override
   void dispose() {
+    // LO PRIMERO: lo que siga corriendo por detras tiene que enterarse de que
+    // ya no hay a quien servir, antes de que nada mas se destruya.
+    _muerto = true;
+
     // Una extraccion a medias deja un WebView invisible corriendo: en un
     // televisor de 1 GB eso es memoria que no vuelve.
     _cerrarTurbo();

@@ -173,12 +173,10 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
 
   /// El turno de destacados. Solo corre con el foco arriba: una imagen que
   /// cambia sola mientras miras las filas distrae en vez de ayudar.
-  /// El turno de destacados. Solo corre con el foco arriba: una imagen que
-  /// cambia sola mientras miras las filas distrae en vez de ayudar.
-  Timer? _turnoHero;
-
-  static const int _cuantosDestacados = 5;
-  static const Duration _cadaTurno = Duration(seconds: 8);
+  /// Los que pide el mosaico de la cabecera: seis huecos, y el de arriba a la
+  /// izquierda se turna entre tres. Lo dice el propio widget para que cambiar
+  /// la forma del mosaico no obligue a acordarse de tocar tambien esto.
+  static const int _cuantosDestacados = TvDestacado.titulosNecesarios;
 
   /// Los cinco de cada seccion, para no volver a sortear al ir y volver.
   ///
@@ -308,6 +306,19 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     _pedirFichaHero();
   }
 
+  /// La imagen apaisada de cada tarjeta, en el orden de `_destacados`.
+  ///
+  /// Sale de lo que TMDB haya contestado. Los huecos son normales: la ficha
+  /// puede no haber llegado todavia, o el titulo puede no estar en TMDB. La
+  /// tarjeta sabe apañarse sin imagen.
+  ///
+  /// NUNCA la caratula del proveedor: es VERTICAL, y metida en un hueco
+  /// apaisado sale recortada por la mitad.
+  List<String?> get _imagenesHero => [
+    for (final item in _destacados)
+      (_fichasHero[_claveHero(item)]?['backdrop_url'] as String?),
+  ];
+
   /// Trae de TMDB la imagen apaisada y la sinopsis del destacado actual.
   ///
   /// Y ADEMAS LA DEL SIGUIENTE, en cuanto termina con esta.
@@ -376,34 +387,25 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       // una ficha que ya no viene y no enseñaria ni la caratula del proveedor.
       if (mounted) setState(() => _fichasEnCamino.remove(clave));
 
-      // El siguiente, ya en marcha. Solo desde el actual: encadenar desde el
-      // precargado pediria los cinco de golpe, y TMDB no es gratis.
-      if (mounted && indice == null && _destacados.length > 1) {
-        _pedirFichaHero(indice: (_idxDestacado + 1) % _destacados.length);
+      // ── Y LAS DEMAS, EN CADENA ────────────────────────────────────────
+      //
+      // Con la portada unica bastaba con la actual y la siguiente. Ahora las
+      // cinco tarjetas se ven a la vez, asi que las cinco necesitan su imagen
+      // o saldrian cajas oscuras al lado de la elegida.
+      //
+      // EN CADENA Y NO DE GOLPE: cada una arranca cuando termina la anterior.
+      // Cinco peticiones simultaneas a TMDB desde un aparato de 1 GB compiten
+      // entre ellas y con la imagen que se esta bajando, y la primera tarjeta
+      // —la que se mira— tarda mas en aparecer que si van en fila.
+      if (mounted && indice == null) {
+        for (var i = 0; i < _destacados.length; i++) {
+          final clave = _claveHero(_destacados[i]);
+          if (_fichasHero.containsKey(clave)) continue;
+          if (_fichasEnCamino.contains(clave)) continue;
+          await _pedirFichaHero(indice: i);
+        }
       }
     }
-  }
-
-  void _turnoDestacados(bool conFoco) {
-    _turnoHero?.cancel();
-    if (!conFoco || _destacados.length < 2) return;
-    _turnoHero = Timer.periodic(_cadaTurno, (_) {
-      if (!mounted) return;
-      setState(() => _idxDestacado = (_idxDestacado + 1) % _destacados.length);
-      _pedirFichaHero();
-    });
-  }
-
-  /// Pasa al siguiente destacado, a mano.
-  ///
-  /// Reinicia el turno automatico: si acabas de elegir tu el titulo, que la
-  /// cuenta atras te lo cambie dos segundos despues es de todo menos util.
-  ///
-  void _siguienteDestacado() {
-    if (_destacados.length < 2) return;
-    setState(() => _idxDestacado = (_idxDestacado + 1) % _destacados.length);
-    _pedirFichaHero();
-    _turnoDestacados(true);
   }
 
   /// Abre el destacado actual: al reproductor o a la ficha.
@@ -460,7 +462,6 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   /// entera. Solo se recoge cuando el foco se va de verdad, al contenido.
   void _focoEnLateral(bool dentro) {
     _cierreLateral?.cancel();
-    _turnoHero?.cancel();
     if (dentro) {
       if (!_lateralAbierto) setState(() => _lateralAbierto = true);
       return;
@@ -509,7 +510,13 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     if (_scrollVertical.hasClients) {
       // La fila de destino, arrimada al borde de arriba pero sin pegarse: se
       // ve entera y se intuye la siguiente.
-      final objetivo = (TvDestacado.altura + destino * _altoFila - 24).clamp(
+      // Lo que el mosaico ocupa DE VERDAD en esta pantalla, no un tope fijo.
+      // Con el tope, el catalogo se desplazaba de mas y dejaba una franja
+      // vacia justo donde deberia estar la primera categoria.
+      final altoDestacado = TvDestacado.alturaPara(
+        MediaQuery.sizeOf(context).width,
+      );
+      final objetivo = (altoDestacado + destino * _altoFila - 24).clamp(
         0.0,
         _scrollVertical.position.maxScrollExtent,
       );
@@ -589,8 +596,6 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     WatchProgressService().removeListener(_alCambiarProgreso);
     _refrescoSeguirViendo?.cancel();
     _cierreLateral?.cancel();
-    // Es periodico: sin esto sigue latiendo con la pantalla ya cerrada.
-    _turnoHero?.cancel();
     for (final n in _nodosLateral) {
       n.dispose();
     }
@@ -1069,35 +1074,18 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                                 key: _llaveHero,
                                 items: _destacados,
                                 indice: _idxDestacado,
-                                esperandoFicha:
-                                    _destacados.isNotEmpty &&
-                                    _fichasEnCamino.contains(
-                                      _claveHero(
-                                        _destacados[_idxDestacado.clamp(
-                                          0,
-                                          _destacados.length - 1,
-                                        )],
-                                      ),
-                                    ),
-                                ficha:
-                                    _destacados.isEmpty
-                                        ? null
-                                        : _fichasHero[_claveHero(
-                                          _destacados[_idxDestacado.clamp(
-                                            0,
-                                            _destacados.length - 1,
-                                          )],
-                                        )],
-                                onReproducir: () => _abrirDestacado(true),
-                                onFicha: () => _abrirDestacado(false),
+                                imagenes: _imagenesHero,
+                                onElegir: (i) {
+                                  _idxDestacado = i;
+                                  _abrirDestacado(false);
+                                },
+                                onIndice: (i) => _idxDestacado = i,
                                 onAbajo: () => _irAFila(0, 0),
-                                onSiguiente: _siguienteDestacado,
                                 onSalirIzquierda:
                                     () =>
                                         _nodosLateral[_seccion].requestFocus(),
                                 onFoco: (dentro) {
                                   if (dentro) _filaActual = -1;
-                                  _turnoDestacados(dentro);
                                 },
                               );
                             }

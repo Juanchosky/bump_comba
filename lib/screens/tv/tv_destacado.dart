@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -5,595 +8,582 @@ import '../../services/fast_image_service.dart';
 import '../../services/m3u_service.dart';
 import '../../utils/titulo_tmdb.dart';
 
-/// El destacado que abre el catálogo: imagen grande, título y dos botones.
+/// La cabecera del catálogo: un mosaico de seis huecos.
 ///
-/// POR QUÉ ARRIBA Y A PANTALLA COMPLETA
-/// Una rejilla de carátulas no propone nada: enseña sesenta cosas iguales y
-/// deja la decisión entera al usuario. El destacado hace lo que hace la
-/// portada de un periódico — decir "empieza por aquí" — y de paso le da a la
-/// pantalla un punto de entrada obvio para el foco.
+/// ── LA FORMA ───────────────────────────────────────────────────────────────
 ///
-/// LO QUE NO HACE
-/// No rota mientras estás mirando las filas. Una imagen que cambia sola
-/// mientras miras otra cosa es una distracción, no una función: solo pasa al
-/// siguiente cuando el foco está aquí arriba.
+///     +---------------+---------------+
+///     |   GRANDE 0    |   GRANDE 1    |   <- dos apaisadas, media pantalla
+///     |  (se pasa     |    (fija)     |
+///     |    sola)      |               |
+///     +---------------+---------------+
+///     |  título de lo que tenga el foco   |
+///     +-------+-------+-------+-------+
+///     |   2   |   3   |   4   |   5   |   <- cuatro pequeñas, pegadas
+///     +-------+-------+-------+-------+
+///
+/// El hueco de arriba a la izquierda NO es un título fijo: va pasando varios
+/// solo, y las rayitas de su esquina dicen por cuál va. Los otros cinco sí lo
+/// son.
+///
+/// ── POR QUÉ UN MOSAICO Y NO UNA PORTADA ────────────────────────────────────
+///
+/// Una portada única enseña un título y esconde el resto detrás de una flecha.
+/// Así se ven seis a la vez y con jerarquía: los dos de arriba mandan por
+/// tamaño, los cuatro de abajo acompañan. Se lee de un vistazo en lugar de
+/// leerse de uno en uno.
 class TvDestacado extends StatefulWidget {
-  /// Los títulos que se van turnando. Salen de la primera fila de la sección.
+  /// Los títulos de la cabecera.
+  ///
+  /// Hacen falta [titulosNecesarios] para llenarla; con menos, los huecos que
+  /// sobran se quedan vacíos en vez de reordenar el mosaico.
   final List<M3UItem> items;
 
-  /// Índice del que se está enseñando ahora.
+  /// Cuál está seleccionado. Sirve para volver al mismo sitio al regresar.
   final int indice;
 
-  /// Datos de TMDB del título actual: sinopsis, año, clasificación, imagen
-  /// apaisada. Llega tarde y puede no llegar: la cabecera se pinta igual.
-  final Map<String, dynamic>? ficha;
-
-  /// TMDB todavia no ha contestado para este titulo.
+  /// La imagen apaisada de cada título, en el mismo orden que [items].
   ///
-  /// Mientras es cierto NO se enseña la caratula del proveedor. Esa caratula
-  /// es VERTICAL y el hueco del banner es apaisado, asi que entraba recortada
-  /// —"cortada", como se veia— y un segundo despues la sustituia la imagen
-  /// buena. Dos imagenes distintas seguidas se ven como un fallo. Mejor el
-  /// hueco oscuro un momento y luego la imagen definitiva, ya bien.
-  final bool esperandoFicha;
+  /// La resuelve el catálogo contra TMDB. Puede haber huecos: un título sin
+  /// imagen sale como caja oscura con su nombre, que es mejor que meter la
+  /// carátula vertical del proveedor recortada a la fuerza.
+  final List<String?> imagenes;
 
-  final VoidCallback onReproducir;
-  final VoidCallback onFicha;
+  /// Abrir el título `i` de [items].
+  final ValueChanged<int> onElegir;
+
+  /// El foco se movió al título `i` de [items].
+  final ValueChanged<int> onIndice;
 
   /// Bajar a la primera fila de carátulas.
   final VoidCallback onAbajo;
 
-  /// Pasar al siguiente destacado. Se llama al pulsar derecha desde el último
-  /// botón: es la forma de recorrer los cinco sin un control aparte.
-  final VoidCallback onSiguiente;
-
-  /// Izquierda desde el primer botón: se vuelve al menú lateral.
+  /// Izquierda desde la primera columna: se vuelve al menú lateral.
   final VoidCallback onSalirIzquierda;
 
-  /// El foco acaba de entrar o salir del destacado. El padre lo usa para
-  /// arrancar y parar el turno de títulos.
+  /// El foco entró o salió de la cabecera.
   final ValueChanged<bool> onFoco;
 
   const TvDestacado({
     super.key,
     required this.items,
     required this.indice,
-    required this.ficha,
-    this.esperandoFicha = false,
-    required this.onReproducir,
-    required this.onFicha,
+    required this.imagenes,
+    required this.onElegir,
+    required this.onIndice,
     required this.onAbajo,
-    required this.onSiguiente,
     required this.onSalirIzquierda,
     required this.onFoco,
   });
 
-  /// Alto reservado en la lista del catálogo.
+  /// Huecos del mosaico: 2 grandes + 4 pequeñas.
+  static const int huecos = 6;
+
+  /// Cuántos títulos se turnan en el hueco de arriba a la izquierda.
+  static const int rotantes = 3;
+
+  /// Títulos que consume la cabecera entera.
   ///
-  /// Fijo y conocido porque el desplazamiento vertical se CALCULA: la fila `i`
-  /// vive en `altura + i * altoFila`. Si esto midiera lo que le apetezca, el
+  /// Los que se turnan ocupan UN hueco entre todos, de ahí el `- 1`.
+  static const int titulosNecesarios = huecos + rotantes - 1;
+
+  /// Cada cuánto pasa al siguiente el hueco que se turna.
+  static const Duration cadaTurno = Duration(seconds: 8);
+
+  /// Separación entre huecos: NINGUNA.
+  ///
+  /// Las seis piezas se tocan. Es lo que las hace leerse como UN bloque —la
+  /// cabecera— en vez de como seis tarjetas puestas cerca. Con 6 todavía se
+  /// veía la rendija y el conjunto no cuajaba.
+  ///
+  /// Lo que separa una pieza de otra es el propio corte entre imágenes, y el
+  /// borde blanco cuando una tiene el foco.
+  static const double hueco = 0;
+
+  /// Márgenes.
+  ///
+  /// El izquierdo es el mismo que el de los títulos de las filas de abajo: las
+  /// dos cosas tienen que empezar en la misma vertical.
+  ///
+  /// EL DERECHO NO ES CERO, aunque el mosaico deba llegar al filo.
+  ///
+  /// Un televisor recorta los bordes de la imagen —el "overscan"—, así que lo
+  /// que la app dibuja pegado al borde derecho el panel se lo come: se veía
+  /// cortado por fuera de la pantalla. 40 es la reserva habitual para eso.
+  ///
+  /// No es aire de diseño; es el trozo que el televisor no enseña.
+  static const double margenIzq = 106;
+  static const double margenDer = 40;
+
+  /// Aire por arriba del mosaico.
+  ///
+  /// Con 24 el bloque quedaba pegado al filo de arriba y se leía como si se
+  /// hubiera desbordado por ahí. 48 le da sitio para respirar.
+  static const double margenSup = 48;
+
+  /// Tope de alto. El mosaico no pasa de aquí ni aunque la pantalla dé para
+  /// más: por encima se comería la primera fila de carátulas.
+  ///
+  /// FIJO Y CONOCIDO porque el desplazamiento vertical se CALCULA: la fila `i`
+  /// vive en `altura + i * altoFila`. Si esto midiera lo que le apeteciera, el
   /// catálogo volvería a moverse a tientas.
   ///
-  /// 430 medidos en el aparato, no a ojo. Con 356 la captura mostraba el
-  /// contenido acabando sobre el corte de la imagen y el título de la primera
-  /// fila justo debajo: sin aire entre las dos cosas.
+  /// Y AHORA MANDA ELLA: el mosaico se ajusta para caber aquí dentro, no al
+  /// revés. Antes salía de multiplicar anchuras, y como el ancho disponible
+  /// cambia con el menú lateral, el bloque acababa más alto que lo reservado
+  /// y empujaba las categorías de abajo fuera de la pantalla.
+  static const double alturaMaxima = 470;
+
+  /// Lo que ocupa DE VERDAD con un ancho dado.
   ///
-  /// De los 430, el contenido ocupa unos 250. Los 180 restantes NO están
-  /// vacíos por descuido: son el tramo por el que la imagen se apaga. Ese
-  /// espacio es el que hace que el destacado y las filas se lean como una
-  /// sola superficie en vez de como dos bloques pegados.
+  /// ── POR QUÉ NO ES UNA CONSTANTE ───────────────────────────────────────
   ///
-  /// Sigue asomando el borde superior de la primera fila en un televisor de
-  /// 1080p. Ese asomo no es un descuido: es lo que dice que hay más abajo.
-  static const double altura = 390;
+  /// Lo era, y sobraba sitio. Las piezas se dimensionan por el ANCHO —media
+  /// anchura útil en 16:9—, así que en un panel estrecho salen más bajas y el
+  /// hueco reservado se quedaba grande: entre el mosaico y "Últimamente
+  /// nuevo" aparecía una franja vacía de más de cien píxeles.
+  ///
+  /// Reservando lo que de verdad mide, esa franja desaparece sola en
+  /// cualquier pantalla, en vez de tener que acertar un número fijo que solo
+  /// vale para un televisor.
+  static double alturaPara(double anchoDisponible) {
+    final util = anchoDisponible - margenIzq - margenDer;
+    final porAncho = (util - hueco) / 2 * 9 / 16;
+    // Las pequeñas miden la mitad que las grandes, así que las dos filas
+    // juntas son una vez y media la grande.
+    final porAlto = (alturaMaxima - margenSup) / 1.5;
+    final altoGrande = porAncho < porAlto ? porAncho : porAlto;
+    return margenSup + altoGrande * 1.5;
+  }
 
   @override
   State<TvDestacado> createState() => TvDestacadoState();
 }
 
 class TvDestacadoState extends State<TvDestacado> {
-  /// Un nodo por botón: Reproducir y Ver ficha.
-  final List<FocusNode> _nodos = [
-    FocusNode(debugLabel: 'destacadoReproducir'),
-    FocusNode(debugLabel: 'destacadoFicha'),
-  ];
+  /// Un nodo por HUECO, no por título: los que se turnan comparten sitio.
+  final List<FocusNode> _nodos = List.generate(
+    TvDestacado.huecos,
+    (i) => FocusNode(debugLabel: 'destacado$i'),
+  );
 
   int _foco = -1; // -1 = ninguno
 
+  /// Por cuál de los que se turnan va el hueco 0.
+  int _turno = 0;
+  Timer? _reloj;
+
+  @override
+  void initState() {
+    super.initState();
+    _reloj = Timer.periodic(TvDestacado.cadaTurno, (_) {
+      if (!mounted) return;
+      // ── NO SE MUEVE MIENTRAS LO MIRAS ─────────────────────────────────
+      //
+      // Con el foco encima, cambiar el título significaría que OK abre algo
+      // distinto de lo que estabas mirando. Con un mando, donde el foco es lo
+      // único que orienta, eso es abrir la película equivocada.
+      if (_foco == 0) return;
+      setState(() => _turno = (_turno + 1) % _rotantesReales);
+    });
+  }
+
   @override
   void dispose() {
+    _reloj?.cancel();
     for (final n in _nodos) {
       n.dispose();
     }
     super.dispose();
   }
 
-  /// Pone el foco en el destacado. Siempre en "Reproducir": es lo que se viene
-  /// a hacer, y volver del catálogo a un "Ver ficha" enfocado sería raro.
-  void enfocar() => _nodos.first.requestFocus();
+  /// Cuántos se turnan de verdad: si llegaron menos títulos de los que caben,
+  /// se turnan los que haya.
+  int get _rotantesReales {
+    final sobrantes = widget.items.length - (TvDestacado.huecos - 1);
+    return sobrantes.clamp(1, TvDestacado.rotantes);
+  }
+
+  /// Qué título le toca al hueco `h`.
+  ///
+  /// El hueco 0 se lo reparten los que se turnan; los demás van detrás, en
+  /// orden. `null` si todavía no hay título para ese hueco — con el catálogo a
+  /// medio cargar es lo normal.
+  int? _indiceDe(int h) {
+    final i = h == 0 ? _turno : _rotantesReales + h - 1;
+    return i < widget.items.length ? i : null;
+  }
+
+  /// Pone el foco en la cabecera.
+  void enfocar() {
+    // En el hueco donde esté lo último elegido, si sigue a la vista; si no, en
+    // el primero.
+    for (var h = 0; h < TvDestacado.huecos; h++) {
+      if (_indiceDe(h) == widget.indice) {
+        _nodos[h].requestFocus();
+        return;
+      }
+    }
+    _nodos.first.requestFocus();
+  }
 
   bool get tieneFoco => _foco >= 0;
 
-  KeyEventResult _tecla(int i, KeyEvent evento) {
+  /// A dónde lleva cada flecha desde cada hueco.
+  ///
+  /// Escrito como tabla y no como una cadena de `if`: el mosaico tiene una
+  /// forma concreta —dos arriba, cuatro abajo— y los saltos se entienden mucho
+  /// mejor viéndolos juntos que deduciéndolos de condiciones sueltas.
+  ///
+  ///  · Bajar desde una grande lleva a la pequeña que tiene DEBAJO, no siempre
+  ///    a la primera: la izquierda cubre las pequeñas 2 y 3, la derecha las 4
+  ///    y 5.
+  ///  · Subir desde una pequeña devuelve a la grande de su mitad.
+  ///  · `null` es "aquí no hay nada", y lo resuelve quien llama: saliendo al
+  ///    menú lateral o bajando a las filas del catálogo.
+  static const Map<int, ({int? izq, int? der, int? arr, int? aba})> _saltos = {
+    0: (izq: null, der: 1, arr: null, aba: 2),
+    1: (izq: 0, der: null, arr: null, aba: 4),
+    2: (izq: null, der: 3, arr: 0, aba: null),
+    3: (izq: 2, der: 4, arr: 0, aba: null),
+    4: (izq: 3, der: 5, arr: 1, aba: null),
+    5: (izq: 4, der: null, arr: 1, aba: null),
+  };
+
+  void _irA(int? h) {
+    if (h == null) return;
+    if (_indiceDe(h) == null) return; // hueco vacío: no se va ahí
+    _nodos[h].requestFocus();
+  }
+
+  KeyEventResult _tecla(int h, KeyEvent evento) {
     if (evento is! KeyDownEvent && evento is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
     }
     final k = evento.logicalKey;
+    final salto = _saltos[h]!;
 
     if (k == LogicalKeyboardKey.select ||
         k == LogicalKeyboardKey.enter ||
         k == LogicalKeyboardKey.gameButtonA) {
+      // Con la tecla mantenida no se repite: abrir la ficha cinco veces por
+      // dejar el dedo puesto no lo quiere nadie.
       if (evento is KeyRepeatEvent) return KeyEventResult.handled;
-      i == 0 ? widget.onReproducir() : widget.onFicha();
+      final i = _indiceDe(h);
+      if (i != null) widget.onElegir(i);
       return KeyEventResult.handled;
     }
+
     if (k == LogicalKeyboardKey.arrowRight) {
-      // ── DERECHA RECORRE: botón, botón, siguiente destacado ────────────
-      //
-      // Desde el último botón, derecha pasa al siguiente título en vez de no
-      // hacer nada. Es lo que hace que los cinco destacados sean alcanzables
-      // con el mando sin inventar un control nuevo: las rayitas de abajo ya
-      // dicen cuántos hay y en cuál estás, y la flecha hace lo que esas
-      // rayitas prometen.
-      //
-      // Con la tecla mantenida NO se encadena: pasar cinco portadas de golpe
-      // por dejar el dedo puesto no lo quiere nadie.
-      if (i == 0) {
-        _nodos[1].requestFocus();
-      } else if (evento is! KeyRepeatEvent) {
-        widget.onSiguiente();
-      }
+      _irA(salto.der);
       return KeyEventResult.handled;
     }
+
     if (k == LogicalKeyboardKey.arrowLeft) {
-      if (i == 1) {
-        _nodos[0].requestFocus();
-      } else {
+      if (salto.izq == null) {
         widget.onSalirIzquierda();
+      } else {
+        _irA(salto.izq);
       }
       return KeyEventResult.handled;
     }
+
     if (k == LogicalKeyboardKey.arrowDown) {
-      widget.onAbajo();
+      // Si abajo no hay hueco —o el que hay está vacío— se sale a las filas
+      // del catálogo, que es lo que uno espera al seguir bajando.
+      final abajo = salto.aba;
+      if (abajo == null || _indiceDe(abajo) == null) {
+        widget.onAbajo();
+      } else {
+        _irA(abajo);
+      }
       return KeyEventResult.handled;
     }
-    // Arriba no lleva a ningún sitio: esto ya es lo más alto de la pantalla.
-    if (k == LogicalKeyboardKey.arrowUp) return KeyEventResult.handled;
+
+    if (k == LogicalKeyboardKey.arrowUp) {
+      _irA(salto.arr);
+      return KeyEventResult.handled;
+    }
 
     return KeyEventResult.ignored;
   }
 
-  // ── Datos, con lo que haya ───────────────────────────────────────────────
-  String? _texto(String clave) {
-    final v = widget.ficha?[clave];
-    if (v is String && v.trim().isNotEmpty) return v.trim();
-    return null;
+  void _cambioFoco(int h, bool tiene) {
+    final antes = _foco >= 0;
+    if (tiene) {
+      _foco = h;
+      final i = _indiceDe(h);
+      if (i != null) widget.onIndice(i);
+    } else if (_foco == h) {
+      _foco = -1;
+    }
+    if (mounted) setState(() {});
+
+    final ahora = _foco >= 0;
+    if (antes != ahora) widget.onFoco(ahora);
   }
 
-  M3UItem? get _item =>
-      widget.items.isEmpty
-          ? null
-          : widget.items[widget.indice.clamp(0, widget.items.length - 1)];
+  /// Sin las marcas del proveedor: en pantalla se leía "Obsesión (2026)", con
+  /// el año repetido. El mismo limpiado que se le manda a TMDB sirve para
+  /// enseñarlo.
+  String _titulo(int i) =>
+      limpiarTituloParaTmdb(widget.items[i].seriesName ?? widget.items[i].name);
 
-  /// La imagen apaisada, pedida en grande.
-  ///
-  /// TMDB devuelve `backdrop_url` en `w500` — poco más de un cuarto del ancho
-  /// de una pantalla de televisor. Estirado a 1920 se ve exactamente como se
-  /// veía: pixelado.
-  ///
-  /// `original` y no `w1280`: el destacado ocupa la pantalla ENTERA, y a 1280
-  /// todavía hay que estirar un 50%. Es una imagen por título y solo en el
-  /// televisor, que va por wifi, no por datos.
-  ///
-  /// El teléfono no se toca: allí `w500` va sobrado para su banner y bajar el
-  /// original solo gastaría datos del usuario.
-  String? _grande(String? url) {
-    if (url == null) return null;
-    return url.replaceFirst('/w500/', '/original/');
-  }
-
-  String? get _anio {
-    final f = _texto('release_date');
-    return (f != null && f.length >= 4) ? f.substring(0, 4) : null;
-  }
+  String? _imagen(int i) =>
+      i < widget.imagenes.length ? widget.imagenes[i] : null;
 
   @override
   Widget build(BuildContext context) {
-    final item = _item;
-    if (item == null) return const SizedBox(height: TvDestacado.altura);
-
-    // Sin las marcas del proveedor: en pantalla se leia "Obsesión (2026)",
-    // con el año repetido en la línea de debajo. El mismo limpiado que se le
-    // manda a TMDB sirve para enseñarlo.
-    final titulo = limpiarTituloParaTmdb(item.seriesName ?? item.name);
-    final sinopsis = _texto('overview');
-    final clasificacion = _texto('rating');
-    // Apaisada si la hay; si no, el poster, que es vertical pero al menos es
-    // del titulo. Y si TMDB no encontro nada, la caratula del proveedor.
-    // Cualquier cosa antes que dejar ver el fondo de la app estirado.
-    final fondo =
-        _grande(_texto('backdrop_url')) ??
-        _grande(_texto('poster_url')) ??
-        // Solo cuando ya sabemos que TMDB no tiene nada que darnos: si sigue
-        // en camino, la caratula vertical seria un parpadeo, no un respaldo.
-        (widget.esperandoFicha ? null : item.logo);
-    final esApaisada = _texto('backdrop_url') != null;
-
-    return SizedBox(
-      height: TvDestacado.altura,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          // ── La imagen ────────────────────────────────────────────────
-          //
-          // Apaisada de TMDB. Mientras no llega no se pone la carátula
-          // estirada en su sitio: un póster vertical deformado a 16:9 se ve
-          // peor que no poner nada, y ademas cambiaria de forma al llegar la
-          // buena.
-          if (fondo != null && fondo.isNotEmpty)
-            Positioned.fill(
-              // El poster de respaldo se ancla a la DERECHA: es vertical, y
-              // recortado a lo ancho del destacado se pierde la mitad. A la
-              // derecha, lo que se pierde cae bajo el velo del texto en vez de
-              // comerse la cara del cartel.
-              // ── LA IMAGEN SE DISUELVE, NO SE TAPA ───────────────────
-              //
-              // Antes el pie llevaba un velo que iba a `#0B0B0D` OPACO. Y ahí
-              // estaba el fallo que se veía en pantalla: debajo del destacado
-              // no hay negro liso, está el fondo del catálogo con su textura.
-              // El velo terminaba en un color que no era el de su alrededor,
-              // así que en vez de un fundido salía una COSTURA — dos
-              // superficies distintas pegadas, con el título de la primera
-              // fila justo debajo.
-              //
-              // `ShaderMask` con `dstIn` no pinta nada encima: recorta el alfa
-              // de la propia imagen. La imagen se desvanece de verdad y por
-              // debajo asoma lo que haya, sea el fondo del catálogo o lo que
-              // se ponga mañana. Nada que cuadrar a mano.
-              child: ShaderMask(
-                blendMode: BlendMode.dstIn,
-                shaderCallback:
-                    (rect) => const LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        Color(0xFFFFFFFF),
-                        Color(0xFFFFFFFF),
-                        Color(0x00FFFFFF),
-                      ],
-                      stops: [0.0, 0.52, 1.0],
-                    ).createShader(rect),
-                child: FractionallySizedBox(
-                  alignment: Alignment.centerRight,
-                  widthFactor: esApaisada ? 1.0 : 0.62,
-                  child: FastThumbnail(
-                    url: fondo,
-                    width: double.infinity,
-                    height: TvDestacado.altura,
-                    // Sin esto la imagen llega en 185 px de ancho: el servicio
-                    // reescribe las URLs de TMDB y da igual lo que se pida
-                    // desde aqui.
-                    pantallaCompleta: true,
-                  ),
-                ),
-              ),
-            ),
-
-          // Velo lateral: el texto va sobre negro casi puro y la imagen queda
-          // libre a la derecha. Sin esto, un fotograma claro se come el
-          // título.
-          const Positioned.fill(
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.centerLeft,
-                  end: Alignment.centerRight,
-                  colors: [
-                    Color(0xF7000000),
-                    Color(0xE0000000),
-                    Color(0x59000000),
-                    Color(0x00000000),
-                  ],
-                  stops: [0.0, 0.30, 0.62, 0.90],
-                ),
-              ),
-            ),
-          ),
-
-          // Velo al pie: funde la imagen con las filas de abajo para que no
-          // haya un corte recto entre las dos zonas.
-          // ── El contenido ─────────────────────────────────────────────
-          Padding(
-            // 80 arriba: el texto tiene que respirar. Pegado al borde se lee
-            // como si se hubiera desbordado, no como una portada.
-            //
-            // Baja el bloque entero —título, datos, sinopsis y botones— porque
-            // es un único Padding: mover esto los mueve todos a la vez y
-            // conserva la separación que ya tienen entre sí.
-            padding: const EdgeInsets.fromLTRB(106, 80, 0, 0),
-            // ── O ENTERO, O NADA ──────────────────────────────────────────
-            //
-            // Antes salía el título al instante y un segundo después caían la
-            // clasificación y la sinopsis, con un hueco vacío mientras tanto.
-            // Eso es enseñar el banner a medio montar, y se nota.
-            //
-            // Netflix no llega antes a sus datos: los espera y pinta la
-            // portada ya completa. Aquí igual — el bloque entero aparece de
-            // una vez, cuando ya está todo, subiendo un poco al entrar.
-            //
-            // Si TMDB falla, `esperandoFicha` se apaga igual y sale lo que
-            // haya (título y categoría): completo dentro de lo que existe,
-            // que es distinto de estar a medias.
-            child: AnimatedSlide(
-              offset:
-                  widget.esperandoFicha ? const Offset(0, 0.06) : Offset.zero,
-              duration: const Duration(milliseconds: 420),
-              curve: Curves.easeOutCubic,
-              child: AnimatedOpacity(
-                opacity: widget.esperandoFicha ? 0 : 1,
-                duration: const Duration(milliseconds: 380),
-                curve: Curves.easeOut,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    SizedBox(
-                      width: 520,
-                      child: Text(
-                        titulo,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 27,
-                          fontWeight: FontWeight.w700,
-                          height: 1.05,
-                          letterSpacing: -0.5,
-                          shadows: [
-                            Shadow(color: Colors.black54, blurRadius: 16),
-                          ],
-                        ),
-                      ),
-                    ),
-
-                    const SizedBox(height: 9),
-
-                    // Año · clasificación · categoría. Alto reservado: TMDB llega
-                    // tarde y sin reservarlo, los botones darían un salto hacia
-                    // abajo justo cuando el usuario va a pulsarlos.
-                    SizedBox(
-                      height: 20,
-                      child: Row(
-                        children: [
-                          if (_anio != null) ...[
-                            Text(
-                              _anio!,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            const _Punto(),
-                          ],
-                          if (clasificacion != null) ...[
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 6,
-                                vertical: 1,
-                              ),
-                              decoration: BoxDecoration(
-                                border: Border.all(
-                                  color: Colors.white.withValues(alpha: 0.38),
-                                ),
-                                borderRadius: BorderRadius.circular(3),
-                              ),
-                              child: Text(
-                                clasificacion,
-                                style: const TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                            ),
-                            const _Punto(),
-                          ],
-                          Flexible(
-                            child: Text(
-                              item.category,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: Colors.white60,
-                                fontSize: 13,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    const SizedBox(height: 11),
-
-                    // Dos líneas de sinopsis. Con hueco reservado, por lo mismo
-                    // que la línea de arriba.
-                    SizedBox(
-                      width: 440,
-                      height: 38,
-                      child:
-                          sinopsis == null
-                              ? null
-                              : Text(
-                                sinopsis,
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 13,
-                                  height: 1.45,
-                                ),
-                              ),
-                    ),
-
-                    // Algo más de aire antes de los botones que entre las líneas
-                    // de texto: separa lo que se lee de lo que se pulsa.
-                    //
-                    // Basta con este hueco: los botones y las rayitas van seguidos
-                    // en la misma columna, así que bajan juntos y conservan su
-                    // separación.
-                    const SizedBox(height: 36),
-
-                    Row(
-                      children: [
-                        _Boton(
-                          nodo: _nodos[0],
-                          texto: 'Ver',
-                          icono: Icons.play_arrow_rounded,
-                          principal: true,
-                          onTecla: (e) => _tecla(0, e),
-                          onFoco: (v) => _cambioFoco(0, v),
-                          onOk: widget.onReproducir,
-                        ),
-                        const SizedBox(width: 12),
-                        _Boton(
-                          nodo: _nodos[1],
-                          texto: 'Ver ficha',
-                          icono: Icons.info_outline_rounded,
-                          principal: false,
-                          onTecla: (e) => _tecla(1, e),
-                          onFoco: (v) => _cambioFoco(1, v),
-                          onOk: widget.onFicha,
-                        ),
-                      ],
-                    ),
-
-                    const SizedBox(height: 14),
-
-                    // Cuál de los destacados se está viendo. Rayas y no puntos:
-                    // desde el sofá, un punto de 6 píxeles no se ve.
-                    Row(
-                      children: [
-                        for (var i = 0; i < widget.items.length; i++) ...[
-                          AnimatedContainer(
-                            duration: const Duration(milliseconds: 200),
-                            width: i == widget.indice ? 24 : 15,
-                            height: 3,
-                            color:
-                                i == widget.indice
-                                    ? Colors.white
-                                    : Colors.white.withValues(alpha: 0.28),
-                          ),
-                          const SizedBox(width: 5),
-                        ],
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _cambioFoco(int i, bool tiene) {
-    setState(() => _foco = tiene ? i : (_foco == i ? -1 : _foco));
-    widget.onFoco(tieneFoco);
-  }
-}
-
-class _Punto extends StatelessWidget {
-  const _Punto();
-
-  @override
-  Widget build(BuildContext context) => const Padding(
-    padding: EdgeInsets.symmetric(horizontal: 8),
-    child: Text('·', style: TextStyle(color: Colors.white38, fontSize: 14)),
-  );
-}
-
-/// Botón del destacado. Blanco relleno el principal, translúcido el otro.
-class _Boton extends StatefulWidget {
-  final FocusNode nodo;
-  final String texto;
-  final IconData icono;
-  final bool principal;
-  final KeyEventResult Function(KeyEvent) onTecla;
-  final ValueChanged<bool> onFoco;
-  final VoidCallback onOk;
-
-  const _Boton({
-    required this.nodo,
-    required this.texto,
-    required this.icono,
-    required this.principal,
-    required this.onTecla,
-    required this.onFoco,
-    required this.onOk,
-  });
-
-  @override
-  State<_Boton> createState() => _BotonState();
-}
-
-class _BotonState extends State<_Boton> {
-  bool _foco = false;
-
-  @override
-  Widget build(BuildContext context) {
-    // DOS ESTADOS, NO TRES: con el foco, blanco sólido y texto negro; sin él,
-    // translúcido y texto blanco. Los dos botones iguales.
-    //
-    // Antes "Reproducir" iba siempre en blanco por ser el principal, así que
-    // al pasar el foco a "Ver ficha" quedaban los dos claros y no se veía cuál
-    // estaba señalado. Con el mando eso es un problema real: el foco es la
-    // única forma de saber dónde estás. Que el fondo blanco signifique una
-    // sola cosa —"aquí está el foco"— es lo que lo hace legible.
-    final Color fondo;
-    final Color tinta;
-    if (_foco) {
-      fondo = Colors.white;
-      tinta = const Color(0xFF0B0B0D);
-    } else {
-      fondo = Colors.white.withValues(alpha: 0.16);
-      tinta = Colors.white;
+    if (widget.items.isEmpty) {
+      return const SizedBox(height: TvDestacado.alturaMaxima);
     }
 
-    return Focus(
-      focusNode: widget.nodo,
-      onFocusChange: (v) {
-        setState(() => _foco = v);
-        widget.onFoco(v);
-      },
-      // OK se lee directo de la tecla, como en el resto del televisor: con el
-      // mando, `Actions`/`Intents` no llegan.
-      onKeyEvent: (node, event) => widget.onTecla(event),
-      child: AnimatedScale(
-        scale: _foco ? 1.05 : 1.0,
-        duration: const Duration(milliseconds: 140),
-        curve: Curves.easeOut,
-        alignment: Alignment.centerLeft,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 140),
-          padding: const EdgeInsets.symmetric(horizontal: 17, vertical: 8),
-          decoration: BoxDecoration(color: fondo),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
+    return LayoutBuilder(
+      builder: (context, restricciones) {
+        // Las medidas se CALCULAN del ancho disponible en vez de fijarse a
+        // mano, para que el mosaico salga igual de proporcionado en un panel
+        // de 1080p que en uno de 720p.
+        final util =
+            restricciones.maxWidth -
+            TvDestacado.margenIzq -
+            TvDestacado.margenDer;
+        // 16:9, la proporción de las imágenes apaisadas de TMDB. Con
+        // cualquier otra saldrían franjas negras o recortes.
+        //
+        // SE MIRA EL ANCHO **Y** EL ALTO, y manda el que menos deje.
+        //
+        // Con solo el ancho, el bloque crecía hasta donde le diera la
+        // anchura disponible y se comía el sitio de las filas de abajo:
+        // "Últimamente nuevo" quedaba fuera de la pantalla. Ajustándolo
+        // también al alto reservado, el mosaico es todo lo grande que puede
+        // ser sin invadir lo que viene debajo.
+        final porAncho = (util - TvDestacado.hueco) / 2 * 9 / 16;
+        // Las pequeñas miden la mitad que las grandes, así que las dos filas
+        // juntas son una vez y media la grande.
+        final porAlto =
+            (TvDestacado.alturaMaxima - TvDestacado.margenSup) / 1.5;
+        final altoGrande = math.min(porAncho, porAlto);
+
+        final anchoGrande = altoGrande * 16 / 9;
+        final anchoChica = (anchoGrande * 2 - TvDestacado.hueco * 2) / 4;
+        final altoChica = anchoChica * 9 / 16;
+
+        return Padding(
+          padding: const EdgeInsets.only(
+            top: TvDestacado.margenSup,
+            left: TvDestacado.margenIzq,
+            right: TvDestacado.margenDer,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(widget.icono, color: tinta, size: 18),
-              const SizedBox(width: 7),
-              Text(
-                widget.texto,
-                style: TextStyle(
-                  color: tinta,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                ),
+              // ── Las dos grandes ──────────────────────────────────────
+              Row(
+                children: [
+                  _tarjeta(0, anchoGrande, altoGrande),
+                  const SizedBox(width: TvDestacado.hueco),
+                  _tarjeta(1, anchoGrande, altoGrande),
+                ],
+              ),
+
+              const SizedBox(height: TvDestacado.hueco),
+
+              // ── Las cuatro pequeñas ──────────────────────────────────
+              Row(
+                children: [
+                  for (var h = 2; h < TvDestacado.huecos; h++) ...[
+                    _tarjeta(h, anchoChica, altoChica),
+                    if (h != TvDestacado.huecos - 1)
+                      const SizedBox(width: TvDestacado.hueco),
+                  ],
+                ],
               ),
             ],
           ),
+        );
+      },
+    );
+  }
+
+  Widget _tarjeta(int h, double ancho, double alto) {
+    final i = _indiceDe(h);
+    if (i == null) {
+      // Sin título todavía: se deja el sitio marcado y vacío. Que el mosaico
+      // cambie de forma según van llegando los datos se ve peor que un hueco
+      // oscuro un momento.
+      return SizedBox(width: ancho, height: alto);
+    }
+
+    return _Tarjeta(
+      nodo: _nodos[h],
+      ancho: ancho,
+      alto: alto,
+      imagen: _imagen(i),
+      titulo: _titulo(i),
+      conFoco: _foco == h,
+      // Las rayitas solo en el hueco que se turna: en los fijos no habría nada
+      // que contar.
+      total: h == 0 ? _rotantesReales : 0,
+      posicion: _turno,
+      onTecla: (e) => _tecla(h, e),
+      onFoco: (v) => _cambioFoco(h, v),
+    );
+  }
+}
+
+/// Un hueco del mosaico.
+class _Tarjeta extends StatelessWidget {
+  final FocusNode nodo;
+  final double ancho;
+  final double alto;
+  final String? imagen;
+  final String titulo;
+  final bool conFoco;
+
+  /// Cuántos se turnan aquí. 0 o 1 = no se turna, así que sin rayitas.
+  final int total;
+  final int posicion;
+
+  final KeyEventResult Function(KeyEvent) onTecla;
+  final ValueChanged<bool> onFoco;
+
+  const _Tarjeta({
+    required this.nodo,
+    required this.ancho,
+    required this.alto,
+    required this.imagen,
+    required this.titulo,
+    required this.conFoco,
+    required this.total,
+    required this.posicion,
+    required this.onTecla,
+    required this.onFoco,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Focus(
+      focusNode: nodo,
+      onFocusChange: onFoco,
+      // OK se lee directo de la tecla, como en el resto del televisor: con el
+      // mando, `Actions`/`Intents` no llegan.
+      onKeyEvent: (node, evento) => onTecla(evento),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        width: ancho,
+        height: alto,
+        decoration: const BoxDecoration(color: Color(0xFF15151A)),
+        // EL BORDE VA POR ENCIMA, no alrededor.
+        //
+        // Como borde normal empujaría el contenido hacia dentro al aparecer, y
+        // la imagen daría un tirón de tres píxeles cada vez que se mueve el
+        // foco. En un mosaico, además, un borde que ocupa sitio descuadraría
+        // la rejilla entera.
+        foregroundDecoration: BoxDecoration(
+          border: Border.all(
+            color: conFoco ? Colors.white : Colors.transparent,
+            // 2, el mismo grosor que el foco de las carátulas del catálogo.
+            // El foco tiene que verse igual en toda la pantalla: si aquí es
+            // más grueso, parece que la cabecera usa otro sistema.
+            width: 2,
+          ),
+        ),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            if (imagen != null && imagen!.isNotEmpty)
+              FastThumbnail(
+                url: imagen!,
+                width: ancho,
+                height: alto,
+                // El servicio reescribe las URLs de TMDB; sin esta marca la
+                // imagen llegaría a 185 px de ancho para un hueco de 550.
+                pantallaCompleta: true,
+              ),
+
+            // ── EL TÍTULO, DENTRO Y SOLO EN LA SELECCIONADA ───────────────
+            //
+            // Dentro y no fuera: fuera ocupaba una franja entre las dos filas
+            // y partía el bloque en dos. Pegado al filo, con el aire justo
+            // para que la letra no toque el borde.
+            //
+            // SOLO CON EL FOCO porque las portadas ya llevan su nombre
+            // impreso. Ponerlo en las seis sería escribir encima de un texto
+            // que ya está ahí, seis veces. Con el foco sí vale: confirma qué
+            // vas a abrir, que es justo lo que la portada no puede decirte.
+            //
+            // El velo oscuro va DEBAJO del texto: una portada clara —un
+            // cielo, una nieve— se come la letra blanca. Solo el tramo de
+            // abajo, para no ensuciar la imagen.
+            if (conFoco)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: IgnorePointer(
+                  child: Container(
+                    padding: EdgeInsets.fromLTRB(10, 26, 10, 8),
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [Color(0x00000000), Color(0xCC000000)],
+                      ),
+                    ),
+                    child: Text(
+                      titulo,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Colors.white,
+                        // Las grandes mandan por tamaño, también en la letra: si
+                        // las seis llevaran el mismo cuerpo, la jerarquía del
+                        // mosaico se perdería.
+                        fontSize: ancho > 400 ? 19 : 14,
+                        fontWeight: FontWeight.w400,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
+            // Por cuál de los que se turnan va. Visible siempre, con foco o
+            // sin él: es lo que avisa de que ese hueco no es fijo.
+            if (total > 1)
+              Positioned(
+                right: 10,
+                bottom: 34,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 9,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.45),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Row(
+                    children: [
+                      for (var i = 0; i < total; i++) ...[
+                        AnimatedContainer(
+                          duration: const Duration(milliseconds: 220),
+                          width: i == posicion ? 16 : 6,
+                          height: 6,
+                          decoration: BoxDecoration(
+                            color:
+                                i == posicion
+                                    ? Colors.white
+                                    : Colors.white.withValues(alpha: 0.45),
+                            borderRadius: BorderRadius.circular(3),
+                          ),
+                        ),
+                        if (i != total - 1) const SizedBox(width: 5),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+          ],
         ),
       ),
     );
