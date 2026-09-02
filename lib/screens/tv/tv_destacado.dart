@@ -345,7 +345,7 @@ class TvDestacadoState extends State<TvDestacado> {
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
                           color: Colors.white,
-                          fontSize: 30,
+                          fontSize: 27,
                           fontWeight: FontWeight.w700,
                           height: 1.05,
                           letterSpacing: -0.5,
@@ -578,14 +578,7 @@ class _BotonState extends State<_Boton> {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 140),
           padding: const EdgeInsets.symmetric(horizontal: 17, vertical: 8),
-          // El mismo radio que en el teléfono: sus dos botones del banner
-          // usan `BorderRadius.circular(4)`. Es un redondeo corto a
-          // propósito — marca la esquina sin convertir el botón en una
-          // pastilla, que es lo que pasaría con un radio grande.
-          decoration: BoxDecoration(
-            color: fondo,
-            borderRadius: BorderRadius.circular(4),
-          ),
+          decoration: BoxDecoration(color: fondo),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
