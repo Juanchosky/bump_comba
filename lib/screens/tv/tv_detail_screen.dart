@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import '../../services/fast_image_service.dart';
 import '../../services/m3u_service.dart';
 import '../../services/tmdb_service.dart';
+import '../../services/tv/tv_vista_previa.dart';
 import '../../utils/titulo_tmdb.dart';
 import 'tv_player_screen.dart';
 
@@ -84,6 +85,10 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
   /// hay fondo: nada que se mueva, nada a medias.
   bool _listo = false;
 
+  /// Marca el recuadro de la cabecera. La vista previa vive en el `Overlay`,
+  /// fuera de esta pantalla, así que hay que medirle el hueco y decírselo.
+  final GlobalKey _huecoVistaPrevia = GlobalKey();
+
   @override
   void initState() {
     super.initState();
@@ -109,6 +114,60 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
     ]);
     await Future.any([todo, Future<void>.delayed(_plazoMaximo)]);
     if (mounted) setState(() => _listo = true);
+    // Después del `setState`: hasta que la ficha no se pinta, el recuadro no
+    // existe y no hay nada que medir.
+    _arrancarVistaPrevia();
+  }
+
+  /// Pone a reproducir en el recuadro de la cabecera.
+  ///
+  /// Se espera al siguiente fotograma porque `_listo` acaba de cambiar y el
+  /// recuadro todavía no está en pantalla: medirlo ahora daría `null`.
+  bool _vistaPreviaPedida = false;
+
+  void _arrancarVistaPrevia() {
+    // Una sola vez por ficha: montarla de nuevo destruiria el reproductor que
+    // ya esta resolviendo.
+    if (_vistaPreviaPedida) return;
+    _vistaPreviaPedida = true;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final hueco = _rectanguloVistaPrevia();
+      if (hueco == null) return;
+
+      final esSerie = widget.item.isSeries || widget.item.seriesName != null;
+      TvVistaPrevia.instancia.mostrar(
+        context,
+        _queSeReproduce(esSerie, _episodios),
+        hueco,
+      );
+    });
+  }
+
+  /// Le pasa el hueco nuevo a la vista previa. Solo mueve; no reinicia nada.
+  void _reubicarVistaPrevia() {
+    final hueco = _rectanguloVistaPrevia();
+    if (hueco != null) TvVistaPrevia.instancia.reubicar(hueco);
+  }
+
+  /// El hueco de la cabecera en coordenadas de pantalla.
+  Rect? _rectanguloVistaPrevia() {
+    final caja = _huecoVistaPrevia.currentContext?.findRenderObject();
+    if (caja is! RenderBox || !caja.hasSize) return null;
+    return caja.localToGlobal(Offset.zero) & caja.size;
+  }
+
+  @override
+  void dispose() {
+    // AQUÍ SE PARA EL VÍDEO, y solo aquí.
+    //
+    // Volver del reproductor grande a la ficha no pasa por este `dispose` —la
+    // ficha nunca se fue— así que la reproducción sigue. Salir de la ficha sí,
+    // y entonces se para. Que es lo que se pidió.
+    final esSerie = widget.item.isSeries || widget.item.seriesName != null;
+    TvVistaPrevia.instancia.cerrarSi(_queSeReproduce(esSerie, _episodios).url);
+    super.dispose();
   }
 
   static const Duration _plazoMaximo = Duration(milliseconds: 2500);
@@ -402,79 +461,97 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
               child:
                   !_listo
                       ? const SizedBox.expand()
-                      : SingleChildScrollView(
-                        // 50 arriba y no 26: el título quedaba pegado al
-                        // borde de la pantalla.
-                        //
-                        // Se toca aquí, en el relleno del scroll, y no en el
-                        // título: así bajan con él la clasificación y los
-                        // datos que lo rodean, la imagen que va al lado y todo
-                        // lo de debajo, conservando la separación que ya
-                        // tienen entre sí.
-                        padding: const EdgeInsets.fromLTRB(48, 50, 48, 30),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            // ── Cabecera: texto a la izquierda, imagen a la derecha ────
-                            Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Expanded(
-                                  child: _cabeceraTexto(esSerie, episodios),
-                                ),
-                                const SizedBox(width: 36),
+                      // EL HUECO SE MUEVE AL HACER SCROLL.
+                      //
+                      // El vídeo vive en el `Overlay`, en coordenadas de
+                      // pantalla: no baja con el contenido. Sin esto, bajar a
+                      // "Quizás te guste" dejaba el vídeo flotando sobre el
+                      // sitio donde ANTES estaba el recuadro.
+                      : NotificationListener<ScrollNotification>(
+                        onNotification: (_) {
+                          _reubicarVistaPrevia();
+                          return false;
+                        },
+                        child: SingleChildScrollView(
+                          // 50 arriba y no 26: el título quedaba pegado al
+                          // borde de la pantalla.
+                          //
+                          // Se toca aquí, en el relleno del scroll, y no en el
+                          // título: así bajan con él la clasificación y los
+                          // datos que lo rodean, la imagen que va al lado y todo
+                          // lo de debajo, conservando la separación que ya
+                          // tienen entre sí.
+                          padding: const EdgeInsets.fromLTRB(48, 50, 48, 30),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              // ── Cabecera: texto a la izquierda, imagen a la derecha ────
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Expanded(
+                                    child: _cabeceraTexto(esSerie, episodios),
+                                  ),
+                                  const SizedBox(width: 36),
 
-                                // La imagen ES el boton de reproducir.
-                                //
-                                // Antes habia un "Reproducir" aparte debajo, y sobraba: en
-                                // la ficha ya hay una imagen grande justo donde mira el
-                                // ojo, asi que darle el foco a ella quita un control de la
-                                // pantalla sin quitar nada de lo que se puede hacer. Es
-                                // ademas el primer foco, asi que entrar y pulsar OK
-                                // reproduce, sin mover el mando.
-                                _ImagenFicha(
-                                  url: _imagen,
-                                  autofocus: true,
-                                  onOk:
-                                      () => _reproducir(
-                                        _queSeReproduce(esSerie, episodios),
-                                      ),
+                                  // La imagen ES el boton de reproducir.
+                                  //
+                                  // Antes habia un "Reproducir" aparte debajo, y sobraba: en
+                                  // la ficha ya hay una imagen grande justo donde mira el
+                                  // ojo, asi que darle el foco a ella quita un control de la
+                                  // pantalla sin quitar nada de lo que se puede hacer. Es
+                                  // ademas el primer foco, asi que entrar y pulsar OK
+                                  // reproduce, sin mover el mando.
+                                  _ImagenFicha(
+                                    clave: _huecoVistaPrevia,
+                                    autofocus: true,
+                                    // YA NO EMPUJA UNA PANTALLA NUEVA.
+                                    //
+                                    // La vista previa que se está viendo aquí y
+                                    // el reproductor grande son el mismo, y ya
+                                    // está reproduciendo: solo se agranda. Por
+                                    // eso continúa por donde iba y no recarga.
+                                    onOk:
+                                        () => TvVistaPrevia.instancia.expandir(
+                                          context,
+                                        ),
+                                  ),
+                                ],
+                              ),
+
+                              const SizedBox(height: 22),
+
+                              if (esSerie) _bloqueEpisodios(episodios),
+
+                              if (_sugerencias.isNotEmpty) ...[
+                                const SizedBox(height: 26),
+                                const Text(
+                                  'Quizás te guste',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 17,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(height: 10),
+                                SizedBox(
+                                  height: 176,
+                                  child: ListView.builder(
+                                    scrollDirection: Axis.horizontal,
+                                    // Sin recorte, para que el 5% que crece la
+                                    // enfocada no se corte arriba y abajo.
+                                    clipBehavior: Clip.none,
+                                    itemCount: _sugerencias.length,
+                                    itemBuilder:
+                                        (context, i) => _CardSugerencia(
+                                          item: _sugerencias[i],
+                                          onOk: () => _abrir(_sugerencias[i]),
+                                        ),
+                                  ),
                                 ),
                               ],
-                            ),
-
-                            const SizedBox(height: 22),
-
-                            if (esSerie) _bloqueEpisodios(episodios),
-
-                            if (_sugerencias.isNotEmpty) ...[
-                              const SizedBox(height: 26),
-                              const Text(
-                                'Quizás te guste',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 17,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                              const SizedBox(height: 10),
-                              SizedBox(
-                                height: 176,
-                                child: ListView.builder(
-                                  scrollDirection: Axis.horizontal,
-                                  // Sin recorte, para que el 5% que crece la
-                                  // enfocada no se corte arriba y abajo.
-                                  clipBehavior: Clip.none,
-                                  itemCount: _sugerencias.length,
-                                  itemBuilder:
-                                      (context, i) => _CardSugerencia(
-                                        item: _sugerencias[i],
-                                        onOk: () => _abrir(_sugerencias[i]),
-                                      ),
-                                ),
-                              ),
                             ],
-                          ],
+                          ),
                         ),
                       ),
             ),
@@ -734,12 +811,14 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
 /// Sin esquinas redondeadas: pegada al borde recto se lee como un fotograma
 /// del propio titulo y no como una tarjeta mas de una interfaz.
 class _ImagenFicha extends StatefulWidget {
-  final String? url;
+  /// Va en el recuadro para poder medirlo desde fuera: la vista previa se
+  /// pinta en el `Overlay` y necesita saber dónde cae este hueco.
+  final GlobalKey clave;
   final bool autofocus;
   final VoidCallback onOk;
 
   const _ImagenFicha({
-    required this.url,
+    required this.clave,
     required this.onOk,
     this.autofocus = false,
   });
@@ -753,12 +832,13 @@ class _ImagenFichaState extends State<_ImagenFicha> {
 
   @override
   Widget build(BuildContext context) {
-    final url = widget.url;
-
     return Focus(
       autofocus: widget.autofocus,
       onFocusChange: (v) {
         setState(() => _foco = v);
+        // El vídeo tapa este recuadro, así que el marco de foco lo dibuja el
+        // `Overlay` por encima. Aquí solo se le avisa.
+        TvVistaPrevia.instancia.foco = v;
         if (v) {
           Scrollable.ensureVisible(
             context,
@@ -786,6 +866,7 @@ class _ImagenFichaState extends State<_ImagenFicha> {
         return KeyEventResult.ignored;
       },
       child: AnimatedContainer(
+        key: widget.clave,
         duration: const Duration(milliseconds: 140),
         width: 360,
         height: 203,
@@ -802,33 +883,41 @@ class _ImagenFichaState extends State<_ImagenFicha> {
             width: 2,
           ),
         ),
+        // AQUÍ YA NO VA NINGUNA IMAGEN.
+        //
+        // Había una foto fija —la apaisada de TMDB— que ocupaba el recuadro
+        // hasta que entraba el vídeo. Se veía por detrás y por los bordes,
+        // porque la proporción del vídeo no tiene por qué ser exactamente la
+        // del hueco, y eso se lee como un montaje mal encajado.
+        //
+        // Antes dependía de un aviso: la foto se quitaba CUANDO el vídeo se
+        // montaba. Eso deja una ventana —mientras la ficha carga y el
+        // reproductor todavía no está— en la que la foto sí aparece, y luego
+        // desaparece. Un parpadeo en el sitio que más se mira.
+        //
+        // Ahora simplemente no está. El recuadro es la caja oscura y el vídeo,
+        // y no hay ningún instante intermedio que enseñe otra cosa.
         child: Stack(
           fit: StackFit.expand,
           children: [
-            // Con `FastThumbnail`, igual que el catalogo: guarda en disco, asi
-            // que volver a una ficha ya vista no vuelve a bajar la imagen.
-            if (url != null && url.isNotEmpty)
-              // `isHD` PORQUE SE VE A 360 px DE ANCHO.
-              //
-              // Sin esta marca, `FastThumbnail` pide `w185` a TMDB: 185 px
-              // estirados a 360 es justo el doble, y eso era lo que se veía
-              // pixelado nada más entrar. Con `isHD` pide `w500`, que sobra
-              // para este tamaño y pesa poco.
-              FastThumbnail(url: url, width: 360, height: 203, isHD: true)
-            else
-              const Icon(Icons.movie_outlined, color: Colors.white24, size: 52),
-
-            // El play solo aparece con el foco encima. Puesto siempre seria un
-            // adorno; asi es la señal de que ESTO es lo que se pulsa, que es
-            // justo lo que hay que decir al quitar el boton de debajo.
-            if (_foco)
-              const Center(
-                child: Icon(
-                  Icons.play_circle_fill_rounded,
-                  color: Colors.white,
-                  size: 58,
-                ),
-              ),
+            // El play mientras el vídeo aún no ha llegado: dice que ESTO es lo
+            // que se pulsa. En cuanto hay imagen sobra —se está reproduciendo,
+            // que es justo lo que el play prometía— y el marco del foco pasa a
+            // dibujarlo el `Overlay`, por encima.
+            ValueListenableBuilder<bool>(
+              valueListenable: TvVistaPrevia.instancia.montada,
+              builder:
+                  (context, conVideo, _) =>
+                      _foco && !conVideo
+                          ? const Center(
+                            child: Icon(
+                              Icons.play_circle_fill_rounded,
+                              color: Colors.white,
+                              size: 58,
+                            ),
+                          )
+                          : const SizedBox.shrink(),
+            ),
           ],
         ),
       ),

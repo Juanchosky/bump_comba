@@ -28,13 +28,51 @@ class TvPlayerScreen extends StatefulWidget {
   final M3UItem item;
   final String titulo;
 
-  const TvPlayerScreen({super.key, required this.item, required this.titulo});
+  /// Solo lo rellena la vista previa de la ficha. Si es `null`, esto es una
+  /// pantalla normal empujada al `Navigator` y todo funciona como siempre.
+  ///
+  /// SI NO ES NULL, este reproductor NO vive en una ruta: vive en el `Overlay`
+  /// de la app, por encima del `Navigator`. Ese es el truco entero de que
+  /// pasar de la ficha al reproductor grande no recargue el vídeo — al no
+  /// estar dentro de una ruta, navegar no lo destruye ni lo vuelve a montar.
+  ///
+  /// A cambio hay dos cosas que aquí NO puede hacer, y por eso se consulta
+  /// este valor en varios sitios:
+  ///
+  ///  · `PopScope` necesita una `ModalRoute` para engancharse, y en el
+  ///    `Overlay` no hay ninguna. El "atrás" lo intercepta quien lo montó.
+  ///  · No puede robar el foco: mientras está pequeño, el foco es de la ficha.
+  ///
+  /// El valor dice si está en grande. Los controles solo se pintan entonces:
+  /// en un recuadro de 360 px son ilegibles y además tapan el vídeo.
+  final ValueListenable<bool>? expandido;
+
+  const TvPlayerScreen({
+    super.key,
+    required this.item,
+    required this.titulo,
+    this.expandido,
+  });
 
   @override
-  State<TvPlayerScreen> createState() => _TvPlayerScreenState();
+  State<TvPlayerScreen> createState() => TvPlayerScreenState();
 }
 
-class _TvPlayerScreenState extends State<TvPlayerScreen> {
+class TvPlayerScreenState extends State<TvPlayerScreen> {
+  /// ¿Vive en el `Overlay` en vez de en una ruta?
+  bool get _enOverlay => widget.expandido != null;
+
+  /// ¿Se está viendo a pantalla completa?
+  bool get _grande => widget.expandido?.value ?? true;
+
+  /// Para que quien lo monta en el `Overlay` pueda pasarle las teclas del
+  /// mando: allí arriba no las recibe por su cuenta.
+  KeyEventResult manejarTecla(KeyEvent evento) =>
+      _tecla(_playerFocusNode, evento);
+
+  /// El "atrás", con el mismo orden de siempre: primero cierra el menú, luego
+  /// los controles, y solo entonces admite que se quiere salir.
+  bool manejarAtras() => _manejarAtras();
   // EXACTAMENTE la misma configuracion que el receptor de transmisiones.
   //
   // `hwdec: 'mediacodec'` va AQUI, en la creacion, y no por `setProperty`:
@@ -1361,11 +1399,33 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
     // deja de recibir las teclas, y el framework las propaga a la ruta de
     // debajo (TvDetailScreen) — que actúa sobre ellas y navega a otro
     // contenido o hace cosas del detalle mientras se ve el reproductor.
-    if (!_playerFocusNode.hasFocus && !_playerFocusNode.hasPrimaryFocus) {
+    // En el `Overlay` NO se reclama el foco. Mientras la vista previa está
+    // pequeña, el foco pertenece a la ficha —es ella quien navega— y robárselo
+    // dejaría al usuario sin poder moverse por la pantalla que está viendo.
+    // Estando en grande, las teclas se las pasa a mano quien lo montó.
+    if (!_enOverlay &&
+        !_playerFocusNode.hasFocus &&
+        !_playerFocusNode.hasPrimaryFocus) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _playerFocusNode.requestFocus();
       });
     }
+
+    // Al vivir en el `Overlay`, este widget no se reconstruye al navegar: hay
+    // que escuchar el cambio de tamaño para que los controles aparezcan y
+    // desaparezcan.
+    if (_enOverlay) {
+      return ValueListenableBuilder<bool>(
+        valueListenable: widget.expandido!,
+        builder: (_, _, _) => _cuerpo(progreso),
+      );
+    }
+
+    final cuerpo = _cuerpo(progreso);
+
+    // En el `Overlay` se devuelve el cuerpo pelado: ni `PopScope` (no hay
+    // `ModalRoute` a la que engancharse) ni `Focus` propio (lo tiene la ficha).
+    if (_enOverlay) return cuerpo;
 
     return PopScope(
       canPop: false,
@@ -1379,157 +1439,193 @@ class _TvPlayerScreenState extends State<TvPlayerScreen> {
           focusNode: _playerFocusNode,
           autofocus: true,
           onKeyEvent: _tecla,
-          child: Scaffold(
-            backgroundColor: Colors.black,
-            body: Stack(
-              fit: StackFit.expand,
-              children: [
-                RepaintBoundary(
-                  child: Video(
-                    controller: _controlador,
-                    controls: NoVideoControls,
-                  ),
-                ),
+          child: cuerpo,
+        ),
+      ),
+    );
+  }
 
-                // MISMO SPINNER Y MISMA CONDICION QUE EL RECEPTOR.
-                //
-                // Antes era el `CircularProgressIndicator` de Material y solo
-                // con `_buffering`. Entre que MPV deja de bufferear y llega la
-                // imagen hay un hueco, y ahi la pantalla se quedaba negra y
-                // vacia: parecia colgada. Con `!_primerFrameListo` el spinner
-                // cubre tambien ese tramo.
-                // El spinner, mientras haya algo que esperar. Si ya no queda
-                // servidor, esperar es mentir: se dice lo que pasa.
-                if (_cargando && !_agotado)
-                  const Center(
-                    child: TvLoadingAnimation(size: 54, strokeWidth: 4),
-                  ),
+  Widget _cuerpo(double progreso) {
+    return LayoutBuilder(
+      builder: (context, restricciones) {
+        // ── NO BASTA CON QUE ESTE "EN GRANDE" ─────────────────────────────
+        //
+        // Al pulsar, `expandido` se pone a `true` de inmediato pero el
+        // rectangulo tarda 260 ms en llegar a la pantalla entera. En ese rato
+        // los controles ya se estan pintando dentro de una caja de 360 px:
+        // la barra del titulo no cabe y desborda 53 px, que es el aviso del
+        // log.
+        //
+        // Midiendo el ancho de verdad, los controles esperan a que haya sitio.
+        // Aparecen al terminar la transicion, que ademas es donde tienen
+        // sentido.
+        final grande = _grande && restricciones.maxWidth > 700;
+        return _pantalla(progreso, grande);
+      },
+    );
+  }
 
-                // ── Se acabaron los servidores ────────────────────────────
-                //
-                // Antes esto era un bucle silencioso: "Cambiando de servidor"
-                // una y otra vez sobre negro, sin final. Un mensaje claro y la
-                // salida a mano valen mas que un intento numero cuarenta.
-                if (_agotado)
-                  Center(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 80),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(
-                            Icons.cloud_off_rounded,
-                            color: Colors.white38,
-                            size: 54,
-                          ),
-                          const SizedBox(height: 20),
-                          Text(
-                            _urls.length > 1
-                                ? 'Ninguno de los ${_urls.length} servidores '
-                                    'pudo reproducir este título'
-                                : 'El servidor no pudo reproducir este título',
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 21,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          const Text(
-                            'Pulsa atrás para volver e inténtalo más tarde.',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              color: Colors.white54,
-                              fontSize: 16,
-                            ),
-                          ),
-                        ],
-                      ),
+  Widget _pantalla(double progreso, bool grande) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          RepaintBoundary(
+            child: Video(controller: _controlador, controls: NoVideoControls),
+          ),
+
+          // MISMO SPINNER Y MISMA CONDICION QUE EL RECEPTOR.
+          //
+          // Antes era el `CircularProgressIndicator` de Material y solo
+          // con `_buffering`. Entre que MPV deja de bufferear y llega la
+          // imagen hay un hueco, y ahi la pantalla se quedaba negra y
+          // vacia: parecia colgada. Con `!_primerFrameListo` el spinner
+          // cubre tambien ese tramo.
+          // El spinner, mientras haya algo que esperar. Si ya no queda
+          // servidor, esperar es mentir: se dice lo que pasa.
+          if (_cargando && !_agotado)
+            Center(
+              // Se queda también en pequeño —es lo que explica por qué el
+              // recuadro está negro— pero a escala: 54 px dentro de
+              // 360 x 203 lo llenan entero.
+              child: TvLoadingAnimation(
+                size: grande ? 54 : 30,
+                strokeWidth: grande ? 4 : 2.5,
+              ),
+            ),
+
+          // ── Se acabaron los servidores ────────────────────────────
+          //
+          // Antes esto era un bucle silencioso: "Cambiando de servidor"
+          // una y otra vez sobre negro, sin final. Un mensaje claro y la
+          // salida a mano valen mas que un intento numero cuarenta.
+          // En pequeño solo el icono: el mensaje entero son 54 px de icono
+          // más dos textos, y en un recuadro de 203 de alto no entra —
+          // desbordaba 19 px. El icono ya dice que algo va mal, y quien
+          // quiera el detalle lo tiene al abrirlo en grande.
+          if (_agotado && !grande)
+            const Center(
+              child: Icon(
+                Icons.cloud_off_rounded,
+                color: Colors.white38,
+                size: 34,
+              ),
+            ),
+
+          if (_agotado && grande)
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 80),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.cloud_off_rounded,
+                      color: Colors.white38,
+                      size: 54,
                     ),
-                  ),
-
-                // Velocidad de descarga, arriba a la izquierda. Sale cuando
-                // ACOMPAÑA a algo: mientras carga, o con los controles abiertos.
-                if (_buffering || !_primerFrameListo || _controlesVisibles)
-                  Positioned(
-                    top: 40,
-                    left: 48,
-                    child: Text(
-                      '${_kbps.toStringAsFixed(0)} KB/s',
+                    const SizedBox(height: 20),
+                    Text(
+                      _urls.length > 1
+                          ? 'Ninguno de los ${_urls.length} servidores '
+                              'pudo reproducir este título'
+                          : 'El servidor no pudo reproducir este título',
+                      textAlign: TextAlign.center,
                       style: const TextStyle(
                         color: Colors.white,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w500,
-                        backgroundColor: Color(0x99000000),
-                        shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                        fontSize: 21,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
-                  ),
-
-                // Se avisa de que se reanudo, pero no se pregunta. Enterarse
-                // es util; tener que decidir con el mando, no.
-                if (_reanudadoDesde != null && _controlesVisibles)
-                  Positioned(
-                    top: 44,
-                    left: 56,
-                    child: Text(
-                      'Reanudado desde ${_fmt(_reanudadoDesde!)}',
-                      style: const TextStyle(
-                        color: Colors.white54,
-                        fontSize: 15,
-                      ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Pulsa atrás para volver e inténtalo más tarde.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.white54, fontSize: 16),
                     ),
-                  ),
-
-                // ── Play, SOLO EN PAUSA ─────────────────────────────────
-                //
-                // Es lo que hace el receptor, y tenia razon de ser: no es un
-                // control permanente sino un "dale para seguir". Mientras se
-                // reproduce no pinta nada en mitad de la pantalla; en cuanto
-                // pausas, aparece y dice que hacer.
-                //
-                // Yo lo habia quitado del todo al malinterpretar que no debia
-                // salir "ahi" — no salia SIEMPRE, que es distinto.
-                if (!_reproduciendo &&
-                    !_buffering &&
-                    _primerFrameListo &&
-                    !_menuAbierto)
-                  const Center(child: _BotonEsfera()),
-
-                if (_controlesVisibles && !_menuAbierto)
-                  _Controles(
-                    titulo: widget.titulo,
-                    caratula: widget.item.logo,
-                    posicion: _posicion,
-                    duracion: _duracion,
-                    bufer: _bufer,
-                    progreso: progreso,
-                    reproduciendo: _reproduciendo,
-                    foco: _foco,
-                    fmt: _fmt,
-                  ),
-
-                if (_menuAbierto)
-                  _MenuPistas(
-                    tab: _menuTab,
-                    indice: _menuIdx,
-                    audio: [
-                      for (final t in _pistasAudio)
-                        _etiqueta(t.title, t.language, t.id),
-                    ],
-                    subtitulos: [
-                      'Desactivados',
-                      for (final t in _pistasSubs)
-                        _etiqueta(t.title, t.language, t.id),
-                    ],
-                    audioActivo: _indiceActual(0),
-                    subtituloActivo: _indiceActual(1),
-                  ),
-              ],
+                  ],
+                ),
+              ),
             ),
-          ),
-        ),
+
+          // Velocidad de descarga, arriba a la izquierda. Sale cuando
+          // ACOMPAÑA a algo: mientras carga, o con los controles abiertos.
+          if (grande &&
+              (_buffering || !_primerFrameListo || _controlesVisibles))
+            Positioned(
+              top: 40,
+              left: 48,
+              child: Text(
+                '${_kbps.toStringAsFixed(0)} KB/s',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w500,
+                  backgroundColor: Color(0x99000000),
+                  shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                ),
+              ),
+            ),
+
+          // Se avisa de que se reanudo, pero no se pregunta. Enterarse
+          // es util; tener que decidir con el mando, no.
+          if (grande && _reanudadoDesde != null && _controlesVisibles)
+            Positioned(
+              top: 44,
+              left: 56,
+              child: Text(
+                'Reanudado desde ${_fmt(_reanudadoDesde!)}',
+                style: const TextStyle(color: Colors.white54, fontSize: 15),
+              ),
+            ),
+
+          // ── Play, SOLO EN PAUSA ─────────────────────────────────
+          //
+          // Es lo que hace el receptor, y tenia razon de ser: no es un
+          // control permanente sino un "dale para seguir". Mientras se
+          // reproduce no pinta nada en mitad de la pantalla; en cuanto
+          // pausas, aparece y dice que hacer.
+          //
+          // Yo lo habia quitado del todo al malinterpretar que no debia
+          // salir "ahi" — no salia SIEMPRE, que es distinto.
+          if (grande &&
+              !_reproduciendo &&
+              !_buffering &&
+              _primerFrameListo &&
+              !_menuAbierto)
+            const Center(child: _BotonEsfera()),
+
+          if (grande && _controlesVisibles && !_menuAbierto)
+            _Controles(
+              titulo: widget.titulo,
+              caratula: widget.item.logo,
+              posicion: _posicion,
+              duracion: _duracion,
+              bufer: _bufer,
+              progreso: progreso,
+              reproduciendo: _reproduciendo,
+              foco: _foco,
+              fmt: _fmt,
+            ),
+
+          if (grande && _menuAbierto)
+            _MenuPistas(
+              tab: _menuTab,
+              indice: _menuIdx,
+              audio: [
+                for (final t in _pistasAudio)
+                  _etiqueta(t.title, t.language, t.id),
+              ],
+              subtitulos: [
+                'Desactivados',
+                for (final t in _pistasSubs)
+                  _etiqueta(t.title, t.language, t.id),
+              ],
+              audioActivo: _indiceActual(0),
+              subtituloActivo: _indiceActual(1),
+            ),
+        ],
       ),
     );
   }
@@ -1836,6 +1932,17 @@ class _Controles extends StatelessWidget {
                     const SizedBox(height: 14),
 
                     // Título a la izquierda, pistas a la derecha, en la misma línea.
+                    //
+                    // `Expanded` Y NO `Flexible`: el título se queda con todo
+                    // el hueco sobrante y EMPUJA las pistas contra el borde
+                    // derecho, que es donde van.
+                    //
+                    // Lo probé con `Flexible` para atajar un desbordamiento, y
+                    // el efecto fue que el título encogía a su ancho natural y
+                    // "Subtítulos" y "Audio" se le pegaban al lado, en medio
+                    // de la barra. El desbordamiento venía de otro sitio —los
+                    // controles se estaban dibujando en la vista previa de
+                    // 360 px— y ya está resuelto ahí.
                     Row(
                       children: [
                         Expanded(
