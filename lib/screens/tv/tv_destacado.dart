@@ -543,16 +543,18 @@ class _BotonState extends State<_Boton> {
 
   @override
   Widget build(BuildContext context) {
-    // Con el foco, blanco sólido y texto negro. Sin él, el principal se queda
-    // en blanco apagado y el secundario casi transparente: así se sabe cuál es
-    // el camino corto aunque el foco esté en otro sitio.
+    // DOS ESTADOS, NO TRES: con el foco, blanco sólido y texto negro; sin él,
+    // translúcido y texto blanco. Los dos botones iguales.
+    //
+    // Antes "Reproducir" iba siempre en blanco por ser el principal, así que
+    // al pasar el foco a "Ver ficha" quedaban los dos claros y no se veía cuál
+    // estaba señalado. Con el mando eso es un problema real: el foco es la
+    // única forma de saber dónde estás. Que el fondo blanco signifique una
+    // sola cosa —"aquí está el foco"— es lo que lo hace legible.
     final Color fondo;
     final Color tinta;
     if (_foco) {
       fondo = Colors.white;
-      tinta = const Color(0xFF0B0B0D);
-    } else if (widget.principal) {
-      fondo = Colors.white.withValues(alpha: 0.88);
       tinta = const Color(0xFF0B0B0D);
     } else {
       fondo = Colors.white.withValues(alpha: 0.16);
