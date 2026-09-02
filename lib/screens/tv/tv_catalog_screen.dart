@@ -39,6 +39,36 @@ class TvCatalogScreen extends StatefulWidget {
 class _TvCatalogScreenState extends State<TvCatalogScreen> {
   final _servicio = M3UService();
   bool _cargando = true;
+
+  /// Se acabó la paciencia con la espera.
+  ///
+  /// La pantalla aguanta sin pintarse hasta tener TODO —filas e imágenes del
+  /// mosaico—, pero eso depende de TMDB y del proveedor, que pueden no
+  /// contestar. Sin un plazo, un fallo suyo dejaría el televisor en la
+  /// pantalla de carga para siempre.
+  bool _plazoCargaVencido = false;
+  Timer? _plazoCarga;
+
+  /// ¿Está todo listo para enseñar el catálogo de una vez?
+  ///
+  /// ── POR QUÉ SE ESPERA A TODO ──────────────────────────────────────────
+  ///
+  /// Antes la pantalla aparecía en cuanto había filas, y lo demás iba
+  /// llegando: primero unas carátulas, unos segundos después el resto, y el
+  /// mosaico rellenándose aparte. Se veía como una pantalla que se monta
+  /// sola delante del usuario.
+  ///
+  /// Ahora se espera también a las imágenes del mosaico, que son las últimas
+  /// en llegar. Tardar un poco más y aparecer entero se lee como una app
+  /// sólida; aparecer a trozos, como una que va justa.
+  bool get _todoListo {
+    if (_plazoCargaVencido) return true;
+    if (_cargando) return false;
+    if (_error != null) return true;
+    if (_destacados.isEmpty) return true;
+    return _heroListo;
+  }
+
   String? _error;
   List<({String titulo, List<M3UItem> items})> _filas = const [];
 
@@ -631,6 +661,14 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   @override
   void initState() {
     super.initState();
+
+    // 14 s: lo que se tarda de sobra en un arranque normal, incluido bajar las
+    // seis imagenes del mosaico. Pasado eso, se enseña lo que haya — mejor un
+    // catalogo incompleto que una pantalla de carga eterna.
+    _plazoCarga = Timer(const Duration(seconds: 14), () {
+      if (mounted) setState(() => _plazoCargaVencido = true);
+    });
+
     // El servicio avisa DOS veces: al publicar los items en crudo —antes de
     // indexar— y al terminar. La primera llena la pantalla en segundos; la
     // segunda añade las series agrupadas y el contenido propio.
@@ -645,6 +683,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   void dispose() {
     _servicio.removeListener(_alLlegarDatos);
     WatchProgressService().removeListener(_alCambiarProgreso);
+    _plazoCarga?.cancel();
     _refrescoSeguirViendo?.cancel();
     _cierreLateral?.cancel();
     for (final n in _nodosLateral) {
@@ -985,9 +1024,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_cargando) {
-      return const _Centrado(child: CircularProgressIndicator());
-    }
+    if (!_todoListo) return const _PantallaCarga();
     if (_error != null) {
       return _Centrado(
         child: Column(
@@ -1014,261 +1051,272 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       );
     }
 
-    return DecoratedBox(
-      // ── Fondo ──────────────────────────────────────────────────────────
-      //
-      // Sustituye al negro plano. Es oscuro y de contraste bajo a proposito:
-      // detras de un catalogo, un fondo con fuerza compite con las caratulas,
-      // que son lo que se viene a mirar. Este solo da temperatura.
-      //
-      // `cover` y no `fill`: en un televisor la proporcion puede no ser 16:9
-      // exacta y estirar la imagen se nota enseguida en las diagonales.
-      decoration: const BoxDecoration(
-        color: Colors.black,
-        image: DecorationImage(
-          image: AssetImage('assets/images/fondotv.png'),
-          fit: BoxFit.cover,
+    return TweenAnimationBuilder<double>(
+      // El catálogo entra fundiéndose desde el logo, no de golpe. Un corte
+      // seco entre dos pantallas oscuras se lee como un parpadeo del
+      // televisor; medio segundo de fundido lo convierte en una transición.
+      tween: Tween<double>(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 500),
+      curve: Curves.easeOut,
+      builder: (context, t, hijo) => Opacity(opacity: t, child: hijo),
+      child: DecoratedBox(
+        // ── Fondo ──────────────────────────────────────────────────────────
+        //
+        // Sustituye al negro plano. Es oscuro y de contraste bajo a proposito:
+        // detras de un catalogo, un fondo con fuerza compite con las caratulas,
+        // que son lo que se viene a mirar. Este solo da temperatura.
+        //
+        // `cover` y no `fill`: en un televisor la proporcion puede no ser 16:9
+        // exacta y estirar la imagen se nota enseguida en las diagonales.
+        decoration: const BoxDecoration(
+          color: Colors.black,
+          image: DecorationImage(
+            image: AssetImage('assets/images/fondotv.png'),
+            fit: BoxFit.cover,
+          ),
         ),
-      ),
-      // ── El lateral va ENCIMA del contenido, no al lado ──────────────
-      //
-      // Es lo que le da el aire moderno de la referencia: las caratulas siguen
-      // por debajo y el menu flota sobre ellas. En una columna aparte el
-      // lateral se lleva un trozo de pantalla que en un televisor es justo lo
-      // que no sobra.
-      //
-      // Debajo del menu va un degradado de negro a transparente. Sin el, el
-      // texto se pierde en cuanto pasa por encima de un poster claro — y ese
-      // es el precio de superponer: hay que ganarse la legibilidad.
-      child: Stack(
-        children: [
-          Positioned.fill(
-            child: FocusTraversalGroup(
-              child: Focus(
-                focusNode: _nodoContenido,
-                // Si una tecla llega hasta aqui es que ninguna tarjeta tenia el
-                // foco: se rescata en vez de dejar la pantalla muerta.
-                onKeyEvent: (node, event) => _rescatarFoco(event),
-                // Al recibir el foco lo pasa a la primera tarjeta: este nodo
-                // es solo la puerta de entrada desde el lateral.
-                //
-                // Y va a la primera de la PRIMERA fila, a mano. Con
-                // `nextFocus()` lo elegia la traversal, que con las filas
-                // desplazadas podia dejarlo en cualquier tarjeta del medio.
-                onFocusChange: (v) {
-                  if (!v) return;
-                  if (_filas.isEmpty) {
-                    _nodoContenido.nextFocus();
-                    return;
-                  }
-                  // El destacado es el sitio por defecto: es lo primero de la
-                  // pantalla y donde se entra al abrir el catalogo o al
-                  // volver del menu sin haber bajado todavia.
-                  if (_filaActual < 0) {
-                    _irAlHero();
-                    return;
-                  }
-
-                  // Y si ya estabas abajo, A DONDE ESTABAS, no al principio.
+        // ── El lateral va ENCIMA del contenido, no al lado ──────────────
+        //
+        // Es lo que le da el aire moderno de la referencia: las caratulas siguen
+        // por debajo y el menu flota sobre ellas. En una columna aparte el
+        // lateral se lleva un trozo de pantalla que en un televisor es justo lo
+        // que no sobra.
+        //
+        // Debajo del menu va un degradado de negro a transparente. Sin el, el
+        // texto se pierde en cuanto pasa por encima de un poster claro — y ese
+        // es el precio de superponer: hay que ganarse la legibilidad.
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: FocusTraversalGroup(
+                child: Focus(
+                  focusNode: _nodoContenido,
+                  // Si una tecla llega hasta aqui es que ninguna tarjeta tenia el
+                  // foco: se rescata en vez de dejar la pantalla muerta.
+                  onKeyEvent: (node, event) => _rescatarFoco(event),
+                  // Al recibir el foco lo pasa a la primera tarjeta: este nodo
+                  // es solo la puerta de entrada desde el lateral.
                   //
-                  // Este nodo recibe el foco tanto al entrar desde el menu
-                  // como al volver de una ficha, y mandar siempre a la fila 0
-                  // era lo que tiraba el catalogo al principio cada vez que
-                  // entrabas a un titulo y salias.
-                  //
-                  // Por `_irAFila` y no directo a la fila: si todavia no esta
-                  // construida, el reintento espera a que exista en vez de
-                  // perder la pulsacion.
-                  _irAFila(_filaActual, _columnaActual);
-                },
-                child:
-                    _filas.isEmpty
-                        ? const Center(
-                          child: Text(
-                            'Nada por aquí todavía.',
-                            style: TextStyle(
-                              color: Colors.white38,
-                              fontSize: 18,
-                            ),
-                          ),
-                        )
-                        : ListView.builder(
-                          controller: _scrollVertical,
-                          // Con el mando no se arrastra: quien manda es el
-                          // foco, y el desplazamiento lo decide `_irAFila`.
-                          physics: const NeverScrollableScrollPhysics(),
-                          // 40 arriba y no 92: los 92 eran el hueco que
-                          // ocupaba la marca. Quitada la marca, ese hueco es
-                          // una franja vacia en lo alto de la pantalla, y en
-                          // un televisor eso es una fila de caratulas que se
-                          // deja de ver.
-                          // Sin hueco arriba: el destacado empieza pegado al
-                          // borde, como en cualquier app de television. El
-                          // hueco solo tenia sentido cuando lo primero era una
-                          // fila de caratulas.
-                          padding: const EdgeInsets.only(bottom: 40),
-                          // Sin `itemExtent`: ahora la lista tiene dos alturas
-                          // —el destacado y las filas— y cada elemento declara
-                          // la suya. El desplazamiento se sigue CALCULANDO en
-                          // `_irAFila`, que es lo que importaba.
-                          // Una fila de margen construida arriba y abajo: al
-                          // bajar, la siguiente ya existe y el foco entra sin
-                          // esperar a que se arme.
-                          scrollCacheExtent: const ScrollCacheExtent.pixels(
-                            320,
-                          ),
-                          itemCount: _filas.length + 1,
-                          itemBuilder: (context, indice) {
-                            // ── 0: el destacado ─────────────────────────
-                            if (indice == 0) {
-                              return TvDestacado(
-                                key: _llaveHero,
-                                items: _destacados,
-                                indice: _idxDestacado,
-                                imagenes: _imagenesHero,
-                                listo: _heroListo,
-                                onElegir: (i) {
-                                  _idxDestacado = i;
-                                  _abrirDestacado(false);
-                                },
-                                onIndice: (i) => _idxDestacado = i,
-                                onAbajo: () => _irAFila(0, 0),
-                                onSalirIzquierda:
-                                    () =>
-                                        _nodosLateral[_seccion].requestFocus(),
-                                onFoco: (dentro) {
-                                  if (dentro) _filaActual = -1;
-                                },
-                              );
-                            }
+                  // Y va a la primera de la PRIMERA fila, a mano. Con
+                  // `nextFocus()` lo elegia la traversal, que con las filas
+                  // desplazadas podia dejarlo en cualquier tarjeta del medio.
+                  onFocusChange: (v) {
+                    if (!v) return;
+                    if (_filas.isEmpty) {
+                      _nodoContenido.nextFocus();
+                      return;
+                    }
+                    // El destacado es el sitio por defecto: es lo primero de la
+                    // pantalla y donde se entra al abrir el catalogo o al
+                    // volver del menu sin haber bajado todavia.
+                    if (_filaActual < 0) {
+                      _irAlHero();
+                      return;
+                    }
 
-                            final i = indice - 1;
-                            final fila = _filas[i];
-                            return SizedBox(
-                              height: _altoFila,
-                              child: _Fila(
-                                key: _llaveDe(fila.titulo),
-                                titulo: fila.titulo,
-                                items: fila.items,
-                                // Ya no hay autofoco en la primera tarjeta: al
-                                // abrir el catalogo manda el destacado, que es
-                                // lo primero que se ve.
-                                autofocoPrimero: false,
-                                onSalirIzquierda:
-                                    () =>
-                                        _nodosLateral[_seccion].requestFocus(),
-                                // Arriba desde la primera fila sube al
-                                // destacado, no a otra fila.
-                                onArriba:
-                                    (col) =>
-                                        i == 0
-                                            ? _irAlHero()
-                                            : _irAFila(i - 1, col),
-                                onAbajo: (col) => _irAFila(i + 1, col),
-                                // Cada vez que el foco cae en una tarjeta se
-                                // apunta donde: es lo que se restaura al volver.
-                                onFocoEn: (col) {
-                                  _filaActual = i;
-                                  _columnaActual = col;
-                                },
+                    // Y si ya estabas abajo, A DONDE ESTABAS, no al principio.
+                    //
+                    // Este nodo recibe el foco tanto al entrar desde el menu
+                    // como al volver de una ficha, y mandar siempre a la fila 0
+                    // era lo que tiraba el catalogo al principio cada vez que
+                    // entrabas a un titulo y salias.
+                    //
+                    // Por `_irAFila` y no directo a la fila: si todavia no esta
+                    // construida, el reintento espera a que exista en vez de
+                    // perder la pulsacion.
+                    _irAFila(_filaActual, _columnaActual);
+                  },
+                  child:
+                      _filas.isEmpty
+                          ? const Center(
+                            child: Text(
+                              'Nada por aquí todavía.',
+                              style: TextStyle(
+                                color: Colors.white38,
+                                fontSize: 18,
                               ),
-                            );
-                          },
-                        ),
+                            ),
+                          )
+                          : ListView.builder(
+                            controller: _scrollVertical,
+                            // Con el mando no se arrastra: quien manda es el
+                            // foco, y el desplazamiento lo decide `_irAFila`.
+                            physics: const NeverScrollableScrollPhysics(),
+                            // 40 arriba y no 92: los 92 eran el hueco que
+                            // ocupaba la marca. Quitada la marca, ese hueco es
+                            // una franja vacia en lo alto de la pantalla, y en
+                            // un televisor eso es una fila de caratulas que se
+                            // deja de ver.
+                            // Sin hueco arriba: el destacado empieza pegado al
+                            // borde, como en cualquier app de television. El
+                            // hueco solo tenia sentido cuando lo primero era una
+                            // fila de caratulas.
+                            padding: const EdgeInsets.only(bottom: 40),
+                            // Sin `itemExtent`: ahora la lista tiene dos alturas
+                            // —el destacado y las filas— y cada elemento declara
+                            // la suya. El desplazamiento se sigue CALCULANDO en
+                            // `_irAFila`, que es lo que importaba.
+                            // Una fila de margen construida arriba y abajo: al
+                            // bajar, la siguiente ya existe y el foco entra sin
+                            // esperar a que se arme.
+                            scrollCacheExtent: const ScrollCacheExtent.pixels(
+                              320,
+                            ),
+                            itemCount: _filas.length + 1,
+                            itemBuilder: (context, indice) {
+                              // ── 0: el destacado ─────────────────────────
+                              if (indice == 0) {
+                                return TvDestacado(
+                                  key: _llaveHero,
+                                  items: _destacados,
+                                  indice: _idxDestacado,
+                                  imagenes: _imagenesHero,
+                                  listo: _heroListo,
+                                  onElegir: (i) {
+                                    _idxDestacado = i;
+                                    _abrirDestacado(false);
+                                  },
+                                  onIndice: (i) => _idxDestacado = i,
+                                  onAbajo: () => _irAFila(0, 0),
+                                  onSalirIzquierda:
+                                      () =>
+                                          _nodosLateral[_seccion]
+                                              .requestFocus(),
+                                  onFoco: (dentro) {
+                                    if (dentro) _filaActual = -1;
+                                  },
+                                );
+                              }
+
+                              final i = indice - 1;
+                              final fila = _filas[i];
+                              return SizedBox(
+                                height: _altoFila,
+                                child: _Fila(
+                                  key: _llaveDe(fila.titulo),
+                                  titulo: fila.titulo,
+                                  items: fila.items,
+                                  // Ya no hay autofoco en la primera tarjeta: al
+                                  // abrir el catalogo manda el destacado, que es
+                                  // lo primero que se ve.
+                                  autofocoPrimero: false,
+                                  onSalirIzquierda:
+                                      () =>
+                                          _nodosLateral[_seccion]
+                                              .requestFocus(),
+                                  // Arriba desde la primera fila sube al
+                                  // destacado, no a otra fila.
+                                  onArriba:
+                                      (col) =>
+                                          i == 0
+                                              ? _irAlHero()
+                                              : _irAFila(i - 1, col),
+                                  onAbajo: (col) => _irAFila(i + 1, col),
+                                  // Cada vez que el foco cae en una tarjeta se
+                                  // apunta donde: es lo que se restaura al volver.
+                                  onFocoEn: (col) {
+                                    _filaActual = i;
+                                    _columnaActual = col;
+                                  },
+                                ),
+                              );
+                            },
+                          ),
+                ),
               ),
             ),
-          ),
 
-          // ── Velo superior ───────────────────────────────────────────
-          //
-          // Estaba puesto para que la marca se apoyara siempre en lo mismo.
-          // Sin marca sigue haciendo falta, pero por otro motivo: las
-          // caratulas de la primera fila se desplazan por debajo y sin la
-          // banda asoman enteras por arriba, como si se salieran de la
-          // pantalla.
-          //
-          // Mas corto que antes —80 en vez de 120—: ya no tiene que cubrir un
-          // texto, solo difuminar el borde de arriba.
-          Positioned(
-            left: 0,
-            right: 0,
-            top: 0,
-            height: 80,
-            child: IgnorePointer(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [
-                      Colors.black.withValues(alpha: 0.92),
-                      Colors.black.withValues(alpha: 0.55),
-                      Colors.transparent,
-                    ],
-                    stops: const [0.0, 0.5, 1.0],
+            // ── Velo superior ───────────────────────────────────────────
+            //
+            // Estaba puesto para que la marca se apoyara siempre en lo mismo.
+            // Sin marca sigue haciendo falta, pero por otro motivo: las
+            // caratulas de la primera fila se desplazan por debajo y sin la
+            // banda asoman enteras por arriba, como si se salieran de la
+            // pantalla.
+            //
+            // Mas corto que antes —80 en vez de 120—: ya no tiene que cubrir un
+            // texto, solo difuminar el borde de arriba.
+            Positioned(
+              left: 0,
+              right: 0,
+              top: 0,
+              height: 80,
+              child: IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Colors.black.withValues(alpha: 0.92),
+                        Colors.black.withValues(alpha: 0.55),
+                        Colors.transparent,
+                      ],
+                      stops: const [0.0, 0.5, 1.0],
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
 
-          // ── El menu, ENCIMA del contenido ──────────────────────────────
-          //
-          // Con un degradado de negro a transparente por debajo. Sin el, el
-          // texto se pierde en cuanto pasa sobre un poster claro: ese es el
-          // precio de superponer, y hay que pagarlo o no se lee.
-          Positioned(
-            left: 0,
-            top: 0,
-            bottom: 0,
-            child: DecoratedBox(
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.centerLeft,
-                  end: Alignment.centerRight,
-                  colors: [Colors.black, Colors.black87, Colors.transparent],
-                  // El velo cubre casi todo el menu y se difumina al final: al
-                  // abrirse, el texto nuevo tiene que caer sobre negro, no
-                  // sobre una caratula.
-                  stops: [0.0, 0.72, 1.0],
+            // ── El menu, ENCIMA del contenido ──────────────────────────────
+            //
+            // Con un degradado de negro a transparente por debajo. Sin el, el
+            // texto se pierde en cuanto pasa sobre un poster claro: ese es el
+            // precio de superponer, y hay que pagarlo o no se lee.
+            Positioned(
+              left: 0,
+              top: 0,
+              bottom: 0,
+              child: DecoratedBox(
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.centerLeft,
+                    end: Alignment.centerRight,
+                    colors: [Colors.black, Colors.black87, Colors.transparent],
+                    // El velo cubre casi todo el menu y se difumina al final: al
+                    // abrirse, el texto nuevo tiene que caer sobre negro, no
+                    // sobre una caratula.
+                    stops: [0.0, 0.72, 1.0],
+                  ),
+                ),
+                // ── Barra lateral ──────────────────────────────────────────────
+                //
+                // Sin buscador ni iconos de cuenta: cada uno seria una promesa que
+                // hay que cumplir, y hoy no llevan a ninguna parte. Y sin "TV en
+                // vivo", que esta app no maneja.
+                child: _Lateral(
+                  secciones: _secciones,
+                  activa: _seccion,
+                  nodos: _nodosLateral,
+                  onElegir: (i) async {
+                    if (i == _iBuscar) {
+                      await Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const TvSearchScreen(),
+                        ),
+                      );
+                      // Al volver, el foco se queda en BUSCAR: es de donde
+                      // saliste, y dejarlo en otro sitio obliga a buscar con la
+                      // vista donde estabas.
+                      if (mounted) _nodosLateral[_iBuscar].requestFocus();
+                      return;
+                    }
+                    if (i == _seccion) return;
+                    setState(() {
+                      _seccion = i;
+                      _filas = _armarFilas();
+                      _prepararDestacados();
+                    });
+                  },
+                  onEntrarContenido: () => _nodoContenido.requestFocus(),
+                  abierto: _lateralAbierto,
+                  onFoco: _focoEnLateral,
                 ),
               ),
-              // ── Barra lateral ──────────────────────────────────────────────
-              //
-              // Sin buscador ni iconos de cuenta: cada uno seria una promesa que
-              // hay que cumplir, y hoy no llevan a ninguna parte. Y sin "TV en
-              // vivo", que esta app no maneja.
-              child: _Lateral(
-                secciones: _secciones,
-                activa: _seccion,
-                nodos: _nodosLateral,
-                onElegir: (i) async {
-                  if (i == _iBuscar) {
-                    await Navigator.of(context).push(
-                      MaterialPageRoute<void>(
-                        builder: (_) => const TvSearchScreen(),
-                      ),
-                    );
-                    // Al volver, el foco se queda en BUSCAR: es de donde
-                    // saliste, y dejarlo en otro sitio obliga a buscar con la
-                    // vista donde estabas.
-                    if (mounted) _nodosLateral[_iBuscar].requestFocus();
-                    return;
-                  }
-                  if (i == _seccion) return;
-                  setState(() {
-                    _seccion = i;
-                    _filas = _armarFilas();
-                    _prepararDestacados();
-                  });
-                },
-                onEntrarContenido: () => _nodoContenido.requestFocus(),
-                abierto: _lateralAbierto,
-                onFoco: _focoEnLateral,
-              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -1843,6 +1891,62 @@ class _TarjetaState extends State<_Tarjeta> {
                 ),
               ],
             ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// La espera del arranque.
+///
+/// SIN RUEDA GIRANDO. Estaba el `CircularProgressIndicator` de Material —un
+/// circulito gris sobre el fondo— y se veia como una pantalla de sistema
+/// operativo, no como la app. Un indicador de progreso ademas promete que
+/// algo avanza, y una rueda que da vueltas no dice cuanto queda: solo llena el
+/// hueco.
+///
+/// Lo que hacen las apps de television es enseñar su marca mientras cargan.
+/// Aqui igual: el logo sobre negro, latiendo despacio para que se note que la
+/// app esta viva. Cuando el catalogo esta entero, sustituye a esto de una vez.
+class _PantallaCarga extends StatefulWidget {
+  const _PantallaCarga();
+
+  @override
+  State<_PantallaCarga> createState() => _PantallaCargaState();
+}
+
+class _PantallaCargaState extends State<_PantallaCarga>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _pulso = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1400),
+  )..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _pulso.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ColoredBox(
+      color: Colors.black,
+      child: Center(
+        child: FadeTransition(
+          // Entre 0.45 y 1: se nota el latido sin llegar a parpadear. Lento a
+          // proposito —1,4 s por ciclo—; rapido transmite prisa, y aqui lo que
+          // toca es esperar.
+          opacity: Tween<double>(
+            begin: 0.45,
+            end: 1.0,
+          ).animate(CurvedAnimation(parent: _pulso, curve: Curves.easeInOut)),
+          child: Image.asset(
+            'assets/images/logo.png',
+            height: 96,
+            // Si el logo faltara, la pantalla no puede quedarse en blanco.
+            errorBuilder: (_, _, _) => const SizedBox.shrink(),
           ),
         ),
       ),

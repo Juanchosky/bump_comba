@@ -148,24 +148,6 @@ class _TvPairingScreenState extends State<TvPairingScreen> {
                           fontWeight: FontWeight.w700,
                         ),
                       ),
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            _puntoMarca(),
-                            const SizedBox(width: 10),
-                            Text(
-                              'Bump Comba',
-                              style: TextStyle(
-                                color: Colors.white.withValues(alpha: 0.75),
-                                fontSize: 17,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
                     ],
                   ),
                 ),
@@ -211,20 +193,6 @@ class _TvPairingScreenState extends State<TvPairingScreen> {
       ),
     );
   }
-
-  Widget _puntoMarca() => Container(
-    width: 15,
-    height: 15,
-    decoration: const BoxDecoration(
-      shape: BoxShape.circle,
-      gradient: RadialGradient(
-        center: Alignment(-0.4, -0.5),
-        radius: 1.2,
-        colors: [Color(0xFFFF6B5E), Color(0xFFE53935), Color(0xFFB71C1C)],
-        stops: [0.0, 0.55, 1.0],
-      ),
-    ),
-  );
 
   Widget _panelPasos() {
     return Column(

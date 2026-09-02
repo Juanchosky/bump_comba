@@ -1710,293 +1710,279 @@ class _WaitingScreenState extends State<_WaitingScreen>
   }
 
   @override
+  @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
-      // Fondo plano casi negro con un degradado vertical apenas perceptible.
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Color(0xFF0B0B0D), Color(0xFF060607)],
-        ),
-      ),
-      child: Stack(
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
         fit: StackFit.expand,
         children: [
-          // Marca discreta arriba a la izquierda.
-          Positioned(
-            top: 40,
-            left: 48,
-            child: Row(
+          // Un rojo muy apagado arriba a la derecha, detrás de la marca. Es lo
+          // único que separa esto de un fondo negro plano, y basta. Es el mismo
+          // recurso que usa la pantalla de vinculación.
+          const DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: RadialGradient(
+                center: Alignment(0.85, -0.9),
+                radius: 1.1,
+                colors: [Color(0x33B71C1C), Colors.transparent],
+              ),
+            ),
+            child: SizedBox.expand(),
+          ),
+
+          Padding(
+            padding: const EdgeInsets.fromLTRB(64, 34, 64, 34),
+            child: Column(
               children: [
-                _brandDot(),
-                const SizedBox(width: 12),
-                Text(
-                  'Bump Comba',
-                  style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.55),
-                    fontSize: 17,
-                    fontWeight: FontWeight.w500,
-                    letterSpacing: 0.3,
+                // ── Cabecera: título centrado, marca a la derecha ──────────
+                SizedBox(
+                  height: 46,
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      const Text(
+                        'Transmite a tu televisor',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 27,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
+
+                const SizedBox(height: 30),
+
+                Expanded(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      // ── Panel izquierdo: qué hacer ────────────────────────
+                      Expanded(child: _panelPasos()),
+
+                      // Separador vertical entre las dos mitades.
+                      Container(
+                        width: 1,
+                        margin: const EdgeInsets.symmetric(horizontal: 44),
+                        color: Colors.white.withValues(alpha: 0.09),
+                      ),
+
+                      // ── Panel derecho: el nombre del televisor ────────────
+                      Expanded(child: _panelNombre()),
+                    ],
+                  ),
+                ),
+
+                const SizedBox(height: 18),
+                if (_ip != null)
+                  Text(
+                    'Misma red Wi-Fi  ·  $_ip',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.22),
+                      fontSize: 13,
+                    ),
+                  ),
               ],
             ),
           ),
+        ],
+      ),
+    );
+  }
 
-          // Composición central.
-          //
-          // Con hueco reservado abajo para el estado de la conexion, que vive
-          // en su propio `Positioned`. Sin esta reserva los dos bloques se
-          // acercan hasta tocarse en cuanto el televisor es de 720p, que es
-          // como se metio el solape la primera vez.
-          //
-          // Y con scroll: si aun asi no cupiera —una tele rara, un idioma que
-          // alarga los textos—, se desplaza en vez de pintar las franjas
-          // amarillas de desbordamiento encima del video.
-          Padding(
-            padding: const EdgeInsets.only(bottom: 112),
-            child: Center(
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // Etiqueta contextual.
-                    Text(
-                      'TRANSMITE A',
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.4),
-                        fontSize: 15,
-                        fontWeight: FontWeight.w500,
-                        letterSpacing: 3.0,
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    // El nombre que hay que buscar en el teléfono — protagonista.
-                    Text(
-                      widget.deviceName,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 43,
-                        fontWeight: FontWeight.w400, // fino, tipo SF
-                        letterSpacing: -0.9,
-                        height: 1.0,
-                      ),
-                    ),
-                    const SizedBox(height: 40),
-                    // Hairline separador.
-                    Container(
-                      width: 420,
-                      height: 1,
-                      color: Colors.white.withValues(alpha: 0.08),
-                    ),
-                    const SizedBox(height: 36),
-                    // Guía de 3 pasos, en fila.
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        _step(1, 'Abre Bump Comba\nen tu teléfono'),
-                        _stepGap(),
-                        _step(
-                          2,
-                          'Toca el ícono\nde transmitir',
-                          icon: Icons.cast_rounded,
-                        ),
-                        _stepGap(),
-                        _step(3, 'Elige "${widget.deviceName}"\nen la lista'),
-                      ],
-                    ),
+  /// Los pasos, en columna y numerados.
+  ///
+  /// Estaban en FILA, uno al lado de otro, y esa era la diferencia que hacía
+  /// que esta pantalla y la de vinculación parecieran de apps distintas: tres
+  /// pasos en horizontal se leen como tres opciones entre las que elegir, no
+  /// como una secuencia que se sigue en orden.
+  Widget _panelPasos() {
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'EN TU TELÉFONO',
+          style: TextStyle(
+            color: Colors.white.withValues(alpha: 0.35),
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 2.4,
+          ),
+        ),
+        const SizedBox(height: 26),
+        _paso(1, 'Abre Bump Comba'),
+        _paso(2, 'Toca el icono de transmitir', icono: Icons.cast_rounded),
+        _paso(3, 'Elige este televisor en la lista', ultimo: true),
+      ],
+    );
+  }
 
-                    // ── Activar este televisor ────────────────────────────────
-                    //
-                    // VA DENTRO DE LA COLUMNA, NO FLOTANDO ABAJO.
-                    //
-                    // Antes era un `Positioned(bottom: 44)` y el estado de la
-                    // conexion un `Positioned(bottom: 40)`: dos bloques sueltos
-                    // peleandose por los mismos pixeles. Se solapaban.
-                    //
-                    // Aqui va en el flujo, detras de los pasos y separado por su
-                    // propia linea: se lee como lo que es —la otra cosa que puedes
-                    // hacer desde esta pantalla— en vez de como un texto que
-                    // aparecio encima de otro.
-                    //
-                    // Y el estado de la conexion se queda solo abajo del todo, que
-                    // es donde tiene sentido: es informacion de fondo, no una
-                    // opcion.
-                    if (widget.mostrarActivar) ...[
-                      const SizedBox(height: 38),
-                      Container(
-                        width: 420,
-                        height: 1,
-                        color: Colors.white.withValues(alpha: 0.08),
-                      ),
-                      const SizedBox(height: 26),
-                      Text(
-                        '¿TIENES SUSCRIPCIÓN?',
-                        style: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.3),
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          letterSpacing: 2.4,
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      _BotonActivar(onHecho: widget.onActivado),
-                    ],
-                  ],
-                ),
+  Widget _paso(int n, String texto, {IconData? icono, bool ultimo = false}) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: ultimo ? 0 : 20),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 28,
+            height: 28,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.07),
+              borderRadius: BorderRadius.circular(7),
+            ),
+            child: Text(
+              '$n',
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.7),
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
               ),
             ),
           ),
+          const SizedBox(width: 15),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 3),
+              child: Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      texto,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 16,
+                        height: 1.4,
+                      ),
+                    ),
+                  ),
+                  if (icono != null) ...[
+                    const SizedBox(width: 9),
+                    Icon(icono, color: Colors.white54, size: 19),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
-          // Estado inferior: punto que respira + "en espera" + IP.
-          Positioned(
-            bottom: 40,
-            left: 0,
-            right: 0,
-            child: Column(
+  /// El panel derecho: el dato grande.
+  ///
+  /// En la de vinculación aquí va el código; aquí va el NOMBRE que hay que
+  /// buscar en la lista del teléfono, que es el equivalente exacto: el dato
+  /// que se lee en la tele y se reconoce en el móvil.
+  Widget _panelNombre() {
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'ESTE TELEVISOR',
+          style: TextStyle(
+            color: Colors.white.withValues(alpha: 0.35),
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 2.4,
+          ),
+        ),
+        const SizedBox(height: 18),
+        Text(
+          widget.deviceName,
+          style: const TextStyle(
+            color: Colors.white,
+            // 34 y no 44: es un nombre largo —"Bump Comba TV"— y a 44 llenaba
+            // el panel de lado a lado. Sigue siendo lo mas grande de la
+            // pantalla, que es lo que tiene que ser.
+            fontSize: 34,
+            fontWeight: FontWeight.w400,
+            letterSpacing: -0.9,
+            height: 1.05,
+          ),
+        ),
+        const SizedBox(height: 26),
+
+        // El estado de la conexión, aquí al lado del nombre.
+        //
+        // Estaba suelto al fondo de la pantalla, y allí era un pie de página:
+        // se leía tarde y sin relación con nada. Junto al nombre dice lo que
+        // de verdad significa — si esta tele está lista para recibir.
+        ValueListenableBuilder<bool>(
+          valueListenable: TvReceiverService().hasClient,
+          builder: (context, conectado, _) {
+            // Naranja parpadeando en espera; verde fijo al conectar.
+            final color =
+                conectado ? const Color(0xFF34C759) : const Color(0xFFFF9500);
+            return Row(
               children: [
-                ValueListenableBuilder<bool>(
-                  valueListenable: TvReceiverService().hasClient,
-                  builder: (context, connected, _) {
-                    // Naranja parpadeando en espera; verde fijo al conectar.
-                    final Color color =
-                        connected
-                            ? const Color(0xFF34C759) // verde
-                            : const Color(0xFFFF9500); // naranja
-                    final String label =
-                        connected
-                            ? 'Teléfono conectado · listo para reproducir'
-                            : 'En espera de conexión';
-                    return Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        AnimatedBuilder(
-                          animation: _t,
-                          builder: (context, _) {
-                            // Conectado: punto fijo. En espera: parpadeo.
-                            final alpha =
-                                connected ? 1.0 : (0.2 + 0.8 * _t.value);
-                            return Container(
-                              width: 8,
-                              height: 8,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                color: color.withValues(alpha: alpha),
-                                boxShadow:
-                                    connected
-                                        ? [
-                                          BoxShadow(
-                                            color: color.withValues(alpha: 0.5),
-                                            blurRadius: 8,
-                                            spreadRadius: 1,
-                                          ),
-                                        ]
-                                        : null,
-                              ),
-                            );
-                          },
+                AnimatedBuilder(
+                  animation: _t,
+                  builder: (context, _) {
+                    return Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: color.withValues(
+                          alpha: conectado ? 1.0 : (0.2 + 0.8 * _t.value),
                         ),
-                        const SizedBox(width: 10),
-                        Text(
-                          label,
-                          style: TextStyle(
-                            color: Colors.white.withValues(alpha: 0.55),
-                            fontSize: 15,
-                            letterSpacing: 0.3,
-                          ),
-                        ),
-                      ],
+                        boxShadow:
+                            conectado
+                                ? [
+                                  BoxShadow(
+                                    color: color.withValues(alpha: 0.5),
+                                    blurRadius: 8,
+                                    spreadRadius: 1,
+                                  ),
+                                ]
+                                : null,
+                      ),
                     );
                   },
                 ),
-                if (_ip != null) ...[
-                  const SizedBox(height: 8),
-                  Text(
-                    'Misma red Wi-Fi · $_ip',
+                const SizedBox(width: 10),
+                Flexible(
+                  child: Text(
+                    conectado
+                        ? 'Teléfono conectado · listo para reproducir'
+                        : 'En espera de conexión',
                     style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.25),
-                      fontSize: 13,
-                      letterSpacing: 0.3,
+                      color: Colors.white.withValues(alpha: 0.55),
+                      fontSize: 15,
                     ),
                   ),
-                ],
+                ),
               ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // Punto de marca: pequeña esfera glossy roja (identidad de la app).
-  Widget _brandDot() {
-    return Container(
-      width: 16,
-      height: 16,
-      decoration: const BoxDecoration(
-        shape: BoxShape.circle,
-        gradient: RadialGradient(
-          center: Alignment(-0.4, -0.5),
-          radius: 1.2,
-          colors: [Color(0xFFFF6B5E), Color(0xFFE53935), Color(0xFFB71C1C)],
-          stops: [0.0, 0.55, 1.0],
+            );
+          },
         ),
-      ),
-    );
-  }
 
-  Widget _stepGap() => Container(
-    width: 1,
-    height: 76,
-    margin: const EdgeInsets.symmetric(horizontal: 40),
-    color: Colors.white.withValues(alpha: 0.06),
-  );
-
-  Widget _step(int n, String text, {IconData? icon}) {
-    return SizedBox(
-      width: 220,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Círculo de número, contorno fino con acento rojo.
+        if (widget.mostrarActivar) ...[
+          const SizedBox(height: 30),
           Container(
-            width: 40,
-            height: 40,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(
-                color: const Color(0xFFE53935).withValues(alpha: 0.55),
-                width: 1.4,
-              ),
-            ),
-            child:
-                icon != null
-                    ? Icon(icon, color: Colors.white, size: 20)
-                    : Text(
-                      '$n',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
+            width: 260,
+            height: 1,
+            color: Colors.white.withValues(alpha: 0.08),
           ),
-          const SizedBox(height: 18),
+          const SizedBox(height: 22),
           Text(
-            text,
+            '¿TIENES SUSCRIPCIÓN?',
             style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.75),
-              fontSize: 18,
-              height: 1.35,
-              fontWeight: FontWeight.w400,
+              color: Colors.white.withValues(alpha: 0.3),
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 2.4,
             ),
           ),
+          const SizedBox(height: 14),
+          _BotonActivar(onHecho: widget.onActivado),
         ],
-      ),
+      ],
     );
   }
 }
@@ -2857,28 +2843,85 @@ class _FocoSuaveState extends State<_FocoSuave> {
           widget.onOk();
           return KeyEventResult.handled;
         }
+
+        // ── LAS FLECHAS SE TRAGAN AQUI ────────────────────────────────────
+        //
+        // Es el UNICO sitio al que se puede ir en esta pantalla: lo demas son
+        // textos. Al dejar pasar las flechas, la navegacion direccional de
+        // Flutter se llevaba el foco fuera del boton y no lo devolvia —no hay
+        // otro destino al que ir—, asi que el boton se quedaba apagado y OK
+        // dejaba de hacer nada. Parecia que el mando se habia colgado.
+        //
+        // Tragandoselas, el foco no se mueve de aqui mientras se espera. En
+        // cuanto llega video, el receptor lo reclama y esta pantalla ya no
+        // esta.
+        if (k == LogicalKeyboardKey.arrowUp ||
+            k == LogicalKeyboardKey.arrowDown ||
+            k == LogicalKeyboardKey.arrowLeft ||
+            k == LogicalKeyboardKey.arrowRight) {
+          return KeyEventResult.handled;
+        }
+
         return KeyEventResult.ignored;
       },
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.lock_open_rounded,
-              size: 17,
-              color: _foco ? Colors.white : Colors.white38,
-            ),
-            const SizedBox(width: 9),
-            Text(
-              'Activar este televisor',
-              style: TextStyle(
-                color: _foco ? Colors.white : Colors.white38,
-                fontSize: 16,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ],
+      // ── UN BOTON DE VERDAD, NO UN TEXTO QUE SE ACLARA ─────────────────
+      //
+      // Antes era texto gris con un candado, sin caja: en gris no parecia
+      // pulsable, y con el foco lo unico que cambiaba era el color de la
+      // letra. En un televisor eso se lee como una nota al pie, no como la
+      // accion que hay que hacer.
+      //
+      // Ahora es un boton solido gris con letra blanca, del mismo estilo que
+      // el de iniciar sesion de las apps de television.
+      //
+      // EL FOCO SE MARCA CON EL PROPIO FONDO, no con adornos alrededor. Un aro
+      // blanco o un resplandor detras ensucian: el boton es pequeno y
+      // cualquier cosa que le crezca por fuera se ve como un marco pegado.
+      //
+      // PERO TIENE QUE NOTARSE. Estuvo en dos grises parecidos y no se sabia
+      // si estaba señalado. Ahora el salto es el de todo el televisor:
+      // enfocado se vuelve BLANCO con letra negra; sin foco, gris oscuro con
+      // letra gris. Eso se ve desde el sofa sin fijarse.
+      //
+      // SIN ZOOM. Lo llevaba, y aqui no aporta: es el unico sitio enfocable de
+      // la pantalla, asi que el foco no va y viene entre varios sitios —esta
+      // siempre puesto—. Un boton que se agranda solo, quieto y sin nada con
+      // que compararse, se ve como si vibrara.
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 11),
+        decoration: BoxDecoration(
+          // Gris OPACO, no blanco translucido.
+          //
+          // Estaba en blanco al 16%, y un translucido toma el color de
+          // lo que tiene detras: sobre el fondo casi negro se veia
+          // lavado. Un gris solido y oscuro se planta sobre cualquier
+          // fondo y deja el blanco del foco como el unico claro de la
+          // pantalla, que es lo que hace que el foco resalte.
+          // LOS DOS ESTADOS SON GRISES, y el texto siempre blanco.
+          //
+          // Enfocado estuvo en blanco con letra negra —lo tipico en un
+          // televisor— pero al lado del resto de la pantalla, que es todo
+          // oscuro, ese salto se enciende como una bombilla. Con dos
+          // grises se nota igual de bien cual esta señalado y el boton no
+          // se sale del conjunto.
+          color: _foco ? const Color(0xFF6B6B72) : const Color(0xFF4A4A4F),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: AnimatedDefaultTextStyle(
+          duration: const Duration(milliseconds: 150),
+          style: TextStyle(
+            // Negro sobre el blanco del foco: si se quedara blanco,
+            // desapareceria justo al señalarlo.
+            // Blanco en los dos estados. Sobre estos grises se lee bien, y
+            // al no cambiar de color no distrae del unico cambio que
+            // importa, que es el del fondo.
+            color: Colors.white,
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.2,
+          ),
+          child: const Text('Activar este televisor'),
         ),
       ),
     );
