@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -114,13 +115,23 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   // Telenovelas y Animacion se resuelven por el NOMBRE de la categoria del
   // proveedor, que es elunico dato que hay. Es aproximado a proposito: mas
   // vale que caiga alguna de mas a que la seccion salga vacia.
+  /// ── ICONOS DE CUPERTINO, NO DE MATERIAL ────────────────────────────────
+  ///
+  /// Los de Material son de trazo grueso y esquinas marcadas: en una pantalla
+  /// grande y vistos de lejos se leen pesados, como de aplicacion de sistema.
+  /// Los de Cupertino tienen el trazo mas fino y la forma mas redonda, que es
+  /// el aire que tienen las apps de television.
+  ///
+  /// Y sin rellenar: la version hueca deja que el COLOR diga cual es la
+  /// seccion abierta, sin que la forma cambie tambien. Dos cosas cambiando a
+  /// la vez cansan de mirar.
   static const List<({String texto, IconData icono})> _secciones = [
-    (texto: 'Inicio', icono: Icons.home_outlined),
-    (texto: 'Peliculas', icono: Icons.movie_outlined),
-    (texto: 'Series', icono: Icons.smart_display_outlined),
-    (texto: 'Telenovelas', icono: Icons.favorite_outline),
-    (texto: 'Animacion', icono: Icons.child_care_outlined),
-    (texto: 'Buscar', icono: Icons.search),
+    (texto: 'Inicio', icono: CupertinoIcons.house),
+    (texto: 'Peliculas', icono: CupertinoIcons.film),
+    (texto: 'Series', icono: CupertinoIcons.tv),
+    (texto: 'Telenovelas', icono: CupertinoIcons.heart),
+    (texto: 'Animacion', icono: CupertinoIcons.smiley),
+    (texto: 'Buscar', icono: CupertinoIcons.search),
   ];
 
   /// BUSCAR no es una seccion del catalogo: es una pantalla aparte.
@@ -321,7 +332,13 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     //
     // Guardado por seccion: ir a SERIES y volver a INICIO devuelve el mismo
     // titulo que dejaste, y solo cambia al volver a entrar en la app.
-    final yaElegidos = _destacadosPorSeccion[_seccion];
+    final guardados = _destacadosPorSeccion[_seccion];
+    // Si se guardaron cuando la cabecera pedia otra cantidad, no valen: la
+    // portada enseñaba ocho rayitas porque la cache era del mosaico anterior.
+    final yaElegidos =
+        (guardados != null && guardados.length > _cuantosDestacados)
+            ? null
+            : guardados;
     if (yaElegidos != null && yaElegidos.isNotEmpty) {
       if (_destacados != yaElegidos) {
         _destacados = yaElegidos;
@@ -405,6 +422,22 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   ///
   /// NUNCA la caratula del proveedor: es VERTICAL, y metida en un hueco
   /// apaisado sale recortada por la mitad.
+  /// La ficha de TMDB de cada destacado, en el orden de `_destacados`.
+  ///
+  /// Los huecos son normales: la ficha puede no haber llegado, o el titulo
+  /// puede no estar en TMDB. La portada se pinta igual, solo que con menos
+  /// texto.
+  List<Map<String, dynamic>?> get _fichasHeroLista => [
+    for (final item in _destacados) _fichasHero[_claveHero(item)],
+  ];
+
+  /// Pasa al siguiente destacado. Lo llama la flecha derecha del ultimo boton
+  /// y el turno automatico de la portada.
+  void _siguienteDestacado() {
+    if (_destacados.length < 2) return;
+    setState(() => _idxDestacado = (_idxDestacado + 1) % _destacados.length);
+  }
+
   List<String?> get _imagenesHero => [
     for (final item in _destacados)
       (_fichasHero[_claveHero(item)]?['backdrop_url'] as String?),
@@ -430,10 +463,32 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       if (!mounted) return;
       await _pedirFichaHero(indice: i);
     }
-    // Ya no queda ninguna por pedir. Con imagen o sin ella —TMDB puede no
-    // tener el titulo—, esperar mas seria dejar la pantalla vacia por algo que
-    // no va a llegar.
-    if (mounted && !_heroListo) setState(() => _heroListo = true);
+    if (!mounted) return;
+
+    // ── FUERA LOS QUE NO TIENEN IMAGEN ────────────────────────────────────
+    //
+    // La portada ES la imagen. Un titulo sin `backdrop_url` en TMDB —los que
+    // llevan marcas del proveedor en el nombre, como "... CAM", no se
+    // encuentran— sale como un rectangulo negro con el titulo flotando: se ve
+    // como una pantalla rota, no como un destacado.
+    //
+    // Se filtra AQUI y no al elegirlos porque hasta que TMDB no contesta no se
+    // sabe cuales tienen imagen.
+    final conImagen = [
+      for (final e in _destacados)
+        if ((_fichasHero[_claveHero(e)]?['backdrop_url'] as String?)
+                ?.isNotEmpty ??
+            false)
+          e,
+    ];
+    if (conImagen.isNotEmpty && conImagen.length != _destacados.length) {
+      _destacados = conImagen;
+      _destacadosPorSeccion[_seccion] = conImagen;
+      if (_idxDestacado >= _destacados.length) _idxDestacado = 0;
+    }
+
+    // Ya no queda ninguna por pedir. Es el momento de enseñarlo.
+    if (!_heroListo) setState(() => _heroListo = true);
   }
 
   /// Trae de TMDB la imagen apaisada y la sinopsis de una pieza.
@@ -630,12 +685,19 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
           _scrollVertical.position.hasContentDimensions
               ? _scrollVertical.position.viewportDimension
               : MediaQuery.sizeOf(context).height;
-      // Centra la fila activa en la pantalla con espacio arriba y abajo
-      // en vez de pegarla al filo superior bajo el velo negro.
-      final margenSuperior = ((altoViewport - _altoFila) / 2).clamp(
-        0.0,
-        altoViewport / 2,
-      );
+      // Para la primera fila (destino == 0), se posiciona retirando el
+      // destacado hacia arriba para que no colisionen sus botones ni sinopsis.
+      // Para el resto de filas (destino >= 1), se centran en la pantalla para
+      // que se vea la fila anterior arriba y la siguiente abajo.
+      final double margenSuperior;
+      if (destino == 0) {
+        margenSuperior = 44.0;
+      } else {
+        margenSuperior = ((altoViewport - _altoFila) / 2).clamp(
+          0.0,
+          altoViewport / 2,
+        );
+      }
       final maxScroll =
           _scrollVertical.position.hasContentDimensions
               ? _scrollVertical.position.maxScrollExtent
@@ -1100,21 +1162,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       curve: Curves.easeOut,
       builder: (context, t, hijo) => Opacity(opacity: t, child: hijo),
       child: DecoratedBox(
-        // ── Fondo ──────────────────────────────────────────────────────────
-        //
-        // Sustituye al negro plano. Es oscuro y de contraste bajo a proposito:
-        // detras de un catalogo, un fondo con fuerza compite con las caratulas,
-        // que son lo que se viene a mirar. Este solo da temperatura.
-        //
-        // `cover` y no `fill`: en un televisor la proporcion puede no ser 16:9
-        // exacta y estirar la imagen se nota enseguida en las diagonales.
-        decoration: const BoxDecoration(
-          color: Colors.black,
-          image: DecorationImage(
-            image: AssetImage('assets/images/fondotv.png'),
-            fit: BoxFit.cover,
-          ),
-        ),
+        decoration: const BoxDecoration(color: Color(0xFF0B0B0D)),
         // ── El lateral va ENCIMA del contenido, no al lado ──────────────
         //
         // Es lo que le da el aire moderno de la referencia: las caratulas siguen
@@ -1236,12 +1284,11 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                                   items: _destacados,
                                   indice: _idxDestacado,
                                   imagenes: _imagenesHero,
+                                  fichas: _fichasHeroLista,
                                   listo: _heroListo,
-                                  onElegir: (i) {
-                                    _idxDestacado = i;
-                                    _abrirDestacado(false);
-                                  },
-                                  onIndice: (i) => _idxDestacado = i,
+                                  onReproducir: () => _abrirDestacado(true),
+                                  onFicha: () => _abrirDestacado(false),
+                                  onSiguiente: _siguienteDestacado,
                                   onAbajo: () => _irAFila(0, 0),
                                   onSalirIzquierda:
                                       () =>

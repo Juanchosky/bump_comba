@@ -943,6 +943,7 @@ class FastThumbnail extends StatefulWidget {
   final double width;
   final double height;
   final BoxFit fit;
+  final Alignment alignment;
   final BorderRadius? borderRadius;
   final int? cacheWidth;
   final String? title;
@@ -965,6 +966,7 @@ class FastThumbnail extends StatefulWidget {
     required this.height,
     this.title,
     this.fit = BoxFit.cover,
+    this.alignment = Alignment.center,
     this.borderRadius,
     this.cacheWidth,
     this.isSeries = false,
@@ -1398,6 +1400,7 @@ class _FastThumbnailState extends State<FastThumbnail>
               width: widget.width,
               height: widget.height,
               fit: widget.fit,
+              alignment: widget.alignment,
               gaplessPlayback: true,
               frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
                 // FIX: frame == null significa que la imagen TODAVÍA se está
