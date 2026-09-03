@@ -50,9 +50,6 @@ class TvDestacado extends StatefulWidget {
   /// Reproducir el destacado actual.
   final VoidCallback onReproducir;
 
-  /// Abrir su ficha.
-  final VoidCallback onFicha;
-
   /// Bajar a la primera fila de carátulas.
   final VoidCallback onAbajo;
 
@@ -73,7 +70,6 @@ class TvDestacado extends StatefulWidget {
     required this.fichas,
     required this.listo,
     required this.onReproducir,
-    required this.onFicha,
     required this.onAbajo,
     required this.onSalirIzquierda,
     required this.onSiguiente,
@@ -109,13 +105,13 @@ class TvDestacado extends StatefulWidget {
 }
 
 class TvDestacadoState extends State<TvDestacado> {
-  /// Un nodo por botón: Ver y Ver ficha.
-  final List<FocusNode> _nodos = [
-    FocusNode(debugLabel: 'destacadoVer'),
-    FocusNode(debugLabel: 'destacadoFicha'),
-  ];
+  /// UN SOLO BOTÓN.
+  ///
+  /// Había otro, "Ver ficha". Con uno solo la portada dice una cosa y no dos,
+  /// y el mando no tiene que elegir antes de poder empezar.
+  final FocusNode _nodo = FocusNode(debugLabel: 'destacadoVer');
 
-  int _foco = -1; // -1 = ninguno
+  bool _foco = false;
   Timer? _reloj;
 
   @override
@@ -128,7 +124,7 @@ class TvDestacadoState extends State<TvDestacado> {
       // Con el foco aquí, cambiar de título significaría que OK abre algo
       // distinto de lo que estabas viendo. Con un mando, donde el foco es lo
       // único que orienta, eso es abrir la película equivocada.
-      if (_foco >= 0 || widget.items.length < 2) return;
+      if (_foco || widget.items.length < 2) return;
       widget.onSiguiente();
     });
   }
@@ -136,18 +132,16 @@ class TvDestacadoState extends State<TvDestacado> {
   @override
   void dispose() {
     _reloj?.cancel();
-    for (final n in _nodos) {
-      n.dispose();
-    }
+    _nodo.dispose();
     super.dispose();
   }
 
-  /// Pone el foco en la cabecera, siempre en "Ver": es a lo que se viene.
-  void enfocar() => _nodos.first.requestFocus();
+  /// Pone el foco en la cabecera.
+  void enfocar() => _nodo.requestFocus();
 
-  bool get tieneFoco => _foco >= 0;
+  bool get tieneFoco => _foco;
 
-  KeyEventResult _tecla(int i, KeyEvent evento) {
+  KeyEventResult _tecla(KeyEvent evento) {
     if (evento is! KeyDownEvent && evento is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
     }
@@ -157,32 +151,23 @@ class TvDestacadoState extends State<TvDestacado> {
         k == LogicalKeyboardKey.enter ||
         k == LogicalKeyboardKey.gameButtonA) {
       if (evento is KeyRepeatEvent) return KeyEventResult.handled;
-      i == 0 ? widget.onReproducir() : widget.onFicha();
+      widget.onReproducir();
       return KeyEventResult.handled;
     }
 
     if (k == LogicalKeyboardKey.arrowRight) {
-      // Derecha recorre: botón, botón, siguiente portada. Es lo que hace que
-      // los cinco sean alcanzables sin inventar un control aparte — las
-      // rayitas de abajo ya dicen cuántos hay, y la flecha cumple lo que esas
-      // rayitas prometen.
+      // Derecha pasa a la siguiente portada. Con dos botones había que
+      // cruzarlos primero; ahora es directo — las rayitas de abajo dicen
+      // cuántas hay, y la flecha cumple lo que esas rayitas prometen.
       //
       // Con la tecla mantenida NO se encadena: pasar cinco portadas de golpe
       // por dejar el dedo puesto no lo quiere nadie.
-      if (i == 0) {
-        _nodos[1].requestFocus();
-      } else if (evento is! KeyRepeatEvent) {
-        widget.onSiguiente();
-      }
+      if (evento is! KeyRepeatEvent) widget.onSiguiente();
       return KeyEventResult.handled;
     }
 
     if (k == LogicalKeyboardKey.arrowLeft) {
-      if (i == 1) {
-        _nodos[0].requestFocus();
-      } else {
-        widget.onSalirIzquierda();
-      }
+      widget.onSalirIzquierda();
       return KeyEventResult.handled;
     }
 
@@ -197,17 +182,10 @@ class TvDestacadoState extends State<TvDestacado> {
     return KeyEventResult.ignored;
   }
 
-  void _cambioFoco(int i, bool tiene) {
-    final antes = _foco >= 0;
-    if (tiene) {
-      _foco = i;
-    } else if (_foco == i) {
-      _foco = -1;
-    }
-    if (mounted) setState(() {});
-
-    final ahora = _foco >= 0;
-    if (antes != ahora) widget.onFoco(ahora);
+  void _cambioFoco(bool tiene) {
+    if (_foco == tiene) return;
+    if (mounted) setState(() => _foco = tiene);
+    widget.onFoco(tiene);
   }
 
   // ── Datos, con lo que haya ───────────────────────────────────────────────
@@ -251,7 +229,7 @@ class TvDestacadoState extends State<TvDestacado> {
             children: [
               // ── 1. Fondo base ─────────────────────────────────────────
               // Evita cualquier hueco o transparencia indeseada.
-              const ColoredBox(color: Color(0xFF0B0B0D)),
+              const ColoredBox(color: Color(0xFF0D0D0D)),
 
               // ── 2. La imagen apaisada ─────────────────────────────────
               AnimatedSwitcher(
@@ -260,7 +238,7 @@ class TvDestacadoState extends State<TvDestacado> {
                     (!widget.listo || imagen == null || imagen.isEmpty)
                         ? const ColoredBox(
                           key: ValueKey('vacio'),
-                          color: Color(0xFF0B0B0D),
+                          color: Color(0xFF0D0D0D),
                         )
                         : FastThumbnail(
                           key: ValueKey(imagen),
@@ -286,7 +264,10 @@ class TvDestacadoState extends State<TvDestacado> {
                       gradient: LinearGradient(
                         begin: Alignment.topCenter,
                         end: Alignment.bottomCenter,
-                        colors: [Color(0x8C0B0B0D), Colors.transparent],
+                        // Transparente del MISMO color, no `Colors.transparent`
+                        // (negro con alfa 0): mezclar hacia el negro tira el
+                        // degradado fuera del tono del fondo y deja un borde.
+                        colors: [Color(0x8C0D0D0D), Color(0x000D0D0D)],
                         stops: [0.0, 1.0],
                       ),
                     ),
@@ -304,10 +285,10 @@ class TvDestacadoState extends State<TvDestacado> {
                         begin: Alignment.centerLeft,
                         end: Alignment.centerRight,
                         colors: [
-                          Color(0xF50B0B0D),
-                          Color(0xD90B0B0D),
-                          Color(0x660B0B0D),
-                          Colors.transparent,
+                          Color(0xF50D0D0D),
+                          Color(0xD90D0D0D),
+                          Color(0x660D0D0D),
+                          Color(0x000D0D0D),
                         ],
                         stops: [0.0, 0.32, 0.58, 0.85],
                       ),
@@ -317,7 +298,7 @@ class TvDestacadoState extends State<TvDestacado> {
               ),
 
               // ── 5. Velo inferior cinematográfico ──────────────────────
-              // Funde la imagen gradualmente en el fondo de la pantalla (0xFF0B0B0D).
+              // Funde la imagen gradualmente en el fondo de la pantalla (0xFF0D0D0D).
               // Comienza suave desde la mitad inferior y solo llega a opaco en la
               // base misma, eliminando cualquier franja negra o corte seco.
               const Positioned(
@@ -332,12 +313,12 @@ class TvDestacadoState extends State<TvDestacado> {
                         begin: Alignment.topCenter,
                         end: Alignment.bottomCenter,
                         colors: [
-                          Colors.transparent,
-                          Color(0x000B0B0D),
-                          Color(0x330B0B0D),
-                          Color(0x730B0B0D),
-                          Color(0xBF0B0B0D),
-                          Color(0xFF0B0B0D),
+                          Color(0x000D0D0D),
+                          Color(0x000D0D0D),
+                          Color(0x330D0D0D),
+                          Color(0x730D0D0D),
+                          Color(0xBF0D0D0D),
+                          Color(0xFF0D0D0D),
                         ],
                         stops: [0.0, 0.20, 0.45, 0.68, 0.88, 1.0],
                       ),
@@ -360,9 +341,9 @@ class TvDestacadoState extends State<TvDestacado> {
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 26,
-                        fontWeight: FontWeight.w700,
+                        color: Color.fromARGB(255, 228, 228, 228),
+                        fontSize: 22,
+                        fontWeight: FontWeight.w500,
                         height: 1.15,
                         letterSpacing: -0.4,
                       ),
@@ -418,26 +399,13 @@ class TvDestacadoState extends State<TvDestacado> {
 
                     const SizedBox(height: 16),
 
-                    Row(
-                      children: [
-                        _Boton(
-                          nodo: _nodos[0],
-                          texto: 'Ver',
-                          icono: Icons.play_arrow_rounded,
-                          conFoco: _foco == 0,
-                          onTecla: (e) => _tecla(0, e),
-                          onFoco: (v) => _cambioFoco(0, v),
-                        ),
-                        const SizedBox(width: 12),
-                        _Boton(
-                          nodo: _nodos[1],
-                          texto: 'Ver ficha',
-                          icono: Icons.info_outline_rounded,
-                          conFoco: _foco == 1,
-                          onTecla: (e) => _tecla(1, e),
-                          onFoco: (v) => _cambioFoco(1, v),
-                        ),
-                      ],
+                    _Boton(
+                      nodo: _nodo,
+                      texto: 'Reproducir',
+                      icono: Icons.play_arrow_rounded,
+                      conFoco: _foco,
+                      onTecla: _tecla,
+                      onFoco: _cambioFoco,
                     ),
                   ],
                 ),
@@ -492,7 +460,9 @@ class _Punto extends StatelessWidget {
 class _Boton extends StatelessWidget {
   final FocusNode nodo;
   final String texto;
-  final IconData icono;
+
+  /// Opcional: hay botones que se explican solos con el texto.
+  final IconData? icono;
   final bool conFoco;
   final KeyEventResult Function(KeyEvent) onTecla;
   final ValueChanged<bool> onFoco;
@@ -500,7 +470,7 @@ class _Boton extends StatelessWidget {
   const _Boton({
     required this.nodo,
     required this.texto,
-    required this.icono,
+    this.icono,
     required this.conFoco,
     required this.onTecla,
     required this.onFoco,
@@ -512,7 +482,7 @@ class _Boton extends StatelessWidget {
     // translúcido. Que el blanco signifique una sola cosa —"aquí está el
     // foco"— es lo que lo hace legible desde el sofá.
     final fondo = conFoco ? Colors.white : Colors.white.withValues(alpha: 0.16);
-    final tinta = conFoco ? const Color(0xFF0B0B0D) : Colors.white;
+    final tinta = conFoco ? const Color(0xFF0D0D0D) : Colors.white;
 
     return Focus(
       focusNode: nodo,
@@ -527,8 +497,10 @@ class _Boton extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icono, color: tinta, size: 18),
-            const SizedBox(width: 7),
+            if (icono != null) ...[
+              Icon(icono, color: tinta, size: 18),
+              const SizedBox(width: 7),
+            ],
             Text(
               texto,
               style: TextStyle(

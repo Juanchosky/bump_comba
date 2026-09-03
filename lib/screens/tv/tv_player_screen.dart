@@ -262,6 +262,32 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
   /// igual se abra desde donde se abra.
   static const int _umbralArranque = 9;
 
+  /// Tope absoluto de espera al arrancar, en segundos.
+  ///
+  /// Los 9 de arriba cuentan SIN DATOS; este cuenta desde que se abrio, pasen
+  /// o no pasen bytes. Es la red de seguridad para el caso en que el servidor
+  /// mande y mande sin llegar nunca a soltar un fotograma.
+  static const int _umbralArranqueMaximo = 45;
+
+  /// Segundos seguidos sin que llegue NADA mientras arranca.
+  int _segundosSinDatos = 0;
+
+  /// Cuanto bufer habia en la ultima vuelta del vigilante.
+  Duration _buferVigilado = Duration.zero;
+
+  /// Cuantos bytes llevaba bajados TurboProxy en la ultima vuelta.
+  int _bytesVigilados = 0;
+
+  /// El fichero pide mas caudal del que hay. NO es un fallo del servidor.
+  bool _faltaCaudal = false;
+
+  /// A partir de aqui se juzga el caudal, en segundos desde que se abrio.
+  ///
+  /// Antes no se puede: TurboProxy arranca en passthrough y sube conexiones
+  /// poco a poco —la "rampa ascendente" del log—, asi que medir en los
+  /// primeros segundos daria por lento algo que todavia no ha acelerado.
+  static const int _cuandoJuzgarCaudal = 18;
+
   /// La primera posicion observada tras abrir. La referencia contra la que se
   /// mide si el video avanza de verdad.
   Duration? _posReferencia;
@@ -754,6 +780,9 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     // Servidor nuevo, cuenta nueva: lo que tardara el anterior no puede
     // condenar a este.
     _segundosDesdeAbrir = 0;
+    _segundosSinDatos = 0;
+    _buferVigilado = Duration.zero;
+    _bytesVigilados = TurboProxy.instance.currentBytesDownloaded;
     _arranco = false;
     _posReferencia = null;
     // Servidor nuevo, colchon nuevo: lo que no daba el anterior no condena a
@@ -1001,8 +1030,85 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
           return;
         }
 
-        if (_segundosDesdeAbrir >= _umbralArranque) {
-          unawaited(_siguienteServidor('no arranco en ${_umbralArranque}s'));
+        // ── EL PLAZO CUENTA SIN DATOS, NO DESDE QUE SE ABRIO ────────────
+        //
+        // Antes bastaba con que pasaran 9 segundos: si el video no habia
+        // empezado, fuera. Y eso mata reproducciones que van perfectamente,
+        // solo que lentas.
+        //
+        // El caso del log: un `.mp4` de la BD por TurboProxy a 2,3 Mbps. Los
+        // bytes ESTABAN llegando —"X-Cache HIT", "acelerando mid-stream"— pero
+        // un MP4 necesita su cabecera entera antes del primer fotograma, y a
+        // esa velocidad no da tiempo en 9 segundos. El vigilante lo mataba, se
+        // cerraba TurboProxy a media descarga, y MPV se quedaba leyendo un
+        // fichero truncado: de ahi los "STSZ atom truncated" y "error reading
+        // header" que salen DESPUES en el log. No era el servidor fallando,
+        // era la app cortandole.
+        //
+        // Sin servidor alternativo, ademas, eso es terminal: no carga nada.
+        //
+        // Ahora los 9 segundos cuentan SIN DATOS. Mientras entren bytes o el
+        // bufer crezca, se le deja seguir, con un tope de 45 segundos para que
+        // un servidor que manda basura sin arrancar tampoco se eternice.
+        // ── SE LE PREGUNTA AL PROXY, NO A MPV ───────────────────────────
+        //
+        // Mirar solo `_kbps` y `_bufer` no valia, y el log lo dejo claro:
+        // TurboProxy decia "acelerando mid-stream (1.7 Mbps)" y su offset
+        // avanzaba hasta 119.917 bytes, pero el vigilante seguia contando
+        // "sin datos" y mataba la reproduccion igual.
+        //
+        // El motivo es que las dos medidas de MPV se quedan a cero MIENTRAS
+        // NO PUEDE LEER LA CABECERA: no hay cache que crecer ni caudal que
+        // reportar hasta que el demuxer entiende el fichero. Justo el tramo
+        // que hay que esperar.
+        //
+        // TurboProxy si sabe lo que esta bajando, porque es quien lo baja.
+        // Sus bytes son la prueba de que el servidor responde.
+        final bytes = TurboProxy.instance.currentBytesDownloaded;
+        final hayDatos =
+            bytes > _bytesVigilados || _kbps > 0 || _bufer > _buferVigilado;
+        _bytesVigilados = bytes;
+        _buferVigilado = _bufer;
+        _segundosSinDatos = hayDatos ? 0 : _segundosSinDatos + 1;
+
+        // ── ¿ES EL SERVIDOR, O ES LA CONEXION? ──────────────────────────
+        //
+        // Se parecen en pantalla —negro y a esperar— pero piden respuestas
+        // opuestas: cambiar de servidor no arregla que el fichero pese mas de
+        // lo que cabe por el cable.
+        //
+        // El caso del log: un MKV de mas de 5 GB, que pide 14 Mbps, servido a
+        // 0,9. Bajaron 9 MB en 45 segundos y el video nunca arranco. No fallo
+        // nadie: ese fichero no cabe por esa conexion. Lo unico que se sacaba
+        // de esperar eran 45 segundos de pantalla negra y luego un mensaje
+        // que culpaba al servidor.
+        //
+        // Con margen amplio —la mitad de lo pedido— para no rendirse con algo
+        // que iba justo pero habria arrancado.
+        final pedido = TurboProxy.instance.bitrateRequeridoActual;
+        final caudal = TurboProxy.instance.mbps;
+        if (!_faltaCaudal &&
+            pedido != null &&
+            pedido > 0 &&
+            caudal > 0 &&
+            _segundosDesdeAbrir >= _cuandoJuzgarCaudal &&
+            caudal < pedido * 0.5) {
+          _faltaCaudal = true;
+          unawaited(
+            _siguienteServidor(
+              'la conexion da ${caudal.toStringAsFixed(1)} Mbps y el titulo '
+              'pide ${pedido.toStringAsFixed(1)}',
+            ),
+          );
+          return;
+        }
+
+        if (_segundosSinDatos >= _umbralArranque) {
+          unawaited(_siguienteServidor('sin datos en ${_umbralArranque}s'));
+        } else if (_segundosDesdeAbrir >= _umbralArranqueMaximo) {
+          unawaited(
+            _siguienteServidor('no arranco en ${_umbralArranqueMaximo}s'),
+          );
         }
         return;
       }
@@ -1696,7 +1802,9 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
                     ),
                     const SizedBox(height: 20),
                     Text(
-                      _urls.length > 1
+                      _faltaCaudal
+                          ? 'Tu conexión está muy lenta'
+                          : _urls.length > 1
                           ? 'Ninguno de los ${_urls.length} servidores '
                               'pudo reproducir este título'
                           : 'El servidor no pudo reproducir este título',
@@ -1708,10 +1816,15 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
                       ),
                     ),
                     const SizedBox(height: 12),
-                    const Text(
-                      'Pulsa atrás para volver e inténtalo más tarde.',
+                    Text(
+                      _faltaCaudal
+                          ? 'Intenta con otro título o vuelve a intentar más tarde.'
+                          : 'Pulsa atrás para volver e inténtalo más tarde.',
                       textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.white54, fontSize: 16),
+                      style: const TextStyle(
+                        color: Colors.white54,
+                        fontSize: 16,
+                      ),
                     ),
                   ],
                 ),

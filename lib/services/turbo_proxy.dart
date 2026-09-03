@@ -445,6 +445,16 @@ class TurboProxy {
   int _totalBytesDownloaded = 0;
 
   double get mbps => _mbps;
+
+  /// Cuanto caudal pide el titulo que se esta sirviendo ahora, en Mbps.
+  ///
+  /// Lo calcula la sesion a partir del tamaño y la duracion del fichero. El
+  /// reproductor lo necesita para distinguir dos cosas que se parecen mucho en
+  /// pantalla —un servidor que no responde y una conexion que no da para este
+  /// fichero— y que piden respuestas opuestas: cambiar de servidor no arregla
+  /// lo segundo.
+  double? get bitrateRequeridoActual =>
+      _sessions.isEmpty ? null : _sessions.values.last.targetBitrateMbps;
   int get activeConnections => _activeConnections;
   int get currentBytesDownloaded => _totalBytesDownloaded;
   double sampleMbps() => _mbps;

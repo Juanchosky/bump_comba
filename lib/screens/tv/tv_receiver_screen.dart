@@ -211,10 +211,20 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
   Timer? _speedPollTimer;
   double _downloadSpeedKbps = 0.0;
 
+  /// El premium puede vencer con el televisor encendido. Sin revisar cada
+  /// tanto, la desvinculación no llegaría hasta el siguiente arranque.
+  Timer? _revalidacionVinculo;
+
   @override
   void initState() {
     super.initState();
     _revisarVinculoTv();
+    // `validarToken()` solo desvincula ante un NO confirmado por el servidor;
+    // un fallo de red devuelve `null` y deja el acceso intacto.
+    _revalidacionVinculo = Timer.periodic(
+      const Duration(hours: 2),
+      (_) => _revisarVinculoTv(),
+    );
     _deviceName = _service.deviceName;
     _configureMpv();
     _startService();
@@ -1433,6 +1443,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
   void dispose() {
     _statusTimer?.cancel();
     _speedPollTimer?.cancel();
+    _revalidacionVinculo?.cancel();
     _commandSub?.cancel();
     _hideControlsTimer?.cancel();
     _seekDebounce?.cancel();

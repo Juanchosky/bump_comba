@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'performance_service.dart';
 import 'metadata_fallback_service.dart';
 import 'network_quality_service.dart';
+import '../utils/colors.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FAILED IMAGE TRACKER — Retries on app resume
@@ -1340,10 +1341,16 @@ class _FastThumbnailState extends State<FastThumbnail>
     final bool conTitulo =
         widget.title != null && !isLow && !FastImageService.modoTelevisor;
 
+    // El destacado ocupa la pantalla entera y se funde con el catalogo: su
+    // hueco va del color del fondo (`AppColors.fondoTv`), no del gris de
+    // tarjeta, que dejaria un bloque mas claro mientras carga la imagen.
+    final Color colorHueco =
+        widget.pantallaCompleta ? AppColors.fondoTv : const Color(0xFF1a1a1a);
+
     return Container(
       width: widget.width,
       height: widget.height,
-      color: const Color(0xFF1a1a1a),
+      color: colorHueco,
       child: Stack(
         alignment: Alignment.center,
         children: [

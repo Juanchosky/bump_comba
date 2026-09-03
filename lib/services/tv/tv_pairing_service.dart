@@ -185,10 +185,16 @@ class TvPairingService {
       return null;
     }
 
-    // El token solo se borra si el aparato ya no existe o fue revocado. Que la
-    // suscripcion haya caducado no invalida el token: si el usuario vuelve a
-    // pagar, el televisor sigue vinculado.
-    if (motivo == 'token_desconocido' || motivo == 'revocado') {
+    // El token se borra en tres casos: el aparato ya no existe, fue revocado
+    // desde el telefono, o la suscripcion ha caducado. Al vencer el premium el
+    // televisor SE DESVINCULA —vuelve a la pantalla de emparejar— y hay que
+    // volver a canjear un codigo despues de renovar. `sin_suscripcion_activa`
+    // solo llega cuando el servidor pudo confirmar con RevenueCat que no hay
+    // plan; los fallos al comprobar caen mas arriba, en `definitivos`, y
+    // conservan el acceso.
+    if (motivo == 'token_desconocido' ||
+        motivo == 'revocado' ||
+        motivo == 'sin_suscripcion_activa') {
       await olvidarToken();
     }
     return false;

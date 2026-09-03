@@ -5,7 +5,6 @@ import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/game_config_service.dart';
 import '../services/m3u_service.dart';
-import '../services/performance_service.dart';
 import '../services/premium_service.dart';
 import '../services/smart_notification_service.dart';
 import 'subscription_screen.dart';
@@ -24,7 +23,6 @@ class StreamBrowserConfigScreen extends StatefulWidget {
 class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
   final M3UService _m3uService = M3UService();
   final GameConfigService _gameConfigService = GameConfigService();
-  final PerformanceService _performanceService = PerformanceService();
   final PremiumService _premiumService = PremiumService();
   final SmartNotificationService _notificationService =
       SmartNotificationService();
@@ -105,14 +103,6 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
                       await _gameConfigService.setSkipGameIntro(val);
                       setState(() {});
                     },
-                    isLast: false,
-                  ),
-                  _buildDivider(),
-                  _buildTapRow(
-                    icon: CupertinoIcons.bolt_fill,
-                    title: 'Efectos Visuales',
-                    subtitle: _getPerformanceModeText(),
-                    onTap: _showPerformanceConfigDialog,
                     isLast: false,
                   ),
                   _buildDivider(),
@@ -550,17 +540,6 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
 
   // -- HELPERS -----------------------------------------------------------------
 
-  String _getPerformanceModeText() {
-    switch (_performanceService.currentMode) {
-      case PerformanceMode.auto:
-        return 'Automático';
-      case PerformanceMode.low:
-        return 'Desactivado';
-      case PerformanceMode.high:
-        return 'Activado';
-    }
-  }
-
   Widget _buildProBadge() {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -585,63 +564,6 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
   }
 
   // -- DIALOGS -----------------------------------------------------------------
-
-  void _showPerformanceConfigDialog() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (context) {
-        return _AppBottomSheet(
-          title: 'Efectos Visuales',
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _buildBottomSheetOption(
-                title: 'Automático',
-                subtitle: 'El sistema decide según el dispositivo',
-                isSelected:
-                    _performanceService.currentMode == PerformanceMode.auto,
-                onTap: () async {
-                  await _performanceService.setPerformanceMode(
-                    PerformanceMode.auto,
-                  );
-                  setState(() {});
-                  if (context.mounted) Navigator.pop(context);
-                },
-              ),
-              _buildBottomSheetOption(
-                title: 'Desactivado',
-                subtitle: 'Sin efectos — máxima fluidez',
-                isSelected:
-                    _performanceService.currentMode == PerformanceMode.low,
-                onTap: () async {
-                  await _performanceService.setPerformanceMode(
-                    PerformanceMode.low,
-                  );
-                  setState(() {});
-                  if (context.mounted) Navigator.pop(context);
-                },
-              ),
-              _buildBottomSheetOption(
-                title: 'Activado',
-                subtitle: 'Efectos completos — mejor visual',
-                isSelected:
-                    _performanceService.currentMode == PerformanceMode.high,
-                onTap: () async {
-                  await _performanceService.setPerformanceMode(
-                    PerformanceMode.high,
-                  );
-                  setState(() {});
-                  if (context.mounted) Navigator.pop(context);
-                },
-              ),
-              const SizedBox(height: 8),
-            ],
-          ),
-        );
-      },
-    );
-  }
 
   Future<void> _deleteSource(int index) async {
     final confirm = await showModalBottomSheet<bool>(
@@ -804,60 +726,6 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
   }
 
   // -- SHEET HELPERS ------------------------------------------------------------
-
-  Widget _buildBottomSheetOption({
-    required String title,
-    required String subtitle,
-    required bool isSelected,
-    required VoidCallback onTap,
-  }) {
-    return InkWell(
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-        child: Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: TextStyle(
-                      color: isSelected ? Colors.red : Colors.white,
-                      fontSize: 16,
-                      fontWeight:
-                          isSelected ? FontWeight.bold : FontWeight.w500,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    subtitle,
-                    style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.4),
-                      fontSize: 12,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            if (isSelected)
-              const Icon(
-                CupertinoIcons.checkmark_circle_fill,
-                color: Colors.red,
-                size: 20,
-              )
-            else
-              Icon(
-                CupertinoIcons.circle,
-                color: Colors.white.withValues(alpha: 0.2),
-                size: 20,
-              ),
-          ],
-        ),
-      ),
-    );
-  }
 
   Widget _buildSheetTextField({
     required TextEditingController controller,

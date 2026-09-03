@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
+import '../../utils/colors.dart';
 import '../../services/fast_image_service.dart';
 import '../../services/m3u_service.dart';
 import 'tv_detail_screen.dart';
@@ -158,25 +159,20 @@ class _TvSearchScreenState extends State<TvSearchScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0B0B0D),
+      // ── EL MISMO FONDO QUE EL CATALOGO Y LA FICHA ────────────────────
+      //
+      // Habia una imagen —`detallestv.png`— y encima un velo negro al 85% que
+      // casi la borraba entera: se estaba pagando decodificar una textura para
+      // no llegar a verla.
+      //
+      // Ahora es el color plano de `AppColors.fondoTv`, el mismo de las otras
+      // dos pantallas. El buscador se abre desde el menu lateral del catalogo,
+      // asi que con otro fondo se leia como salir de la app en vez de abrir una
+      // capa mas.
+      backgroundColor: AppColors.fondoTv,
       body: Stack(
         fit: StackFit.expand,
         children: [
-          const DecoratedBox(
-            decoration: BoxDecoration(
-              color: Colors.black,
-              image: DecorationImage(
-                image: AssetImage('assets/images/detallestv.png'),
-                fit: BoxFit.cover,
-              ),
-            ),
-            child: SizedBox.expand(),
-          ),
-          const DecoratedBox(
-            decoration: BoxDecoration(color: Color(0xD9000000)),
-            child: SizedBox.expand(),
-          ),
-
           Padding(
             padding: const EdgeInsets.fromLTRB(40, 28, 40, 20),
             child: Row(

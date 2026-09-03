@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../../services/fast_image_service.dart';
 import '../../services/m3u_service.dart';
+import '../../utils/colors.dart';
 import 'tv_detail_screen.dart';
 
 /// El catálogo COMPLETO de una categoría, en rejilla.
@@ -35,7 +36,7 @@ class _TvCategoryScreenState extends State<TvCategoryScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0B0B0D),
+      backgroundColor: AppColors.fondoTv,
       body: Stack(
         fit: StackFit.expand,
         children: [

@@ -9,6 +9,7 @@ import '../../services/fast_image_service.dart';
 import '../../services/m3u_service.dart';
 import '../../services/tmdb_service.dart';
 import '../../services/tv/tv_vista_previa.dart';
+import '../../utils/colors.dart';
 import '../../utils/titulo_tmdb.dart';
 import 'tv_player_screen.dart';
 
@@ -402,7 +403,7 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
     final esSerie = _episodios.isNotEmpty;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0B0B0D),
+      backgroundColor: AppColors.fondoTv,
       body: Stack(
         fit: StackFit.expand,
         children: [
@@ -415,38 +416,19 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
           // imagen del titulo sigue estando, pero donde se mira — en el
           // recuadro grande de la derecha.
           //
-          // `cover` y no `fill`: en un televisor la proporcion puede no ser
-          // 16:9 exacta y estirar la imagen se nota enseguida en las
-          // diagonales. Y con `color: black` debajo, el recorte nunca deja un
-          // borde vacio en pantallas mas altas o mas anchas.
+          // ── EL FONDO ES EL MISMO QUE EL DEL CATALOGO ────────────────
+          //
+          // Habia una imagen de fondo —`detallestv.png`— con un velo oscuro
+          // encima para que la sinopsis se leyera sobre su dibujo central.
+          //
+          // Dos pantallas que se abren una desde la otra con fondos distintos
+          // se leen como dos apps. Con el mismo color, entrar en la ficha es
+          // entrar en una capa de la misma pantalla, no viajar a otro sitio.
+          //
+          // De paso se van la imagen y su velo: una textura menos que
+          // decodificar y una capa menos que componer en cada fotograma.
           const DecoratedBox(
-            decoration: BoxDecoration(
-              color: Colors.black,
-              image: DecorationImage(
-                image: AssetImage('assets/images/detallestv.png'),
-                fit: BoxFit.cover,
-              ),
-            ),
-            child: SizedBox.expand(),
-          ),
-
-          // Un velo oscuro que se abre de izquierda a derecha. El fondo tiene
-          // el dibujo justo en el centro, que es por donde pasa la sinopsis:
-          // sin esto, el texto cae encima de las circunferencias claras y deja
-          // de leerse desde el sofa.
-          const DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.centerLeft,
-                end: Alignment.centerRight,
-                colors: [
-                  Color(0xF2000000),
-                  Color(0xB3000000),
-                  Color(0x59000000),
-                ],
-                stops: [0.0, 0.55, 1.0],
-              ),
-            ),
+            decoration: BoxDecoration(color: AppColors.fondoTv),
             child: SizedBox.expand(),
           ),
 
@@ -705,12 +687,12 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
 
         // ── Sinopsis ──────────────────────────────────────────────────────
         //
-        // Cuatro líneas como techo. En una tele el texto se lee a tres metros:
+        // Dos líneas como techo. En una tele el texto se lee a tres metros:
         // un bloque más largo no se lee, se saltea. Y no hay "ver más" porque
         // abrirlo con el mando cuesta un foco más para algo que casi nadie
         // hace.
         RichText(
-          maxLines: 4,
+          maxLines: 2,
           overflow: TextOverflow.ellipsis,
           text: TextSpan(
             children: [

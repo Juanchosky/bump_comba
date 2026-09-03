@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -8,6 +7,7 @@ import '../../services/fast_image_service.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../../services/m3u_service.dart';
 import '../../services/tmdb_service.dart';
+import '../../utils/colors.dart';
 import '../../utils/titulo_tmdb.dart';
 import '../../services/watch_progress_service.dart';
 import 'tv_category_screen.dart';
@@ -50,6 +50,17 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   /// pantalla de carga para siempre.
   bool _plazoCargaVencido = false;
   Timer? _plazoCarga;
+
+  /// Cuándo llegó el último lote de datos del servicio y cuándo empezó todo.
+  ///
+  /// El servicio va soltando contenido a tandas y la indexación de series
+  /// puede pasarse del plazo. Si en ese rato las filas siguen vacías pero los
+  /// datos AÚN llegan, no es un vacío: es que todavía carga. Con esto el plazo
+  /// se prorroga en vez de enseñar "Nada por aquí" encima de una carga en
+  /// curso —que hace cerrar la app justo cuando faltaba un segundo—, con un
+  /// tope absoluto para que un proveedor mudo no deje la espera infinita.
+  DateTime _ultimoDato = DateTime.now();
+  DateTime _inicioCarga = DateTime.now();
 
   /// ¿Está todo listo para enseñar el catálogo de una vez?
   ///
@@ -105,6 +116,20 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   /// El coste está acotado: la lista es perezosa y solo construye las filas
   /// que se ven.
   static const int _maxFilas = 80;
+
+  /// El color del fondo del catalogo.
+  ///
+  /// ── POR QUE ES UNA CONSTANTE ──────────────────────────────────────────
+  ///
+  /// El fondo estaba escrito aqui como `0xFF0B0B0D` y los velos del menu
+  /// lateral usaban `Colors.black` — negro puro. Se parecen, pero no son el
+  /// mismo color: donde el velo es opaco pintaba un negro distinto al de la
+  /// pagina, y eso deja un borde visible justo al lado del menu.
+  ///
+  /// Teniendolo en un solo sitio, el fondo y sus velos no pueden volver a
+  /// separarse. Y vive en `AppColors` porque la ficha usa el mismo: son dos
+  /// capas de la misma pantalla, no dos pantallas distintas.
+  static const Color _fondo = AppColors.fondoTv;
   static const int _maxPorFila = 30;
 
   // ── Secciones del lateral ────────────────────────────────────────────────
@@ -115,23 +140,18 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   // Telenovelas y Animacion se resuelven por el NOMBRE de la categoria del
   // proveedor, que es elunico dato que hay. Es aproximado a proposito: mas
   // vale que caiga alguna de mas a que la seccion salga vacia.
-  /// ── ICONOS DE CUPERTINO, NO DE MATERIAL ────────────────────────────────
+  /// ── ICONOS SIN RELLENAR ────────────────────────────────────────────────
   ///
-  /// Los de Material son de trazo grueso y esquinas marcadas: en una pantalla
-  /// grande y vistos de lejos se leen pesados, como de aplicacion de sistema.
-  /// Los de Cupertino tienen el trazo mas fino y la forma mas redonda, que es
-  /// el aire que tienen las apps de television.
-  ///
-  /// Y sin rellenar: la version hueca deja que el COLOR diga cual es la
-  /// seccion abierta, sin que la forma cambie tambien. Dos cosas cambiando a
-  /// la vez cansan de mirar.
+  /// La version hueca deja que el COLOR diga cual es la seccion abierta, sin
+  /// que la forma cambie tambien. Dos cosas cambiando a la vez cansan de
+  /// mirar.
   static const List<({String texto, IconData icono})> _secciones = [
-    (texto: 'Inicio', icono: Icons.home_rounded),
-    (texto: 'Peliculas', icono: Icons.movie_creation_rounded),
-    (texto: 'Series', icono: Icons.tv_rounded),
-    (texto: 'Telenovelas', icono: Icons.theater_comedy_rounded),
-    (texto: 'Animacion', icono: Icons.animation_rounded),
-    (texto: 'Buscar', icono: Icons.search_rounded),
+    (texto: 'Inicio', icono: Icons.home_outlined),
+    (texto: 'Peliculas', icono: Icons.movie_outlined),
+    (texto: 'Series', icono: Icons.live_tv_outlined),
+    (texto: 'Telenovelas', icono: Icons.theaters_outlined),
+    (texto: 'Animacion', icono: Icons.animation),
+    (texto: 'Buscar', icono: Icons.search_outlined),
   ];
 
   /// BUSCAR no es una seccion del catalogo: es una pantalla aparte.
@@ -767,9 +787,9 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     // 14 s: lo que se tarda de sobra en un arranque normal, incluido bajar las
     // seis imagenes del mosaico. Pasado eso, se enseña lo que haya — mejor un
     // catalogo incompleto que una pantalla de carga eterna.
-    _plazoCarga = Timer(const Duration(seconds: 14), () {
-      if (mounted) setState(() => _plazoCargaVencido = true);
-    });
+    _inicioCarga = DateTime.now();
+    _ultimoDato = _inicioCarga;
+    _plazoCarga = Timer(const Duration(seconds: 14), _revisarPlazoCarga);
 
     // El servicio avisa DOS veces: al publicar los items en crudo —antes de
     // indexar— y al terminar. La primera llena la pantalla en segundos; la
@@ -796,6 +816,22 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     super.dispose();
   }
 
+  /// Se llama al vencer el plazo de carga. Si los datos siguen llegando y aún
+  /// no hay filas, prorroga la espera en vez de dar el catálogo por vacío.
+  void _revisarPlazoCarga() {
+    if (!mounted || _plazoCargaVencido) return;
+    final ahora = DateTime.now();
+    final sigueLlegando =
+        ahora.difference(_ultimoDato) < const Duration(seconds: 6);
+    final dentroDelTope =
+        ahora.difference(_inicioCarga) < const Duration(seconds: 45);
+    if (_filas.isEmpty && sigueLlegando && dentroDelTope) {
+      _plazoCarga = Timer(const Duration(seconds: 5), _revisarPlazoCarga);
+      return;
+    }
+    setState(() => _plazoCargaVencido = true);
+  }
+
   void _alLlegarDatos() {
     if (!mounted) return;
     // Solo se repinta si hay algo nuevo que enseñar. `notifyListeners` salta
@@ -805,6 +841,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     final hayIndexado =
         _servicio.movies.isNotEmpty || _servicio.series.isNotEmpty;
     if (!hayPreliminares && !hayIndexado) return;
+    _ultimoDato = DateTime.now();
     setState(() {
       _filas = _armarFilas();
       _prepararDestacados();
@@ -1162,7 +1199,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       curve: Curves.easeOut,
       builder: (context, t, hijo) => Opacity(opacity: t, child: hijo),
       child: DecoratedBox(
-        decoration: const BoxDecoration(color: Color(0xFF0B0B0D)),
+        decoration: const BoxDecoration(color: _fondo),
         // ── El lateral va ENCIMA del contenido, no al lado ──────────────
         //
         // Es lo que le da el aire moderno de la referencia: las caratulas siguen
@@ -1231,28 +1268,38 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                           // mensaje seco se guarda para cuando el plazo vence
                           // y sigue sin haber nada, que ya si es un vacio de
                           // verdad.
-                          ? Center(
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                if (!_plazoCargaVencido) ...[
-                                  const TvLoadingAnimation(
-                                    size: 34,
-                                    strokeWidth: 3,
-                                  ),
-                                  const SizedBox(height: 18),
-                                ],
-                                Text(
-                                  _plazoCargaVencido
-                                      ? 'Nada por aquí todavía.'
-                                      : 'Cargando, un momento…',
-                                  style: const TextStyle(
-                                    color: Colors.white38,
-                                    fontSize: 18,
-                                  ),
+                          ? Builder(
+                            builder: (context) {
+                              // El mensaje seco SOLO cuando de verdad se acabo
+                              // la carga: plazo vencido y sin una peticion en
+                              // curso. Con `_cargando` todavia en pie sigue
+                              // siendo una espera, no un vacio.
+                              final vacioReal =
+                                  _plazoCargaVencido && !_cargando;
+                              return Center(
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    if (!vacioReal) ...[
+                                      const TvLoadingAnimation(
+                                        size: 34,
+                                        strokeWidth: 3,
+                                      ),
+                                      const SizedBox(height: 18),
+                                    ],
+                                    Text(
+                                      vacioReal
+                                          ? 'Nada por aquí todavía.'
+                                          : 'Cargando, un momento…',
+                                      style: const TextStyle(
+                                        color: Colors.white38,
+                                        fontSize: 18,
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                              ],
-                            ),
+                              );
+                            },
                           )
                           : ListView.builder(
                             controller: _scrollVertical,
@@ -1286,8 +1333,15 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                                   imagenes: _imagenesHero,
                                   fichas: _fichasHeroLista,
                                   listo: _heroListo,
-                                  onReproducir: () => _abrirDestacado(true),
-                                  onFicha: () => _abrirDestacado(false),
+                                  // A LA FICHA, NO A REPRODUCIR.
+                                  //
+                                  // Pulsar "Ver" y que la pelicula arranque de
+                                  // golpe no deja ver de que va ni elegir
+                                  // episodio si es una serie. La ficha ya
+                                  // reproduce sola en su recuadro, asi que no
+                                  // se pierde la inmediatez: se gana el poder
+                                  // decidir antes de comprometerse.
+                                  onReproducir: () => _abrirDestacado(false),
                                   onSiguiente: _siguienteDestacado,
                                   onAbajo: () => _irAFila(0, 0),
                                   onSalirIzquierda:
@@ -1360,9 +1414,9 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                       begin: Alignment.topCenter,
                       end: Alignment.bottomCenter,
                       colors: [
-                        Colors.black.withValues(alpha: 0.92),
-                        Colors.black.withValues(alpha: 0.55),
-                        Colors.transparent,
+                        _fondo.withValues(alpha: 0.92),
+                        _fondo.withValues(alpha: 0.55),
+                        _fondo.withValues(alpha: 0),
                       ],
                       stops: const [0.0, 0.5, 1.0],
                     ),
@@ -1381,11 +1435,22 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
               top: 0,
               bottom: 0,
               child: DecoratedBox(
-                decoration: const BoxDecoration(
+                // Sin `const`: los colores salen de `withValues`, que es una
+                // llamada y no se puede evaluar en tiempo de compilacion.
+                decoration: BoxDecoration(
                   gradient: LinearGradient(
                     begin: Alignment.centerLeft,
                     end: Alignment.centerRight,
-                    colors: [Colors.black, Colors.black87, Colors.transparent],
+                    // El tramo opaco es EXACTAMENTE el color de la pagina, y
+                    // el transparente es ese mismo color sin opacidad — no
+                    // `Colors.transparent`, que es negro invisible y al
+                    // mezclarse tira el degradado hacia el negro por el
+                    // camino.
+                    colors: [
+                      _fondo,
+                      _fondo.withValues(alpha: 0.85),
+                      _fondo.withValues(alpha: 0),
+                    ],
                     // El velo cubre casi todo el menu y se difumina al final: al
                     // abrirse, el texto nuevo tiene que caer sobre negro, no
                     // sobre una caratula.

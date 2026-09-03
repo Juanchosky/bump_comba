@@ -4,6 +4,18 @@ class AppColors {
   // Original dark gray
   static const Color background = Color.fromARGB(255, 13, 13, 13);
 
+  /// El fondo de las pantallas del televisor.
+  ///
+  /// Vive aqui y no dentro de una pantalla porque lo comparten el catalogo y
+  /// la ficha, que se abren una desde la otra. Con colores distintos —aunque
+  /// se parezcan— entrar en la ficha se lee como cambiar de aplicacion, y los
+  /// velos del menu lateral dejan un borde visible al no coincidir con el
+  /// fondo que tienen debajo.
+  ///
+  /// Es el mismo valor que [background], el fondo de la app movil, para que el
+  /// catalogo, la ficha y la busqueda del televisor se vean identicos a ella.
+  static const Color fondoTv = Color(0xFF0D0D0D);
+
   // Slightly lighter variant for cards or secondary layers (original was often 1a1a1a)
   static const Color surface = Color(0xFF1a1a1a);
 
