@@ -126,12 +126,12 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   /// seccion abierta, sin que la forma cambie tambien. Dos cosas cambiando a
   /// la vez cansan de mirar.
   static const List<({String texto, IconData icono})> _secciones = [
-    (texto: 'Inicio', icono: CupertinoIcons.house),
-    (texto: 'Peliculas', icono: CupertinoIcons.film),
-    (texto: 'Series', icono: CupertinoIcons.tv),
-    (texto: 'Telenovelas', icono: CupertinoIcons.heart),
-    (texto: 'Animacion', icono: CupertinoIcons.smiley),
-    (texto: 'Buscar', icono: CupertinoIcons.search),
+    (texto: 'Inicio', icono: Icons.home_rounded),
+    (texto: 'Peliculas', icono: Icons.movie_creation_rounded),
+    (texto: 'Series', icono: Icons.tv_rounded),
+    (texto: 'Telenovelas', icono: Icons.theater_comedy_rounded),
+    (texto: 'Animacion', icono: Icons.animation_rounded),
+    (texto: 'Buscar', icono: Icons.search_rounded),
   ];
 
   /// BUSCAR no es una seccion del catalogo: es una pantalla aparte.
