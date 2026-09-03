@@ -106,6 +106,18 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
                     isLast: false,
                   ),
                   _buildDivider(),
+                  _buildSwitchRow(
+                    icon: CupertinoIcons.bell_fill,
+                    title: 'Recordatorios',
+                    subtitle: 'Recordatorios para seguir viendo',
+                    value: _notificationService.isEnabled,
+                    onChanged: (val) async {
+                      await _notificationService.setEnabled(val);
+                      if (mounted) setState(() {});
+                    },
+                    isLast: false,
+                  ),
+                  _buildDivider(),
                   _buildTapRow(
                     icon: CupertinoIcons.tv,
                     title: 'Vincular televisor',
@@ -116,18 +128,6 @@ class _StreamBrowserConfigScreenState extends State<StreamBrowserConfigScreen> {
                           builder: (_) => const VincularTvScreen(),
                         ),
                       );
-                    },
-                    isLast: false,
-                  ),
-                  _buildDivider(),
-                  _buildSwitchRow(
-                    icon: CupertinoIcons.bell_fill,
-                    title: 'Recordatorios',
-                    subtitle: 'Recordatorios para seguir viendo',
-                    value: _notificationService.isEnabled,
-                    onChanged: (val) async {
-                      await _notificationService.setEnabled(val);
-                      if (mounted) setState(() {});
                     },
                     isLast: true,
                   ),
