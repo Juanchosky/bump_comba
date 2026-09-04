@@ -1270,12 +1270,32 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                           // verdad.
                           ? Builder(
                             builder: (context) {
-                              // El mensaje seco SOLO cuando de verdad se acabo
-                              // la carga: plazo vencido y sin una peticion en
-                              // curso. Con `_cargando` todavia en pie sigue
-                              // siendo una espera, no un vacio.
+                              // ── EL PLAZO NO BASTA PARA DECIR "NO HAY NADA"
+                              //
+                              // Se decidia con un temporizador que se prorroga
+                              // mientras SIGAN LLEGANDO datos. Y ahi esta el
+                              // fallo: en el arranque hay tramos largos en los
+                              // que no llega nada porque se esta trabajando —el
+                              // cruce del contenido propio son 4,5 s en un
+                              // isolate, el indexado otro tanto—. Seis segundos
+                              // de silencio se leian como "esto ya no avanza" y
+                              // salia el mensaje seco encima de una carga que
+                              // iba perfectamente.
+                              //
+                              // La pregunta de verdad no es cuanto se ha
+                              // esperado, sino si HAY CONTENIDO. Si el servicio
+                              // ya tiene titulos y aqui no hay filas, es que se
+                              // estan montando: eso es esperar, no un vacio.
+                              //
+                              // Asi el mensaje seco queda para lo unico que
+                              // significa: no hay contenido que enseñar.
+                              final hayContenido =
+                                  _servicio.items.isNotEmpty ||
+                                  _servicio.itemsPreliminares.isNotEmpty;
                               final vacioReal =
-                                  _plazoCargaVencido && !_cargando;
+                                  _plazoCargaVencido &&
+                                  !_cargando &&
+                                  !hayContenido;
                               return Center(
                                 child: Column(
                                   mainAxisSize: MainAxisSize.min,
@@ -1289,7 +1309,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                                     ],
                                     Text(
                                       vacioReal
-                                          ? 'Nada por aquí todavía.'
+                                          ? 'No hay contenido disponible.'
                                           : 'Cargando, un momento…',
                                       style: const TextStyle(
                                         color: Colors.white38,
