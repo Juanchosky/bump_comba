@@ -938,61 +938,76 @@ class _ImagenFichaState extends State<_ImagenFicha> {
         }
         return KeyEventResult.ignored;
       },
-      child: AnimatedContainer(
-        key: widget.clave,
-        duration: const Duration(milliseconds: 140),
-        width: 360,
-        height: 203,
-        decoration: const BoxDecoration(color: Color(0xFF1A1A1E)),
-        // El recuadro del foco va POR ENCIMA de la imagen, no alrededor.
-        //
-        // Como borde normal dejaba un marco oscuro permanente aun sin foco: el
-        // borde transparente sigue ocupando y deja ver el color de la caja de
-        // debajo. Asi la imagen llega hasta el filo y el blanco solo aparece
-        // cuando esta seleccionada.
-        foregroundDecoration: BoxDecoration(
-          border: Border.all(
-            color: _foco ? Colors.white : Colors.transparent,
-            width: 2,
-          ),
-        ),
-        // AQUÍ YA NO VA NINGUNA IMAGEN.
-        //
-        // Había una foto fija —la apaisada de TMDB— que ocupaba el recuadro
-        // hasta que entraba el vídeo. Se veía por detrás y por los bordes,
-        // porque la proporción del vídeo no tiene por qué ser exactamente la
-        // del hueco, y eso se lee como un montaje mal encajado.
-        //
-        // Antes dependía de un aviso: la foto se quitaba CUANDO el vídeo se
-        // montaba. Eso deja una ventana —mientras la ficha carga y el
-        // reproductor todavía no está— en la que la foto sí aparece, y luego
-        // desaparece. Un parpadeo en el sitio que más se mira.
-        //
-        // Ahora simplemente no está. El recuadro es la caja oscura y el vídeo,
-        // y no hay ningún instante intermedio que enseñe otra cosa.
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            // El play mientras el vídeo aún no ha llegado: dice que ESTO es lo
-            // que se pulsa. En cuanto hay imagen sobra —se está reproduciendo,
-            // que es justo lo que el play prometía— y el marco del foco pasa a
-            // dibujarlo el `Overlay`, por encima.
-            ValueListenableBuilder<bool>(
-              valueListenable: TvVistaPrevia.instancia.montada,
-              builder:
-                  (context, conVideo, _) =>
-                      _foco && !conVideo
-                          ? const Center(
-                            child: Icon(
-                              Icons.play_circle_fill_rounded,
-                              color: Colors.white,
-                              size: 58,
-                            ),
-                          )
-                          : const SizedBox.shrink(),
+      // ── UN SOLO MARCO DE FOCO, NO DOS ──────────────────────────────────
+      //
+      // Este recuadro dibujaba su marco blanco SIEMPRE que tenia el foco, y el
+      // `Overlay` del video dibuja el suyo encima cuando la vista previa esta
+      // montada. Eran dos marcos, y como el rectangulo del `Overlay` puede
+      // quedar desplazado un pixel, se veia un filo doble asomando por detras
+      // del video.
+      //
+      // Ahora este solo se pinta MIENTRAS NO HAY VIDEO. En cuanto la previa se
+      // monta, el marco lo lleva el `Overlay` — que es quien va por encima y
+      // el unico que puede dibujarlo bien.
+      child: ValueListenableBuilder<bool>(
+        valueListenable: TvVistaPrevia.instancia.montada,
+        builder:
+            (context, conVideo, _) => AnimatedContainer(
+              key: widget.clave,
+              duration: const Duration(milliseconds: 140),
+              width: 360,
+              height: 203,
+              // ── CON VIDEO, LA CAJA NO PINTA NADA ───────────────────
+              //
+              // El gris `1A1A1E` es el relleno del hueco mientras se
+              // espera. Pero el video va en el `Overlay`, y su rectangulo
+              // no coincide al pixel con el de esta caja: por donde no
+              // llega asomaba una franja gris, que se lee como si hubiera
+              // algo detras del video.
+              //
+              // Perseguir ese pixel es pelea perdida: el rectangulo se
+              // remide en cada fotograma y el video se escala por su
+              // cuenta. Lo que si se puede es quitar lo que asoma — con
+              // video, la caja se vuelve transparente, y si queda un filo
+              // lo que se ve es el fondo de la pantalla, que no se
+              // distingue de nada.
+              decoration: BoxDecoration(
+                color: conVideo ? Colors.transparent : const Color(0xFF1A1A1E),
+              ),
+              foregroundDecoration: BoxDecoration(
+                border: Border.all(
+                  color: _foco && !conVideo ? Colors.white : Colors.transparent,
+                  width: 2,
+                ),
+              ),
+              // AQUÍ YA NO VA NINGUNA IMAGEN.
+              //
+              // Había una foto fija —la apaisada de TMDB— que ocupaba el recuadro
+              // hasta que entraba el vídeo. Se veía por detrás y por los bordes,
+              // porque la proporción del vídeo no tiene por qué ser exactamente la
+              // del hueco, y eso se lee como un montaje mal encajado.
+              //
+              // Antes dependía de un aviso: la foto se quitaba CUANDO el vídeo se
+              // montaba. Eso deja una ventana —mientras la ficha carga y el
+              // reproductor todavía no está— en la que la foto sí aparece, y luego
+              // desaparece. Un parpadeo en el sitio que más se mira.
+              //
+              // Ahora simplemente no está. El recuadro es la caja oscura y el vídeo,
+              // y no hay ningún instante intermedio que enseñe otra cosa.
+              // El play mientras el vídeo aún no ha llegado: dice que ESTO es lo
+              // que se pulsa. En cuanto hay imagen sobra — se está reproduciendo,
+              // que es justo lo que el play prometía.
+              child:
+                  _foco && !conVideo
+                      ? const Center(
+                        child: Icon(
+                          Icons.play_circle_fill_rounded,
+                          color: Colors.white,
+                          size: 58,
+                        ),
+                      )
+                      : null,
             ),
-          ],
-        ),
       ),
     );
   }
