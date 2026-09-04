@@ -279,8 +279,8 @@ class TvDestacadoState extends State<TvDestacado> {
 
                 // ── 2. La tarjeta ─────────────────────────────────────────
                 //
-                // Los mismos valores que en el teléfono: radio 12, borde
-                // blanco al 20% de 1,5 px y un degradado diagonal muy tenue.
+                // Casi los mismos valores que en el teléfono: radio 12, borde
+                // blanco de 1,5 px y un degradado diagonal muy tenue.
                 // Ese borde es lo que separa la tarjeta del fondo sin dibujar
                 // una caja: se ve el filo, no el marco.
                 //
@@ -301,7 +301,12 @@ class TvDestacadoState extends State<TvDestacado> {
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.2),
+                      // 0.13, mas tenue que el 0.2 del telefono. Alli la
+                      // pantalla se mira de cerca y el filo se pierde si no
+                      // aprieta; a tres metros el blanco sobre fondo oscuro
+                      // gana presencia, y al 20% el marco se veia antes que la
+                      // portada. Asi marca el limite sin dibujarlo.
+                      color: Colors.white.withValues(alpha: 0.13),
                       width: 1.5,
                     ),
                     gradient: LinearGradient(
@@ -349,7 +354,7 @@ class TvDestacadoState extends State<TvDestacado> {
                               colors: [
                                 Colors.transparent,
                                 Colors.transparent,
-                                AppColors.fondoTv.withValues(alpha: 0.85),
+                                AppColors.fondoTv.withValues(alpha: 0.7),
                               ],
                               stops: const [0.0, 0.55, 1.0],
                             ),
@@ -366,8 +371,8 @@ class TvDestacadoState extends State<TvDestacado> {
                               begin: Alignment.centerLeft,
                               end: Alignment.centerRight,
                               colors: [
-                                AppColors.fondoTv.withValues(alpha: 0.92),
-                                AppColors.fondoTv.withValues(alpha: 0.55),
+                                AppColors.fondoTv.withValues(alpha: 0.8),
+                                AppColors.fondoTv.withValues(alpha: 0.42),
                                 AppColors.fondoTv.withValues(alpha: 0),
                               ],
                               stops: const [0.0, 0.45, 0.8],
