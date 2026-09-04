@@ -198,6 +198,7 @@ class _TvSearchScreenState extends State<TvSearchScreen> {
                     items: _resultados,
                     columnas: _columnasResultados,
                     vacio: _texto.isEmpty,
+                    consulta: _texto,
                     onSalirIzquierda: () => _tecladoFoco.currentState?.volver(),
                   ),
                 ),
@@ -594,6 +595,11 @@ class _Resultados extends StatefulWidget {
   final List<M3UItem> items;
   final int columnas;
   final bool vacio;
+
+  /// Lo que hay escrito. Se usa para poder decir QUE es lo que no se
+  /// encontro: "sin resultados" a secas obliga a mirar arriba para recordar
+  /// que se habia tecleado.
+  final String consulta;
   final VoidCallback onSalirIzquierda;
 
   const _Resultados({
@@ -601,6 +607,7 @@ class _Resultados extends StatefulWidget {
     required this.items,
     required this.columnas,
     required this.vacio,
+    required this.consulta,
     required this.onSalirIzquierda,
   });
 
@@ -722,16 +729,72 @@ class _ResultadosState extends State<_Resultados> {
     return KeyEventResult.ignored;
   }
 
+  /// La pantalla cuando no hay nada que enseñar.
+  ///
+  /// ── DOS SITUACIONES DISTINTAS, NO UNA ─────────────────────────────────
+  ///
+  /// Antes las dos se despachaban con una linea gris: "Escribe para buscar" y
+  /// "Nada con ese nombre". Y no son lo mismo:
+  ///
+  ///  · Aun no has escrito. No hay ningun problema — es el estado normal al
+  ///    entrar. Toca invitar, y de paso decir como se escribe con el mando,
+  ///    que no es evidente.
+  ///  · Has escrito y no hay resultados. Aqui si hay algo que resolver, y lo
+  ///    util es decir QUE no se encontro y como buscar mejor: con este
+  ///    catalogo, la causa habitual es teclear el titulo entero cuando basta
+  ///    una palabra.
+  ///
+  /// El icono y el tamaño son para verse desde el sofa: una linea de 17 en
+  /// gris a tres metros no se lee, se intuye.
+  Widget _sinResultados() {
+    final esperando = widget.vacio;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 48),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              esperando ? Icons.search_rounded : Icons.search_off_rounded,
+              size: 46,
+              color: Colors.white.withValues(alpha: 0.22),
+            ),
+            const SizedBox(height: 20),
+            Text(
+              esperando
+                  ? '¿Qué quieres ver?'
+                  : 'No encontramos "${widget.consulta}"',
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 23,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              esperando
+                  ? 'Empieza a escribir con el teclado de la izquierda...'
+                  : 'Prueba con menos palabras, o solo con una parte del '
+                      'título.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.42),
+                fontSize: 15,
+                height: 1.5,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    if (widget.items.isEmpty) {
-      return Center(
-        child: Text(
-          widget.vacio ? 'Escribe para buscar' : 'Nada con ese nombre',
-          style: const TextStyle(color: Colors.white38, fontSize: 17),
-        ),
-      );
-    }
+    if (widget.items.isEmpty) return _sinResultados();
 
     _prepararNodos();
 

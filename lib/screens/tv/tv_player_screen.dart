@@ -210,6 +210,17 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
   Timer? _guardado;
   Duration? _reanudadoDesde;
 
+  /// Borra el aviso de "Reanudado desde...".
+  ///
+  /// El aviso se ponia y NO se quitaba nunca: como solo se pinta con los
+  /// controles abiertos, cada vez que se abrian volvia a salir, aunque
+  /// llevaras media pelicula. Un dato de hace cuarenta minutos presentado como
+  /// si acabara de pasar.
+  ///
+  /// Es una nota de paso —informa de que no empezaste desde cero— y como tal
+  /// tiene que caducar.
+  Timer? _olvidarReanudado;
+
   // ── Cambio de servidor ───────────────────────────────────────────────────
   //
   // Mismo problema que en la transmision y misma solucion: el titulo puede
@@ -492,7 +503,15 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     } catch (_) {}
 
     if (!mounted) return;
-    if (desde > Duration.zero) setState(() => _reanudadoDesde = desde);
+    if (desde > Duration.zero) {
+      setState(() => _reanudadoDesde = desde);
+      // 10 segundos: lo que se tarda en leerlo con calma, incluso si los
+      // controles se abren un momento despues de que arranque el video.
+      _olvidarReanudado?.cancel();
+      _olvidarReanudado = Timer(const Duration(seconds: 10), () {
+        if (mounted) setState(() => _reanudadoDesde = null);
+      });
+    }
 
     try {
       await _abrir(desde);
@@ -678,6 +697,63 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
       await DynamicScraperService().stopCurrentScraping();
     }
     return null;
+  }
+
+  /// Cuantos reintentos automaticos se han gastado ya.
+  int _reintentosAuto = 0;
+
+  /// Solo uno. Con mas, un titulo que de verdad no existe tendria al usuario
+  /// mirando un spinner que reintenta en bucle, que es peor que un mensaje
+  /// claro.
+  static const int _maxReintentosAuto = 1;
+
+  Timer? _reintento;
+
+  /// Se acabaron los servidores.
+  ///
+  /// ── PERO NO DEFINITIVAMENTE ────────────────────────────────────────────
+  ///
+  /// Antes esto pintaba el error y ahi se quedaba: para volver a intentarlo
+  /// habia que salir de la pantalla y entrar de nuevo.
+  ///
+  /// Y la mayoria de los fallos de este proveedor son PASAJEROS —una respuesta
+  /// cortada, el VPS con la cache fria, una extraccion que tardo de mas—. El
+  /// segundo intento suele funcionar, y el usuario no tiene por que ser quien
+  /// lo descubra.
+  ///
+  /// Se reintenta UNA vez, desde el primer servidor y olvidando los que se
+  /// dieron por rotos: si el fallo fue pasajero, ya no lo son.
+  ///
+  /// NO se reintenta si el problema es de caudal: la conexion no va a mejorar
+  /// en cuatro segundos, y repetir solo alarga la espera para acabar igual.
+  void _rendirse() {
+    _vigilante?.cancel();
+    // Parar antes de cerrar: si no, MPV se queda reconectando contra la sesion
+    // cerrada.
+    unawaited(_player.stop());
+    _cerrarTurbo();
+
+    if (!_faltaCaudal && _reintentosAuto < _maxReintentosAuto && !_muerto) {
+      _reintentosAuto++;
+      debugPrint('TvPlayer: reintento automatico $_reintentosAuto');
+      _reintento?.cancel();
+      _reintento = Timer(const Duration(seconds: 4), () {
+        if (_muerto || !mounted) return;
+        _rotos.clear();
+        _fallosSeguidos = 0;
+        _idxServidor = 0;
+        _cambiandoServidor = false;
+        setState(() {
+          _agotado = false;
+          _primerFrameListo = false;
+        });
+        _armarVigilante();
+        unawaited(_abrir(_posicion));
+      });
+      return;
+    }
+
+    if (mounted) setState(() => _agotado = true);
   }
 
   /// Los subtitulos que trajo el extractor de cada servidor.
@@ -1022,6 +1098,11 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
           _arranco = true;
           // Este servidor SI va: la cuenta de fallos seguidos vuelve a cero.
           _fallosSeguidos = 0;
+          // Y el veredicto de "no hay caudal" se anula: acaba de demostrarse
+          // falso. Sin esto se quedaba puesto para siempre, y si mas tarde se
+          // agotaban los servidores por OTRO motivo, la pantalla culpaba a la
+          // conexion de algo que no habia hecho.
+          _faltaCaudal = false;
           // Aqui NO se preparan alternativas. Se hacia, y era el segundo
           // camino por el que el navegador arrancaba encima del video: basta
           // con detectar medio segundo de avance, que no dice nada de si la
@@ -1149,12 +1230,7 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     // Si solo hay un servidor, no hay adonde saltar
     if (_urls.length <= 1) {
       debugPrint('TvPlayer: el único servidor disponible falló ($motivo)');
-      _vigilante?.cancel();
-      // Parar antes de cerrar, por el mismo motivo que en `_abrir`: si no, MPV
-      // se queda reconectando contra la sesion cerrada.
-      unawaited(_player.stop());
-      _cerrarTurbo();
-      if (mounted) setState(() => _agotado = true);
+      _rendirse();
       return;
     }
 
@@ -1171,12 +1247,7 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         'TvPlayer: sin servidores utiles '
         '(${_rotos.length} rotos de ${_urls.length}) — se deja de intentar',
       );
-      _vigilante?.cancel();
-      // Parar antes de cerrar, por el mismo motivo que en `_abrir`: si no, MPV
-      // se queda reconectando contra la sesion cerrada.
-      unawaited(_player.stop());
-      _cerrarTurbo();
-      if (mounted) setState(() => _agotado = true);
+      _rendirse();
       return;
     }
 
@@ -1226,9 +1297,11 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
       s.cancel();
     }
     _ocultar?.cancel();
+    _olvidarReanudado?.cancel();
     _diagnostico?.cancel();
     _prepararAlternativas?.cancel();
     _confirmarSalto?.cancel();
+    _reintento?.cancel();
     _sondeoVelocidad?.cancel();
     _vigilante?.cancel();
     _guardado?.cancel();

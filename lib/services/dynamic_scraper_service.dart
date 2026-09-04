@@ -668,8 +668,54 @@ class DynamicScraperService {
   }
 
   /// Attempts to extract a direct video source (m3u8/mp4) and subtitle tracks from an episode page.
+  /// Lo ya resuelto, por pagina, con su fecha de caducidad.
+  ///
+  /// ── POR QUE HACE FALTA ────────────────────────────────────────────────
+  ///
+  /// Resolver una pagina cuesta ~10 segundos: se abre un WebView —un Chromium
+  /// entero— y se carga el sitio del proveedor con sus fuentes, su JavaScript
+  /// y su analitica, solo para pescar la URL del video.
+  ///
+  /// Y se estaba pagando VARIAS VECES por el mismo titulo: una en la vista
+  /// previa de la ficha y otra al abrir el reproductor, con diez segundos de
+  /// diferencia y para obtener exactamente lo mismo. De ahi que en el
+  /// televisor "tarde tanto" algo que en el telefono va suelto.
+  final Map<String, ({DateTime hasta, ExtractedStreamResult resultado})>
+  _resueltas = {};
+
+  /// Hasta cuando vale lo resuelto.
+  ///
+  /// Estas URLs vienen firmadas y traen su propia caducidad en `exp=<unix>`.
+  /// Se respeta esa, con un minuto de margen, porque servir una URL caducada
+  /// es peor que no tener cache: falla al abrir y encima parece un fallo del
+  /// servidor.
+  ///
+  /// Si no trae `exp`, diez minutos: suficiente para el caso que importa —el
+  /// mismo titulo dos veces seguidas— y corto para que nada se quede rancio.
+  DateTime _caducidadDe(String url) {
+    final m = RegExp(r'exp=(\d{10})').firstMatch(url);
+    if (m != null) {
+      final seg = int.tryParse(m.group(1)!);
+      if (seg != null) {
+        return DateTime.fromMillisecondsSinceEpoch(
+          seg * 1000,
+        ).subtract(const Duration(minutes: 1));
+      }
+    }
+    return DateTime.now().add(const Duration(minutes: 10));
+  }
+
   Future<ExtractedStreamResult?> extractStreamResult(String pageUrl) async {
     if (!isSupported(pageUrl)) return null;
+
+    final guardada = _resueltas[pageUrl];
+    if (guardada != null) {
+      if (DateTime.now().isBefore(guardada.hasta)) {
+        debugPrint('DynamicScraperService: ya resuelta, sin abrir WebView');
+        return guardada.resultado;
+      }
+      _resueltas.remove(pageUrl);
+    }
     if (_isScrapingGlobal) await _disposeHeadless();
     _isScrapingGlobal = true;
 
@@ -1069,6 +1115,15 @@ class DynamicScraperService {
       if (_currentSessionId == sessionId) {
         _disposeHeadless();
         _isScrapingGlobal = false;
+      }
+      // A la cache, para que el siguiente que pida esta misma pagina no
+      // vuelva a abrir un WebView. Solo si trajo video: guardar un fallo
+      // seria condenar el titulo durante todo el plazo.
+      if (result != null && result.videoUrl.isNotEmpty) {
+        _resueltas[pageUrl] = (
+          hasta: _caducidadDe(result.videoUrl),
+          resultado: result,
+        );
       }
       return result;
     } catch (e) {

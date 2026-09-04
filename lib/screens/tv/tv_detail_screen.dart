@@ -126,20 +126,13 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
   /// recuadro todavía no está en pantalla: medirlo ahora daría `null`.
   bool _vistaPreviaPedida = false;
 
-  /// La URL EXACTA con la que se montó la vista previa.
+  /// El turno con el que quedó montada la vista previa.
   ///
-  /// ── POR QUE SE GUARDA EN VEZ DE VOLVER A CALCULARLA ────────────────────
-  ///
-  /// Al cerrar se recalculaba con `_queSeReproduce(...)`, y ese cálculo mira
-  /// `_episodios`, que se llena DESPUES de montar la vista previa. Si mientras
-  /// tanto llegaba la lista de episodios, el resultado ya no era el mismo
-  /// título — y `cerrarSi` no cerraba nada, porque lo que sonaba no coincidía
-  /// con lo que se le pedía cerrar.
-  ///
-  /// Resultado: salías de la ficha y el vídeo SEGUIA reproduciéndose, con su
-  /// recuadro flotando sobre el catálogo. Eso es lo que se veía como que la
-  /// app se había colgado.
-  String? _urlVistaPrevia;
+  /// Antes se guardaba su URL, y no valía: la ficha monta la previa con el
+  /// episodio que toca, y esa elección cambia cuando llega la lista de
+  /// episodios. Con la URL vieja, al cerrar no coincidía y el recuadro se
+  /// quedaba flotando sobre el catálogo.
+  int? _turnoVistaPrevia;
 
   void _arrancarVistaPrevia() {
     // Una sola vez por ficha: montarla de nuevo destruiria el reproductor que
@@ -154,12 +147,31 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
 
       final esSerie = widget.item.isSeries || widget.item.seriesName != null;
       final queVer = _queSeReproduce(esSerie, _episodios);
-      _urlVistaPrevia = queVer.url;
-      TvVistaPrevia.instancia.mostrar(context, queVer, hueco);
+      _turnoVistaPrevia = TvVistaPrevia.instancia.mostrar(
+        context,
+        queVer,
+        hueco,
+      );
     });
   }
 
   /// Le pasa el hueco nuevo a la vista previa. Solo mueve; no reinicia nada.
+  ///
+  /// ── SE LLAMA EN CADA FOTOGRAMA, Y ES BARATO ───────────────────────────
+  ///
+  /// El rectangulo se medía UNA vez, justo despues de que la ficha se diera
+  /// por lista. Pero en ese momento la pantalla todavia se esta asentando —el
+  /// contenido entra con un fundido y el scroll aun no ha cuajado—, asi que la
+  /// medida salia de una disposicion que un instante despues ya no era la
+  /// buena. El video quedaba descolocado dentro de su hueco y aparecian bandas
+  /// claras arriba y abajo.
+  ///
+  /// Y solo se arreglaba bajando y volviendo, porque el scroll disparaba una
+  /// medida nueva. Midiendo en cada fotograma, eso se corrige solo.
+  ///
+  /// El coste es minimo: buscar un `RenderBox` y comparar un rectangulo. Y si
+  /// no ha cambiado, `reubicar` no avisa a nadie — un `ValueNotifier` solo
+  /// notifica cuando el valor es DISTINTO.
   void _reubicarVistaPrevia() {
     final hueco = _rectanguloVistaPrevia();
     if (hueco != null) TvVistaPrevia.instancia.reubicar(hueco);
@@ -179,9 +191,9 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
     // Volver del reproductor grande a la ficha no pasa por este `dispose` —la
     // ficha nunca se fue— así que la reproducción sigue. Salir de la ficha sí,
     // y entonces se para. Que es lo que se pidió.
-    // Con la URL guardada, no con una recalculada: ver `_urlVistaPrevia`.
-    final mia = _urlVistaPrevia;
-    if (mia != null) TvVistaPrevia.instancia.cerrarSi(mia);
+    // Por turno, no por URL: ver `_turnoVistaPrevia`.
+    final mio = _turnoVistaPrevia;
+    if (mio != null) TvVistaPrevia.instancia.cerrarSi(mio);
     super.dispose();
   }
 
@@ -386,7 +398,7 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
 
   /// La clasificacion por edades: "TV-MA", "16", "PG-13"... TMDB la da por
   /// pais y `_getDetails` ya se queda con la de España, o la de EEUU si no la
-  /// hay. No siempre existe, y cuando no existe no se enseña nada.
+  /// hay. No siempre existe, y cuando no existe no se enseña la linea entera.
   String? get _clasificacion => _texto('rating');
   String? get _tituloOriginal => _texto('original_title');
   String? get _fondo => _texto('backdrop_url');
@@ -399,6 +411,12 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Tras pintar, se comprueba que el hueco siga donde creemos. Ver
+    // `_reubicarVistaPrevia`.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _reubicarVistaPrevia();
+    });
+
     final episodios = _episodiosVisibles;
     final esSerie = _episodios.isNotEmpty;
 
@@ -652,36 +670,54 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
           ),
         ],
 
-        // Marca de servidor y clasificacion, en la misma linea.
+        // AQUI IBAN LA MARCA DE SERVIDOR Y LA CLASIFICACION.
         //
-        // Van juntas porque son la misma clase de dato: dos apuntes tecnicos
-        // que se consultan, no que se leen. Repartidas en dos lineas ocupaban
-        // el doble para decir lo mismo.
-        Builder(
-          builder: (context) {
-            final hayAlternativas =
-                widget.item.alternatives.isNotEmpty ||
-                _episodios.any((e) => e.alternatives.isNotEmpty);
-            final deLaBD =
-                widget.item.esDeLaBD || _episodios.any((e) => e.esDeLaBD);
-            final servidor = hayAlternativas ? 'V1+' : (deLaBD ? 'BD' : null);
-            final edad = _clasificacion;
-            if (servidor == null && edad == null) {
-              return const SizedBox.shrink();
-            }
-            return Padding(
-              padding: const EdgeInsets.only(top: 10),
-              child: Row(
-                children: [
-                  if (servidor != null) _Distintivo(texto: servidor),
-                  if (servidor != null && edad != null)
-                    const SizedBox(width: 8),
-                  if (edad != null) _Distintivo(texto: edad),
-                ],
-              ),
-            );
-          },
-        ),
+        // "V1+" y "BD" decian de donde sale el video —si hay servidor
+        // alternativo o si es contenido propio—, y eso le importa a quien
+        // mantiene el catalogo, no a quien va a ver una pelicula. Era una nota
+        // interna colada en la ficha.
+        //
+        // ── Clasificación ─────────────────────────────────────────────────
+        //
+        // CON SU NOMBRE DELANTE, no como una insignia suelta.
+        //
+        // Antes era un recuadro con "12" o "TV-MA" dentro, y un numero en una
+        // caja no dice de que va: hay que saberse el codigo. Con la palabra
+        // delante se entiende sin saber nada, y de paso queda igual que la
+        // sinopsis de aqui debajo — mismo tamaño, misma etiqueta en negrita,
+        // mismo gris para el dato. Dos lineas que se leen como una ficha en
+        // vez de como dos elementos distintos.
+        //
+        // Si TMDB no la trae, no se enseña la linea: una etiqueta con "Sin
+        // datos" al lado ocupa igual y no aporta nada.
+        if (_clasificacion != null) ...[
+          const SizedBox(height: 14),
+          RichText(
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            text: TextSpan(
+              children: [
+                const TextSpan(
+                  text: 'Clasificación  ',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    height: 1.5,
+                  ),
+                ),
+                TextSpan(
+                  text: _clasificacion,
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 14,
+                    height: 1.5,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
 
         const SizedBox(height: 14),
 
@@ -1165,39 +1201,6 @@ class _ChipTemporadaState extends State<_ChipTemporada> {
             fontSize: 14,
             fontWeight: widget.elegida ? FontWeight.w600 : FontWeight.w400,
           ),
-        ),
-      ),
-    );
-  }
-}
-
-/// Marca de servidor: V1+ (hay alternativas) o BD (contenido propio).
-///
-/// En blanco y pequeña, a proposito. En el telefono va en rojo y verde, pero
-/// alli es una lista de fichas y el color ayuda a distinguirlas de un vistazo.
-/// Aqui hay UNA sola ficha y el rojo se llevaba la mirada por encima del
-/// titulo, para decir algo que no manda nada: la marca es un dato tecnico, no
-/// una llamada de atencion. La sigue leyendo quien la busca, y ya no compite.
-class _Distintivo extends StatelessWidget {
-  final String texto;
-  const _Distintivo({required this.texto});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.10),
-        borderRadius: BorderRadius.circular(4),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.35)),
-      ),
-      child: Text(
-        texto,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 10,
-          fontWeight: FontWeight.w700,
-          letterSpacing: 0.5,
         ),
       ),
     );

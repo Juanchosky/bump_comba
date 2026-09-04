@@ -61,6 +61,23 @@ class TvVistaPrevia {
   /// Qué se está reproduciendo, para no volver a montarlo si ya es ese.
   String? _urlActual;
 
+  /// Quién montó lo que hay ahora.
+  ///
+  /// ── POR QUE UN NUMERO Y NO LA URL ─────────────────────────────────────
+  ///
+  /// La pertenencia se comprobaba comparando URLs, y eso fallaba: la ficha
+  /// monta la vista previa con el episodio que toca, y esa eleccion puede
+  /// CAMBIAR mientras esta abierta —al llegar la lista de episodios, por
+  /// ejemplo—. Cuando eso pasaba, la URL guardada por la ficha ya no era la
+  /// del proxy, `cerrarSi` decidia que aquello era de otro y no cerraba nada.
+  ///
+  /// Resultado: salias al catalogo y el recuadro de video se quedaba flotando
+  /// encima.
+  ///
+  /// Un numero de turno no depende de lo que se este viendo: quien lo monto lo
+  /// cierra, pase lo que pase con el contenido.
+  int _turno = 0;
+
   /// EL REPRODUCTOR, GUARDADO APARTE.
   ///
   /// Se construye una sola vez por titulo y se guarda aqui. Estaba creado
@@ -88,12 +105,14 @@ class TvVistaPrevia {
   /// Volver a llamar con el mismo contenido NO reinicia nada: es lo que
   /// permite que la ficha reajuste el rectángulo al hacer scroll sin cortar la
   /// reproducción.
-  void mostrar(BuildContext context, M3UItem item, Rect hueco) {
+  /// Devuelve el turno con el que quedo montada, para que quien la monto
+  /// pueda cerrarla despues sin depender de lo que se este viendo.
+  int mostrar(BuildContext context, M3UItem item, Rect hueco) {
     if (_entrada != null && _urlActual == item.url) {
       // Ya montada con este mismo titulo: solo se reubica. No se toca nada
       // mas, que es lo que permite seguir el scroll sin cortar el video.
       _hueco.value = hueco;
-      return;
+      return _turno;
     }
 
     // EL ORDEN IMPORTA: `cerrar()` deja el hueco en `null`, y con el hueco
@@ -102,6 +121,7 @@ class TvVistaPrevia {
     cerrar();
     _hueco.value = hueco;
     _urlActual = item.url;
+    _turno++;
     _reproductor = TvPlayerScreen(
       key: _clave,
       item: item,
@@ -181,6 +201,7 @@ class TvVistaPrevia {
 
     Overlay.of(context, rootOverlay: true).insert(_entrada!);
     montada.value = true;
+    return _turno;
   }
 
   /// Solo mueve el hueco. Nunca desmonta nada.
@@ -238,8 +259,9 @@ class TvVistaPrevia {
   /// `pushReplacement`: ahi el `dispose` de la ficha vieja corre DESPUES de
   /// que la nueva haya montado su vista previa, asi que un `cerrar()` a secas
   /// mataba la del sucesor y la ficha nueva se quedaba sin video.
-  void cerrarSi(String url) {
-    if (_urlActual != null && _urlActual != url) return;
+  /// Cierra solo si el turno indicado sigue siendo el que manda.
+  void cerrarSi(int turno) {
+    if (turno != _turno) return;
     cerrar();
   }
 

@@ -148,10 +148,10 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   static const List<({String texto, IconData icono})> _secciones = [
     (texto: 'Inicio', icono: Icons.home_outlined),
     (texto: 'Peliculas', icono: Icons.movie_outlined),
-    (texto: 'Series', icono: Icons.live_tv_outlined),
+    (texto: 'Series', icono: Icons.live_tv_rounded),
     (texto: 'Telenovelas', icono: Icons.theaters_outlined),
-    (texto: 'Animacion', icono: Icons.animation),
-    (texto: 'Buscar', icono: Icons.search_outlined),
+    (texto: 'Animacion', icono: Icons.animation_rounded),
+    (texto: 'Buscar', icono: Icons.search_rounded),
   ];
 
   /// BUSCAR no es una seccion del catalogo: es una pantalla aparte.
