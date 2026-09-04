@@ -805,18 +805,40 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
           const SizedBox(height: 10),
         ],
 
-        // El rango de la temporada, en naranja. Dice de un vistazo cuantos
-        // episodios hay sin tener que recorrer la fila hasta el final.
+        // ── La cabecera de la fila ──────────────────────────────────────
+        //
+        // Antes aqui iba "1-6" en naranja y nada mas. Un rango suelto y en un
+        // color de aviso: el naranja llamaba la atencion para decir algo que
+        // no la merece, y sin la palabra delante hay que deducir que ese "1-6"
+        // son episodios.
+        //
+        // Ahora se nombra lo que es y cuantos hay, con el mismo tratamiento
+        // que "Quizas te guste" de mas abajo — asi las dos filas de la ficha
+        // se leen como hermanas.
         if (primero != null && ultimo != null) ...[
-          Text(
-            '$primero-$ultimo',
-            style: const TextStyle(
-              color: Color(0xFFF5A623),
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-            ),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: [
+              const Text(
+                'Episodios',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                '$primero-$ultimo',
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.35),
+                  fontSize: 13,
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 10),
         ],
 
         SizedBox(
@@ -1028,35 +1050,56 @@ class _CeldaEpisodioState extends State<_CeldaEpisodio> {
         }
         return KeyEventResult.ignored;
       },
+      // ── LOS TRES ESTADOS SE DICEN CON EL RELLENO, NO CON BORDES ────────
+      //
+      // Antes la celda marcada se señalaba con un filo naranja de 2 px sobre
+      // fondo gris. Un contorno de color alrededor de un numero es el aspecto
+      // de un campo de formulario, y eso es lo que hacia que la fila entera
+      // pareciera un teclado numerico en vez de una lista de episodios.
+      //
+      // Ahora manda el fondo, que es lo que se ve de lejos:
+      //
+      //  · ENFOCADA — blanco solido con el numero oscuro. Igual que el resto
+      //    del televisor: el blanco significa "aqui esta el mando".
+      //  · PUESTA — bañada en ambar, sin contorno. Se distingue del resto sin
+      //    competir con la enfocada.
+      //  · NORMAL — gris oscuro y el numero apagado.
+      //
+      // Y mas grande —76x54 en vez de 64x46—: a tres metros una celda pequeña
+      // con un digito dentro cuesta de acertar con el mando.
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 140),
-        width: 64,
-        margin: const EdgeInsets.only(right: 8),
+        width: 62,
+        margin: const EdgeInsets.only(right: 10),
         decoration: BoxDecoration(
-          color: _foco ? Colors.white : const Color(0xFF2A2A2E),
-          borderRadius: BorderRadius.circular(6),
-          border: Border.all(
-            // Marcada pero sin foco: un filo naranja para no perder de vista
-            // cual quedo puesto mientras se recorre el resto de la fila.
-            color:
-                widget.marcada && !_foco
-                    ? const Color(0xFFF5A623)
-                    : Colors.transparent,
-            width: 2,
-          ),
+          color:
+              _foco
+                  ? Colors.white
+                  : widget.marcada
+                  ? const Color(0xFFF5A623).withValues(alpha: 0.22)
+                  : const Color(0xFF1E1E22),
+          borderRadius: BorderRadius.circular(8),
         ),
         alignment: Alignment.center,
         child:
             widget.icono != null
                 ? Icon(
                   widget.icono,
-                  color: _foco ? Colors.black : Colors.white,
-                  size: 22,
+                  color: _foco ? const Color(0xFF0B0B0D) : Colors.white,
+                  size: 21,
                 )
                 : Text(
                   widget.texto ?? '',
                   style: TextStyle(
-                    color: _foco ? Colors.black : Colors.white,
+                    // El numero acompaña al relleno: oscuro sobre el blanco
+                    // del foco, ambar sobre el baño ambar, y apagado cuando la
+                    // celda no dice nada.
+                    color:
+                        _foco
+                            ? const Color(0xFF0B0B0D)
+                            : widget.marcada
+                            ? const Color(0xFFF5A623)
+                            : Colors.white70,
                     fontSize: 16,
                     fontWeight: FontWeight.w600,
                   ),
@@ -1179,26 +1222,43 @@ class _ChipTemporadaState extends State<_ChipTemporada> {
         }
         return KeyEventResult.ignored;
       },
+      // ── PESTAÑA SUBRAYADA, NO PASTILLA ────────────────────────────────
+      //
+      // Eran pastillas redondeadas con contorno al enfocarse. Una fila de
+      // pastillas se lee como un grupo de botones sueltos —cualquiera de ellos
+      // podria hacer cualquier cosa— y por eso no se entendia de un vistazo
+      // que fueran las temporadas de la MISMA serie.
+      //
+      // Subrayadas se leen como lo que son: pestañas de una misma cosa. Es
+      // ademas lo que hacen las apps de television, y no por copiar: sin caja
+      // alrededor, la palabra manda y a tres metros lo que se lee es la
+      // palabra.
+      //
+      // La barra de debajo hace doble trabajo: ambar cuando la temporada esta
+      // PUESTA, blanca cuando solo la estas mirando con el mando. Dos cosas
+      // distintas que no pueden confundirse.
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 130),
-        margin: const EdgeInsets.only(right: 10),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+        margin: const EdgeInsets.only(right: 22),
+        padding: const EdgeInsets.only(bottom: 7),
         decoration: BoxDecoration(
-          color:
-              widget.elegida
-                  ? Colors.white.withValues(alpha: 0.14)
-                  : Colors.transparent,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-            color: _foco ? Colors.white : Colors.transparent,
-            width: 2,
+          border: Border(
+            bottom: BorderSide(
+              color:
+                  _foco
+                      ? Colors.white
+                      : widget.elegida
+                      ? const Color(0xFFF5A623)
+                      : Colors.transparent,
+              width: 2.5,
+            ),
           ),
         ),
         child: Text(
           'Temporada ${widget.numero}',
           style: TextStyle(
             color: color,
-            fontSize: 14,
+            fontSize: 15,
             fontWeight: widget.elegida ? FontWeight.w600 : FontWeight.w400,
           ),
         ),

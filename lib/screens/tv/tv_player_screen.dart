@@ -821,16 +821,13 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     try {
       final pistas = _pistasSubs;
       if (pistas.isEmpty) return;
-      final preferida = pistas.firstWhere(
-        (t) {
-          final etiqueta = (t.title ?? t.language ?? '').toLowerCase();
-          return etiqueta.contains('es') ||
-              etiqueta.contains('spa') ||
-              etiqueta.contains('lat') ||
-              etiqueta.contains('web');
-        },
-        orElse: () => pistas.first,
-      );
+      final preferida = pistas.firstWhere((t) {
+        final etiqueta = (t.title ?? t.language ?? '').toLowerCase();
+        return etiqueta.contains('es') ||
+            etiqueta.contains('spa') ||
+            etiqueta.contains('lat') ||
+            etiqueta.contains('web');
+      }, orElse: () => pistas.first);
       await _player.setSubtitleTrack(preferida);
       debugPrint(
         'TvPlayer: subtitulo activado '
@@ -1352,6 +1349,28 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     // LO PRIMERO: lo que siga corriendo por detras tiene que enterarse de que
     // ya no hay a quien servir, antes de que nada mas se destruya.
     _muerto = true;
+
+    // ── LA EXTRACCION A MEDIAS SE CANCELA AQUI ───────────────────────────
+    //
+    // Sin esto, el WebView de una extraccion en curso sobrevivia a su
+    // reproductor: seguia cargando la web entera del proveedor —fuentes,
+    // JavaScript, analitica— para nadie.
+    //
+    // Y lo grave es lo que pasaba al encadenar: sales de una ficha y entras en
+    // otra, la segunda abre SU WebView, y durante unos segundos hay DOS
+    // Chromium cargando el mismo sitio a la vez. En un aparato de 1 GB eso
+    // deja el hilo de la interfaz sin aire —"Skipped 733 frames" en el log— y
+    // el mando deja de responder. Ese es el cuelgue de la navegacion.
+    //
+    // Solo si de verdad habia algo resolviendose: `stopCurrentScraping` sobre
+    // una extraccion ajena mataria la del reproductor que si sigue vivo.
+    if (_resolviendo.isNotEmpty) {
+      unawaited(
+        DynamicScraperService().stopCurrentScraping().catchError((Object e) {
+          debugPrint('TvPlayer: no se pudo cortar la extraccion: $e');
+        }),
+      );
+    }
 
     // Una extraccion a medias deja un WebView invisible corriendo: en un
     // televisor de 1 GB eso es memoria que no vuelve.
