@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -754,10 +755,11 @@ class _ResultadosState extends State<_Resultados> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              esperando ? Icons.search_rounded : Icons.search_off_rounded,
-              size: 46,
-              color: Colors.white.withValues(alpha: 0.22),
+            _LupaAnimada(
+              icono: esperando ? Icons.search_rounded : Icons.search_off_rounded,
+              // Solo respira mientras espera a que escribas; con el mensaje de
+              // "no encontramos" la quietud acompaña mejor.
+              animar: esperando,
             ),
             const SizedBox(height: 20),
             Text(
@@ -822,6 +824,84 @@ class _ResultadosState extends State<_Resultados> {
             onTecla: (e) => _tecla(i, e),
             onVolver: () => enfocar(i),
           ),
+    );
+  }
+}
+
+/// La lupa del estado vacio, rastreando despacio.
+///
+/// No es decoracion por decoracion: a tres metros y sin nada en pantalla, un
+/// elemento que se mueve despacio dice "esto esta vivo, esperando" mucho mejor
+/// que un icono congelado. Solo se mueve la lupa —un recorrido corto y elíptico,
+/// como si buscara— sin escala ni halo, para que llame la atencion sin molestar.
+class _LupaAnimada extends StatefulWidget {
+  final IconData icono;
+  final bool animar;
+
+  const _LupaAnimada({required this.icono, required this.animar});
+
+  @override
+  State<_LupaAnimada> createState() => _LupaAnimadaState();
+}
+
+class _LupaAnimadaState extends State<_LupaAnimada>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 2600),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.animar) _c.repeat();
+  }
+
+  @override
+  void didUpdateWidget(_LupaAnimada old) {
+    super.didUpdateWidget(old);
+    if (widget.animar && !_c.isAnimating) {
+      _c.repeat();
+    } else if (!widget.animar && _c.isAnimating) {
+      _c.stop();
+      _c.value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.animar) {
+      return Icon(
+        widget.icono,
+        size: 46,
+        color: Colors.white.withValues(alpha: 0.22),
+      );
+    }
+
+    return AnimatedBuilder(
+      animation: _c,
+      builder: (context, child) {
+        // Recorrido elíptico corto: la lupa "pasea" mirando de un lado a otro.
+        final angulo = _c.value * 2 * math.pi;
+        return Transform.translate(
+          offset: Offset(
+            math.cos(angulo) * 9,
+            math.sin(angulo * 2) * 4,
+          ),
+          child: child,
+        );
+      },
+      child: Icon(
+        widget.icono,
+        size: 46,
+        color: Colors.white.withValues(alpha: 0.22),
+      ),
     );
   }
 }

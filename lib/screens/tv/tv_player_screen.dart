@@ -730,14 +730,24 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     _vigilante?.cancel();
     // Parar antes de cerrar: si no, MPV se queda reconectando contra la sesion
     // cerrada.
-    unawaited(_player.stop());
+    //
+    // CON SU `catch`: `stop()` lanza si el `Player` ya esta destruido —el
+    // `[Player] has been disposed` que salia en el log— y aqui se llamaba sin
+    // nadie que recogiera esa excepcion, asi que acababa como error sin
+    // atender. Parar es una limpieza: si el reproductor ya no esta, el trabajo
+    // ya esta hecho.
+    unawaited(
+      _player.stop().catchError((Object e) {
+        debugPrint('TvPlayer: no se pudo parar (ya estaba fuera): $e');
+      }),
+    );
     _cerrarTurbo();
 
     if (!_faltaCaudal && _reintentosAuto < _maxReintentosAuto && !_muerto) {
       _reintentosAuto++;
       debugPrint('TvPlayer: reintento automatico $_reintentosAuto');
       _reintento?.cancel();
-      _reintento = Timer(const Duration(seconds: 4), () {
+      _reintento = Timer(const Duration(seconds: 4), () async {
         if (_muerto || !mounted) return;
         _rotos.clear();
         _fallosSeguidos = 0;
@@ -748,7 +758,20 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
           _primerFrameListo = false;
         });
         _armarVigilante();
-        unawaited(_abrir(_posicion));
+
+        // CON SU `catch`, y no `unawaited` a secas.
+        //
+        // `_abrir` lanza cuando la pagina no da video, y aqui nadie mas lo
+        // recoge: la excepcion se escaparia del temporizador y quedaria como
+        // error sin atender, con la pantalla esperando un video que ya se sabe
+        // que no viene. Recogiendola, el segundo fallo se enseña como lo que
+        // es — esta vez ya sin mas reintentos, porque el cupo esta gastado.
+        try {
+          await _abrir(_posicion);
+        } catch (e) {
+          debugPrint('TvPlayer: el reintento automatico fallo: $e');
+          if (!_muerto && mounted) _rendirse();
+        }
       });
       return;
     }
@@ -765,6 +788,18 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
   Future<void> _cargarSubsWeb() async {
     final subs = _subsWeb[_idxServidor];
     if (subs == null || subs.isEmpty || _muerto) return;
+
+    // `open()` vuelve antes de que MPV haya demuxado nada, y un `sub-add`
+    // lanzado en ese hueco se pierde sin aviso. Se espera a que el medio tenga
+    // duracion —o se agota un margen corto— antes de engancharlos.
+    for (var i = 0; i < 20; i++) {
+      if (_muerto) return;
+      if (_player.state.duration > Duration.zero) break;
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+    if (_muerto) return;
+
+    // 1. Se registran todas las pistas que trajo la pagina.
     for (final sub in subs) {
       if (_muerto) return;
       try {
@@ -775,6 +810,34 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         // Una pista que no carga no puede tumbar la reproduccion.
         debugPrint('TvPlayer: no se pudo añadir el subtitulo ${sub.label}: $e');
       }
+    }
+
+    // 2. Y se ACTIVA una, releyendo la lista real de MPV — igual que el
+    //    telefono. Anadir con `SubtitleTrack.uri` no deja siempre la pista
+    //    seleccionada, y sin seleccion el `SubtitleView` no pinta nada: ese
+    //    era el motivo de que el contenido de la BD con subtitulos siguiera
+    //    saliendo sin ellos aunque ya se guardaran.
+    if (_muerto) return;
+    try {
+      final pistas = _pistasSubs;
+      if (pistas.isEmpty) return;
+      final preferida = pistas.firstWhere(
+        (t) {
+          final etiqueta = (t.title ?? t.language ?? '').toLowerCase();
+          return etiqueta.contains('es') ||
+              etiqueta.contains('spa') ||
+              etiqueta.contains('lat') ||
+              etiqueta.contains('web');
+        },
+        orElse: () => pistas.first,
+      );
+      await _player.setSubtitleTrack(preferida);
+      debugPrint(
+        'TvPlayer: subtitulo activado '
+        '(${preferida.title ?? preferida.language ?? preferida.id})',
+      );
+    } catch (e) {
+      debugPrint('TvPlayer: no se pudo activar el subtitulo: $e');
     }
   }
 
