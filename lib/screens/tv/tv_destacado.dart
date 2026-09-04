@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../services/fast_image_service.dart';
 import '../../services/m3u_service.dart';
+import '../../utils/colors.dart';
 import '../../utils/titulo_tmdb.dart';
 
 /// La cabecera del catálogo: UNA portada, grande.
@@ -85,6 +87,12 @@ class TvDestacado extends StatefulWidget {
   /// Margen izquierdo del texto: el mismo que el de los títulos de las filas
   /// de abajo. Las dos cosas tienen que empezar en la misma vertical.
   static const double margenIzq = 106;
+
+  /// Margen derecho. La tarjeta NO llega al filo: es una tarjeta, y una
+  /// tarjeta pegada al borde de la pantalla deja de leerse como tal. Ademas,
+  /// un televisor recorta los bordes —el "overscan"— y lo pegado al filo se lo
+  /// come el panel.
+  static const double margenDer = 56;
 
   /// Tope de alto, para que la portada no se coma la primera fila.
   static const double alturaMaxima = 450;
@@ -217,6 +225,7 @@ class TvDestacadoState extends State<TvDestacado> {
     final titulo = limpiarTituloParaTmdb(item.seriesName ?? item.name);
     final imagen = _i < widget.imagenes.length ? widget.imagenes[_i] : null;
     final sinopsis = _texto('overview');
+    final hayImagen = widget.listo && imagen != null && imagen.isNotEmpty;
 
     return LayoutBuilder(
       builder: (context, restricciones) {
@@ -224,220 +233,270 @@ class TvDestacadoState extends State<TvDestacado> {
 
         return SizedBox(
           height: alto,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              // ── 1. Fondo base ─────────────────────────────────────────
-              // Evita cualquier hueco o transparencia indeseada.
-              const ColoredBox(color: Color(0xFF0D0D0D)),
-
-              // ── 2. La imagen apaisada ─────────────────────────────────
-              AnimatedSwitcher(
-                duration: const Duration(milliseconds: 500),
-                child:
-                    (!widget.listo || imagen == null || imagen.isEmpty)
-                        ? const ColoredBox(
-                          key: ValueKey('vacio'),
-                          color: Color(0xFF0D0D0D),
-                        )
-                        : FastThumbnail(
-                          key: ValueKey(imagen),
-                          url: imagen,
-                          width: restricciones.maxWidth,
-                          height: alto,
-                          // Encuadre superior para no cortar rostros ni cabezas
-                          alignment: const Alignment(0.0, -0.3),
-                          pantallaCompleta: true,
-                        ),
-              ),
-
-              // ── 3. Velo superior sutil ────────────────────────────────
-              // Suaviza la transición hacia la parte alta de la pantalla.
-              const Positioned(
-                top: 0,
-                left: 0,
-                right: 0,
-                height: 120,
-                child: IgnorePointer(
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        // Transparente del MISMO color, no `Colors.transparent`
-                        // (negro con alfa 0): mezclar hacia el negro tira el
-                        // degradado fuera del tono del fondo y deja un borde.
-                        colors: [Color(0x8C0D0D0D), Color(0x000D0D0D)],
-                        stops: [0.0, 1.0],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-
-              // ── 4. Velo lateral izquierdo ─────────────────────────────
-              // Da legibilidad y contraste perfecto a los textos y botones.
-              const Positioned.fill(
-                child: IgnorePointer(
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.centerLeft,
-                        end: Alignment.centerRight,
-                        colors: [
-                          Color(0xF50D0D0D),
-                          Color(0xD90D0D0D),
-                          Color(0x660D0D0D),
-                          Color(0x000D0D0D),
-                        ],
-                        stops: [0.0, 0.32, 0.58, 0.85],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-
-              // ── 5. Velo inferior cinematográfico ──────────────────────
-              // Funde la imagen gradualmente en el fondo de la pantalla (0xFF0D0D0D).
-              // Comienza suave desde la mitad inferior y solo llega a opaco en la
-              // base misma, eliminando cualquier franja negra o corte seco.
-              const Positioned(
-                left: 0,
-                right: 0,
-                bottom: 0,
-                height: 280,
-                child: IgnorePointer(
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [
-                          Color(0x000D0D0D),
-                          Color(0x000D0D0D),
-                          Color(0x330D0D0D),
-                          Color(0x730D0D0D),
-                          Color(0xBF0D0D0D),
-                          Color(0xFF0D0D0D),
-                        ],
-                        stops: [0.0, 0.20, 0.45, 0.68, 0.88, 1.0],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-
-              // ── 6. El texto y los botones ─────────────────────────────
-              Positioned(
-                left: TvDestacado.margenIzq,
-                right: restricciones.maxWidth * 0.40,
-                bottom: 40,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      titulo,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Color.fromARGB(255, 228, 228, 228),
-                        fontSize: 22,
-                        fontWeight: FontWeight.w500,
-                        height: 1.15,
-                        letterSpacing: -0.4,
-                      ),
-                    ),
-
-                    const SizedBox(height: 8),
-
-                    // Año · categoría.
-                    SizedBox(
-                      height: 20,
-                      child: Row(
-                        children: [
-                          if (_anio != null) ...[
-                            Text(
-                              _anio!,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            const _Punto(),
-                          ],
-                          Flexible(
-                            child: Text(
-                              item.category,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: Colors.white60,
-                                fontSize: 13,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    // Una o dos líneas de sinopsis si la hay
-                    if (sinopsis != null) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        sinopsis,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white70,
-                          fontSize: 13,
-                          height: 1.35,
-                        ),
-                      ),
-                    ],
-
-                    const SizedBox(height: 16),
-
-                    _Boton(
-                      nodo: _nodo,
-                      texto: 'Reproducir',
-                      icono: Icons.play_arrow_rounded,
-                      conFoco: _foco,
-                      onTecla: _tecla,
-                      onFoco: _cambioFoco,
-                    ),
-                  ],
-                ),
-              ),
-
-              // ── 7. En cuál de los títulos estás ───────────────────────
-              if (widget.items.length > 1)
-                Positioned(
-                  right: 48,
-                  bottom: 42,
-                  child: Row(
-                    children: [
-                      for (var i = 0; i < widget.items.length; i++) ...[
-                        AnimatedContainer(
-                          duration: const Duration(milliseconds: 220),
-                          width: i == _i ? 22 : 8,
-                          height: 4,
-                          decoration: BoxDecoration(
-                            color:
-                                i == _i
-                                    ? Colors.white
-                                    : Colors.white.withValues(alpha: 0.35),
-                            borderRadius: BorderRadius.circular(2),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(
+              TvDestacado.margenIzq,
+              22,
+              TvDestacado.margenDer,
+              24,
+            ),
+            child: Stack(
+              // Sin recorte: el resplandor de abajo se sale del hueco a
+              // propósito, y recortarlo lo convertiría en una línea.
+              clipBehavior: Clip.none,
+              children: [
+                // ── 1. El resplandor ──────────────────────────────────────
+                //
+                // Una copia desenfocada de la misma imagen, detrás de la
+                // tarjeta y desbordando por abajo. Es lo que hace que en el
+                // teléfono el banner parezca apoyado sobre la pantalla en vez
+                // de pegado a ella, y en una tele —donde el fondo es casi
+                // negro— se nota todavía más.
+                //
+                // A media resolución: va a 30 de desenfoque, así que el
+                // detalle no se ve y en un aparato de 1 GB no hay que pagarlo.
+                if (hayImagen)
+                  Positioned(
+                    top: 16,
+                    left: 14,
+                    right: 14,
+                    bottom: -12,
+                    child: IgnorePointer(
+                      child: ImageFiltered(
+                        imageFilter: ImageFilter.blur(sigmaX: 30, sigmaY: 30),
+                        child: Opacity(
+                          opacity: 0.55,
+                          child: FastThumbnail(
+                            url: imagen,
+                            width: double.infinity,
+                            height: double.infinity,
+                            cacheWidth: 400,
                           ),
                         ),
-                        if (i != widget.items.length - 1)
-                          const SizedBox(width: 5),
+                      ),
+                    ),
+                  ),
+
+                // ── 2. La tarjeta ─────────────────────────────────────────
+                //
+                // Los mismos valores que en el teléfono: radio 12, borde
+                // blanco al 20% de 1,5 px y un degradado diagonal muy tenue.
+                // Ese borde es lo que separa la tarjeta del fondo sin dibujar
+                // una caja: se ve el filo, no el marco.
+                //
+                // El borde NO cambia con el foco. El foco lo lleva el botón,
+                // que se vuelve blanco; si además se encendiera el marco,
+                // serían dos cosas diciendo lo mismo.
+                // `Container` Y NO `DecoratedBox`, y es la diferencia entre
+                // que el borde se vea o no.
+                //
+                // `DecoratedBox` pinta la decoracion DETRAS de su hijo sin
+                // apartarlo: la imagen ocupaba tambien el filo y se comia el
+                // borde entero. `Container` convierte el borde en relleno, asi
+                // que el recorte de dentro empieza 1,5 px mas adentro y el
+                // filo queda a la vista.
+                //
+                // Ya me paso antes en esta misma tarjeta.
+                Container(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.2),
+                      width: 1.5,
+                    ),
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        Colors.white.withValues(alpha: 0.15),
+                        Colors.white.withValues(alpha: 0.05),
+                        Colors.white.withValues(alpha: 0.10),
                       ],
-                    ],
+                    ),
+                  ),
+                  child: ClipRRect(
+                    // 11 y no 12: por dentro del borde de 1,5. Con el mismo
+                    // radio, la imagen asomaría por las esquinas.
+                    borderRadius: BorderRadius.circular(11),
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        // Base oscura: si la imagen no llega, la tarjeta sigue
+                        // siendo una tarjeta y no un agujero al fondo.
+                        const ColoredBox(color: Color(0xFF15151A)),
+
+                        if (hayImagen)
+                          FastThumbnail(
+                            url: imagen,
+                            width: double.infinity,
+                            height: double.infinity,
+                            // El servicio reescribe las URLs de TMDB; sin esta
+                            // marca la imagen llegaría a 185 px de ancho para
+                            // una tarjeta de más de mil.
+                            pantallaCompleta: true,
+                          ),
+
+                        // ── 3. Los velos ──────────────────────────────────
+                        //
+                        // El de abajo es el del teléfono, con el color del
+                        // fondo de la app y no negro: así el pie de la tarjeta
+                        // se funde con la pantalla en vez de oscurecerse.
+                        DecoratedBox(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: [
+                                Colors.transparent,
+                                Colors.transparent,
+                                AppColors.fondoTv.withValues(alpha: 0.85),
+                              ],
+                              stops: const [0.0, 0.55, 1.0],
+                            ),
+                          ),
+                        ),
+                        // Y este por la izquierda, que en el teléfono no hace
+                        // falta —allí el texto va abajo, sobre el velo de
+                        // arriba— pero aquí sí: en una pantalla apaisada el
+                        // texto va al lado, y sin esto una portada clara se
+                        // come la letra blanca.
+                        DecoratedBox(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.centerLeft,
+                              end: Alignment.centerRight,
+                              colors: [
+                                AppColors.fondoTv.withValues(alpha: 0.92),
+                                AppColors.fondoTv.withValues(alpha: 0.55),
+                                AppColors.fondoTv.withValues(alpha: 0),
+                              ],
+                              stops: const [0.0, 0.45, 0.8],
+                            ),
+                          ),
+                        ),
+
+                        // ── 4. El contenido ───────────────────────────────
+                        Positioned(
+                          left: 34,
+                          right: restricciones.maxWidth * 0.42,
+                          bottom: 30,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                titulo,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 22,
+                                  fontWeight: FontWeight.w500,
+                                  height: 1.15,
+                                  letterSpacing: -0.3,
+                                ),
+                              ),
+
+                              const SizedBox(height: 8),
+
+                              SizedBox(
+                                height: 20,
+                                child: Row(
+                                  children: [
+                                    if (_anio != null) ...[
+                                      Text(
+                                        _anio!,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      const _Punto(),
+                                    ],
+                                    Flexible(
+                                      child: Text(
+                                        item.category,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          color: Colors.white60,
+                                          fontSize: 13,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+
+                              // Una línea de sinopsis, y solo si la hay: sin
+                              // ella el bloque se cierra y el botón sube.
+                              if (sinopsis != null) ...[
+                                const SizedBox(height: 10),
+                                Text(
+                                  sinopsis,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 13,
+                                    height: 1.4,
+                                  ),
+                                ),
+                              ],
+
+                              const SizedBox(height: 20),
+
+                              _Boton(
+                                nodo: _nodo,
+                                texto: 'Ver',
+                                icono: Icons.play_arrow_rounded,
+                                conFoco: _foco,
+                                onTecla: _tecla,
+                                onFoco: _cambioFoco,
+                              ),
+                            ],
+                          ),
+                        ),
+
+                        // ── 5. En cuál de los cinco estás ─────────────────
+                        if (widget.items.length > 1)
+                          Positioned(
+                            right: 28,
+                            bottom: 30,
+                            child: Row(
+                              children: [
+                                for (
+                                  var i = 0;
+                                  i < widget.items.length;
+                                  i++
+                                ) ...[
+                                  AnimatedContainer(
+                                    duration: const Duration(milliseconds: 220),
+                                    width: i == _i ? 22 : 8,
+                                    height: 4,
+                                    decoration: BoxDecoration(
+                                      color:
+                                          i == _i
+                                              ? Colors.white
+                                              : Colors.white.withValues(
+                                                alpha: 0.35,
+                                              ),
+                                      borderRadius: BorderRadius.circular(2),
+                                    ),
+                                  ),
+                                  if (i != widget.items.length - 1)
+                                    const SizedBox(width: 5),
+                                ],
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
                 ),
-            ],
+              ],
+            ),
           ),
         );
       },
