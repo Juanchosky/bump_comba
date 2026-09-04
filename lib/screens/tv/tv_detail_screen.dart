@@ -134,12 +134,38 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
   /// quedaba flotando sobre el catálogo.
   int? _turnoVistaPrevia;
 
+  /// La espera antes de arrancar la vista previa.
+  ///
+  /// ── NO SE EXTRAE NADA POR ESTAR DE PASO ───────────────────────────────
+  ///
+  /// Arrancaba nada mas abrir la ficha, y eso significa abrir un Chromium y
+  /// cargar la web entera del proveedor. Recorriendo el catalogo se ven muchas
+  /// fichas en poco rato, y cada una lanzaba su extraccion: en el log se cuentan
+  /// catorce seguidas, y la ultima acabo en ANR con el sistema matando la app.
+  ///
+  /// Con la espera, mirar una ficha y salir no cuesta NADA. La previa arranca
+  /// solo si de verdad te quedas, que es cuando la quieres.
+  ///
+  /// Segundo y medio: lo justo para distinguir "estoy mirando esto" de "iba de
+  /// paso", sin que se note como una demora en el caso normal.
+  static const Duration _esperaAntesDePrevia = Duration(milliseconds: 1500);
+
+  Timer? _esperaPrevia;
+
   void _arrancarVistaPrevia() {
     // Una sola vez por ficha: montarla de nuevo destruiria el reproductor que
     // ya esta resolviendo.
     if (_vistaPreviaPedida) return;
     _vistaPreviaPedida = true;
 
+    _esperaPrevia?.cancel();
+    _esperaPrevia = Timer(_esperaAntesDePrevia, () {
+      if (!mounted) return;
+      _montarVistaPrevia();
+    });
+  }
+
+  void _montarVistaPrevia() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final hueco = _rectanguloVistaPrevia();
@@ -191,6 +217,10 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
     // Volver del reproductor grande a la ficha no pasa por este `dispose` —la
     // ficha nunca se fue— así que la reproducción sigue. Salir de la ficha sí,
     // y entonces se para. Que es lo que se pidió.
+    // Y si la espera aun no habia vencido, aqui se cancela: salir antes de que
+    // arranque significa que la extraccion NO llega a empezar.
+    _esperaPrevia?.cancel();
+
     // Por turno, no por URL: ver `_turnoVistaPrevia`.
     final mio = _turnoVistaPrevia;
     if (mio != null) TvVistaPrevia.instancia.cerrarSi(mio);

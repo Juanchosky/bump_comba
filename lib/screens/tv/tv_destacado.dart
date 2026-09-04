@@ -236,7 +236,7 @@ class TvDestacadoState extends State<TvDestacado> {
           child: Padding(
             padding: const EdgeInsets.fromLTRB(
               TvDestacado.margenIzq,
-              22,
+              30,
               TvDestacado.margenDer,
               24,
             ),
