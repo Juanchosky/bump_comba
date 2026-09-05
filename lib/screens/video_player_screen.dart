@@ -158,6 +158,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     return Duration.zero;
   }
 
+  /// El caudal de descarga que se enseña bajo el spinner, en KB/s.
+  ///
+  /// Se alimenta del MISMO muestreo que ya vigila la red —no hay una medicion
+  /// nueva—, asi que enseñarlo no cuesta nada: el dato ya se estaba tomando
+  /// para decidir si la conexion da o no da.
+  double _kbpsCarga = 0;
+
   // Muestreo de la velocidad REAL de descarga (cache-speed de MPV) cada 5s.
   int _throughputSampleTick = 0;
   int _stallSeconds = 0;
@@ -3360,6 +3367,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     } else {
       final bytesPerSec = await _leerCacheSpeedBytes();
       mbps = bytesPerSec * 8 / 1000000;
+    }
+
+    // El dato para la etiqueta de carga. Solo se avisa a la interfaz si el
+    // numero cambio de verdad —redondeado a KB/s enteros, que es como se
+    // enseña—: sin esa comparacion habria un `setState` por muestreo aunque en
+    // pantalla no cambiara nada.
+    final kb = mbps * 1000 / 8;
+    if (mounted && kb.round() != _kbpsCarga.round()) {
+      setState(() => _kbpsCarga = kb);
     }
 
     if (mbps > 0) {
@@ -6695,20 +6711,46 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             ],
           ),
         ),
-        if (showBackground && _isInitialLoad)
-          const Align(
-            alignment: Alignment(0, 0.20),
-            child: Text(
-              '',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: Color.fromARGB(150, 255, 255, 255),
-                fontSize: 13.5,
-                fontWeight: FontWeight.w500,
-                letterSpacing: 0.2,
+        // ── QUÉ SE ESTÁ ESPERANDO, Y A QUÉ RITMO ──────────────────────────
+        //
+        // Aquí había un `Text('')`: la etiqueta seguía en su sitio pero vacía,
+        // de cuando se dejó la carga con solo el spinner.
+        //
+        // Un círculo girando dice "espera" y nada más. No distingue una carga
+        // que avanza despacio de una que está parada, y esos dos casos piden
+        // cosas distintas de quien mira —uno esperar, el otro salir—. Con el
+        // caudal al lado la diferencia se ve sola: si el número se mueve,
+        // viene; si está a cero, no.
+        //
+        // Sin `_isInitialLoad`: el momento en que más falta hace saberlo es
+        // justo el otro, cuando se corta a mitad de película.
+        Align(
+          alignment: const Alignment(0, 0.20),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.45),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+              child: Text(
+                // Sin caudal todavía no se pone "0 KB/s": un cero parece que
+                // no llega nada, cuando lo que pasa es que aún no se ha
+                // medido.
+                _kbpsCarga >= 1
+                    ? 'Cargando video · ${_kbpsCarga.toStringAsFixed(0)} KB/s'
+                    : 'Cargando video',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Color.fromARGB(200, 255, 255, 255),
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: 0.2,
+                ),
               ),
             ),
           ),
+        ),
         if (showBackground &&
             (context
                     .findAncestorStateOfType<_VideoPlayerScreenState>()
@@ -7545,10 +7587,43 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                   width:
                                                                       8 * scale,
                                                                 ),
+                                                                // ── LA
+                                                                // DURACIÓN,
+                                                                // SOLO CUANDO
+                                                                // SE SABE ────
+                                                                //
+                                                                // Hasta que
+                                                                // MPV lee la
+                                                                // cabecera,
+                                                                // `duration`
+                                                                // es cero y
+                                                                // aquí salía
+                                                                // "00:00". Es
+                                                                // un dato
+                                                                // falso —dice
+                                                                // que la
+                                                                // película no
+                                                                // dura nada— y
+                                                                // encima salta
+                                                                // de golpe a
+                                                                // las dos
+                                                                // horas y pico
+                                                                // cuando por
+                                                                // fin se
+                                                                // conoce.
+                                                                //
+                                                                // Vacío es
+                                                                // honesto:
+                                                                // todavía no
+                                                                // se sabe.
                                                                 Text(
-                                                                  WatchProgressService.formatDuration(
-                                                                    duration,
-                                                                  ),
+                                                                  duration >
+                                                                          Duration
+                                                                              .zero
+                                                                      ? WatchProgressService.formatDuration(
+                                                                        duration,
+                                                                      )
+                                                                      : '',
                                                                   style: TextStyle(
                                                                     color:
                                                                         Colors
