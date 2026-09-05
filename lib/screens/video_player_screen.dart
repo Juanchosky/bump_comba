@@ -6724,28 +6724,48 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         //
         // Sin `_isInitialLoad`: el momento en que más falta hace saberlo es
         // justo el otro, cuando se corta a mitad de película.
-        Align(
-          alignment: const Alignment(0, 0.20),
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: 0.45),
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-              child: Text(
-                // Sin caudal todavía no se pone "0 KB/s": un cero parece que
-                // no llega nada, cuando lo que pasa es que aún no se ha
-                // medido.
-                _kbpsCarga >= 1
-                    ? 'Cargando video · ${_kbpsCarga.toStringAsFixed(0)} KB/s'
-                    : 'Cargando video',
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Color.fromARGB(200, 255, 255, 255),
-                  fontSize: 13.5,
-                  fontWeight: FontWeight.w500,
-                  letterSpacing: 0.2,
+        // ── COLGADO DEL SPINNER, NO DE LA PANTALLA ──────────────────────
+        //
+        // Iba con `Alignment(0, 0.13)`, y eso NO son pixeles: es una fraccion
+        // de la mitad del alto. En horizontal la pantalla es mucho mas baja,
+        // asi que la misma cifra da bastantes menos pixeles y el texto se
+        // subia hasta pegarse al spinner. Ajustar una cifra por orientacion lo
+        // tapaba, pero seguiria fallando en la siguiente pantalla distinta.
+        //
+        // Medido desde el spinner el problema desaparece: `Center` lo pone en
+        // el mismo eje y el desplazamiento es en PIXELES —su radio mas un
+        // hueco fijo—, asi que la separacion se ve igual en vertical, en
+        // horizontal y en cualquier tamaño.
+        //
+        // Y el spinner no se toca: sigue exactamente centrado, que es lo que
+        // lo deja al mismo nivel que los botones de reproducir y pausa.
+        Center(
+          child: Transform.translate(
+            offset: Offset(0, spinnerSize / 2 + 22),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.45),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 6,
+                ),
+                child: Text(
+                  // Sin caudal todavía no se pone "0 KB/s": un cero parece que
+                  // no llega nada, cuando lo que pasa es que aún no se ha
+                  // medido.
+                  _kbpsCarga >= 1
+                      ? 'Cargando video · ${_kbpsCarga.toStringAsFixed(0)} KB/s'
+                      : 'Cargando video',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Color.fromARGB(200, 255, 255, 255),
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w500,
+                    letterSpacing: 0.2,
+                  ),
                 ),
               ),
             ),
