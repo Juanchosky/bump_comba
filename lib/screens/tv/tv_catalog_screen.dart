@@ -1523,7 +1523,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
             Positioned(
               left: 0,
               right: 0,
-              top: 40,
+              top: 46,
               child: Center(
                 child: _BarraMenu(
                   secciones: _secciones,
