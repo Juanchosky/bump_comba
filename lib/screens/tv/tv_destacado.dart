@@ -55,8 +55,13 @@ class TvDestacado extends StatefulWidget {
   /// Bajar a la primera fila de carátulas.
   final VoidCallback onAbajo;
 
-  /// Izquierda desde el primer botón: se vuelve al menú lateral.
-  final VoidCallback onSalirIzquierda;
+  /// Arriba desde el destacado: se sube a la barra del menú.
+  ///
+  /// Era `onSalirIzquierda` de cuando el menú estaba en una columna a la
+  /// izquierda. Al mudarse arriba, la tecla tenía que mudarse con él: la
+  /// dirección de una flecha en un mando no es una convención, es una
+  /// instrucción sobre dónde mirar.
+  final VoidCallback onSalirArriba;
 
   /// Pasar al siguiente destacado.
   final VoidCallback onSiguiente;
@@ -73,7 +78,7 @@ class TvDestacado extends StatefulWidget {
     required this.listo,
     required this.onReproducir,
     required this.onAbajo,
-    required this.onSalirIzquierda,
+    required this.onSalirArriba,
     required this.onSiguiente,
     required this.onFoco,
   });
@@ -86,7 +91,13 @@ class TvDestacado extends StatefulWidget {
 
   /// Margen izquierdo del texto: el mismo que el de los títulos de las filas
   /// de abajo. Las dos cosas tienen que empezar en la misma vertical.
-  static const double margenIzq = 106;
+  ///
+  /// 56 y no 106. Los 106 eran el ancho del menú lateral recogido más su aire:
+  /// todo lo de la izquierda empezaba después del menú para no quedar debajo.
+  /// Con el menú arriba ya no hay nada que esquivar, y esos 50 píxeles vuelven
+  /// a la imagen. Queda el margen de seguridad del overscan, que es el único
+  /// motivo real para no pegarse al filo.
+  static const double margenIzq = 56;
 
   /// Margen derecho. La tarjeta NO llega al filo: es una tarjeta, y una
   /// tarjeta pegada al borde de la pantalla deja de leerse como tal. Ademas,
@@ -174,18 +185,21 @@ class TvDestacadoState extends State<TvDestacado> {
       return KeyEventResult.handled;
     }
 
-    if (k == LogicalKeyboardKey.arrowLeft) {
-      widget.onSalirIzquierda();
-      return KeyEventResult.handled;
-    }
+    // Izquierda no lleva a ningún sitio: derecha pasa al siguiente destacado
+    // y el menú ya no está a este lado. Se atrapa igual para que la traversal
+    // de Flutter no se lleve el foco a una carátula de abajo por geometría.
+    if (k == LogicalKeyboardKey.arrowLeft) return KeyEventResult.handled;
 
     if (k == LogicalKeyboardKey.arrowDown) {
       widget.onAbajo();
       return KeyEventResult.handled;
     }
 
-    // Arriba no lleva a ningún sitio: esto ya es lo más alto de la pantalla.
-    if (k == LogicalKeyboardKey.arrowUp) return KeyEventResult.handled;
+    // Arriba sube a la barra del menú, que flota justo encima de esta imagen.
+    if (k == LogicalKeyboardKey.arrowUp) {
+      widget.onSalirArriba();
+      return KeyEventResult.handled;
+    }
 
     return KeyEventResult.ignored;
   }

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -172,8 +173,8 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   ///
   /// Recogido no desaparece: quedan los iconos, que bastan para saber donde
   /// estas y para volver.
-  bool _lateralAbierto = false;
-  final List<FocusNode> _nodosLateral = List.generate(
+  bool _menuEnfocado = false;
+  final List<FocusNode> _nodosMenu = List.generate(
     _secciones.length,
     (i) => FocusNode(debugLabel: 'lateral$i'),
   );
@@ -213,8 +214,8 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   /// Espera antes de rehacer "Seguir viendo". Ver `_alCambiarProgreso`.
   Timer? _refrescoSeguirViendo;
 
-  /// Espera antes de recoger el menu lateral. Ver `_focoEnLateral`.
-  Timer? _cierreLateral;
+  /// Espera antes de recoger el menu lateral. Ver `_focoEnMenu`.
+  Timer? _cierreMenu;
 
   // ── El destacado de arriba ───────────────────────────────────────────────
   //
@@ -633,15 +634,15 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   /// Al salir se espera un instante: si el foco solo esta saltando de un item
   /// a otro, el siguiente avisa antes de que venza el plazo y el menu ni se
   /// entera. Solo se recoge cuando el foco se va de verdad, al contenido.
-  void _focoEnLateral(bool dentro) {
-    _cierreLateral?.cancel();
+  void _focoEnMenu(bool dentro) {
+    _cierreMenu?.cancel();
     if (dentro) {
-      if (!_lateralAbierto) setState(() => _lateralAbierto = true);
+      if (!_menuEnfocado) setState(() => _menuEnfocado = true);
       return;
     }
-    _cierreLateral = Timer(const Duration(milliseconds: 80), () {
-      if (mounted && _lateralAbierto) {
-        setState(() => _lateralAbierto = false);
+    _cierreMenu = Timer(const Duration(milliseconds: 80), () {
+      if (mounted && _menuEnfocado) {
+        setState(() => _menuEnfocado = false);
       }
     });
   }
@@ -807,8 +808,8 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     WatchProgressService().removeListener(_alCambiarProgreso);
     _plazoCarga?.cancel();
     _refrescoSeguirViendo?.cancel();
-    _cierreLateral?.cancel();
-    for (final n in _nodosLateral) {
+    _cierreMenu?.cancel();
+    for (final n in _nodosMenu) {
       n.dispose();
     }
     _nodoContenido.dispose();
@@ -1364,10 +1365,20 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                                   onReproducir: () => _abrirDestacado(false),
                                   onSiguiente: _siguienteDestacado,
                                   onAbajo: () => _irAFila(0, 0),
-                                  onSalirIzquierda:
-                                      () =>
-                                          _nodosLateral[_seccion]
-                                              .requestFocus(),
+                                  // ARRIBA ES LA PUERTA DEL MENU.
+                                  //
+                                  // Con el menu a la izquierda, la puerta era
+                                  // la flecha izquierda. Ahora que esta arriba
+                                  // y flotando sobre el propio destacado, la
+                                  // direccion tiene que apuntar a donde se ve:
+                                  // pulsar izquierda para subir seria pedirle
+                                  // al usuario que ignore lo que tiene delante.
+                                  //
+                                  // Y entra por la seccion ABIERTA, no por la
+                                  // primera: es la que ya esta iluminada, asi
+                                  // que el foco cae donde la vista ya estaba.
+                                  onSalirArriba:
+                                      () => _nodosMenu[_seccion].requestFocus(),
                                   onFoco: (dentro) {
                                     if (dentro) _filaActual = -1;
                                   },
@@ -1386,10 +1397,13 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                                   // abrir el catalogo manda el destacado, que es
                                   // lo primero que se ve.
                                   autofocoPrimero: false,
-                                  onSalirIzquierda:
-                                      () =>
-                                          _nodosLateral[_seccion]
-                                              .requestFocus(),
+                                  // Antes esto saltaba al menu lateral. Con el
+                                  // menu arriba, izquierda en la primera
+                                  // caratula no lleva a ningun sitio: se queda
+                                  // donde esta. Al menu se sube con arriba,
+                                  // fila a fila hasta el destacado, que es el
+                                  // mismo camino por el que se bajo.
+                                  onSalirIzquierda: () {},
                                   // Arriba desde la primera fila sube al
                                   // destacado, no a otra fila.
                                   onArriba:
@@ -1445,47 +1459,27 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
               ),
             ),
 
-            // ── El menu, ENCIMA del contenido ──────────────────────────────
+            // ── EL MENU, ARRIBA Y FLOTANDO ─────────────────────────────
             //
-            // Con un degradado de negro a transparente por debajo. Sin el, el
-            // texto se pierde en cuanto pasa sobre un poster claro: ese es el
-            // precio de superponer, y hay que pagarlo o no se lee.
+            // Estaba a la izquierda, en columna. Arriba y en horizontal se
+            // gana lo que en un televisor mas escasea: ANCHO. Las caratulas
+            // ya no empiezan 90 pixeles adentro y el destacado se ve entero.
+            //
+            // Y no lleva velo debajo: lleva DESENFOQUE. El velo era un parche
+            // —tapar la imagen para poder leer encima—; el desenfoque deja
+            // pasar el color y la luz de lo que hay detras y solo se come el
+            // detalle, que es lo unico que estorbaba. Por eso la barra se ve
+            // distinta segun el destacado en vez de ser una mancha negra
+            // siempre igual.
             Positioned(
               left: 0,
-              top: 0,
-              bottom: 0,
-              child: DecoratedBox(
-                // Sin `const`: los colores salen de `withValues`, que es una
-                // llamada y no se puede evaluar en tiempo de compilacion.
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.centerLeft,
-                    end: Alignment.centerRight,
-                    // El tramo opaco es EXACTAMENTE el color de la pagina, y
-                    // el transparente es ese mismo color sin opacidad — no
-                    // `Colors.transparent`, que es negro invisible y al
-                    // mezclarse tira el degradado hacia el negro por el
-                    // camino.
-                    colors: [
-                      _fondo,
-                      _fondo.withValues(alpha: 0.85),
-                      _fondo.withValues(alpha: 0),
-                    ],
-                    // El velo cubre casi todo el menu y se difumina al final: al
-                    // abrirse, el texto nuevo tiene que caer sobre negro, no
-                    // sobre una caratula.
-                    stops: [0.0, 0.72, 1.0],
-                  ),
-                ),
-                // ── Barra lateral ──────────────────────────────────────────────
-                //
-                // Sin buscador ni iconos de cuenta: cada uno seria una promesa que
-                // hay que cumplir, y hoy no llevan a ninguna parte. Y sin "TV en
-                // vivo", que esta app no maneja.
-                child: _Lateral(
+              right: 0,
+              top: 38,
+              child: Center(
+                child: _BarraMenu(
                   secciones: _secciones,
                   activa: _seccion,
-                  nodos: _nodosLateral,
+                  nodos: _nodosMenu,
                   onElegir: (i) async {
                     if (i == _iBuscar) {
                       await Navigator.of(context).push(
@@ -1494,9 +1488,9 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                         ),
                       );
                       // Al volver, el foco se queda en BUSCAR: es de donde
-                      // saliste, y dejarlo en otro sitio obliga a buscar con la
-                      // vista donde estabas.
-                      if (mounted) _nodosLateral[_iBuscar].requestFocus();
+                      // saliste, y dejarlo en otro sitio obliga a buscar con
+                      // la vista donde estabas.
+                      if (mounted) _nodosMenu[_iBuscar].requestFocus();
                       return;
                     }
                     if (i == _seccion) return;
@@ -1507,8 +1501,8 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                     });
                   },
                   onEntrarContenido: () => _nodoContenido.requestFocus(),
-                  abierto: _lateralAbierto,
-                  onFoco: _focoEnLateral,
+                  enfocado: _menuEnfocado,
+                  onFoco: _focoEnMenu,
                 ),
               ),
             ),
@@ -1746,7 +1740,12 @@ class _FilaState extends State<_Fila> {
             // 4 y no 10: es lo que separa el nombre de la categoria de sus
             // caratulas. Justo lo suficiente para que no se toquen; mas aire
             // aqui era el hueco que hacia parecer las filas separadas.
-            padding: const EdgeInsets.only(left: 106, bottom: 4),
+            // 56 y no 106: los 106 dejaban sitio al menu lateral recogido, y
+            // ese menu ya no esta a la izquierda. Es el mismo numero que
+            // `TvDestacado.margenIzq` — el titulo de la seccion y el del
+            // destacado empiezan en la misma vertical, y romper eso se ve
+            // como una columna torcida.
+            padding: const EdgeInsets.only(left: 56, bottom: 4),
             child: Text(
               widget.titulo,
               maxLines: 1,
@@ -1762,16 +1761,13 @@ class _FilaState extends State<_Fila> {
           //
           // No es lo mismo que ponerlo en su `padding`: el padding se desplaza
           // con el contenido, asi que las caratulas se seguian pintando por
-          // debajo del menu y asomaban por su lateral al recorrer la fila.
-          //
-          // 100 y no 106: los 6 que faltan se los queda el `padding` del
-          // propio ListView, para que la tarjeta enfocada crezca sin salirse.
+          // debajo del margen y asomaban por el filo al recorrer la fila.
           Padding(
-            // 94 y no 106: los 12 que faltan se los queda el `padding` del
+            // 44 y no 56: los 12 que faltan se los queda el `padding` del
             // propio ListView, para que la tarjeta enfocada crezca sin salirse
-            // por la izquierda. La suma sigue dando 106, que es donde empieza
+            // por la izquierda. La suma sigue dando 56, que es donde empieza
             // el titulo de la seccion.
-            padding: const EdgeInsets.only(left: 94),
+            padding: const EdgeInsets.only(left: 44),
             child: SizedBox(
               // Caratula (204) + hueco (8) + titulo (~15), y 12 mas de aire:
               // al crecer un 5%, la caratula gana 10 de alto y sin ese margen
@@ -2119,179 +2115,202 @@ class _Centrado extends StatelessWidget {
       Container(color: Colors.black, child: Center(child: child));
 }
 
-/// Barra lateral del catálogo.
+/// La barra de secciones, arriba y en horizontal.
 ///
-/// SIN BUSCADOR NI ICONOS DE CUENTA
-/// La referencia los lleva arriba a la derecha, pero cada uno sería una promesa
-/// que hay que cumplir: hoy no llevan a ninguna parte. Un icono que no hace
-/// nada resta más de lo que decora.
+/// SIN BUSCADOR NI ICONOS DE CUENTA A LA DERECHA
+/// La referencia los lleva ahi, pero cada uno seria una promesa que hay que
+/// cumplir: hoy no llevan a ninguna parte. Un icono que no hace nada resta
+/// mas de lo que decora. Y sin "TV en vivo": esta app no lo maneja.
 ///
-/// Y sin "TV en vivo": esta app no lo maneja.
-class _Lateral extends StatelessWidget {
+/// ── POR QUE UNA CAPSULA Y NO UNA BANDA ────────────────────────────────────
+///
+/// Una banda de borde a borde parte la pantalla en dos y le roba altura al
+/// destacado. La capsula flota: ocupa lo que miden sus items y deja ver la
+/// imagen por los lados, que es lo que hace que se lea como algo POSADO
+/// encima del contenido y no como una zona aparte.
+class _BarraMenu extends StatelessWidget {
   final List<({String texto, IconData icono})> secciones;
   final int activa;
   final List<FocusNode> nodos;
   final ValueChanged<int> onElegir;
   final VoidCallback onEntrarContenido;
-  final bool abierto;
+
+  /// El foco esta dentro de la barra. No cambia la forma —eso seria un salto
+  /// cada vez que entras y sales—, solo la asienta: mas opaca y con el borde
+  /// mas marcado, para que se separe de la imagen mientras la usas.
+  final bool enfocado;
   final ValueChanged<bool> onFoco;
 
-  const _Lateral({
+  const _BarraMenu({
     required this.secciones,
     required this.activa,
     required this.nodos,
     required this.onElegir,
     required this.onEntrarContenido,
-    required this.abierto,
+    required this.enfocado,
     required this.onFoco,
   });
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOutCubic,
-      // Estrecho y pegado al contenido, como en la referencia: el lateral es
-      // una guia, no una columna con peso propio. Cuanto menos separe, mas
-      // sitio queda para lo que se viene a ver.
-      // Recogido caben los iconos; abierto, iconos y texto. La transicion es
-      // de 220 ms: lo bastante para que se lea como un movimiento y no como un
-      // salto, y lo bastante corta para no estorbar a quien va rapido.
-      // 236 y no 218: el texto crecio a 16 px con mas espacio entre letras, y
-      // "TELENOVELAS" se quedaba al filo. Como recorta sin avisar
-      // (`overflow: clip`), no habria dado error — solo una palabra cortada.
-      width: abierto ? 236 : 90,
-      padding: const EdgeInsets.only(left: 30, top: 26, bottom: 26),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // ── El menu, CENTRADO en vertical ──────────────────────────
-          //
-          // Pegado arriba quedaba desequilibrado: marca y secciones formaban un
-          // bloque en la esquina con toda la mitad inferior vacia. Centrado, el
-          // menu acompaña a las filas de caratulas en vez de colgar de arriba.
-          //
-          // La marca se queda donde estaba —arriba es su sitio— y son los
-          // `Spacer` los que empujan las secciones al centro.
-          const Spacer(),
-
-          for (int i = 0; i < secciones.length; i++)
-            _ItemLateral(
-              indice: i,
-              texto: secciones[i].texto,
-              icono: secciones[i].icono,
-              activa: i == activa,
-              abierto: abierto,
-              onFoco: onFoco,
-              nodo: nodos[i],
-              onElegir: () => onElegir(i),
-              onDerecha: onEntrarContenido,
-              // EL MENU DA LA VUELTA.
-              //
-              // Antes las flechas se topaban con el final: para llegar a
-              // BUSCAR, que es la ultima, habia que bajar cinco veces desde
-              // INICIO. Dando la vuelta esta a UNA pulsacion hacia arriba, y
-              // volver de BUSCAR a INICIO es otra hacia abajo.
-              //
-              // Es una lista de seis, corta y siempre visible: aqui la vuelta
-              // no desorienta, ahorra.
-              onArriba:
-                  () =>
-                      nodos[(i - 1 + secciones.length) % secciones.length]
-                          .requestFocus(),
-              onAbajo: () => nodos[(i + 1) % secciones.length].requestFocus(),
+    return ClipRRect(
+      // El recorte va FUERA del desenfoque a proposito: `BackdropFilter` no
+      // tiene forma propia, difumina todo lo que quede dentro de su recorte.
+      // Sin este `ClipRRect` el desenfoque se comeria la pantalla entera.
+      borderRadius: BorderRadius.circular(34),
+      child: BackdropFilter(
+        // 18 y no 30: con mas desenfoque la imagen de detras se convierte en
+        // una mancha de color y la barra vuelve a parecer un panel opaco, que
+        // es justo lo que se queria evitar. Con 18 todavia se adivina que hay
+        // detras.
+        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOutCubic,
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+          decoration: BoxDecoration(
+            // Negro translucido, no blanco: encima de una imagen clara el
+            // blanco se pierde y el texto blanco de dentro con el. El negro
+            // funciona sobre cualquier destacado, que es la unica garantia
+            // que se puede tener cuando el fondo lo pone el catalogo.
+            color: Colors.black.withValues(alpha: enfocado ? 0.58 : 0.42),
+            borderRadius: BorderRadius.circular(34),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: enfocado ? 0.16 : 0.10),
             ),
-
-          const Spacer(),
-        ],
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (int i = 0; i < secciones.length; i++)
+                _ItemMenu(
+                  texto: secciones[i].texto,
+                  icono: secciones[i].icono,
+                  activa: i == activa,
+                  onFoco: onFoco,
+                  nodo: nodos[i],
+                  onElegir: () => onElegir(i),
+                  onAbajo: onEntrarContenido,
+                  // LA BARRA DA LA VUELTA.
+                  //
+                  // Antes las flechas se topaban con el final: para llegar a
+                  // BUSCAR, que es la ultima, habia que recorrer las cinco
+                  // anteriores. Dando la vuelta esta a UNA pulsacion hacia la
+                  // izquierda desde INICIO.
+                  //
+                  // Es una lista de seis, corta y siempre visible: aqui la
+                  // vuelta no desorienta, ahorra.
+                  onIzquierda:
+                      () =>
+                          nodos[(i - 1 + secciones.length) % secciones.length]
+                              .requestFocus(),
+                  onDerecha:
+                      () => nodos[(i + 1) % secciones.length].requestFocus(),
+                ),
+            ],
+          ),
+        ),
       ),
     );
   }
 }
 
-class _ItemLateral extends StatefulWidget {
-  /// Su sitio en la lista. Solo sirve para retrasar su entrada: ver seis
-  /// textos aparecer a la vez es un interruptor; verlos caer de arriba abajo
-  /// es un movimiento, y se lee como que el menu se despliega.
-  final int indice;
+/// Una seccion dentro de la barra.
+///
+/// ── EL TEXTO SOLO DONDE HACE FALTA ────────────────────────────────────────
+///
+/// Seis iconos con su palabra al lado no caben a lo ancho sin apretarlos, y
+/// apretados dejan de leerse a distancia de sofa. Asi que la palabra la
+/// enseña solo el item que la NECESITA: el que estas mirando y el de la
+/// seccion abierta. El resto se queda en icono, que a esa distancia basta
+/// para reconocerlos.
+///
+/// Es lo mismo que hace la referencia —una pastilla con texto y logos sueltos
+/// alrededor—, y de paso resuelve el ancho sin discutir con el.
+class _ItemMenu extends StatefulWidget {
   final String texto;
   final IconData icono;
   final bool activa;
-  final bool abierto;
   final ValueChanged<bool> onFoco;
   final FocusNode nodo;
   final VoidCallback onElegir;
+  final VoidCallback onAbajo;
+  final VoidCallback onIzquierda;
   final VoidCallback onDerecha;
-  final VoidCallback? onArriba;
-  final VoidCallback? onAbajo;
 
-  const _ItemLateral({
-    required this.indice,
+  const _ItemMenu({
     required this.texto,
     required this.icono,
     required this.activa,
-    required this.abierto,
     required this.onFoco,
     required this.nodo,
     required this.onElegir,
+    required this.onAbajo,
+    required this.onIzquierda,
     required this.onDerecha,
-    this.onArriba,
-    this.onAbajo,
   });
 
   @override
-  State<_ItemLateral> createState() => _ItemLateralState();
+  State<_ItemMenu> createState() => _ItemMenuState();
 }
 
-class _ItemLateralState extends State<_ItemLateral> {
+class _ItemMenuState extends State<_ItemMenu> {
   bool _foco = false;
 
   @override
   Widget build(BuildContext context) {
-    // Tres estados y no dos, porque son tres cosas distintas y el usuario tiene
-    // que poder separarlas de un vistazo desde el sofá:
-    //  · la sección ABIERTA (roja, es donde estás)
-    //  · la que estás MIRANDO con el mando (blanca)
-    //  · el resto (gris)
+    // Tres estados y no dos, porque son tres cosas distintas y hay que poder
+    // separarlas de un vistazo desde el sofa:
+    //  · la que estas MIRANDO con el mando — pastilla clara, letra oscura
+    //  · la seccion ABIERTA — pastilla apenas insinuada, letra blanca
+    //  · el resto — solo el icono, apagado
     //
-    // Sin separar "abierta" de "enfocada", mover el mando parecería cambiar de
-    // sección sin haber pulsado nada.
+    // Sin separar "abierta" de "enfocada", mover el mando pareceria cambiar de
+    // seccion sin haber pulsado nada.
     final Color color;
     if (_foco) {
-      color = Colors.white;
+      // Sobre la pastilla clara, el texto va del color de la pagina. Negro
+      // puro se veria como un agujero; este es el mismo negro del fondo, y
+      // asi la pastilla parece un recorte de la pantalla.
+      color = AppColors.fondoTv;
     } else if (widget.activa) {
-      color = const Color(0xFFE50914);
+      color = Colors.white;
     } else {
       // Estaba en `white38`. En un panel de televisor, a tres metros y con la
-      // imagen del destacado detras, ese gris se lee como texto deshabilitado
-      // — de ahi que el menu pareciera de relleno. Sube lo justo para que se
-      // lea como una opcion mas, sin competir con la seccion abierta.
-      color = Colors.white.withValues(alpha: 0.52);
+      // imagen del destacado detras, ese gris se lee como deshabilitado — de
+      // ahi que el menu pareciera de relleno.
+      color = Colors.white.withValues(alpha: 0.62);
     }
+
+    final conTexto = _foco || widget.activa;
 
     return Focus(
       focusNode: widget.nodo,
       onFocusChange: (v) {
         setState(() => _foco = v);
-        // Cualquier item con el foco abre el menu; al salir, se recoge. El
-        // padre agrupa los avisos, asi que pasar de un item a otro no lo cierra
-        // y lo vuelve a abrir.
+        // Cualquier item con el foco "enciende" la barra; al salir se apaga.
+        // El padre agrupa los avisos, asi que pasar de un item a otro no la
+        // apaga y la vuelve a encender.
         widget.onFoco(v);
       },
       onKeyEvent: (node, event) {
         if (event is! KeyDownEvent) return KeyEventResult.ignored;
         final k = event.logicalKey;
 
+        if (k == LogicalKeyboardKey.arrowDown) {
+          widget.onAbajo();
+          return KeyEventResult.handled;
+        }
+        // Arriba no lleva a ningun sitio: la barra es lo mas alto que hay. Se
+        // atrapa igual para que la traversal de Flutter no se lleve el foco a
+        // una tarjeta por geometria.
+        if (k == LogicalKeyboardKey.arrowUp) return KeyEventResult.handled;
+        if (k == LogicalKeyboardKey.arrowLeft) {
+          widget.onIzquierda();
+          return KeyEventResult.handled;
+        }
         if (k == LogicalKeyboardKey.arrowRight) {
           widget.onDerecha();
-          return KeyEventResult.handled;
-        }
-        if (k == LogicalKeyboardKey.arrowUp && widget.onArriba != null) {
-          widget.onArriba!();
-          return KeyEventResult.handled;
-        }
-        if (k == LogicalKeyboardKey.arrowDown && widget.onAbajo != null) {
-          widget.onAbajo!();
           return KeyEventResult.handled;
         }
         if (k == LogicalKeyboardKey.select ||
@@ -2302,76 +2321,66 @@ class _ItemLateralState extends State<_ItemLateral> {
         }
         return KeyEventResult.ignored;
       },
-      child: Padding(
-        padding: const EdgeInsets.only(bottom: 26),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOutCubic,
+        padding: EdgeInsets.symmetric(
+          horizontal: conTexto ? 17 : 13,
+          vertical: 9,
+        ),
+        decoration: BoxDecoration(
+          color:
+              _foco
+                  ? Colors.white.withValues(alpha: 0.94)
+                  : widget.activa
+                  ? Colors.white.withValues(alpha: 0.12)
+                  : Colors.transparent,
+          borderRadius: BorderRadius.circular(26),
+        ),
         child: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
             AnimatedScale(
               // El icono acompaña al foco. Muy poco: es una señal de apoyo,
-              // el color ya hace el trabajo.
-              scale: _foco ? 1.12 : 1.0,
+              // la pastilla ya hace el trabajo.
+              scale: _foco ? 1.08 : 1.0,
               duration: const Duration(milliseconds: 180),
               curve: Curves.easeOutBack,
-              child: Icon(widget.icono, size: 21, color: color),
+              child: Icon(widget.icono, size: 18, color: color),
             ),
-            const SizedBox(width: 16),
-            Expanded(
-              // ── LA ENTRADA, EN CASCADA ────────────────────────────────
-              //
-              // Antes los seis textos se desvanecian a la vez y con el mismo
-              // plazo: el menu se encendia como un interruptor. Ahora cada uno
-              // entra un poco despues que el de arriba y llega deslizandose
-              // desde la izquierda, siguiendo al panel que se abre.
-              //
-              // El retraso se hace con la DURACION, no con un temporizador:
-              // todos arrancan juntos pero cada uno tarda mas, asi que llegan
-              // escalonados. Sin temporizadores no hay nada que cancelar si el
-              // menu se cierra a medias — y con un mando eso pasa a menudo.
-              //
-              // 34 ms por escalon: seis items son 170 ms de diferencia entre
-              // el primero y el ultimo. Mas que eso y el ultimo llega tarde
-              // para alguien que ya esta bajando con el mando.
+            // ── LA PALABRA, APARECIENDO A LO ANCHO ────────────────────────
+            //
+            // `AnimatedSize` no vale aqui: mide a su hijo, y el hijo es un
+            // texto que o esta o no esta. Con un factor de ancho el hueco
+            // crece desde cero y el texto se desliza dentro, asi que los items
+            // de al lado se apartan acompañando al movimiento en vez de dar un
+            // salto cuando el texto aparece de golpe.
+            ClipRect(
               child: TweenAnimationBuilder<double>(
-                tween: Tween<double>(begin: 0, end: widget.abierto ? 1.0 : 0.0),
-                duration: Duration(milliseconds: 230 + widget.indice * 34),
+                tween: Tween<double>(begin: 0, end: conTexto ? 1 : 0),
+                duration: const Duration(milliseconds: 200),
                 curve: Curves.easeOutCubic,
-                builder: (context, t, hijo) {
-                  return Opacity(
-                    opacity: t.clamp(0.0, 1.0),
-                    child: Transform.translate(
-                      // Entra desde la izquierda, desde debajo del icono, que
-                      // es de donde viene el panel. Corto a proposito: un
-                      // recorrido largo se nota lento aunque dure lo mismo.
-                      offset: Offset((1 - t) * -22, 0),
-                      child: hijo,
+                builder:
+                    (context, t, hijo) => Align(
+                      alignment: Alignment.centerLeft,
+                      widthFactor: t,
+                      child: Opacity(opacity: t.clamp(0.0, 1.0), child: hijo),
                     ),
-                  );
-                },
-                child: AnimatedDefaultTextStyle(
-                  duration: const Duration(milliseconds: 130),
-                  // TODO EN MAYUSCULAS necesita mas espacio entre letras que
-                  // el texto normal: las mayusculas no tienen ascendentes ni
-                  // descendentes que separen unas de otras, y apretadas se
-                  // leen como un bloque. Estaba en 0.7, que para 15 px en
-                  // versales es poco — eso es lo que le daba el aire de
-                  // plantilla sin rematar. 1.6 las separa de verdad.
-                  //
-                  // Y el grosor base sube de w500 a w600: a distancia de sofa
-                  // los trazos finos se deshacen contra el fondo.
-                  style: TextStyle(
-                    color: color,
-                    fontSize: 15,
-                    fontWeight:
-                        widget.activa || _foco
-                            ? FontWeight.w500
-                            : FontWeight.w500,
-                    letterSpacing: 0.4,
-                  ),
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 9),
                   child: Text(
                     widget.texto,
                     maxLines: 1,
-                    overflow: TextOverflow.clip,
                     softWrap: false,
+                    overflow: TextOverflow.clip,
+                    // El grosor sube a w600: a distancia de sofa los trazos
+                    // finos se deshacen contra el fondo.
+                    style: TextStyle(
+                      color: color,
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.3,
+                    ),
                   ),
                 ),
               ),
