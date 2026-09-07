@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -259,37 +258,19 @@ class TvDestacadoState extends State<TvDestacado> {
               // propósito, y recortarlo lo convertiría en una línea.
               clipBehavior: Clip.none,
               children: [
-                // ── 1. El resplandor ──────────────────────────────────────
+                // ── 1. SIN RESPLANDOR DETRAS ──────────────────────────
                 //
-                // Una copia desenfocada de la misma imagen, detrás de la
-                // tarjeta y desbordando por abajo. Es lo que hace que en el
-                // teléfono el banner parezca apoyado sobre la pantalla en vez
-                // de pegado a ella, y en una tele —donde el fondo es casi
-                // negro— se nota todavía más.
+                // Habia una copia desenfocada de la misma imagen asomando por
+                // detras de la tarjeta. Venia del telefono, donde la portada
+                // es pequeña y ese halo la despega de la pantalla; en un
+                // televisor la portada ocupa media pantalla, asi que el halo
+                // tambien era enorme y sobre el fondo casi negro del catalogo
+                // se veia antes que la propia imagen.
                 //
-                // A media resolución: va a 30 de desenfoque, así que el
-                // detalle no se ve y en un aparato de 1 GB no hay que pagarlo.
-                if (hayImagen)
-                  Positioned(
-                    top: 16,
-                    left: 14,
-                    right: 14,
-                    bottom: -12,
-                    child: IgnorePointer(
-                      child: ImageFiltered(
-                        imageFilter: ImageFilter.blur(sigmaX: 30, sigmaY: 30),
-                        child: Opacity(
-                          opacity: 0.55,
-                          child: FastThumbnail(
-                            url: imagen,
-                            width: double.infinity,
-                            height: double.infinity,
-                            cacheWidth: 400,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
+                // Se fue con el borde: la tarjeta ya no se apoya en nada ni
+                // se enmarca, simplemente esta. De paso se ahorra un
+                // desenfoque a pantalla completa en cada cambio de destacado,
+                // que en un aparato de 1 GB no es poco.
 
                 // ── 2. La tarjeta ─────────────────────────────────────────
                 //
@@ -313,16 +294,36 @@ class TvDestacadoState extends State<TvDestacado> {
                 // Ya me paso antes en esta misma tarjeta.
                 Container(
                   decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(12),
+                    // ── ESQUINAS RECTAS ───────────────────────────────────
+                    //
+                    // El radio de 12 venia del telefono, donde la portada es
+                    // una tarjeta dentro de una lista y el redondeo la separa
+                    // de lo que tiene al lado. Aqui no hay nada al lado: lo
+                    // que la rodea es el fondo de la pantalla.
+                    //
+                    // Y sin borde, la curva era lo ultimo que la seguia
+                    // leyendo como una tarjeta pegada encima. Recta y a
+                    // sangre, la portada es PARTE de la pantalla — la misma
+                    // identidad que la barra y las filas, donde nada esta
+                    // enmarcado.
+                    // ── EL FILO ───────────────────────────────────────────
+                    //
+                    // 1 px al 8%, y sin sombra detras. La sombra se probo y se
+                    // quito: `fondotv.png` es casi negro entero —brillo medio
+                    // de 6 sobre 255—, asi que una sombra negra sobre fondo
+                    // negro no separa de nada, solo apagaba el pie.
+                    //
+                    // El filo si hace falta. Sin nada, la portada se recorta
+                    // contra el fondo como una pegatina; con esto se ve donde
+                    // TERMINA sin que llegue a leerse como un marco. La clave
+                    // esta en que las esquinas siguen RECTAS: lo que convertia
+                    // esto en una tarjeta pegada encima era la curva, no la
+                    // linea.
                     border: Border.all(
-                      // 0.13, mas tenue que el 0.2 del telefono. Alli la
-                      // pantalla se mira de cerca y el filo se pierde si no
-                      // aprieta; a tres metros el blanco sobre fondo oscuro
-                      // gana presencia, y al 20% el marco se veia antes que la
-                      // portada. Asi marca el limite sin dibujarlo.
-                      color: Colors.white.withValues(alpha: 0.13),
-                      width: 1.5,
+                      color: Colors.white.withValues(alpha: 0.08),
+                      width: 1,
                     ),
+
                     gradient: LinearGradient(
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
@@ -333,10 +334,7 @@ class TvDestacadoState extends State<TvDestacado> {
                       ],
                     ),
                   ),
-                  child: ClipRRect(
-                    // 11 y no 12: por dentro del borde de 1,5. Con el mismo
-                    // radio, la imagen asomaría por las esquinas.
-                    borderRadius: BorderRadius.circular(11),
+                  child: ClipRect(
                     child: Stack(
                       fit: StackFit.expand,
                       children: [
@@ -368,9 +366,12 @@ class TvDestacadoState extends State<TvDestacado> {
                               colors: [
                                 Colors.transparent,
                                 Colors.transparent,
-                                AppColors.fondoTv.withValues(alpha: 0.7),
+                                AppColors.fondoTv.withValues(alpha: 0.55),
                               ],
-                              stops: const [0.0, 0.55, 1.0],
+                              // Empieza mas abajo (0.65 en vez de 0.55): el
+                              // velo tapaba casi la mitad inferior de la
+                              // portada, y ahi todavia hay imagen que ver.
+                              stops: const [0.0, 0.65, 1.0],
                             ),
                           ),
                         ),
@@ -385,11 +386,17 @@ class TvDestacadoState extends State<TvDestacado> {
                               begin: Alignment.centerLeft,
                               end: Alignment.centerRight,
                               colors: [
-                                AppColors.fondoTv.withValues(alpha: 0.8),
-                                AppColors.fondoTv.withValues(alpha: 0.42),
+                                // Baja de 0.8/0.42 a 0.62/0.26. Lo que tiene
+                                // que garantizar es que se lea el texto, no
+                                // que la portada se apague: el titulo va en
+                                // blanco de 22 y con ese contraste sobra.
+                                AppColors.fondoTv.withValues(alpha: 0.62),
+                                AppColors.fondoTv.withValues(alpha: 0.26),
                                 AppColors.fondoTv.withValues(alpha: 0),
                               ],
-                              stops: const [0.0, 0.45, 0.8],
+                              // Y se apaga antes: 0.7 en vez de 0.8, asi el
+                              // tercio derecho de la imagen queda limpio.
+                              stops: const [0.0, 0.45, 0.7],
                             ),
                           ),
                         ),

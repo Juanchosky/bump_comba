@@ -1249,7 +1249,23 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       curve: Curves.easeOut,
       builder: (context, t, hijo) => Opacity(opacity: t, child: hijo),
       child: DecoratedBox(
-        decoration: const BoxDecoration(color: _fondo),
+        // ── EL FONDO DEL CATALOGO ──────────────────────────────────────
+        //
+        // Era el color plano `_fondo`. Ahora es una imagen, y el color se
+        // queda DEBAJO en vez de sustituirse: mientras el PNG se decodifica
+        // —millon y medio de pixeles, y en un televisor eso tarda un
+        // fotograma o dos— lo que se ve es el mismo negro de siempre y no un
+        // destello blanco.
+        //
+        // `cover` y no `fill`: el televisor puede ser 16:9 o 21:9 y estirar el
+        // fondo se nota mas de lo que parece. Recortar por los lados no.
+        decoration: const BoxDecoration(
+          color: _fondo,
+          image: DecorationImage(
+            image: AssetImage('assets/images/fondotv.png'),
+            fit: BoxFit.cover,
+          ),
+        ),
         // ── El lateral va ENCIMA del contenido, no al lado ──────────────
         //
         // Es lo que le da el aire moderno de la referencia: las caratulas siguen
