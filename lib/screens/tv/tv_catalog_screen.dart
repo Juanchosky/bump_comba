@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -1579,7 +1578,6 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                     });
                   },
                   onEntrarContenido: () => _nodoContenido.requestFocus(),
-                  enfocado: _menuEnfocado,
                   onFoco: _focoEnMenu,
                 ),
               ),
@@ -2213,10 +2211,6 @@ class _BarraMenu extends StatelessWidget {
   final ValueChanged<int> onElegir;
   final VoidCallback onEntrarContenido;
 
-  /// El foco esta dentro de la barra. No cambia la forma —eso seria un salto
-  /// cada vez que entras y sales—, solo la asienta: mas opaca y con el borde
-  /// mas marcado, para que se separe de la imagen mientras la usas.
-  final bool enfocado;
   final ValueChanged<bool> onFoco;
 
   const _BarraMenu({
@@ -2225,69 +2219,56 @@ class _BarraMenu extends StatelessWidget {
     required this.nodos,
     required this.onElegir,
     required this.onEntrarContenido,
-    required this.enfocado,
     required this.onFoco,
   });
 
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
-      // El recorte va FUERA del desenfoque a proposito: `BackdropFilter` no
-      // tiene forma propia, difumina todo lo que quede dentro de su recorte.
-      // Sin este `ClipRRect` el desenfoque se comeria la pantalla entera.
-      borderRadius: BorderRadius.circular(34),
-      child: BackdropFilter(
-        // 18 y no 30: con mas desenfoque la imagen de detras se convierte en
-        // una mancha de color y la barra vuelve a parecer un panel opaco, que
-        // es justo lo que se queria evitar. Con 18 todavia se adivina que hay
-        // detras.
-        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 220),
-          curve: Curves.easeOutCubic,
-          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
-          decoration: BoxDecoration(
-            // Negro translucido, no blanco: encima de una imagen clara el
-            // blanco se pierde y el texto blanco de dentro con el. El negro
-            // funciona sobre cualquier destacado, que es la unica garantia
-            // que se puede tener cuando el fondo lo pone el catalogo.
-            color: Colors.black.withValues(alpha: enfocado ? 0.58 : 0.42),
-            borderRadius: BorderRadius.circular(34),
-            border: Border.all(
-              color: Colors.white.withValues(alpha: enfocado ? 0.16 : 0.10),
+    // ── SIN CAPSULA ───────────────────────────────────────────────────────
+    //
+    // Llevaba un contenedor redondeado con borde blanco y desenfoque detras.
+    // Se veia bien por su cuenta y desentonaba con todo lo demas: el
+    // destacado no tiene borde ni curvas, las caratulas tampoco, y el fondo
+    // es una imagen. La barra era lo unico enmarcado de la pantalla — el
+    // mismo problema que tuvo el destacado, en el sitio donde mas se mira.
+    //
+    // Ahora los items van sueltos sobre el fondo. Lo que los separa de la
+    // imagen no es una caja: es que el que importa esta ILUMINADO y el resto
+    // apagados.
+    //
+    // Se va tambien el `BackdropFilter`, y no solo por estetica: era un
+    // desenfoque a repintar en cada fotograma mientras el catalogo se
+    // desplaza, sobre la GPU de un Amlogic.
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (int i = 0; i < secciones.length; i++)
+            _ItemMenu(
+              texto: secciones[i].texto,
+              icono: secciones[i].icono,
+              activa: i == activa,
+              onFoco: onFoco,
+              nodo: nodos[i],
+              onElegir: () => onElegir(i),
+              onAbajo: onEntrarContenido,
+              // LA BARRA DA LA VUELTA.
+              //
+              // Antes las flechas se topaban con el final: para llegar a
+              // BUSCAR, que es la ultima, habia que recorrer las cinco
+              // anteriores. Dando la vuelta esta a UNA pulsacion hacia la
+              // izquierda desde INICIO.
+              //
+              // Es una lista de seis, corta y siempre visible: aqui la
+              // vuelta no desorienta, ahorra.
+              onIzquierda:
+                  () =>
+                      nodos[(i - 1 + secciones.length) % secciones.length]
+                          .requestFocus(),
+              onDerecha: () => nodos[(i + 1) % secciones.length].requestFocus(),
             ),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (int i = 0; i < secciones.length; i++)
-                _ItemMenu(
-                  texto: secciones[i].texto,
-                  icono: secciones[i].icono,
-                  activa: i == activa,
-                  onFoco: onFoco,
-                  nodo: nodos[i],
-                  onElegir: () => onElegir(i),
-                  onAbajo: onEntrarContenido,
-                  // LA BARRA DA LA VUELTA.
-                  //
-                  // Antes las flechas se topaban con el final: para llegar a
-                  // BUSCAR, que es la ultima, habia que recorrer las cinco
-                  // anteriores. Dando la vuelta esta a UNA pulsacion hacia la
-                  // izquierda desde INICIO.
-                  //
-                  // Es una lista de seis, corta y siempre visible: aqui la
-                  // vuelta no desorienta, ahorra.
-                  onIzquierda:
-                      () =>
-                          nodos[(i - 1 + secciones.length) % secciones.length]
-                              .requestFocus(),
-                  onDerecha:
-                      () => nodos[(i + 1) % secciones.length].requestFocus(),
-                ),
-            ],
-          ),
-        ),
+        ],
       ),
     );
   }
@@ -2357,7 +2338,11 @@ class _ItemMenuState extends State<_ItemMenu> {
       // Estaba en `white38`. En un panel de televisor, a tres metros y con la
       // imagen del destacado detras, ese gris se lee como deshabilitado — de
       // ahi que el menu pareciera de relleno.
-      color = Colors.white.withValues(alpha: 0.62);
+      // Sin la capsula detras, los items apagados quedan directamente
+      // sobre la imagen: si estan demasiado encendidos, seis iconos sueltos
+      // por la pantalla parecen suciedad. Bajan del 62% al 55% para que el
+      // encendido se lleve la mirada solo.
+      color = Colors.white.withValues(alpha: 0.55);
     }
 
     final conTexto = _foco || widget.activa;
@@ -2406,15 +2391,21 @@ class _ItemMenuState extends State<_ItemMenu> {
           horizontal: conTexto ? 13 : 10,
           vertical: 9,
         ),
-        decoration: BoxDecoration(
-          color:
-              _foco
-                  ? Colors.white.withValues(alpha: 0.94)
-                  : widget.activa
-                  ? Colors.white.withValues(alpha: 0.12)
-                  : Colors.transparent,
-          borderRadius: BorderRadius.circular(26),
-        ),
+        // ── ESQUINAS RECTAS ─────────────────────────────────────────
+        //
+        // La pastilla era una capsula de radio 26. Recta dice lo mismo —aqui
+        // esta el foco— sin traer de vuelta la forma que sobraba: es el mismo
+        // idioma que el destacado y las caratulas.
+        //
+        // Y sobre el fondo, el bloque blanco es AHORA lo unico que separa la
+        // barra de la imagen, asi que sube del 94% al 100%: sin capsula
+        // detras, un blanco a medias se ensucia con lo que tenga debajo.
+        color:
+            _foco
+                ? Colors.white
+                : widget.activa
+                ? Colors.white.withValues(alpha: 0.14)
+                : Colors.transparent,
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
