@@ -107,10 +107,41 @@ class _CustomMatchMeta {
 }
 
 const Set<String> _commonStopWords = {
-  'the', 'del', 'los', 'las', 'por', 'una', 'uno', 'con', 'que', 'and',
-  'for', 'von', 'der', 'die', 'das', 'les', 'des', 'san', 'sur', 'para',
-  'from', 'with', 'about', 'over', 'into', 'after', 'pelicula', 'movie',
-  'film', 'version', 'edition', 'edicion', 'latino', 'castellano', 'subtitulado',
+  'the',
+  'del',
+  'los',
+  'las',
+  'por',
+  'una',
+  'uno',
+  'con',
+  'que',
+  'and',
+  'for',
+  'von',
+  'der',
+  'die',
+  'das',
+  'les',
+  'des',
+  'san',
+  'sur',
+  'para',
+  'from',
+  'with',
+  'about',
+  'over',
+  'into',
+  'after',
+  'pelicula',
+  'movie',
+  'film',
+  'version',
+  'edition',
+  'edicion',
+  'latino',
+  'castellano',
+  'subtitulado',
 };
 
 // ===========================================================================
@@ -674,6 +705,22 @@ class M3UService extends ChangeNotifier {
     });
   }
 
+  /// Borra las fuentes de este aparato.
+  ///
+  /// Es la otra mitad de `importarFuentes`, y existe por el televisor: las
+  /// credenciales del proveedor no son suyas, se las presta el telefono al
+  /// vincularlo. Al desvincular tienen que irse con el vinculo — si no, el
+  /// aparato se queda con la configuracion de quien lo vinculo la vez
+  /// anterior, y la siguiente cuenta que lo empareje heredaria un catalogo
+  /// que no le corresponde.
+  Future<void> olvidarFuentes() async {
+    _prefs ??= await SharedPreferences.getInstance();
+    _sources = [];
+    _activeSourceIndex = 0;
+    await _saveSources();
+    debugPrint('M3UService: fuentes olvidadas');
+  }
+
   /// Aplica una configuracion de fuentes traida de otro aparato.
   ///
   /// Devuelve cuantas fuentes quedaron. No hace nada si el JSON viene vacio o
@@ -1198,7 +1245,8 @@ class M3UService extends ChangeNotifier {
     if (!forceRefresh) {
       final cacheTimestamp = _prefs?.getInt(_customCacheTimestampKey);
       final hasCachedTimestamp = cacheTimestamp != null;
-      final isFresh = hasCachedTimestamp &&
+      final isFresh =
+          hasCachedTimestamp &&
           DateTime.now().millisecondsSinceEpoch - cacheTimestamp <
               _customCacheDuration.inMilliseconds;
 
@@ -2105,7 +2153,6 @@ class M3UService extends ChangeNotifier {
   // INTELLIGENT CUSTOM CONTENT INTERLEAVING
   // ===========================================================================
 
-
   /// Vincula items de la base de datos (custom_content) como alternativas BD (Más rápida)
   /// a items coincidentes de Xtream en lugar de crear tarjetas duplicadas.
   static (List<M3UItem>, List<M3UItem>) _linkCustomContentAlternatives(
@@ -2135,10 +2182,11 @@ class M3UService extends ChangeNotifier {
         canonKey: cCanonPrincipal,
         canonNoSpace: cCanonPrincipal.replaceAll(' ', ''),
         numbers: _extractNumbersFromTitle(cCanonPrincipal),
-        words: cCanonPrincipal
-            .split(' ')
-            .where((w) => w.length >= 3 && !_commonStopWords.contains(w))
-            .toSet(),
+        words:
+            cCanonPrincipal
+                .split(' ')
+                .where((w) => w.length >= 3 && !_commonStopWords.contains(w))
+                .toSet(),
       );
 
       for (final titulo in _titulosDeMatch(cItem)) {
@@ -2193,10 +2241,11 @@ class M3UService extends ChangeNotifier {
 
       // 2. Si no hubo match O(1), consultar candidatos por palabras clave
       if (matchedCustom == null) {
-        final regWords = regCanonKey
-            .split(' ')
-            .where((w) => w.length >= 3 && !_commonStopWords.contains(w))
-            .toSet();
+        final regWords =
+            regCanonKey
+                .split(' ')
+                .where((w) => w.length >= 3 && !_commonStopWords.contains(w))
+                .toSet();
 
         if (regWords.isNotEmpty) {
           final Set<_CustomMatchMeta> smartCandidates = {};
@@ -2255,7 +2304,9 @@ class M3UService extends ChangeNotifier {
                 final intersectionCount =
                     regWords.where(candidate.words.contains).length;
                 final unionCount =
-                    regWords.length + candidate.words.length - intersectionCount;
+                    regWords.length +
+                    candidate.words.length -
+                    intersectionCount;
                 final jaccard =
                     unionCount > 0 ? intersectionCount / unionCount : 0.0;
 
@@ -2264,7 +2315,8 @@ class M3UService extends ChangeNotifier {
                   break;
                 }
 
-                if ((regWords.length >= 2 && intersectionCount == regWords.length) ||
+                if ((regWords.length >= 2 &&
+                        intersectionCount == regWords.length) ||
                     (candidate.words.length >= 2 &&
                         intersectionCount == candidate.words.length)) {
                   matchedCustom = candidate.item;
@@ -2275,10 +2327,17 @@ class M3UService extends ChangeNotifier {
               // Levenshtein fuzzy match
               if (regCanonNoSpace.length >= 6 &&
                   candidate.canonNoSpace.length >= 6 &&
-                  (regCanonNoSpace.length - candidate.canonNoSpace.length).abs() <= 3) {
-                final dist = _levenshtein(regCanonNoSpace, candidate.canonNoSpace);
-                final maxLen =
-                    max(regCanonNoSpace.length, candidate.canonNoSpace.length);
+                  (regCanonNoSpace.length - candidate.canonNoSpace.length)
+                          .abs() <=
+                      3) {
+                final dist = _levenshtein(
+                  regCanonNoSpace,
+                  candidate.canonNoSpace,
+                );
+                final maxLen = max(
+                  regCanonNoSpace.length,
+                  candidate.canonNoSpace.length,
+                );
                 if (1.0 - (dist / maxLen) >= 0.85) {
                   matchedCustom = candidate.item;
                   break;

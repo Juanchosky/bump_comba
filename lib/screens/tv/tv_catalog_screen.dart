@@ -33,7 +33,15 @@ import 'tv_search_screen.dart';
 /// controlable hasta que hay filas de distinta longitud, y entonces son cien
 /// casos límite escritos a mano contra uno ya resuelto.
 class TvCatalogScreen extends StatefulWidget {
-  const TvCatalogScreen({super.key});
+  /// Soltar el vinculo con la cuenta y volver a la pantalla de emparejar.
+  ///
+  /// Lo hace el receptor y no esta pantalla: es el quien decide que se ve
+  /// —catalogo o espera— segun haya token o no. Si el catalogo borrara el
+  /// token por su cuenta, seguiria pintado encima de un televisor que ya no
+  /// tiene permiso hasta que alguien lo mandara repintar.
+  final Future<void> Function() onDesvincular;
+
+  const TvCatalogScreen({super.key, required this.onDesvincular});
 
   @override
   State<TvCatalogScreen> createState() => _TvCatalogScreenState();
@@ -153,6 +161,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     (texto: 'Telenovelas', icono: Icons.theaters_outlined),
     (texto: 'Animacion', icono: Icons.animation_rounded),
     (texto: 'Buscar', icono: Icons.search_rounded),
+    (texto: 'Desvincular', icono: Icons.link_off_rounded),
   ];
 
   /// BUSCAR no es una seccion del catalogo: es una pantalla aparte.
@@ -162,6 +171,20 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   /// las filas: abre el buscador y al cerrarlo el catalogo sigue como estaba,
   /// en la seccion en la que lo dejaste.
   static const int _iBuscar = 5;
+
+  /// DESVINCULAR tampoco es una seccion: suelta el televisor de la cuenta y
+  /// devuelve la pantalla de emparejar.
+  ///
+  /// ── POR QUE VIVE EN LA BARRA Y NO EN UN AJUSTE ─────────────────────────
+  ///
+  /// Porque no hay ajustes. Un televisor vinculado no tiene mas pantallas que
+  /// esta, y sin una salida visible la unica forma de cambiar de cuenta era
+  /// borrar los datos de la aplicacion desde Android — que es tanto como no
+  /// tenerla.
+  ///
+  /// Va la ULTIMA a proposito, detras de BUSCAR: es lo que menos se usa y lo
+  /// unico que se lamenta si se pulsa sin querer. Y por eso pregunta antes.
+  static const int _iDesvincular = 6;
 
   int _seccion = 0;
 
@@ -685,6 +708,32 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   /// precio es este: cuando cambian las piezas de dentro, hay que actualizarlo
   /// A MANO o vuelve a sobrar hueco.
   static const double _altoFila = 255;
+
+  /// Pregunta antes de soltar el vinculo.
+  ///
+  /// ── POR QUE UN DIALOGO A MANO ──────────────────────────────────────────
+  ///
+  /// `AlertDialog` con `TextButton` funciona con raton y con dedo. Con un
+  /// mando no: el foco lo reparte la traversal por geometria, no se ve cual
+  /// de los dos botones lo tiene —el resaltado de Material a tres metros no
+  /// se distingue— y el boton por defecto acaba siendo el primero que se
+  /// encuentre, que aqui es el peligroso.
+  ///
+  /// Asi que las dos teclas que importan se atienden a mano y el foco arranca
+  /// en CANCELAR. Ante una pregunta que se hace por si acaso, la respuesta
+  /// por defecto tiene que ser la que no rompe nada.
+  Future<bool> _confirmarDesvincular() async {
+    final respuesta = await showDialog<bool>(
+      context: context,
+      // Sin salida por fuera: con un mando no hay "pulsar al lado", y dejarlo
+      // abierto solo puede cerrarse por accidente al pulsar atras — que ya
+      // esta atendido y devuelve `false`.
+      barrierDismissible: false,
+      barrierColor: Colors.black.withValues(alpha: 0.72),
+      builder: (_) => const _DialogoDesvincular(),
+    );
+    return respuesta ?? false;
+  }
 
   /// Mueve el foco a la fila `destino`, conservando la columna.
   ///
@@ -1491,6 +1540,19 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                       // saliste, y dejarlo en otro sitio obliga a buscar con
                       // la vista donde estabas.
                       if (mounted) _nodosMenu[_iBuscar].requestFocus();
+                      return;
+                    }
+                    if (i == _iDesvincular) {
+                      final seguro = await _confirmarDesvincular();
+                      if (!mounted) return;
+                      if (seguro) {
+                        await widget.onDesvincular();
+                        return;
+                      }
+                      // Se ha dicho que no: el foco vuelve al boton, que es
+                      // desde donde se abrio. Sin esto se queda en el aire y
+                      // la siguiente flecha lo manda donde le parezca.
+                      if (mounted) _nodosMenu[_iDesvincular].requestFocus();
                       return;
                     }
                     if (i == _seccion) return;
@@ -2386,6 +2448,197 @@ class _ItemMenuState extends State<_ItemMenu> {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// La pregunta de DESVINCULAR, hecha para un mando.
+///
+/// Dos botones, izquierda y derecha, y nada mas. Sin listas ni scroll: cuanto
+/// menos haya que recorrer, menos posibilidades de pulsar lo que no era.
+class _DialogoDesvincular extends StatefulWidget {
+  const _DialogoDesvincular();
+
+  @override
+  State<_DialogoDesvincular> createState() => _DialogoDesvincularState();
+}
+
+class _DialogoDesvincularState extends State<_DialogoDesvincular> {
+  /// false = CANCELAR (donde empieza), true = DESVINCULAR.
+  bool _enSi = false;
+
+  final FocusNode _nodo = FocusNode(debugLabel: 'dialogoDesvincular');
+
+  @override
+  void initState() {
+    super.initState();
+    // Tras el primer fotograma: el `Focus` no existe hasta que el dialogo
+    // esta montado, y pedirselo antes no hace nada.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _nodo.requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    _nodo.dispose();
+    super.dispose();
+  }
+
+  /// UN SOLO NODO PARA LOS DOS BOTONES.
+  ///
+  /// Con un `Focus` por boton, Flutter decide el salto entre ellos por
+  /// geometria y hay que ir sincronizando quien lo tiene para pintarlo. Con
+  /// uno solo, cual esta elegido es una variable de esta clase: izquierda y
+  /// derecha la cambian, y lo que se ve no puede desviarse de lo que pasaria
+  /// al pulsar OK.
+  KeyEventResult _tecla(KeyEvent evento) {
+    if (evento is! KeyDownEvent) return KeyEventResult.ignored;
+    final k = evento.logicalKey;
+
+    if (k == LogicalKeyboardKey.arrowLeft ||
+        k == LogicalKeyboardKey.arrowRight) {
+      setState(() => _enSi = !_enSi);
+      return KeyEventResult.handled;
+    }
+    if (k == LogicalKeyboardKey.select ||
+        k == LogicalKeyboardKey.enter ||
+        k == LogicalKeyboardKey.gameButtonA) {
+      Navigator.of(context).pop(_enSi);
+      return KeyEventResult.handled;
+    }
+    // Atras es CANCELAR, no "cerrar sin contestar": son lo mismo aqui, y
+    // atenderlo evita que el `PopScope` de la pantalla de detras lo vea.
+    if (k == LogicalKeyboardKey.escape ||
+        k == LogicalKeyboardKey.goBack ||
+        k == LogicalKeyboardKey.browserBack) {
+      Navigator.of(context).pop(false);
+      return KeyEventResult.handled;
+    }
+    // Arriba y abajo se atrapan sin hacer nada: aqui no hay nada arriba ni
+    // abajo, y dejarlas pasar las lleva al catalogo que hay detras.
+    if (k == LogicalKeyboardKey.arrowUp || k == LogicalKeyboardKey.arrowDown) {
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Focus(
+      focusNode: _nodo,
+      onKeyEvent: (_, evento) => _tecla(evento),
+      child: Center(
+        child: Container(
+          width: 560,
+          padding: const EdgeInsets.fromLTRB(38, 34, 38, 28),
+          decoration: BoxDecoration(
+            color: const Color(0xFF16161A),
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Desvincular este televisor',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 23,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                // Se dice lo que pasa DESPUES, no solo lo que se pierde: quien
+                // esta aqui casi siempre quiere cambiar de cuenta, y lo que
+                // necesita saber es que va a poder volver a hacerlo.
+                'Se cerrara el catalogo y volveras a la pantalla de '
+                'emparejamiento, donde podras vincularlo de nuevo con otra '
+                'cuenta.',
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.62),
+                  fontSize: 15.5,
+                  height: 1.45,
+                ),
+              ),
+              const SizedBox(height: 28),
+              Row(
+                children: [
+                  Expanded(
+                    child: _BotonDialogo(
+                      texto: 'Cancelar',
+                      elegido: !_enSi,
+                      peligroso: false,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: _BotonDialogo(
+                      texto: 'Desvincular',
+                      elegido: _enSi,
+                      peligroso: true,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Un boton del dialogo. No tiene foco propio ni recibe pulsaciones: solo
+/// pinta. Quien decide es `_DialogoDesvincularState`, y esto es su reflejo.
+class _BotonDialogo extends StatelessWidget {
+  final String texto;
+  final bool elegido;
+
+  /// El elegido se pinta relleno. En rojo si es el que rompe algo, en blanco
+  /// si no: el color no decora, dice cual de los dos hace daño.
+  final bool peligroso;
+
+  const _BotonDialogo({
+    required this.texto,
+    required this.elegido,
+    required this.peligroso,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final Color fondo;
+    final Color tinta;
+    if (!elegido) {
+      fondo = Colors.white.withValues(alpha: 0.08);
+      tinta = Colors.white.withValues(alpha: 0.72);
+    } else if (peligroso) {
+      fondo = const Color(0xFFE50914);
+      tinta = Colors.white;
+    } else {
+      fondo = Colors.white;
+      tinta = AppColors.fondoTv;
+    }
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 160),
+      curve: Curves.easeOutCubic,
+      padding: const EdgeInsets.symmetric(vertical: 15),
+      decoration: BoxDecoration(
+        color: fondo,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Text(
+        texto,
+        textAlign: TextAlign.center,
+        style: TextStyle(
+          color: tinta,
+          fontSize: 16,
+          fontWeight: FontWeight.w600,
         ),
       ),
     );

@@ -160,6 +160,18 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
   /// instante antes de cambiar al catalogo.
   bool? _tvVinculado;
 
+  /// Desvincula el televisor y devuelve la pantalla de espera.
+  ///
+  /// EL ORDEN IMPORTA. Primero se borra el vinculo y despues se repinta: al
+  /// revés, el catalogo se desmontaria mientras el borrado sigue en marcha y
+  /// la revalidacion periodica podria colarse en medio con el token todavia
+  /// puesto.
+  Future<void> _desvincularTv() async {
+    await TvPairingService.instance.desvincular();
+    if (!mounted) return;
+    setState(() => _tvVinculado = false);
+  }
+
   Future<void> _revisarVinculoTv() async {
     final token = await TvPairingService.instance.tokenGuardado();
     if (!mounted) return;
@@ -1525,7 +1537,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
                   // Transmitir sigue funcionando igual por debajo: en cuanto
                   // llega un LOAD, `_hasMedia` se pone a true y el
                   // reproductor tapa esto sin preguntar.
-                  ? const TvCatalogScreen()
+                  ? TvCatalogScreen(onDesvincular: _desvincularTv)
                   : _WaitingScreen(
                     deviceName: _deviceName,
                     // Se enseña SALVO que sepamos que ya esta vinculado.

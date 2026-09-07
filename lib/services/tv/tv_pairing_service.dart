@@ -74,6 +74,34 @@ class TvPairingService {
   }
 
   // ── Llamada ──────────────────────────────────────────────────────────────
+  /// Desvincula ESTE televisor.
+  ///
+  /// ── QUE SE BORRA Y QUE NO ─────────────────────────────────────────────
+  ///
+  /// Se va el token —el permiso— y se van las fuentes, que son credenciales
+  /// prestadas por el telefono. Se QUEDA el `device_id`, y es a proposito:
+  /// identifica al aparato, no a la cuenta. El servidor lo usa para saber que
+  /// un televisor que se vuelve a vincular es el mismo de antes y no gastar
+  /// otra plaza de las dos que hay por cuenta (`onConflict: user_ref,
+  /// device_id` en la funcion `tv-pairing`). Borrarlo aqui convertiria cada
+  /// desvinculacion en un aparato nuevo, y en dos vueltas el usuario se
+  /// quedaria sin plazas.
+  ///
+  /// ── LO QUE ESTO NO HACE ───────────────────────────────────────────────
+  ///
+  /// No avisa al servidor: la funcion `tv-pairing` no tiene ninguna accion
+  /// para que un televisor se de de baja a si mismo, solo `revocar`, que es
+  /// del lado del telefono y pide el `userRef` que aqui no se conoce. Asi que
+  /// la fila sigue viva en `tv_devices` hasta que se quite desde el telefono.
+  ///
+  /// En la practica no estorba: volver a vincular el mismo aparato reutiliza
+  /// esa fila. Solo se nota si se quiere vincular a OTRA cuenta teniendo las
+  /// dos plazas de la primera ocupadas.
+  Future<void> desvincular() async {
+    await olvidarToken();
+    await M3UService().olvidarFuentes();
+  }
+
   Future<Map<String, dynamic>?> _llamar(Map<String, dynamic> cuerpo) async {
     if (_baseUrl == null || _anonKey == null) {
       debugPrint('TvPairing: sin configurar (falta configurar())');
