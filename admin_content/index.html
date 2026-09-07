@@ -284,10 +284,25 @@
                     <div class="form-group">
                         <label for="import-url">URLs del Contenido (una por línea para importar varias a la vez)</label>
                         <textarea id="import-url" rows="4"
-                            placeholder="Ejemplo Película: https://video.playspelis.com/es/detail/movie/yN0aGFrdc4n4TsPf0wZ5C-Toy-Story-5&#10;Ejemplo Serie: https://flixlat.com/es/detail/drama/r9VzzJNsLC7sv0LQ7OxCO-Breaking-Bad-Season-1"
+                            placeholder="https://ejemplo.com/pelicula/xyz&#10;Mi Título Personalizado&#10;&#10;https://ejemplo.com/otra/abc&#10;Otro Título"
                             style="font-size:.88rem;width:100%;padding:.75rem;border-radius:.6rem;background:rgba(255,255,255,.05);color:var(--text-main);border:1px solid var(--border-color);font-family:inherit;resize:vertical;"></textarea>
                         <small style="color:var(--text-muted);margin-top:.4rem;display:block;">
                             Soporta enlaces de <code style="background:rgba(255,255,255,.07);padding:.1rem .4rem;border-radius:.3rem;">Playspelis</code>, <code style="background:rgba(255,255,255,.07);padding:.1rem .4rem;border-radius:.3rem;">Cuevana</code> y <code style="background:rgba(255,255,255,.07);padding:.1rem .4rem;border-radius:.3rem;">Flixlat</code>.
+                            Puedes poner un <strong style="color:var(--text-main);">título personalizado</strong> en la línea siguiente a cada URL.
+                        </small>
+                    </div>
+                    <div class="form-group" style="margin-top:1rem;">
+                        <label for="import-category" style="display:flex;align-items:center;gap:.5rem;">
+                            <i data-lucide="tag" style="width:16px;height:16px;color:var(--primary);"></i>
+                            Categoría para el contenido importado
+                        </label>
+                        <input type="text" id="import-category" list="import-category-list"
+                            placeholder="Ej: Acción, Terror, Recomendados..."
+                            value="Recomendados"
+                            style="font-size:.88rem;width:100%;padding:.75rem;border-radius:.6rem;background:rgba(255,255,255,.05);color:var(--text-main);border:1px solid var(--border-color);font-family:inherit;">
+                        <datalist id="import-category-list"></datalist>
+                        <small style="color:var(--text-muted);margin-top:.4rem;display:block;">
+                            Escribe o selecciona una categoría. Todos los contenidos importados se asignarán a esta categoría.
                         </small>
                     </div>
                     <div id="full-import-progress" style="display:none;margin-top:1.5rem;">

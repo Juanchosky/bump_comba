@@ -489,8 +489,25 @@ function renderRequests() {
     updateSelectedRequestsCount();
 }
 
+/** Pobla el datalist del campo de categoría en el modal de importación con las categorías existentes */
+function populateImportCategoryList() {
+    const datalist = document.getElementById('import-category-list');
+    if (!datalist) return;
+    const categoriesSet = new Set(['Recomendados']);
+    allContent.forEach(item => {
+        if (item.category && item.category.trim()) {
+            categoriesSet.add(item.category.trim());
+        }
+    });
+    const sorted = Array.from(categoriesSet).sort((a, b) => a.localeCompare(b, 'es'));
+    datalist.innerHTML = sorted.map(cat => `<option value="${cat}">`).join('');
+}
+
 function openAutoImportWithTitle(title, requestId) {
     importUrlInput.value = '';
+    const catInput = document.getElementById('import-category');
+    if (catInput) catInput.value = 'Recomendados';
+    populateImportCategoryList();
     const bar = document.getElementById('full-import-bar');
     const status = document.getElementById('full-import-status');
     const progress = document.getElementById('full-import-progress');
@@ -1086,6 +1103,9 @@ function setupEventListeners() {
 
     autoImportBtn.onclick = () => {
         importUrlInput.value = '';
+        const catInput = document.getElementById('import-category');
+        if (catInput) catInput.value = 'Recomendados';
+        populateImportCategoryList();
         // Reset progress
         const bar = document.getElementById('full-import-bar');
         const status = document.getElementById('full-import-status');
@@ -1105,14 +1125,51 @@ function setupEventListeners() {
             return;
         }
 
-        const urls = rawInput.split('\n')
-            .map(u => cleanVideoUrl(u.trim()))
-            .filter(u => u.startsWith('http'));
+        // ── Parsear el textarea: aislar URLs y asociar títulos personalizados ──
+        // Separa cualquier URL aunque esté pegada a texto en la misma línea o con saltos de línea
+        const tokens = rawInput
+            .replace(/(https?:\/\/[^\s]+)/g, '\n$1\n')
+            .split('\n')
+            .map(t => t.trim())
+            .filter(t => t.length > 0);
 
-        if (urls.length === 0) {
+        const importEntries = [];
+        let pendingTitle = null;
+
+        for (let i = 0; i < tokens.length; i++) {
+            const token = tokens[i];
+            const isUrl = /^https?:\/\//i.test(token);
+
+            if (isUrl) {
+                const cleaned = cleanVideoUrl(token);
+                // Si había un título previo pendiente (ej: título escrito antes de la URL)
+                let customTitle = pendingTitle;
+                pendingTitle = null;
+
+                // Si no había título previo, revisar si el siguiente token es un título (escrito después de la URL)
+                if (!customTitle && i + 1 < tokens.length && !/^https?:\/\//i.test(tokens[i + 1])) {
+                    customTitle = tokens[i + 1];
+                    i++; // consumir el token del título
+                }
+
+                importEntries.push({
+                    url: cleaned,
+                    customTitle: customTitle ? customTitle.trim() : null
+                });
+            } else {
+                // Es texto no-URL: guardarlo como posible título para la siguiente URL
+                pendingTitle = token;
+            }
+        }
+
+        if (importEntries.length === 0) {
             showToast('No se encontraron URLs válidas en el texto', 'error');
             return;
         }
+
+        // Leer la categoría seleccionada por el usuario
+        const importCategoryInput = document.getElementById('import-category');
+        const selectedCategory = (importCategoryInput && importCategoryInput.value.trim()) || 'Recomendados';
 
         const progressDiv = document.getElementById('full-import-progress');
         const statusEl = document.getElementById('full-import-status');
@@ -1123,31 +1180,45 @@ function setupEventListeners() {
         lucide.createIcons();
         if (progressDiv) progressDiv.style.display = 'block';
         if (barEl) barEl.style.width = '10%';
-        if (statusEl) statusEl.textContent = `Procesando ${urls.length} enlace(s)...`;
+        if (statusEl) statusEl.textContent = `Procesando ${importEntries.length} enlace(s) → ${selectedCategory}...`;
 
         let successCount = 0;
         let failCount = 0;
 
         try {
-            for (let i = 0; i < urls.length; i++) {
-                const url = urls[i];
-                const pct = Math.round(((i + 1) / urls.length) * 100);
+            for (let i = 0; i < importEntries.length; i++) {
+                const { url, customTitle } = importEntries[i];
+                const pct = Math.round(((i + 1) / importEntries.length) * 100);
                 if (barEl) barEl.style.width = pct + '%';
-                if (statusEl) statusEl.textContent = `Importando (${i + 1}/${urls.length}): ${url.split('/').pop()}...`;
+                if (statusEl) statusEl.textContent = `Importando (${i + 1}/${importEntries.length}): ${customTitle || url.split('/').pop()}...`;
 
+                // Detectar películas por URL — todo lo demás se importa como serie via edge function import-full-series
                 const isMovie = url.includes('/movie/') || url.includes('/pelicula/') || url.includes('/film/');
 
                 if (isMovie) {
+                    // ── Importar como película ──
                     try {
                         const meta = await parseMovieMetadataFromUrl(url);
+
+                        // Si hay título personalizado, usarlo en vez del auto-detectado
+                        // pero preservar la lógica del año (YYYY)
+                        let finalTitle = meta.title;
+                        if (customTitle) {
+                            finalTitle = customTitle;
+                            const yearMatch = meta.title.match(/\((\d{4})\)$/);
+                            if (yearMatch && !finalTitle.match(/\(\d{4}\)$/)) {
+                                finalTitle = `${finalTitle} (${yearMatch[1]})`;
+                            }
+                        }
+
                         const { error } = await supabaseClient
                             .from('custom_content')
                             .insert([{
-                                title: meta.title,
+                                title: finalTitle,
                                 video_url: url,
                                 thumbnail_url: meta.thumbnail_url,
                                 type: 'movie',
-                                category: meta.category || 'Recomendados',
+                                category: selectedCategory,
                                 is_active: true
                             }]);
                         if (error) throw error;
@@ -1157,12 +1228,49 @@ function setupEventListeners() {
                         failCount++;
                     }
                 } else {
+                    // ── Importar como serie via edge function import-full-series ──
                     try {
                         const { data, error } = await supabaseClient.functions.invoke('import-full-series', {
-                            body: { url }
+                            body: {
+                                url,
+                                custom_title: customTitle,
+                                category: selectedCategory
+                            }
                         });
                         if (error) throw error;
                         if (data && data.error) throw new Error(data.error);
+
+                        // Después de importar la serie, asegurar título personalizado y categoría en la BD
+                        const seriesId = data?.series_id || data?.series?.id;
+                        if (seriesId) {
+                            const updateData = {};
+                            if (customTitle) {
+                                let finalTitle = customTitle;
+                                const seriesReturnedTitle = data?.series_title || (data?.series && data.series.title) || '';
+                                const yearMatch = seriesReturnedTitle.match(/\((\d{4})\)$/);
+                                if (yearMatch && !finalTitle.match(/\(\d{4}\)$/)) {
+                                    finalTitle = `${finalTitle} (${yearMatch[1]})`;
+                                }
+                                updateData.title = finalTitle;
+                            }
+                            if (selectedCategory && selectedCategory !== 'Recomendados') {
+                                updateData.category = selectedCategory;
+                            }
+                            if (Object.keys(updateData).length > 0) {
+                                await supabaseClient
+                                    .from('custom_content')
+                                    .update(updateData)
+                                    .eq('id', seriesId);
+                            }
+                            // Asignar también la categoría elegida a todos los capítulos importados
+                            if (selectedCategory && selectedCategory !== 'Recomendados') {
+                                await supabaseClient
+                                    .from('custom_content')
+                                    .update({ category: selectedCategory })
+                                    .eq('parent_id', seriesId);
+                            }
+                        }
+
                         successCount++;
                     } catch (sErr) {
                         console.error('Error al importar serie:', sErr);
@@ -1507,3 +1615,91 @@ function showToast(message, type = 'success') {
     lucide.createIcons();
     setTimeout(() => toast.classList.add('hidden'), 5000);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SELECCIÓN POR ARRASTRE — click + deslizar para seleccionar múltiples filas
+// ─────────────────────────────────────────────────────────────────────────────
+(function setupDragSelect() {
+    let isDragging = false;
+    let dragSelectState = true; // true = seleccionar, false = deseleccionar
+    let lastProcessedRow = null;
+
+    // Obtener la fila <tr> más cercana desde cualquier elemento
+    function getRow(el) {
+        return el.closest('tr');
+    }
+
+    // Obtener el checkbox de una fila
+    function getCheckbox(row) {
+        return row ? row.querySelector('.row-checkbox, .request-checkbox') : null;
+    }
+
+    // Aplicar el estado de selección a un checkbox
+    function applyToCheckbox(cb) {
+        if (!cb || cb.checked === dragSelectState) return;
+        cb.checked = dragSelectState;
+        // Disparar el onchange manualmente
+        const id = cb.value;
+        if (cb.classList.contains('row-checkbox')) {
+            onRowCheckboxChange(id, dragSelectState);
+        } else if (cb.classList.contains('request-checkbox')) {
+            onRequestCheckboxChange(id, dragSelectState);
+        }
+    }
+
+    document.addEventListener('mousedown', (e) => {
+        // Solo activar si el click es en un checkbox de fila o en la celda del checkbox
+        const row = getRow(e.target);
+        if (!row) return;
+        const cb = getCheckbox(row);
+        if (!cb) return;
+
+        // Solo activar si el click fue en el checkbox o su celda contenedora (primera td)
+        const firstTd = row.querySelector('td');
+        if (!firstTd || !firstTd.contains(e.target)) return;
+
+        isDragging = true;
+        // El estado del drag depende del estado NUEVO del checkbox que se clickeó
+        // Si estaba sin check → vamos a seleccionar, si estaba con check → vamos a deseleccionar
+        dragSelectState = !cb.checked;
+        lastProcessedRow = row;
+
+        // Prevenir selección de texto durante el arrastre
+        e.preventDefault();
+        document.body.style.userSelect = 'none';
+        document.body.style.webkitUserSelect = 'none';
+
+        // Aplicar al checkbox clickeado
+        applyToCheckbox(cb);
+    });
+
+    document.addEventListener('mouseover', (e) => {
+        if (!isDragging) return;
+        const row = getRow(e.target);
+        if (!row || row === lastProcessedRow) return;
+        const cb = getCheckbox(row);
+        if (!cb) return;
+
+        lastProcessedRow = row;
+        applyToCheckbox(cb);
+    });
+
+    document.addEventListener('mouseup', () => {
+        if (isDragging) {
+            isDragging = false;
+            lastProcessedRow = null;
+            document.body.style.userSelect = '';
+            document.body.style.webkitUserSelect = '';
+        }
+    });
+
+    // Si el mouse sale de la ventana, terminar el drag
+    document.addEventListener('mouseleave', () => {
+        if (isDragging) {
+            isDragging = false;
+            lastProcessedRow = null;
+            document.body.style.userSelect = '';
+            document.body.style.webkitUserSelect = '';
+        }
+    });
+})();
