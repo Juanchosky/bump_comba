@@ -83,9 +83,26 @@ class TvDestacado extends StatefulWidget {
   });
 
   /// Cuántos títulos se turnan en la portada.
-  static const int titulosNecesarios = 5;
+  ///
+  /// ── UNO. SIN CARRUSEL ─────────────────────────────────────────────────
+  ///
+  /// Eran cinco, turnándose cada nueve segundos. Un carrusel arriba parece
+  /// vida, pero en un televisor cobra dos precios: la pantalla cambia sola
+  /// mientras la miras —y con un mando, lo que cambia solo es lo que acabas
+  /// abriendo por error— y obliga a bajar cinco portadas a red antes de que
+  /// la primera fila esté siquiera armada.
+  ///
+  /// Con uno, la portada es una decisión y no una rotación: se entra, se ve
+  /// qué hay, y lo demás está abajo.
+  ///
+  /// El número manda de verdad: puesto a 1, el turno no se programa, las
+  /// rayitas de posición no se pintan y la flecha derecha no tiene adónde ir
+  /// —`_siguienteDestacado` ya se guarda de listas de menos de dos—. Devolver
+  /// el carrusel es volver a subirlo.
+  static const int titulosNecesarios = 1;
 
-  /// Cada cuánto pasa al siguiente, con el foco fuera.
+  /// Cada cuánto pasa al siguiente, con el foco fuera. Sin efecto mientras
+  /// `titulosNecesarios` sea 1.
   static const Duration cadaTurno = Duration(seconds: 9);
 
   /// Margen izquierdo del texto: el mismo que el de los títulos de las filas
@@ -135,6 +152,12 @@ class TvDestacadoState extends State<TvDestacado> {
   @override
   void initState() {
     super.initState();
+    // Con una sola portada no hay turno que dar: ni se programa. Un
+    // `Timer.periodic` que despierta cada nueve segundos para comprobar que
+    // no tiene nada que hacer es exactamente el tipo de cosa que en un
+    // televisor de gama baja no hay que dejar corriendo.
+    if (TvDestacado.titulosNecesarios < 2) return;
+
     _reloj = Timer.periodic(TvDestacado.cadaTurno, (_) {
       if (!mounted) return;
       // ── NO PASA MIENTRAS LO MIRAS ──────────────────────────────────────
@@ -173,21 +196,17 @@ class TvDestacadoState extends State<TvDestacado> {
       return KeyEventResult.handled;
     }
 
-    if (k == LogicalKeyboardKey.arrowRight) {
-      // Derecha pasa a la siguiente portada. Con dos botones había que
-      // cruzarlos primero; ahora es directo — las rayitas de abajo dicen
-      // cuántas hay, y la flecha cumple lo que esas rayitas prometen.
-      //
-      // Con la tecla mantenida NO se encadena: pasar cinco portadas de golpe
-      // por dejar el dedo puesto no lo quiere nadie.
-      if (evento is! KeyRepeatEvent) widget.onSiguiente();
+    // Ni derecha ni izquierda llevan a ningún sitio: con una sola portada no
+    // hay siguiente ni anterior. Se atrapan igual —`onSiguiente` es inofensivo
+    // con listas de uno, pero dejar pasar la tecla sí hace daño: la traversal
+    // de Flutter se llevaría el foco a una carátula de abajo por geometría.
+    //
+    // Si algún día vuelve el carrusel, aquí es donde derecha recupera su
+    // sentido: `if (evento is! KeyRepeatEvent) widget.onSiguiente();`.
+    if (k == LogicalKeyboardKey.arrowRight ||
+        k == LogicalKeyboardKey.arrowLeft) {
       return KeyEventResult.handled;
     }
-
-    // Izquierda no lleva a ningún sitio: derecha pasa al siguiente destacado
-    // y el menú ya no está a este lado. Se atrapa igual para que la traversal
-    // de Flutter no se lleve el foco a una carátula de abajo por geometría.
-    if (k == LogicalKeyboardKey.arrowLeft) return KeyEventResult.handled;
 
     if (k == LogicalKeyboardKey.arrowDown) {
       widget.onAbajo();
@@ -485,7 +504,12 @@ class TvDestacadoState extends State<TvDestacado> {
                           ),
                         ),
 
-                        // ── 5. En cuál de los cinco estás ─────────────────
+                        // ── 5. En cuál de las portadas estás ──────────────
+                        //
+                        // Con `titulosNecesarios` en 1 esto no se pinta: la
+                        // condición de abajo lo apaga solo. Se conserva porque
+                        // es la otra mitad del carrusel — si vuelve, vuelven
+                        // las rayitas sin tener que reescribirlas.
                         if (widget.items.length > 1)
                           Positioned(
                             right: 28,
