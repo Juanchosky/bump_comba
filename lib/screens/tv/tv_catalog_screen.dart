@@ -1523,6 +1523,46 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
               ),
             ),
 
+            // ── LA MARCA, ABAJO A LA DERECHA ──────────────────────────────
+            //
+            // Es una firma, no un elemento de la interfaz: no se enfoca, no se
+            // pulsa y no compite con nada. Por eso va en la esquina que menos
+            // se mira —abajo a la derecha, donde no hay ni menu ni texto del
+            // destacado— y por eso va al 38%: a plena opacidad, un logo fijo
+            // en pantalla se convierte en lo que el ojo vuelve cada vez que
+            // no esta mirando otra cosa.
+            //
+            // 56 de margen, el mismo que usan el titulo del destacado y las
+            // filas. Y no menos: un televisor recorta los bordes —el
+            // "overscan"— y lo que se pega al filo se lo come el panel.
+            //
+            // `IgnorePointer` porque en el `Stack` esta POR ENCIMA de las
+            // caratulas: sin el, se quedaria con los toques de la esquina en
+            // los aparatos que tienen pantalla tactil o raton.
+            Positioned(
+              right: 56,
+              bottom: 46,
+              child: IgnorePointer(
+                child: Opacity(
+                  opacity: 0.90,
+                  child: Image.asset(
+                    'assets/images/logo.png',
+                    // Alto fijo y ancho libre: el PNG es 1080x720 y lo que
+                    // tiene que casar con el resto de la pantalla es cuanto
+                    // ocupa de alto, no su ancho.
+                    height: 70,
+                    fit: BoxFit.contain,
+                    // Se decodifica al tamaño en que se ve, no a 1080 de
+                    // ancho. En un televisor de 1 GB, una imagen decodificada
+                    // ocho veces mas grande de lo necesario es memoria tirada
+                    // en algo que no se mira.
+                    cacheHeight: 174,
+                    filterQuality: FilterQuality.medium,
+                  ),
+                ),
+              ),
+            ),
+
             // ── EL MENU, ARRIBA Y FLOTANDO ─────────────────────────────
             //
             // Estaba a la izquierda, en columna. Arriba y en horizontal se

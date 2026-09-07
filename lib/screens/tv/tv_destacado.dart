@@ -325,24 +325,16 @@ class TvDestacadoState extends State<TvDestacado> {
                     // sangre, la portada es PARTE de la pantalla — la misma
                     // identidad que la barra y las filas, donde nada esta
                     // enmarcado.
-                    // ── EL FILO ───────────────────────────────────────────
+                    // ── SIN BORDE ─────────────────────────────────────────
                     //
-                    // 1 px al 8%, y sin sombra detras. La sombra se probo y se
-                    // quito: `fondotv.png` es casi negro entero —brillo medio
-                    // de 6 sobre 255—, asi que una sombra negra sobre fondo
-                    // negro no separa de nada, solo apagaba el pie.
+                    // Ni borde ni sombra. Ahora que la barra tampoco tiene
+                    // caja, no queda nada enmarcado en toda la pantalla: la
+                    // portada, las caratulas y el menu terminan donde termina
+                    // lo que muestran.
                     //
-                    // El filo si hace falta. Sin nada, la portada se recorta
-                    // contra el fondo como una pegatina; con esto se ve donde
-                    // TERMINA sin que llegue a leerse como un marco. La clave
-                    // esta en que las esquinas siguen RECTAS: lo que convertia
-                    // esto en una tarjeta pegada encima era la curva, no la
-                    // linea.
-                    border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.08),
-                      width: 1,
-                    ),
-
+                    // (El filo llego a estar en 1 px al 8%. Si alguna vez la
+                    // portada se recorta demasiado contra el fondo, es ahi
+                    // donde estaba.)
                     gradient: LinearGradient(
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
