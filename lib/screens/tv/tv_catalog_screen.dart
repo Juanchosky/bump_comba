@@ -2167,7 +2167,7 @@ class _BarraMenu extends StatelessWidget {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 220),
           curve: Curves.easeOutCubic,
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
           decoration: BoxDecoration(
             // Negro translucido, no blanco: encima de una imagen clara el
             // blanco se pierde y el texto blanco de dentro con el. El negro
@@ -2325,7 +2325,7 @@ class _ItemMenuState extends State<_ItemMenu> {
         duration: const Duration(milliseconds: 200),
         curve: Curves.easeOutCubic,
         padding: EdgeInsets.symmetric(
-          horizontal: conTexto ? 17 : 13,
+          horizontal: conTexto ? 13 : 10,
           vertical: 9,
         ),
         decoration: BoxDecoration(
@@ -2367,7 +2367,7 @@ class _ItemMenuState extends State<_ItemMenu> {
                       child: Opacity(opacity: t.clamp(0.0, 1.0), child: hijo),
                     ),
                 child: Padding(
-                  padding: const EdgeInsets.only(left: 9),
+                  padding: const EdgeInsets.only(left: 8),
                   child: Text(
                     widget.texto,
                     maxLines: 1,
