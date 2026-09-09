@@ -403,13 +403,11 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
           }
 
           if (isFromDB) {
-            // Contenido de la base de datos: máxima calidad HD, suavizado de bordes pixelados en luz lineal y deblocking por hardware
             await mpv.setProperty('hls-bitrate', 'max');
             await mpv.setProperty('scale', 'mitchell');
             await mpv.setProperty('cscale', 'mitchell');
-            await mpv.setProperty('linear-upscale', 'yes');
-            await mpv.setProperty('deband', 'no');
-            // Forzar deblocking de hardware (elimina macrobloques pixelados 720p en el decodificador H.264 a 60 FPS)
+            await mpv.setProperty('linear-upscaling', 'yes');
+            await mpv.setProperty('sigmoid-upscaling', 'yes');
             await mpv.setProperty('vd-lavc-skiploopfilter', 'none');
             await mpv.setProperty('sws-scaler', 'bicubic');
           } else {

@@ -738,8 +738,7 @@ class DynamicScraperService {
         }
       });
 
-      if (bestUrl != null &&
-          (maxScore >= 480 || force || candidateUrls.isNotEmpty)) {
+      if (bestUrl != null && (maxScore >= 720 || force)) {
         debugPrint(
           'DynamicScraperService: Best candidate resolved (Score: $maxScore P): $bestUrl',
         );

@@ -325,16 +325,21 @@ class TvDestacadoState extends State<TvDestacado> {
                     // sangre, la portada es PARTE de la pantalla — la misma
                     // identidad que la barra y las filas, donde nada esta
                     // enmarcado.
-                    // ── SIN BORDE ─────────────────────────────────────────
+                    // ── UN FILO SUTIL ─────────────────────────────────────
                     //
-                    // Ni borde ni sombra. Ahora que la barra tampoco tiene
-                    // caja, no queda nada enmarcado en toda la pantalla: la
-                    // portada, las caratulas y el menu terminan donde termina
-                    // lo que muestran.
+                    // 1 px al 7%, y nada mas: ni sombra ni curvas. Sin nada,
+                    // la portada se recorta contra el fondo como una pegatina;
+                    // con esto se ve donde TERMINA sin llegar a leerse como un
+                    // marco.
                     //
-                    // (El filo llego a estar en 1 px al 8%. Si alguna vez la
-                    // portada se recorta demasiado contra el fondo, es ahi
-                    // donde estaba.)
+                    // Lo que lo hace tolerable es que las esquinas siguen
+                    // RECTAS. Lo que convertia esto en una tarjeta pegada
+                    // encima era la curva, no la linea — por eso el borde pudo
+                    // volver y el radio no.
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.07),
+                      width: 1,
+                    ),
                     gradient: LinearGradient(
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,

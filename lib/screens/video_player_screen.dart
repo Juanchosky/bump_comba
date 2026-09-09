@@ -2154,6 +2154,21 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             futures.add(mpv.setProperty('vd-lavc-dr', 'no'));
           }
 
+          if (_currentItem.sourceName == 'Supabase' && !lowPerf) {
+            futures.addAll([
+              mpv.setProperty('hls-bitrate', 'max'),
+              mpv.setProperty('scale', 'mitchell'),
+              mpv.setProperty('cscale', 'mitchell'),
+              mpv.setProperty('linear-upscaling', 'yes'),
+              mpv.setProperty('sigmoid-upscaling', 'yes'),
+              mpv.setProperty('deband', 'yes'),
+              mpv.setProperty('deband-iterations', '2'),
+              mpv.setProperty('deband-threshold', '35'),
+              mpv.setProperty('deband-range', '20'),
+              mpv.setProperty('deband-grain', '5'),
+            ]);
+          }
+
           if (GameConfigService().volumeNormalize) {
             futures.add(mpv.setProperty('af', 'dynaudnorm'));
           }
