@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:http/http.dart' as http;
 import 'm3u_service.dart';
 
 class ScrapedSubtitle {
@@ -470,6 +472,66 @@ class DynamicScraperService {
     return 300;
   }
 
+  static const String _ua =
+      'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36';
+
+  /// Abre un `.m3u8` y devuelve la altura de la MEJOR variante que declara.
+  /// `null` si no es una lista maestra o no se pudo leer.
+  ///
+  /// POR QUE NO BASTA CON MIRAR LA URL
+  /// `_getQualityScore` puntua por el TEXTO de la direccion, que es una
+  /// adivinanza: un `master.m3u8` no dice por fuera si lleva 1080p o 480p
+  /// dentro, asi que se le daba 700 — POR DEBAJO de un `hd.m3u8` fijo, que
+  /// puntua 720. Con las dos sobre la mesa se elegia la de 720 y se tiraba la
+  /// maestra, que es justo donde suele estar la variante buena. De ahi el
+  /// "en la base de datos solo hay hasta 720": nadie habia mirado dentro.
+  ///
+  /// Una lista maestra ocupa menos de 2 KB y esta al principio del archivo,
+  /// asi que se corta la descarga a 32 KB en vez de tragarse la lista de
+  /// segmentos de una pelicula entera.
+  static Future<int?> _alturaMaximaDe(String url, String referer) async {
+    final cliente = http.Client();
+    try {
+      final peticion =
+          http.Request('GET', Uri.parse(url))
+            ..headers.addAll({
+              'User-Agent': _ua,
+              'Referer': referer,
+              'Accept': '*/*',
+            });
+      final respuesta = await cliente
+          .send(peticion)
+          .timeout(const Duration(seconds: 2));
+      if (respuesta.statusCode != 200) return null;
+
+      final buffer = StringBuffer();
+      await for (final trozo in respuesta.stream.transform(
+        const Utf8Decoder(allowMalformed: true),
+      )) {
+        buffer.write(trozo);
+        if (buffer.length > 32768) break;
+      }
+
+      final cuerpo = buffer.toString();
+      if (!cuerpo.contains('#EXT-X-STREAM-INF')) return null;
+
+      var mejor = 0;
+      for (final m in RegExp(
+        r'RESOLUTION=\d+x(\d+)',
+        caseSensitive: false,
+      ).allMatches(cuerpo)) {
+        final alto = int.tryParse(m.group(1) ?? '') ?? 0;
+        if (alto > mejor) mejor = alto;
+      }
+      return mejor > 0 ? mejor : null;
+    } catch (_) {
+      return null;
+    } finally {
+      cliente.close();
+    }
+  }
+
   /// Extracts metadata from a supported URL.
   Future<ScrapedMetadata?> scrapeMetadata(String url) async {
     if (!isSupported(url)) return null;
@@ -726,25 +788,74 @@ class DynamicScraperService {
     final Map<String, int> candidateUrls = {};
     final Set<ScrapedSubtitle> detectedSubtitles = {};
 
+    // Altura REAL leida dentro de cada lista maestra, y las que ya se miraron
+    // (aunque no dieran nada, para no volver a pedirlas en bucle).
+    final Map<String, int> alturaReal = {};
+    final Set<String> yaSondeadas = {};
+    bool sondeando = false;
+
+    int puntosDe(String url) => alturaReal[url] ?? candidateUrls[url] ?? 0;
+
     void resolveBestCandidate({bool force = false}) {
       if (completer.isCompleted || candidateUrls.isEmpty) return;
+      if (sondeando && !force) return;
 
       String? bestUrl;
       int maxScore = -1;
-      candidateUrls.forEach((candidateUrl, score) {
+      for (final candidateUrl in candidateUrls.keys) {
+        final score = puntosDe(candidateUrl);
         if (score > maxScore) {
           maxScore = score;
           bestUrl = candidateUrl;
         }
-      });
+      }
+      if (bestUrl == null) return;
 
-      if (bestUrl != null && (maxScore >= 720 || force)) {
+      // Un `.m3u8` sin abrir puede ser una maestra con 1080p dentro. Se mira
+      // ANTES de conformarse con lo que diga la URL. El `force` del tope de
+      // tiempo salta este paso: ahi ya no hay margen para sondear nada.
+      final sinSondear =
+          candidateUrls.keys
+              .where(
+                (u) =>
+                    u.toLowerCase().contains('.m3u8') && !yaSondeadas.contains(u),
+              )
+              .take(4)
+              .toList();
+
+      if (sinSondear.isNotEmpty && !force) {
+        sondeando = true;
+        yaSondeadas.addAll(sinSondear);
+        unawaited(() async {
+          try {
+            await Future.wait(
+              sinSondear.map((u) async {
+                final alto = await _alturaMaximaDe(u, pageUrl);
+                if (alto != null) {
+                  alturaReal[u] = alto;
+                  debugPrint(
+                    'DynamicScraperService: lista maestra con ${alto}p -> $u',
+                  );
+                }
+              }),
+            ).timeout(const Duration(seconds: 3));
+          } catch (_) {
+            // Un sondeo que falla no bloquea nada: se sigue con la puntuacion
+            // adivinada por la URL, que es lo que habia antes.
+          }
+          sondeando = false;
+          resolveBestCandidate();
+        }());
+        return;
+      }
+
+      if (maxScore >= 720 || force) {
         debugPrint(
           'DynamicScraperService: Best candidate resolved (Score: $maxScore P): $bestUrl',
         );
         completer.complete(
           ExtractedStreamResult(
-            videoUrl: bestUrl!,
+            videoUrl: bestUrl,
             subtitles: detectedSubtitles.toList(),
           ),
         );
@@ -1101,13 +1212,17 @@ class DynamicScraperService {
         onTimeout: () {
           resolveBestCandidate(force: true);
           if (_currentSessionId == sessionId) _disposeHeadless();
-          if (candidateUrls.isNotEmpty) {
-            return ExtractedStreamResult(
-              videoUrl: candidateUrls.keys.first,
-              subtitles: detectedSubtitles.toList(),
-            );
-          }
-          return null;
+          if (candidateUrls.isEmpty) return null;
+          // El mejor, no el primero que entro: `candidateUrls` es un mapa sin
+          // orden de calidad, asi que `.first` devolvia una variante al azar
+          // —normalmente la ligera, que es la que suelen publicar antes.
+          final mejor = candidateUrls.keys.reduce(
+            (a, b) => puntosDe(b) > puntosDe(a) ? b : a,
+          );
+          return ExtractedStreamResult(
+            videoUrl: mejor,
+            subtitles: detectedSubtitles.toList(),
+          );
         },
       );
 

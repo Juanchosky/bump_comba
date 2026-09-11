@@ -489,6 +489,23 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     // — justo lo que este perfil existe para evitar.
     await TvMpvConfig.aplicarBase(_player);
 
+    if (widget.item.sourceName == 'Supabase') {
+      try {
+        final mpv = _player.platform as dynamic;
+        if (mpv != null) {
+          await mpv.setProperty('hls-bitrate', 'max');
+          await mpv.setProperty('scale', 'mitchell');
+          await mpv.setProperty('cscale', 'mitchell');
+          await mpv.setProperty('linear-upscaling', 'yes');
+          await mpv.setProperty('sigmoid-upscaling', 'yes');
+          await mpv.setProperty('vd-lavc-skiploopfilter', 'none');
+          await mpv.setProperty('sws-scaler', 'bicubic');
+        }
+      } catch (e) {
+        debugPrint('TvPlayer: error aplicando perfil BD: $e');
+      }
+    }
+
     Duration desde = Duration.zero;
     try {
       final p = await _progreso.getProgressForItem(widget.item);

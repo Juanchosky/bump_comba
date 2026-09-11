@@ -339,6 +339,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   // Propiedades consultadas a MPV en vivo para el panel de diagnóstico.
   String _diagCodec = '?';
   String _diagHwdecActivo = '?';
+  // Que salida de video usa MPV. Decide si los ajustes de escalado y deband
+  // hacen algo: solo actuan cuando el fotograma pasa por la cadena de shaders
+  // (`gpu`/`gpu-next`). Con una salida que entrega directo a la Surface de
+  // Android se ignoran en silencio, que es indistinguible de "no mejora nada".
+  String _diagVo = '?';
   int _diagVideoTracks = -1;
   String _diagTrackCodecs = '?';
   String _diagVidSel = '?';
@@ -2154,26 +2159,42 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             futures.add(mpv.setProperty('vd-lavc-dr', 'no'));
           }
 
-          if (_currentItem.sourceName == 'Supabase' && !lowPerf) {
-            futures.addAll([
-              mpv.setProperty('hls-bitrate', 'max'),
-              mpv.setProperty('scale', 'mitchell'),
-              mpv.setProperty('cscale', 'mitchell'),
-              mpv.setProperty('linear-upscaling', 'yes'),
-              mpv.setProperty('sigmoid-upscaling', 'yes'),
-              mpv.setProperty('deband', 'yes'),
-              mpv.setProperty('deband-iterations', '2'),
-              mpv.setProperty('deband-threshold', '35'),
-              mpv.setProperty('deband-range', '20'),
-              mpv.setProperty('deband-grain', '5'),
-            ]);
-          }
-
           if (GameConfigService().volumeNormalize) {
             futures.add(mpv.setProperty('af', 'dynaudnorm'));
           }
 
           await Future.wait(futures);
+
+          // DESPUES del bloque de arriba, no dentro: ahi va un
+          // `hls-bitrate: auto` para VOD y `Future.wait` no garantiza el orden,
+          // asi que metido en la misma lista podia ganar el 'auto'.
+          //
+          // Los ajustes de escalado (`scale`, `deband`, ...) solo hacen algo
+          // cuando MPV renderiza por su cadena de shaders. Con
+          // `hwdec: mediacodec` el fotograma va del decodificador a la Surface
+          // sin pasar por ahi y se ignoran; quedan puestos para cuando el
+          // reintento baja a `mediacodec-copy`, que si pasa por el renderizador.
+          if (_currentItem.sourceName == 'Supabase' && !lowPerf) {
+            for (final p in const {
+              'hls-bitrate': 'max',
+              'scale': 'mitchell',
+              'cscale': 'mitchell',
+              'linear-upscaling': 'yes',
+              'sigmoid-upscaling': 'yes',
+              'deband': 'yes',
+              'deband-iterations': '2',
+              'deband-threshold': '35',
+              'deband-range': '20',
+              'deband-grain': '5',
+            }.entries) {
+              try {
+                await mpv.setProperty(p.key, p.value);
+              } catch (e) {
+                debugPrint('MPV: rechazado ${p.key}=${p.value} -> $e');
+              }
+            }
+          }
+
           _subtitlesEnabled = false;
         } catch (e) {
           debugPrint('Error configurando MPV: $e');
@@ -7728,6 +7749,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           } catch (_) {
             _diagHwdecActivo = 'err';
           }
+          try {
+            final vo = await mpv.getProperty('current-vo');
+            final escala = await mpv.getProperty('scale');
+            _diagVo =
+                '${(vo == null || vo.toString().isEmpty) ? 'null' : vo}'
+                ' / scale=${(escala == null || escala.toString().isEmpty) ? '?' : escala}';
+          } catch (_) {
+            _diagVo = 'err';
+          }
           // Volcado detallado de pistas de video: id, códec, dimensiones,
           // si es carátula (albumart) y si está seleccionada. Decisivo para
           // saber por qué no se activa ninguna pista.
@@ -7831,6 +7861,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       line('vid sel', _diagVidSel),
       line('Pistas', _diagTrackCodecs),
       line('HW activo', _diagHwdecActivo),
+      line('Salida / escala', _diagVo),
       line('Pistas video', _diagVideoTracks < 0 ? '?' : '$_diagVideoTracks'),
       line(
         'Textura (rect)',
