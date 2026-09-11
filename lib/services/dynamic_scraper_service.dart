@@ -381,6 +381,27 @@ class DynamicScraperService {
       return true;
     }
 
+    // 9. Peelink variants
+    if (lowUrl.contains('peelink') ||
+        lowUrl.contains('peelink2') ||
+        lowUrl.contains('peelinkp')) {
+      return true;
+    }
+
+    // 10. VOE variants
+    if (lowUrl.contains('voe.sx') ||
+        lowUrl.contains('johnfullwonder') ||
+        lowUrl.contains('voe-network') ||
+        lowUrl.contains('voe.') ||
+        lowUrl.contains('peliculasrey.me')) {
+      return true;
+    }
+
+    // 11. Uqload variants
+    if (lowUrl.contains('uqload')) {
+      return true;
+    }
+
     return false;
   }
 
@@ -535,6 +556,14 @@ class DynamicScraperService {
   /// Extracts metadata from a supported URL.
   Future<ScrapedMetadata?> scrapeMetadata(String url) async {
     if (!isSupported(url)) return null;
+
+    if (url.toLowerCase().contains('peelink')) {
+      final fastMeta = await _scrapePeelinkMetadata(url);
+      if (fastMeta != null) {
+        return fastMeta;
+      }
+    }
+
     if (_isScrapingGlobal) await _disposeHeadless();
     _isScrapingGlobal = true;
 
@@ -778,6 +807,22 @@ class DynamicScraperService {
       }
       _resueltas.remove(pageUrl);
     }
+
+    // ── VÍA RÁPIDA NATIVA (HTTP directo sin WebView) ───────────────────
+    // Para Peelink y servidores directos como VOE. Resuelve en ~500ms y
+    // con 0 MB de consumo de RAM (vital para TV Boxes con 1 GB de RAM).
+    final fastResult = await _tryFastDirectExtraction(pageUrl);
+    if (fastResult != null && fastResult.videoUrl.isNotEmpty) {
+      debugPrint(
+        'DynamicScraperService: resuelto por vía rápida nativa -> ${fastResult.videoUrl}',
+      );
+      _resueltas[pageUrl] = (
+        hasta: _caducidadDe(fastResult.videoUrl),
+        resultado: fastResult,
+      );
+      return fastResult;
+    }
+
     if (_isScrapingGlobal) await _disposeHeadless();
     _isScrapingGlobal = true;
 
@@ -1275,5 +1320,385 @@ class DynamicScraperService {
     } catch (e) {
       debugPrint('Error disposing headless: $e');
     }
+  }
+
+  // ── VÍA RÁPIDA NATIVA: PEELINK & VOE ────────────────────────────────────────
+
+  Future<ExtractedStreamResult?> _tryFastDirectExtraction(
+    String pageUrl,
+  ) async {
+    final low = pageUrl.toLowerCase();
+    if (low.contains('peelink')) {
+      return await _extractPeelinkStream(pageUrl);
+    }
+    if (low.contains('voe.sx') ||
+        low.contains('johnfullwonder') ||
+        low.contains('voe-network') ||
+        low.contains('voe.') ||
+        low.contains('peliculasrey.me')) {
+      return await _extractVoeStream(pageUrl);
+    }
+    return null;
+  }
+
+  Future<ExtractedStreamResult?> _extractPeelinkStream(
+    String peelinkUrl,
+  ) async {
+    try {
+      final client = http.Client();
+      final res = await client.get(
+        Uri.parse(peelinkUrl),
+        headers: {
+          'User-Agent': _ua,
+          'Accept':
+              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+        },
+      ).timeout(const Duration(seconds: 8));
+      client.close();
+
+      if (res.statusCode != 200) return null;
+      final html = res.body;
+
+      // 1. Extraer opciones de px_repros: px_repros['latino_0'] = '...'
+      final reproRegex = RegExp(
+        r'''px_repros\['([^']+)'\]\s*=\s*'([^']+)' '''.trim(),
+      );
+      final matches = reproRegex.allMatches(html).toList();
+
+      final List<String> candidateServerUrls = [];
+      final latino = <String>[];
+      final espanol = <String>[];
+      final sub = <String>[];
+      final otros = <String>[];
+
+      for (final m in matches) {
+        final key = m.group(1)?.toLowerCase() ?? '';
+        final b64 = m.group(2) ?? '';
+        try {
+          final decodedHtml = utf8.decode(
+            base64.decode(b64),
+            allowMalformed: true,
+          );
+          final srcMatch = RegExp(
+            r'''src=['"]([^'"]+)['"]''',
+          ).firstMatch(decodedHtml);
+          if (srcMatch != null) {
+            final serverUrl = srcMatch.group(1)!;
+            if (key.contains('latino')) {
+              latino.add(serverUrl);
+            } else if (key.contains('espanol') || key.contains('castellano')) {
+              espanol.add(serverUrl);
+            } else if (key.contains('sub')) {
+              sub.add(serverUrl);
+            } else {
+              otros.add(serverUrl);
+            }
+          }
+        } catch (_) {}
+      }
+
+      candidateServerUrls.addAll(latino);
+      candidateServerUrls.addAll(espanol);
+      candidateServerUrls.addAll(sub);
+      candidateServerUrls.addAll(otros);
+
+      // Si no encontramos en px_repros, buscar en video[N]
+      if (candidateServerUrls.isEmpty) {
+        final videoRegex = RegExp(r'''video\[\d+\]\s*=\s*['"]([^'"]+)['"]''');
+        for (final vm in videoRegex.allMatches(html)) {
+          final vVal = vm.group(1) ?? '';
+          final srcMatch = RegExp(
+            r'''src=['"]([^'"]+)['"]''',
+          ).firstMatch(vVal);
+          if (srcMatch != null) {
+            candidateServerUrls.add(srcMatch.group(1)!);
+          }
+        }
+      }
+
+      debugPrint(
+        'DynamicScraperService (Peelink): ${candidateServerUrls.length} servidores encontrados',
+      );
+
+      for (final serverUrl in candidateServerUrls) {
+        var target = serverUrl;
+
+        // Desempaquetar redirecciones base64 de peliculasrey si aplica
+        if (target.contains('peliculasrey.me') || target.contains('/red2.php/')) {
+          final b64Part = target.split('/red2.php/').last;
+          try {
+            var dec = utf8.decode(base64.decode(b64Part), allowMalformed: true);
+            if (dec.startsWith('aHR0')) {
+              dec = utf8.decode(base64.decode(dec), allowMalformed: true);
+            }
+            if (dec.startsWith('http')) {
+              target = dec;
+            }
+          } catch (_) {}
+        }
+
+        if (target.contains('voe.sx') ||
+            target.contains('voe.') ||
+            target.contains('johnfullwonder') ||
+            target.contains('voe-network')) {
+          final voeResult = await _extractVoeStream(target);
+          if (voeResult != null && voeResult.videoUrl.isNotEmpty) {
+            return voeResult;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('DynamicScraperService: error extractPeelinkStream: $e');
+    }
+    return null;
+  }
+
+  Future<ExtractedStreamResult?> _extractVoeStream(String voeUrl) async {
+    try {
+      var currentUrl = voeUrl;
+
+      // Desempaquetar redirección de peliculasrey si llegó aquí directo
+      if (currentUrl.contains('peliculasrey.me') ||
+          currentUrl.contains('/red2.php/')) {
+        final b64Part = currentUrl.split('/red2.php/').last;
+        try {
+          var dec = utf8.decode(base64.decode(b64Part), allowMalformed: true);
+          if (dec.startsWith('aHR0')) {
+            dec = utf8.decode(base64.decode(dec), allowMalformed: true);
+          }
+          if (dec.startsWith('http')) {
+            currentUrl = dec;
+          }
+        } catch (_) {}
+      }
+
+      final client = http.Client();
+      http.Response res = await client.get(
+        Uri.parse(currentUrl),
+        headers: {
+          'User-Agent': _ua,
+          'Accept':
+              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+        },
+      ).timeout(const Duration(seconds: 8));
+
+      // Redirección JavaScript de VOE a dominio de entrega
+      if (res.body.contains("window.location.href = '") ||
+          res.body.contains('window.location.href = "')) {
+        final redirectMatch = RegExp(
+          r'''window\.location\.href\s*=\s*['"]([^'"]+)['"]''',
+        ).firstMatch(res.body);
+        if (redirectMatch != null) {
+          final redirectUrl = redirectMatch.group(1)!;
+          currentUrl = redirectUrl;
+          res = await client.get(
+            Uri.parse(currentUrl),
+            headers: {
+              'User-Agent': _ua,
+              'Referer': voeUrl,
+            },
+          ).timeout(const Duration(seconds: 8));
+        }
+      }
+      client.close();
+
+      final html = res.body;
+
+      // Patrón de carga útil cifrada: type="application/json">["..."]
+      final jsonTagMatch = RegExp(
+        r'''type=['"]application/json['"]\s*>\s*\[\s*['"]([^'"]+)['"]\s*\]''',
+      ).firstMatch(html);
+      if (jsonTagMatch != null) {
+        final payload = jsonTagMatch.group(1)!;
+        final decryptedJson = _decryptVoePayload(payload);
+        if (decryptedJson != null) {
+          final Map<String, dynamic> data = jsonDecode(decryptedJson);
+          final streamUrl =
+              data['source']?.toString() ??
+              data['direct_access_url']?.toString();
+          if (streamUrl != null && streamUrl.isNotEmpty) {
+            final List<ScrapedSubtitle> subs = [];
+            if (data['captions'] is List) {
+              for (var c in data['captions']) {
+                if (c is Map && c['file'] != null) {
+                  subs.add(
+                    ScrapedSubtitle(
+                      url: c['file'].toString(),
+                      label: c['label']?.toString() ?? 'Español',
+                      language: c['language']?.toString(),
+                    ),
+                  );
+                }
+              }
+            }
+            return ExtractedStreamResult(videoUrl: streamUrl, subtitles: subs);
+          }
+        }
+      }
+
+      // Respaldo secundario: búsqueda directa de URL de streaming en JS
+      final hlsMatch = RegExp(
+        r'''['"](?:hls|source)['"]\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]''',
+      ).firstMatch(html);
+      if (hlsMatch != null) {
+        return ExtractedStreamResult(videoUrl: hlsMatch.group(1)!);
+      }
+      final mp4Match = RegExp(
+        r'''['"](?:file|direct_access_url)['"]\s*:\s*['"]([^'"]+\.mp4[^'"]*)['"]''',
+      ).firstMatch(html);
+      if (mp4Match != null) {
+        return ExtractedStreamResult(videoUrl: mp4Match.group(1)!);
+      }
+    } catch (e) {
+      debugPrint('DynamicScraperService: error extractVoeStream: $e');
+    }
+    return null;
+  }
+
+  String? _decryptVoePayload(String raw) {
+    try {
+      // 1. ROT13 sobre letras mayúsculas y minúsculas
+      final rot13Buffer = StringBuffer();
+      for (int i = 0; i < raw.length; i++) {
+        final code = raw.codeUnitAt(i);
+        if (code >= 65 && code <= 90) {
+          rot13Buffer.writeCharCode((code - 65 + 13) % 26 + 65);
+        } else if (code >= 97 && code <= 122) {
+          rot13Buffer.writeCharCode((code - 97 + 13) % 26 + 97);
+        } else {
+          rot13Buffer.writeCharCode(code);
+        }
+      }
+      var stripped = rot13Buffer.toString();
+
+      // 2. Eliminar cadenas de ruido agregadas por el servidor VOE
+      const noise = ['@\$', '^^', '~@', '%?', '*~', '!!', '#&'];
+      for (final p in noise) {
+        stripped = stripped.replaceAll(p, '');
+      }
+
+      // 3. Primer decode Base64
+      final padLen = (4 - (stripped.length % 4)) % 4;
+      final padded1 = stripped + ('=' * padLen);
+      final bytes1 = base64.decode(padded1);
+      final decoded1 = utf8.decode(bytes1, allowMalformed: true);
+
+      // 4. Desplazamiento de caracteres (-3)
+      final shiftedBuffer = StringBuffer();
+      for (int i = 0; i < decoded1.length; i++) {
+        shiftedBuffer.writeCharCode(decoded1.codeUnitAt(i) - 3);
+      }
+      final shifted = shiftedBuffer.toString();
+
+      // 5. Invertir la cadena
+      final reversed = shifted.split('').reversed.join();
+
+      // 6. Segundo decode Base64 para obtener el JSON final
+      final padLen2 = (4 - (reversed.length % 4)) % 4;
+      final padded2 = reversed + ('=' * padLen2);
+      final bytes2 = base64.decode(padded2);
+      final finalJson = utf8.decode(bytes2, allowMalformed: true);
+
+      return finalJson;
+    } catch (e) {
+      debugPrint('DynamicScraperService: error decrypting VOE payload: $e');
+      return null;
+    }
+  }
+
+  Future<ScrapedMetadata?> _scrapePeelinkMetadata(String url) async {
+    try {
+      final client = http.Client();
+      final res = await client.get(
+        Uri.parse(url),
+        headers: {
+          'User-Agent': _ua,
+          'Accept':
+              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+        },
+      ).timeout(const Duration(seconds: 8));
+      client.close();
+
+      if (res.statusCode != 200) return null;
+      final html = res.body;
+
+      // 1. Título
+      String title = '';
+      final h1Match = RegExp(
+        r'''<h1[^>]*class=['"][^'"]*entry-title[^'"]*['"][^>]*>(.*?)</h1>''',
+        dotAll: true,
+      ).firstMatch(html);
+      if (h1Match != null) {
+        title = h1Match.group(1)!.replaceAll(RegExp(r'<[^>]*>'), '').trim();
+      } else {
+        final ogTitle = RegExp(
+          r'''<meta\s+property=['"]og:title['"]\s+content=['"]([^'"]+)['"]''',
+        ).firstMatch(html);
+        if (ogTitle != null) {
+          title = ogTitle.group(1)!.replaceAll(' - PEELINK', '').trim();
+        }
+      }
+
+      // 2. Poster / Imagen
+      String? thumb;
+      final ogImg = RegExp(
+        r'''<meta\s+property=['"]og:image['"]\s+content=['"]([^'"]+)['"]''',
+      ).firstMatch(html);
+      if (ogImg != null) {
+        thumb = ogImg.group(1)!.trim();
+      }
+
+      // 3. Descripción
+      String? desc;
+      final ogDesc = RegExp(
+        r'''<meta\s+(?:property=['"]og:description['"]|name=['"]description['"])\s+content=['"]([^'"]+)['"]''',
+      ).firstMatch(html);
+      if (ogDesc != null) {
+        desc = ogDesc.group(1)!.trim();
+      }
+
+      // 4. Episodios si es serie
+      final List<M3UItem> episodes = [];
+      final epRegex = RegExp(
+        r'''<a[^>]+href=['"](https?://[^'"]*peelink[^'"]*(?:cap\d+|capitulo|episodio)[^'"]*)['"][^>]*>(.*?)</a>''',
+        caseSensitive: false,
+      );
+      final seenEpUrls = <String>{};
+      for (final m in epRegex.allMatches(html)) {
+        final epUrl = m.group(1)!;
+        if (!seenEpUrls.add(epUrl)) continue;
+        final epTitleRaw =
+            m.group(2)!.replaceAll(RegExp(r'<[^>]*>'), '').trim();
+        final epTitle =
+            epTitleRaw.isNotEmpty
+                ? epTitleRaw
+                : 'Episodio ${episodes.length + 1}';
+        episodes.add(
+          M3UItem(
+            name: epTitle,
+            url: epUrl,
+            logo: thumb,
+            category: 'Episodios',
+            isLive: false,
+            isDynamic: true,
+          ),
+        );
+      }
+
+      if (title.isNotEmpty) {
+        return ScrapedMetadata(
+          title: title,
+          thumbnailUrl: thumb,
+          description: desc,
+          episodes: episodes,
+        );
+      }
+    } catch (e) {
+      debugPrint('DynamicScraperService: error _scrapePeelinkMetadata: $e');
+    }
+    return null;
   }
 }
