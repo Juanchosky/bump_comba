@@ -1414,16 +1414,6 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
             ],
             Builder(
               builder: (context) {
-                final bool hasAlternatives =
-                    widget.item.alternatives.isNotEmpty ||
-                    _allEpisodes.any((ep) => ep.alternatives.isNotEmpty);
-                final bool isFromDB =
-                    widget.item.esDeLaBD ||
-                    _allEpisodes.any((ep) => ep.esDeLaBD);
-
-                final String? serverBadgeText =
-                    hasAlternatives ? 'V1+' : (isFromDB ? 'BD' : null);
-
                 // ── Distintivo ENG ────────────────────────────────────────
                 //
                 // Avisa ANTES de darle al play de que ese contenido esta en
@@ -1449,7 +1439,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                           ),
                     );
 
-                if (serverBadgeText == null && !hayIngles) {
+                if (!hayIngles) {
                   return const SizedBox.shrink();
                 }
 
@@ -1478,8 +1468,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      if (serverBadgeText != null) distintivo(serverBadgeText),
-                      if (hayIngles) distintivo('ENG'),
+                      distintivo('ENG'),
                     ],
                   ),
                 );
