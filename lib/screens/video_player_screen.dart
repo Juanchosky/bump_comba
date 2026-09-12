@@ -2243,7 +2243,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 isHlsStream ? '67108864' : (lowPerf ? '25165824' : '50331648'),
               ),
               mpv.setProperty('demuxer-readahead-secs', lowPerf ? '45' : '90'),
-              mpv.setProperty('hls-bitrate', 'max'),
+              mpv.setProperty('hls-bitrate', 'auto'),
               if (isHlsStream) ...[
                 mpv.setProperty('hls-forward-cache-secs', '45'),
                 mpv.setProperty('hls-back-cache-secs', '30'),
@@ -6898,7 +6898,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         // lo deja al mismo nivel que los botones de reproducir y pausa.
         Center(
           child: Transform.translate(
-            offset: Offset(0, spinnerSize / 2 + 22),
+            offset: Offset(0, spinnerSize / 2 + 28),
             child: DecoratedBox(
               decoration: BoxDecoration(
                 color: Colors.black.withValues(alpha: 0.45),

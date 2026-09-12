@@ -199,8 +199,12 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
     if (isLive) return;
 
-    // NO pre-calentar si requiere scraping (son URLs de páginas web, no videos directos)
-    if (DynamicScraperService().isSupported(url)) return;
+    // Si requiere scraping, pre-resolvemos la URL en segundo plano mientras el usuario
+    // lee la sinopsis o mira el reparto. Cuando toque "Reproducir", ya estará en caché (0ms de espera).
+    if (DynamicScraperService().isSupported(url)) {
+      unawaited(DynamicScraperService().extractStreamResult(widget.item.url));
+      return;
+    }
 
     Future.microtask(() async {
       try {
