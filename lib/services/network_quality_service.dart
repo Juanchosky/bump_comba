@@ -61,6 +61,8 @@ class NetworkQualityService {
       _activeStreamUrl = null;
       _bandwidthHistory.clear();
       _consecutiveGoodReadings = 0;
+      _lastRealMbps = null;
+      _lastRealMbpsAt = null;
       return;
     }
 
@@ -86,6 +88,8 @@ class NetworkQualityService {
     // Different host: reset history but trigger immediate measurement so we have an estimate within 800ms
     _bandwidthHistory.clear();
     _consecutiveGoodReadings = 0;
+    _lastRealMbps = null;
+    _lastRealMbpsAt = null;
     unawaited(_measure());
   }
 
@@ -372,9 +376,11 @@ class NetworkQualityService {
       // aporta (evita oscilar con un bache pasajero).
       _applyQuality(newQuality, estimatedBandwidthMbps.value, latencyMs.value);
     } else if (isImproving) {
-      // Si la calidad anterior era 'offline', recuperamos inmediatamente
-      // para evitar quedar atascados por 60 segundos debido a la histeresis
-      if (quality.value == NetworkQuality.offline) {
+      // Si la calidad anterior era 'offline' o 'poor' y la nueva lectura es claramente buena (good/excellent),
+      // recuperamos inmediatamente para evitar quedar atrapados 60s en perfil de emergencia.
+      if (quality.value == NetworkQuality.offline ||
+          (quality.value == NetworkQuality.poor &&
+              newQuality.index <= NetworkQuality.good.index)) {
         _consecutiveGoodReadings = 0;
         _applyQuality(
           newQuality,
