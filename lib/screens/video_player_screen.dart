@@ -2450,38 +2450,70 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           });
         }
 
-        // Cargar y registrar subtítulos extraídos de la web (VTT/SRT)
+        // Cargar y registrar subtítulos extraídos de la web (VTT/SRT) en SEGUNDO PLANO
+        // CRÍTICO: No hacer un bucle 'await' bloqueante sobre todas las pistas web
+        // (pueden ser más de 20 idiomas de múltiples episodios). Cada descarga remota
+        // demora 1s y bloqueaba el arranque del video durante 25+ segundos mientras
+        // el audio ya sonaba de fondo, dejando la pantalla tapada con el póster de carga.
         if (_scrapedSubtitles.isNotEmpty && _player != null) {
-          for (final sub in _scrapedSubtitles) {
-            try {
-              debugPrint(
-                'VideoPlayerScreen: Registering Web Subtitle (${sub.label}): ${sub.url}',
-              );
-              await _player?.setSubtitleTrack(
-                SubtitleTrack.uri(
-                  sub.url,
-                  title: sub.label,
-                  language: sub.language,
-                ),
-              );
-            } catch (e) {
-              debugPrint('VideoPlayerScreen: Error adding subtitle track: $e');
-            }
-          }
+          unawaited(() async {
+            if (!mounted || _player == null) return;
+            final activePlayer = _player;
+            if (activePlayer == null) return;
 
-          // Auto-activar pista en español si existe
-          final tracks = _player?.state.tracks.subtitle ?? [];
-          for (final t in tracks) {
-            final tTitle = (t.title ?? t.language ?? '').toLowerCase();
-            if (tTitle.contains('es') ||
-                tTitle.contains('spa') ||
-                tTitle.contains('lat') ||
-                tTitle.contains('web')) {
-              await _player?.setSubtitleTrack(t);
-              if (mounted) setState(() => _subtitlesEnabled = true);
-              break;
+            // Filtrar subtítulos que correspondan al episodio actual (si aplica)
+            final currentEp = _currentItem.episodeNumber;
+            final relevantSubs =
+                _scrapedSubtitles.where((sub) {
+                  if (currentEp == null) return true;
+                  final match = RegExp(
+                    r'[-_]?[eE](\d+)[-_]?',
+                  ).firstMatch(sub.url);
+                  if (match != null) {
+                    final parsed = int.tryParse(match.group(1)!);
+                    if (parsed != null && parsed != currentEp) return false;
+                  }
+                  return true;
+                }).toList();
+
+            // Buscar si hay subtítulo en español
+            ScrapedSubtitle? spanishSub;
+            for (final s in relevantSubs) {
+              final l = s.label.toLowerCase();
+              final lang = (s.language ?? '').toLowerCase();
+              if (l.contains('español') ||
+                  l.contains('spanish') ||
+                  l.contains('castellano') ||
+                  lang == 'es' ||
+                  lang.startsWith('es-')) {
+                spanishSub = s;
+                break;
+              }
             }
-          }
+
+            // Si existe subtítulo en español, precargarlo en segundo plano
+            if (spanishSub != null) {
+              try {
+                debugPrint(
+                  'VideoPlayerScreen: Registrando subtítulo en español en segundo plano (${spanishSub.label}): ${spanishSub.url}',
+                );
+                await activePlayer.setSubtitleTrack(
+                  SubtitleTrack.uri(
+                    spanishSub.url,
+                    title: spanishSub.label,
+                    language: spanishSub.language ?? 'es',
+                  ),
+                );
+                if (mounted) {
+                  setState(() => _subtitlesEnabled = true);
+                }
+              } catch (e) {
+                debugPrint(
+                  'VideoPlayerScreen: Error cargando subtítulo en español: $e',
+                );
+              }
+            }
+          }());
         }
       } else {
         if (!mounted || _player == null) return;
@@ -2684,10 +2716,20 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // Playing stream para marcar inicio de reproducción
     _streamSubscriptions.add(
       _player!.stream.playing.listen((playing) {
-        if (playing && !_hasPlaybackStarted && mounted && !_isVideoLoading) {
-          // Arranco: la red de seguridad ya no hace falta.
-          _watchdogArranque?.cancel();
-          setState(() => _hasPlaybackStarted = true);
+        if (playing && mounted) {
+          final pos = _player?.state.position ?? Duration.zero;
+          final hasVideo = ((_player?.state.width ?? 0) > 0);
+          if (pos.inMilliseconds > 200 || hasVideo) {
+            // Arranco: la red de seguridad ya no hace falta.
+            _watchdogArranque?.cancel();
+            _serverFailoverTimer?.cancel();
+            if (_isVideoLoading || !_hasPlaybackStarted) {
+              setState(() {
+                _isVideoLoading = false;
+                _hasPlaybackStarted = true;
+              });
+            }
+          }
         }
       }),
     );
@@ -2880,12 +2922,17 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _streamSubscriptions.add(
       _player!.stream.position.listen((position) {
         if (!mounted || _player == null) return;
-        if (!_hasPlaybackStarted &&
-            !_isVideoLoading &&
-            (position.inMilliseconds > 100 ||
-                (_player?.state.playing ?? false))) {
+        // Failsafe: Si la posición avanza, el stream ya está reproduciendo indiscutiblemente.
+        // Apagamos _isVideoLoading para que el póster borroso se retire al instante.
+        if (position.inMilliseconds > 200) {
           _watchdogArranque?.cancel();
-          setState(() => _hasPlaybackStarted = true);
+          _serverFailoverTimer?.cancel();
+          if (_isVideoLoading || !_hasPlaybackStarted) {
+            setState(() {
+              _isVideoLoading = false;
+              _hasPlaybackStarted = true;
+            });
+          }
         }
         final rawDur = _player!.state.duration;
         if (rawDur > Duration.zero) {
@@ -3059,13 +3106,23 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// descubrirlos por su cuenta —solo ve las pistas incrustadas—, asi que hay
   /// que mandarselos en el LOAD o su menu de subtitulos sale vacio.
   List<Map<String, String>> _subtitulosParaTv() {
+    final currentEp = _currentItem.episodeNumber;
     return [
       for (final s in _scrapedSubtitles)
-        {
-          'url': s.url,
-          'label': s.label,
-          if (s.language != null) 'language': s.language!,
-        },
+        if (currentEp == null ||
+            () {
+              final match = RegExp(r'[-_]?[eE](\d+)[-_]?').firstMatch(s.url);
+              if (match != null) {
+                final parsed = int.tryParse(match.group(1)!);
+                if (parsed != null && parsed != currentEp) return false;
+              }
+              return true;
+            }())
+          {
+            'url': s.url,
+            'label': s.label,
+            if (s.language != null) 'language': s.language!,
+          },
     ];
   }
 
@@ -5323,7 +5380,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     final Set<String> seenUrls = {};
     final Set<String> seenLabels = {};
     final List<ScrapedSubtitle> uniqueScrapedSubtitles = [];
+    final currentEp = _currentItem.episodeNumber;
     for (final sub in _scrapedSubtitles) {
+      if (currentEp != null) {
+        final match = RegExp(r'[-_]?[eE](\d+)[-_]?').firstMatch(sub.url);
+        if (match != null) {
+          final parsed = int.tryParse(match.group(1)!);
+          if (parsed != null && parsed != currentEp) continue;
+        }
+      }
       if (sub.url.isNotEmpty &&
           !seenUrls.contains(sub.url) &&
           !seenLabels.contains(sub.label.toLowerCase())) {
@@ -6898,7 +6963,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         // lo deja al mismo nivel que los botones de reproducir y pausa.
         Center(
           child: Transform.translate(
-            offset: Offset(0, spinnerSize / 2 + 28),
+            offset: Offset(0, spinnerSize / 2 + 30),
             child: DecoratedBox(
               decoration: BoxDecoration(
                 color: Colors.black.withValues(alpha: 0.45),
