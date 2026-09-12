@@ -60,33 +60,63 @@ function sanitizeImageUrl(rawUrl: string | null | undefined): string | null {
   }
 }
 
+const TMDB_API_KEY = "4d1a1f42684a12a2fed02f05b35b4bb8"
+
+async function fetchTmdbTvYear(title: string): Promise<string | null> {
+  try {
+    const clean = title
+      .replace(/\[[^\]]*\]/g, ' ')
+      .replace(/\((?:HDTS|CAM|TS|HDRIP|BRRIP|WEBRIP|WEB-?DL|HD|SD|4K|FHD|UHD|LAT|CAST|SUB|VOSE|DUAL|REMUX|BLURAY|DVDRIP|SCREENER|LINE)[^)]*\)/gi, ' ')
+      .replace(/\b(?:1080p|720p|480p|2160p|4k|uhd|hd|sd|web-?dl|webrip|bluray|brrip|latino|castellano|subtitulado|vose|remux)\b/gi, ' ')
+      .replace(/\b(?:season|temporada|temp|t)\s*\d+\b/gi, ' ')
+      .replace(/\((?:19|20)\d{2}\)/g, ' ')
+      .replace(/[|·_]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+
+    if (!clean) return null
+
+    const url = `https://api.themoviedb.org/3/search/tv?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(clean)}&language=es-ES`
+    const res = await fetch(url, { signal: AbortSignal.timeout(4500) })
+    if (!res.ok) return null
+    const data = await res.json()
+    const results = data?.results || []
+    if (results.length === 0) return null
+
+    const nClean = clean.toLowerCase()
+    const exact = results.find((r: any) =>
+      (r.name && r.name.toLowerCase() === nClean) ||
+      (r.original_name && r.original_name.toLowerCase() === nClean)
+    )
+    const best = exact || results[0]
+    const airDate = best.first_air_date || best.release_date
+    if (airDate && typeof airDate === 'string') {
+      const m = airDate.match(/\b(19\d\d|20\d\d)\b/)
+      if (m) return m[1]
+    }
+    return null
+  } catch (_) {
+    return null
+  }
+}
+
 function extractReleaseYear(props: any, coverUrl: string | null, html: string): string | null {
   if (props) {
-    if (props.year) return props.year.toString()
-    if (props.releaseYear) return props.releaseYear.toString()
+    if (props.year) {
+      const m = props.year.toString().match(/\b(19\d\d|20\d\d)\b/)
+      if (m) return m[1]
+    }
+    if (props.releaseYear) {
+      const m = props.releaseYear.toString().match(/\b(19\d\d|20\d\d)\b/)
+      if (m) return m[1]
+    }
     if (props.releaseDate) {
       const m = props.releaseDate.toString().match(/\b(19\d\d|20\d\d)\b/)
       if (m) return m[1]
     }
   }
-
-  if (coverUrl) {
-    try {
-      const decodedUrl = decodeURIComponent(coverUrl)
-      const coverMatch = decodedUrl.match(/\/cover\/([12]\d{3})\d{4}/) ||
-                         decodedUrl.match(/\/cover\/([12]\d{3})\d{2}\d{2}/) ||
-                         decodedUrl.match(/\/cover\/(19\d\d|20\d\d)/)
-      if (coverMatch && coverMatch[1]) {
-        return coverMatch[1]
-      }
-    } catch (_) {}
-  }
-
-  if (html) {
-    const htmlMatch = html.match(/\b(19[89]\d|20[0-3]\d)\b/)
-    if (htmlMatch) return htmlMatch[1]
-  }
-
+  // NUNCA extraer año de la URL del CDN de cover (/cover/2026...) ni de regex libre en HTML,
+  // ya que eso causa falsos años (ej: 2026 para series clásicas o de catálogo).
   return null
 }
 
@@ -287,7 +317,11 @@ serve(async (req: Request) => {
     const posterUrl = meta.coverUrl
 
     // Extract release year and append (YYYY) to title if not present
-    const year = extractReleaseYear(meta.props, posterUrl, mainHtml)
+    // Extract release year from props or consult TMDB
+    let year = extractReleaseYear(meta.props, posterUrl, mainHtml)
+    if (!year && !seriesTitle.match(/\(\d{4}\)$/)) {
+      year = await fetchTmdbTvYear(seriesTitle)
+    }
     if (year && seriesTitle && !seriesTitle.match(/\(\d{4}\)$/)) {
       seriesTitle = `${seriesTitle} (${year})`
     }

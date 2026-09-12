@@ -5,6 +5,233 @@ const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CONFIGURACIÓN Y SERVICIO DE TMDB (The Movie Database)
+// ─────────────────────────────────────────────────────────────────────────────
+const TMDB_API_KEY = '4d1a1f42684a12a2fed02f05b35b4bb8';
+const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
+
+/**
+ * Limpia el título eliminando marcas de calidad, audios, corchetes y ruido para consultar TMDB.
+ */
+function cleanTitleForTmdb(rawTitle) {
+    if (!rawTitle) return '';
+    let t = rawTitle;
+    // Extraer o limpiar corchetes enteros: [Audio Latino], [1080p], etc.
+    t = t.replace(/\[[^\]]*\]/g, ' ');
+    // Limpiar etiquetas de calidad y codecs entre paréntesis o corchetes
+    t = t.replace(/\((?:HDTS|CAM|TS|HDRIP|BRRIP|WEBRIP|WEB-?DL|HD|SD|4K|FHD|UHD|LAT|CAST|SUB|VOSE|DUAL|REMUX|BLURAY|DVDRIP|SCREENER|LINE|AUDIO LATINO)[^)]*\)/gi, ' ');
+    // Limpiar palabras de calidad o ruido común de streaming
+    t = t.replace(/\b(?:1080p|720p|480p|2160p|4k|uhd|hd|sd|web-?dl|webrip|bluray|brrip|hdrip|dvdrip|x264|x265|h264|h265|hevc|aac|ac3|dual|latino|castellano|subtitulado|vose|remux|pelicula|completa|online|gratis)\b/gi, ' ');
+    // Limpiar menciones de temporadas/capítulos: "Temporada 1", "Season 2", "T3"
+    t = t.replace(/\b(?:temporada|season|temp|t)\s*\d+\b/gi, ' ');
+    // Remover años entre paréntesis para la consulta de texto limpia: (2023) -> ' '
+    t = t.replace(/\((?:19|20)\d{2}\)/g, ' ');
+    // Remover paréntesis vacíos
+    t = t.replace(/\(\s*\)/g, ' ');
+    // Separadores
+    t = t.replace(/[|·_]/g, ' ');
+    // Quitar guiones repetidos o espacios
+    t = t.replace(/\s+/g, ' ').trim();
+    t = t.replace(/\s*-\s*$/, '').trim();
+    return t || rawTitle;
+}
+
+/**
+ * Normaliza una cadena para comparaciones (sin acentos, minúsculas, alfanumérico).
+ */
+function normalizeTextForMatch(str) {
+    return (str || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+/**
+ * Selecciona el mejor resultado de TMDB priorizando coincidencia de título y año.
+ */
+function pickBestTmdbMatch(results, query, yearHint, mediaType) {
+    if (!results || results.length === 0) return null;
+    const nQuery = normalizeTextForMatch(query);
+
+    const valid = results.filter(r => {
+        const d = mediaType === 'tv' ? r.first_air_date : r.release_date;
+        return d && d.length >= 4;
+    });
+    const pool = valid.length > 0 ? valid : results;
+
+    // 1. Si hay un año sugerido, buscar coincidencia exacta con ese año
+    if (yearHint) {
+        const withYear = pool.filter(r => {
+            const d = mediaType === 'tv' ? r.first_air_date : r.release_date;
+            return d && d.startsWith(yearHint);
+        });
+        const exactWithYear = withYear.find(r => {
+            const t = normalizeTextForMatch(r.title || r.name);
+            const ot = normalizeTextForMatch(r.original_title || r.original_name);
+            return t === nQuery || ot === nQuery;
+        });
+        if (exactWithYear) return exactWithYear;
+        if (withYear.length > 0) return withYear[0];
+    }
+
+    // 2. Coincidencia exacta de título
+    const exact = pool.find(r => {
+        const t = normalizeTextForMatch(r.title || r.name);
+        const ot = normalizeTextForMatch(r.original_title || r.original_name);
+        return t === nQuery || ot === nQuery;
+    });
+    if (exact) return exact;
+
+    // 3. Primer resultado como fallback
+    return pool[0];
+}
+
+/**
+ * Consulta la API de TMDB para obtener el año oficial de estreno y metadatos complementarios.
+ * @param {string} rawTitle - Título crudo
+ * @param {'movie'|'tv'|'series'} mediaType - Tipo
+ * @param {string|number|null} explicitYear - Año si se conoce
+ * @returns {Promise<{ year: string|null, title: string|null, posterUrl: string|null, backdropUrl: string|null, overview: string|null }|null>}
+ */
+async function fetchTmdbInfo(rawTitle, mediaType = 'movie', explicitYear = null) {
+    if (!rawTitle) return null;
+
+    let yearHint = explicitYear ? explicitYear.toString() : null;
+    if (!yearHint) {
+        const ym = rawTitle.match(/[\(\[]?\b(19\d\d|20\d\d)\b[\)\]]?/);
+        if (ym) yearHint = ym[1];
+    }
+
+    const cleanQuery = cleanTitleForTmdb(rawTitle);
+    if (!cleanQuery) return null;
+
+    const endpoint = (mediaType === 'series' || mediaType === 'tv') ? 'tv' : 'movie';
+    const yearParam = yearHint
+        ? (endpoint === 'tv' ? `&first_air_date_year=${yearHint}` : `&primary_release_year=${yearHint}`)
+        : '';
+
+    const fetchWithTimeout = async (url, ms = 4500) => {
+        const controller = new AbortController();
+        const id = setTimeout(() => controller.abort(), ms);
+        try {
+            const res = await fetch(url, { signal: controller.signal });
+            clearTimeout(id);
+            if (!res.ok) return null;
+            return await res.json();
+        } catch (_) {
+            clearTimeout(id);
+            return null;
+        }
+    };
+
+    // 1. Intento en español con filtro de año si existe
+    let data = await fetchWithTimeout(
+        `${TMDB_BASE_URL}/search/${endpoint}?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(cleanQuery)}${yearParam}&language=es-ES`
+    );
+
+    // 2. Si no hubo resultados y se usó filtro de año, intentar sin filtro de año
+    if ((!data || !data.results || data.results.length === 0) && yearParam) {
+        data = await fetchWithTimeout(
+            `${TMDB_BASE_URL}/search/${endpoint}?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(cleanQuery)}&language=es-ES`
+        );
+    }
+
+    // 3. Si aún no hay resultados, intentar sin language (por si el nombre está en idioma original)
+    if (!data || !data.results || data.results.length === 0) {
+        data = await fetchWithTimeout(
+            `${TMDB_BASE_URL}/search/${endpoint}?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(cleanQuery)}`
+        );
+    }
+
+    // 4. Si aún no hay resultados, intentar búsqueda multi
+    if (!data || !data.results || data.results.length === 0) {
+        data = await fetchWithTimeout(
+            `${TMDB_BASE_URL}/search/multi?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(cleanQuery)}&language=es-ES`
+        );
+    }
+
+    const results = data?.results || [];
+    const best = pickBestTmdbMatch(results, cleanQuery, yearHint, endpoint);
+
+    if (best) {
+        const rawDate = endpoint === 'tv'
+            ? (best.first_air_date || best.release_date)
+            : (best.release_date || best.first_air_date);
+        let year = null;
+        if (rawDate && typeof rawDate === 'string' && rawDate.length >= 4) {
+            const yMatch = rawDate.match(/\b(19\d\d|20\d\d)\b/);
+            if (yMatch) year = yMatch[1];
+        }
+
+        const resolvedTitle = best.title || best.name || best.original_title || best.original_name || null;
+        const posterUrl = best.poster_path ? `https://image.tmdb.org/t/p/w500${best.poster_path}` : null;
+        const backdropUrl = best.backdrop_path ? `https://image.tmdb.org/t/p/w1280${best.backdrop_path}` : null;
+
+        return {
+            year,
+            title: resolvedTitle,
+            posterUrl,
+            backdropUrl,
+            overview: best.overview || null,
+            id: best.id
+        };
+    }
+
+    return null;
+}
+
+/**
+ * Función auxiliar para buscar en TMDB desde el modal manual de agregar/editar contenido.
+ */
+async function searchTmdbForManualForm() {
+    const titleInput = document.getElementById('title');
+    const typeInput = document.getElementById('type');
+    const thumbInput = document.getElementById('thumbnail_url');
+    const btn = document.getElementById('btn-search-tmdb');
+    const rawTitle = titleInput ? titleInput.value.trim() : '';
+
+    if (!rawTitle) {
+        showToast('Ingresa un título para buscar en TMDB', 'error');
+        return;
+    }
+
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<i data-lucide="loader-2" class="spinning" style="width:16px;height:16px;"></i> <span>Buscando...</span>';
+        lucide.createIcons();
+    }
+
+    try {
+        const mediaType = (typeInput && typeInput.value === 'series') ? 'tv' : 'movie';
+        const info = await fetchTmdbInfo(rawTitle, mediaType);
+
+        if (!info || !info.year) {
+            showToast('No se encontró información o año en TMDB para este título', 'error');
+        } else {
+            let baseClean = cleanTitleForTmdb(rawTitle);
+            const finalCleanTitle = baseClean || info.title || rawTitle;
+            titleInput.value = `${finalCleanTitle} (${info.year})`;
+
+            if (thumbInput && !thumbInput.value.trim() && info.posterUrl) {
+                thumbInput.value = info.posterUrl;
+            }
+            showToast(`¡Encontrado en TMDB! Año: ${info.year}`, 'success');
+        }
+    } catch (e) {
+        showToast('Error al consultar TMDB: ' + e.message, 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i data-lucide="sparkles" style="color: var(--primary); width: 16px; height: 16px;"></i> <span>Buscar TMDB</span>';
+            lucide.createIcons();
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // AUTH — Login / Logout usando tabla admin_users
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1080,6 +1307,8 @@ function setupEventListeners() {
     viewGridBtn.onclick = () => { viewMode = 'grid'; localStorage.setItem('viewMode', 'grid'); applyFilters(); };
     typeSelect.onchange = handleTypeChange;
     contentForm.onsubmit = saveContent;
+    const btnSearchTmdb = document.getElementById('btn-search-tmdb');
+    if (btnSearchTmdb) btnSearchTmdb.onclick = searchTmdbForManualForm;
     searchInput.oninput = applyFilters;
     filterCategory.onchange = applyFilters;
     filterSeason.onchange = applyFilters;
@@ -1198,16 +1427,33 @@ function setupEventListeners() {
                 if (isMovie) {
                     // ── Importar como película ──
                     try {
+                        if (statusEl) statusEl.textContent = `Consultando TMDB y analizando película (${i + 1}/${importEntries.length}): ${customTitle || url.split('/').pop()}...`;
                         const meta = await parseMovieMetadataFromUrl(url);
 
-                        // Si hay título personalizado, usarlo en vez del auto-detectado
-                        // pero preservar la lógica del año (YYYY)
                         let finalTitle = meta.title;
                         if (customTitle) {
-                            finalTitle = customTitle;
-                            const yearMatch = meta.title.match(/\((\d{4})\)$/);
-                            if (yearMatch && !finalTitle.match(/\(\d{4}\)$/)) {
-                                finalTitle = `${finalTitle} (${yearMatch[1]})`;
+                            finalTitle = customTitle.trim();
+                            let movieYear = null;
+                            const customYearMatch = finalTitle.match(/\((\d{4})\)$/);
+
+                            if (customYearMatch) {
+                                movieYear = customYearMatch[1];
+                            } else {
+                                // Consultar TMDB para el título personalizado
+                                try {
+                                    const tmdb = await fetchTmdbInfo(finalTitle, 'movie', meta.year);
+                                    if (tmdb && tmdb.year) {
+                                        movieYear = tmdb.year;
+                                    } else if (meta.year) {
+                                        movieYear = meta.year;
+                                    }
+                                } catch (_) {
+                                    movieYear = meta.year;
+                                }
+                            }
+
+                            if (movieYear && !finalTitle.match(/\(\d{4}\)$/)) {
+                                finalTitle = `${finalTitle} (${movieYear})`;
                             }
                         }
 
@@ -1230,27 +1476,55 @@ function setupEventListeners() {
                 } else {
                     // ── Importar como serie via edge function import-full-series ──
                     try {
+                        if (statusEl) statusEl.textContent = `Consultando TMDB y preparando serie (${i + 1}/${importEntries.length}): ${customTitle || url.split('/').pop()}...`;
+
+                        let seriesTitleToSend = customTitle ? customTitle.trim() : null;
+                        let seriesYear = null;
+
+                        // Si el usuario especificó un título personalizado pero no trae año, buscarlo en TMDB
+                        if (seriesTitleToSend) {
+                            const ym = seriesTitleToSend.match(/\((\d{4})\)$/);
+                            if (ym) {
+                                seriesYear = ym[1];
+                            } else {
+                                try {
+                                    const tmdb = await fetchTmdbInfo(seriesTitleToSend, 'tv');
+                                    if (tmdb && tmdb.year) {
+                                        seriesYear = tmdb.year;
+                                        seriesTitleToSend = `${seriesTitleToSend} (${seriesYear})`;
+                                    }
+                                } catch (_) {}
+                            }
+                        }
+
                         const { data, error } = await supabaseClient.functions.invoke('import-full-series', {
                             body: {
                                 url,
-                                custom_title: customTitle,
+                                custom_title: seriesTitleToSend,
                                 category: selectedCategory
                             }
                         });
                         if (error) throw error;
                         if (data && data.error) throw new Error(data.error);
 
-                        // Después de importar la serie, asegurar título personalizado y categoría en la BD
+                        // Después de importar la serie, asegurar título con año correcto y categoría en la BD
                         const seriesId = data?.series_id || data?.series?.id;
                         if (seriesId) {
                             const updateData = {};
-                            if (customTitle) {
-                                let finalTitle = customTitle;
-                                const seriesReturnedTitle = data?.series_title || (data?.series && data.series.title) || '';
-                                const yearMatch = seriesReturnedTitle.match(/\((\d{4})\)$/);
-                                if (yearMatch && !finalTitle.match(/\(\d{4}\)$/)) {
-                                    finalTitle = `${finalTitle} (${yearMatch[1]})`;
-                                }
+                            const seriesReturnedTitle = data?.series_title || (data?.series && data.series.title) || '';
+                            let finalTitle = seriesTitleToSend || seriesReturnedTitle;
+
+                            // Si el título retornado aún no tiene año (o queremos verificar con TMDB), resolver
+                            if (!finalTitle.match(/\(\d{4}\)$/)) {
+                                try {
+                                    const tmdb = await fetchTmdbInfo(finalTitle, 'tv');
+                                    if (tmdb && tmdb.year) {
+                                        finalTitle = `${finalTitle} (${tmdb.year})`;
+                                    }
+                                } catch (_) {}
+                            }
+
+                            if (finalTitle && finalTitle !== seriesReturnedTitle) {
                                 updateData.title = finalTitle;
                             }
                             if (selectedCategory && selectedCategory !== 'Recomendados') {
@@ -1525,49 +1799,59 @@ async function parseMovieMetadataFromUrl(url) {
         }
     }
 
-    // ── 5. Detect Release Year and append (YYYY) to title if not present
-    const year = extractReleaseYear(propsData, thumbnail_url, html);
-    if (year && title && !title.match(/\(\d{4}\)$/)) {
-        title = `${title} (${year})`;
+    // ── 5. Consultar TMDB para obtener el año real de estreno y poster oficial si falta
+    let year = extractReleaseYear(propsData, thumbnail_url, html);
+    let tmdbInfo = null;
+
+    try {
+        console.log('[parseMovieMetadata] Consultando TMDB para película:', title);
+        tmdbInfo = await fetchTmdbInfo(title, 'movie', year);
+        if (tmdbInfo && tmdbInfo.year) {
+            year = tmdbInfo.year;
+            console.log('[parseMovieMetadata] TMDB año confirmado:', year, 'Título oficial:', tmdbInfo.title);
+        }
+        // Si no teníamos thumbnail o era inválido, usar el poster oficial de TMDB
+        if (!thumbnail_url && tmdbInfo && tmdbInfo.posterUrl) {
+            thumbnail_url = tmdbInfo.posterUrl;
+        }
+    } catch (tmdbErr) {
+        console.warn('[parseMovieMetadata] Error consultando TMDB:', tmdbErr);
+    }
+
+    if (title) {
+        if (year) {
+            // Reemplazar año antiguo/erróneo si ya venía uno, o agregar el año confirmado
+            if (title.match(/\(\d{4}\)$/)) {
+                title = title.replace(/\(\d{4}\)$/, `(${year})`);
+            } else {
+                title = `${title} (${year})`;
+            }
+        }
     }
 
     thumbnail_url = sanitizeImageUrl(thumbnail_url);
 
     console.log('[parseMovieMetadata] FINAL RESULT:', { title, thumbnail_url: thumbnail_url.substring(0, 80), category });
-    return { title, thumbnail_url, category };
+    return { title, thumbnail_url, category, year, tmdbInfo };
 }
 
 function extractReleaseYear(props, coverUrl, html) {
     if (props) {
-        if (props.year) return props.year.toString();
-        if (props.releaseYear) return props.releaseYear.toString();
+        if (props.year) {
+            const y = props.year.toString().match(/\b(19\d\d|20\d\d)\b/);
+            if (y) return y[1];
+        }
+        if (props.releaseYear) {
+            const y = props.releaseYear.toString().match(/\b(19\d\d|20\d\d)\b/);
+            if (y) return y[1];
+        }
         if (props.releaseDate) {
             const m = props.releaseDate.toString().match(/\b(19\d\d|20\d\d)\b/);
             if (m) return m[1];
         }
     }
-
-    if (coverUrl) {
-        let decodedUrl = coverUrl;
-        try {
-            decodedUrl = decodeURIComponent(coverUrl);
-        } catch (_) {}
-
-        // Matches cover/20260710/ or /cover/20260512/ or /cover/2026...
-        const coverMatch = decodedUrl.match(/\/cover\/([12]\d{3})\d{4}\//) ||
-                           decodedUrl.match(/\/cover\/([12]\d{3})\d{2}\d{2}\//) ||
-                           decodedUrl.match(/\/cover\/([12]\d{3})\d{4}/) ||
-                           decodedUrl.match(/\/cover\/(19\d\d|20\d\d)/);
-        if (coverMatch && coverMatch[1]) {
-            return coverMatch[1];
-        }
-    }
-
-    if (html) {
-        const htmlMatch = html.match(/\b(19[89]\d|20[0-3]\d)\b/);
-        if (htmlMatch) return htmlMatch[1];
-    }
-
+    // NUNCA extraer año de la URL del CDN de cover (/cover/2026...) ni de regex libre en HTML,
+    // ya que eso causa falsos años (ej: 2026 para películas de catálogo).
     return null;
 }
 

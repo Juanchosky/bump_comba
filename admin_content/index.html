@@ -212,7 +212,13 @@
                         <div class="form-grid">
                             <div class="form-group full-width">
                                 <label for="title">Título del Contenido</label>
-                                <input type="text" id="title" required placeholder="Ej: Avengers: Endgame">
+                                <div style="display: flex; gap: 0.5rem; align-items: stretch;">
+                                    <input type="text" id="title" required placeholder="Ej: Avengers: Endgame" style="flex: 1;">
+                                    <button type="button" id="btn-search-tmdb" class="btn btn-secondary" style="white-space: nowrap; padding: 0 0.85rem; font-size: 0.85rem; gap: 0.4rem; display: inline-flex; align-items: center;" title="Buscar información y año exacto en TMDB">
+                                        <i data-lucide="sparkles" style="color: var(--primary); width: 16px; height: 16px;"></i>
+                                        <span>Buscar TMDB</span>
+                                    </button>
+                                </div>
                             </div>
                             <div class="form-group">
                                 <label for="type">Tipo</label>
