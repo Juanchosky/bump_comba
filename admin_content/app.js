@@ -1694,7 +1694,9 @@ function setupEventListeners() {
                 if (statusEl) statusEl.textContent = `Procesando (${i + 1}/${importEntries.length}): ${customTitle || url.split('/').pop()}...`;
 
                 // Detectar películas por URL — todo lo demás se importa como serie via edge function import-full-series
-                const isMovie = url.includes('/movie/') || url.includes('/pelicula/') || url.includes('/film/');
+                const lowUrl = url.toLowerCase();
+                const isPeelinkMovie = lowUrl.includes('peelink') && /\/ver-[^/]+-online\.html/.test(lowUrl);
+                const isMovie = url.includes('/movie/') || url.includes('/pelicula/') || url.includes('/film/') || isPeelinkMovie;
 
                 if (isMovie) {
                     // ── Importar como película ──

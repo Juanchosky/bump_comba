@@ -86,6 +86,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool _isScraping = false;
   String? _scrapingError;
 
+
   String get _currentUserAgent =>
       _userAgents[_userAgentIndex % _userAgents.length];
 
@@ -1542,7 +1543,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
 
     // 1. Manejo de Scraping (enlaces dinámicos)
-    if (DynamicScraperService().isSupported(item.url)) {
+    final bool esContenidoScrapeado = DynamicScraperService().isSupported(item.url);
+    if (esContenidoScrapeado) {
       setState(() {
         _isScraping = true;
         _isVideoLoading = true;
@@ -2297,8 +2299,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         final bool esperarPrimerFrame =
             isLocalReload && shouldPlayLocally && !_isLiveContent;
 
+        final bool isHls = playbackUrl.toLowerCase().contains('.m3u8') ||
+            playbackUrl.toLowerCase().contains('/hls/');
+        final Duration? startParam = isHls ? null : startFrom;
+
         await _player!.open(
-          Media(playbackUrl, httpHeaders: headers, start: startFrom),
+          Media(playbackUrl, httpHeaders: headers, start: startParam),
           play: shouldPlayLocally && !esperarPrimerFrame,
         );
 
@@ -2421,59 +2427,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         );
       }
 
-      if (startFrom != null && startFrom.inSeconds > 0) {
-        // FASE 1: Esperar a que el demuxer reporte duración
-        int attempts = 0;
-        while (attempts < 60 && mounted && _player != null) {
-          await Future.delayed(const Duration(milliseconds: 500));
-          if (_player!.state.duration.inSeconds > 0) break;
-          attempts++;
-        }
-
-        // FASE 2: Esperar al primer frame decodificado antes de hacer seek.
-        // El decoder MTK c2.mtk.avc.decoder lanza releaseAsync si recibe
-        // un seek antes de haber procesado el primer output frame.
-        // Esperamos hasta 3s a que width/height > 0 (primer frame listo).
-        int frameWait = 0;
-        while (frameWait < 30 && mounted && _player != null) {
-          await Future.delayed(const Duration(milliseconds: 100));
-          final w = _player!.state.width ?? 0;
-          final h = _player!.state.height ?? 0;
-          if (w > 0 && h > 0) break;
-          frameWait++;
-        }
-        // El CCodecBufferChannel MTK necesita ~300-500ms entre el primer
-        // output frame dequeued y el primer seek para evitar releaseAsync.
-        await Future.delayed(const Duration(milliseconds: 500));
-
-        if (mounted && _player != null) {
-          _lastSeekTime = DateTime.now();
-          await _player!.seek(startFrom);
-          for (int i = 0; i < 5; i++) {
-            await Future.delayed(const Duration(milliseconds: 500));
-            if (!mounted || _player == null) break;
-            final pos = _player!.state.position.inSeconds;
-
-            // Se sale en cuanto estamos EN el objetivo o ya lo pasamos.
-            //
-            // Antes la condicion era (pos - startFrom).abs() < 10. Con .abs(),
-            // en cuanto la reproduccion avanzaba mas de 10s POR ENCIMA del
-            // objetivo —cosa que pasa a los pocos segundos— la diferencia
-            // CRECIA en vez de encogerse, la salida no se cumplia nunca, y el
-            // bucle gastaba sus 5 intentos haciendo seek al mismo segundo una
-            // y otra vez. Cada uno arrastraba al espectador hacia atras y
-            // luego el video corria para recuperar: es el "se adelanta solo y
-            // se retrasa" con el audio desincronizado.
-            //
-            // Solo hay que reintentar si nos quedamos CORTOS, que es el unico
-            // fallo real del seek de arranque.
-            if (pos >= startFrom.inSeconds - 10) break;
-
-            _lastSeekTime = DateTime.now();
-            await _player!.seek(startFrom);
-          }
-        }
-      }
 
       if (!castService.isCasting.value) {
         final bool isIOS = defaultTargetPlatform == TargetPlatform.iOS;
@@ -2497,6 +2450,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
           if (hasVideo && isPlayingAndAdvanced && hasBuffer) {
             _serverFailoverTimer?.cancel();
+            _watchdogArranque?.cancel();
             break;
           }
 
@@ -2518,6 +2472,28 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
           await Future.delayed(const Duration(milliseconds: 100));
           frameWait++;
+        }
+
+        // ── REANUDACIÓN EN CALIENTE ──────────────────────────────────────
+        // Para streams HLS (Peelink / VOE / etc.), pasar `start: startFrom` a
+        // Media() cuelga el demuxer de ffmpeg durante 20s (network-timeout)
+        // intentando hacer seek antes de tener la estructura de la playlist.
+        // Por eso en HLS abrimos sin start (carga en ~1s como si empezara de 0)
+        // y aplicamos el seek aquí, cuando el decodificador MediaTek ya está
+        // activo, decodificando y con buffer listo.
+        if (startFrom != null &&
+            startFrom.inSeconds > 5 &&
+            mounted &&
+            _player != null &&
+            !castService.isCasting.value) {
+          final pos = _player!.state.position.inSeconds;
+          if (pos < startFrom.inSeconds - 5) {
+            debugPrint(
+              'Resume: reproductor en ${pos}s, aplicando seek a ${startFrom.inSeconds}s tras inicio rápido...',
+            );
+            _lastSeekTime = DateTime.now();
+            await _player!.seek(startFrom);
+          }
         }
       }
 
