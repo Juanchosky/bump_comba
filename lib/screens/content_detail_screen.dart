@@ -73,6 +73,9 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   // TMDB Metadata
   final TMDBService _tmdbService = TMDBService();
   Map<String, dynamic>? _metadata;
+  // seasonNumber -> episodeNumber -> { 'still_url': ..., 'name': ..., 'overview': ... }
+  final Map<int, Map<int, Map<String, dynamic>>> _tmdbSeasonData = {};
+  final Set<int> _loadingSeasons = {};
 
   // Pre-warming
   Player? _prewarmPlayer;
@@ -173,6 +176,34 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
       setState(() {
         _metadata = data;
       });
+      if (widget.item.isSeries) {
+        _fetchSeasonData(_selectedSeason);
+      }
+    }
+  }
+
+  Future<void> _fetchSeasonData(int seasonNumber) async {
+    if (!widget.item.isSeries) return;
+    if (_tmdbSeasonData.containsKey(seasonNumber)) return;
+    if (_loadingSeasons.contains(seasonNumber)) return;
+
+    final seriesId = _metadata?['id'];
+    if (seriesId == null || seriesId is! int) return;
+
+    _loadingSeasons.add(seasonNumber);
+    try {
+      final seasonEpisodes = await _tmdbService.getSeasonEpisodes(
+        seriesId,
+        seasonNumber,
+      );
+      if (mounted && seasonEpisodes.isNotEmpty) {
+        setState(() {
+          _tmdbSeasonData[seasonNumber] = seasonEpisodes;
+        });
+      }
+    } catch (_) {
+    } finally {
+      _loadingSeasons.remove(seasonNumber);
     }
   }
 
@@ -487,6 +518,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                           setState(() {
                             _selectedSeason = season;
                           });
+                          _fetchSeasonData(season);
                           Navigator.pop(context);
                         },
                         child: Padding(
@@ -814,6 +846,9 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
     if (_seasons.isNotEmpty) {
       _selectedSeason = _seasons.first;
+      if (_metadata != null) {
+        _fetchSeasonData(_selectedSeason);
+      }
     }
   }
 
@@ -2096,75 +2131,126 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                   margin: const EdgeInsets.only(bottom: 16),
                   child: Row(
                     children: [
-                      // Episode Thumbnail
-                      SizedBox(
-                        width: 120,
-                        height: 70,
-                        child: Stack(
-                          children: [
-                            FastThumbnail(
-                              url:
-                                  (episode.logo != null &&
-                                          episode.logo!.isNotEmpty)
-                                      ? episode.logo!
-                                      : (widget.item.logo ?? ''),
-                              title: episode.name,
+                      // Episode Thumbnail o Placeholder elegante si la imagen es repetida
+                      Builder(
+                        builder: (context) {
+                          final epNum =
+                              episode.episodeNumber ??
+                              NormalizationUtils.parseEpisodeNumber(
+                                episode.name,
+                              ) ??
+                              (index + 1);
+
+                          final tmdbEp =
+                              _tmdbSeasonData[_selectedSeason]?[epNum];
+                          final String? tmdbStill =
+                              tmdbEp?['still_url'] as String?;
+
+                          final String? epLogo =
+                              (episode.logo != null && episode.logo!.isNotEmpty)
+                                  ? episode.logo
+                                  : null;
+                          final String? seriesLogo =
+                              (widget.item.logo != null &&
+                                      widget.item.logo!.isNotEmpty)
+                                  ? widget.item.logo
+                                  : null;
+                          final bool isDistinctLogo =
+                              epLogo != null && epLogo != seriesLogo;
+                          final String? effectiveImage =
+                              tmdbStill ?? (isDistinctLogo ? epLogo : null);
+
+                          if (effectiveImage != null &&
+                              effectiveImage.isNotEmpty) {
+                            return SizedBox(
                               width: 120,
                               height: 70,
-                              fit: BoxFit.cover,
+                              child: Stack(
+                                children: [
+                                  FastThumbnail(
+                                    url: effectiveImage,
+                                    title: episode.name,
+                                    width: 120,
+                                    height: 70,
+                                    fit: BoxFit.cover,
+                                    borderRadius: BorderRadius.circular(8),
+                                    isHD:
+                                        _isGoodNetwork &&
+                                        !PerformanceService().lowMemoryLimit,
+                                    onError: () {
+                                      _m3uService.reportFailedLogo(
+                                        effectiveImage,
+                                      );
+                                    },
+                                  ),
+                                  Center(
+                                    child: Icon(
+                                      Icons.play_circle_outline,
+                                      color: Colors.white.withValues(alpha: 0.8),
+                                      size: 32,
+                                    ),
+                                  ),
+                                  _buildEpisodeProgressIndicator(episode),
+                                ],
+                              ),
+                            );
+                          }
+
+                          // Diseño limpio y moderno de respaldo cuando no hay foto única
+                          return SizedBox(
+                            width: 120,
+                            height: 70,
+                            child: ClipRRect(
                               borderRadius: BorderRadius.circular(8),
-                              isHD:
-                                  _isGoodNetwork &&
-                                  !PerformanceService().lowMemoryLimit,
-                              onError: () {
-                                final logo =
-                                    (episode.logo != null &&
-                                            episode.logo!.isNotEmpty)
-                                        ? episode.logo
-                                        : widget.item.logo;
-                                if (logo != null) {
-                                  _m3uService.reportFailedLogo(logo);
-                                }
-                              },
-                            ),
-                            Center(
-                              child: Icon(
-                                Icons.play_circle_outline,
-                                color: Colors.white.withValues(alpha: 0.8),
-                                size: 32,
-                              ),
-                            ),
-                            // Progress Indicator (Timeline)
-                            FutureBuilder<WatchProgress?>(
-                              future: WatchProgressService().getProgressForItem(
-                                episode,
-                              ),
-                              builder: (context, snapshot) {
-                                if (snapshot.hasData && snapshot.data != null) {
-                                  final progress =
-                                      snapshot.data!.progressPercentage;
-                                  if (progress > 5) {
-                                    return Positioned(
-                                      bottom: 0,
-                                      left: 0,
-                                      right: 0,
-                                      child: Container(
-                                        height: 3,
-                                        color: Colors.white24,
-                                        child: FractionallySizedBox(
-                                          alignment: Alignment.centerLeft,
-                                          widthFactor: progress / 100,
-                                          child: Container(color: Colors.red),
-                                        ),
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  gradient: const LinearGradient(
+                                    begin: Alignment.topLeft,
+                                    end: Alignment.bottomRight,
+                                    colors: [
+                                      Color(0xFF262626),
+                                      Color(0xFF141414),
+                                    ],
+                                  ),
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(
+                                    color: Colors.white.withValues(alpha: 0.12),
+                                    width: 0.8,
+                                  ),
+                                ),
+                                child: Stack(
+                                  children: [
+                                    Center(
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(
+                                            Icons.play_circle_outline,
+                                            color: Colors.white.withValues(
+                                              alpha: 0.85,
+                                            ),
+                                            size: 26,
+                                          ),
+                                          const SizedBox(height: 3),
+                                          Text(
+                                            'EP $epNum',
+                                            style: const TextStyle(
+                                              color: Colors.white70,
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.w600,
+                                              letterSpacing: 0.5,
+                                            ),
+                                          ),
+                                        ],
                                       ),
-                                    );
-                                  }
-                                }
-                                return const SizedBox.shrink();
-                              },
+                                    ),
+                                    _buildEpisodeProgressIndicator(episode),
+                                  ],
+                                ),
+                              ),
                             ),
-                          ],
-                        ),
+                          );
+                        },
                       ),
                       const SizedBox(width: 16),
                       Expanded(
@@ -2173,62 +2259,6 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                           children: [
                             Builder(
                               builder: (context) {
-                                final cleanTitle =
-                                    NormalizationUtils.extractEpisodeTitle(
-                                      episode.name,
-                                    );
-                                final isCleaned = cleanTitle.isNotEmpty;
-
-                                if (!isCleaned) {
-                                  return Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        episode.name,
-                                        style: const TextStyle(
-                                          color: Color.fromRGBO(
-                                            255,
-                                            255,
-                                            255,
-                                            1,
-                                          ),
-                                          fontSize: 15,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                        maxLines: 2,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        'Episodio ${episode.episodeNumber ?? (index + 1)}',
-                                        style: const TextStyle(
-                                          color: Colors.white54,
-                                          fontSize: 12,
-                                        ),
-                                      ),
-                                      if (episode.duration != null &&
-                                          NormalizationUtils.formatDuration(
-                                            episode.duration,
-                                          ).isNotEmpty)
-                                        Padding(
-                                          padding: const EdgeInsets.only(
-                                            top: 2,
-                                          ),
-                                          child: Text(
-                                            NormalizationUtils.formatDuration(
-                                              episode.duration,
-                                            ),
-                                            style: const TextStyle(
-                                              color: Colors.white54,
-                                              fontSize: 12,
-                                            ),
-                                          ),
-                                        ),
-                                    ],
-                                  );
-                                }
-
                                 final epNum =
                                     episode.episodeNumber ??
                                     NormalizationUtils.parseEpisodeNumber(
@@ -2236,11 +2266,40 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                                     ) ??
                                     (index + 1);
 
+                                final tmdbEp =
+                                    _tmdbSeasonData[_selectedSeason]?[epNum];
+                                final String? tmdbName =
+                                    tmdbEp?['name'] as String?;
+                                final bool hasSpecificTmdbTitle =
+                                    tmdbName != null &&
+                                    tmdbName.trim().isNotEmpty &&
+                                    !RegExp(
+                                      r'^(cap[ií]tulo|episodio|episode)\s*\d+$',
+                                      caseSensitive: false,
+                                    ).hasMatch(tmdbName.trim());
+
+                                final cleanTitle =
+                                    NormalizationUtils.extractEpisodeTitle(
+                                      episode.name,
+                                    );
+                                final isCleaned = cleanTitle.isNotEmpty;
+
+                                final String finalTitle;
+                                if (hasSpecificTmdbTitle) {
+                                  finalTitle = tmdbName.trim();
+                                } else if (isCleaned) {
+                                  finalTitle = cleanTitle;
+                                } else {
+                                  finalTitle = episode.name;
+                                }
+
                                 return Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
-                                      '$epNum. $cleanTitle',
+                                      hasSpecificTmdbTitle || isCleaned
+                                          ? '$epNum. $finalTitle'
+                                          : finalTitle,
                                       style: const TextStyle(
                                         color: Color(0xFFF2F2F2),
                                         fontSize: 14.4,
@@ -2249,31 +2308,26 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                                       maxLines: 2,
                                       overflow: TextOverflow.ellipsis,
                                     ),
+                                    const SizedBox(height: 4),
                                     if (episode.duration != null &&
                                         NormalizationUtils.formatDuration(
                                           episode.duration,
                                         ).isNotEmpty)
-                                      Padding(
-                                        padding: const EdgeInsets.only(top: 2),
-                                        child: Text(
-                                          NormalizationUtils.formatDuration(
-                                            episode.duration,
-                                          ),
-                                          style: const TextStyle(
-                                            color: Colors.white54,
-                                            fontSize: 12.3,
-                                          ),
+                                      Text(
+                                        NormalizationUtils.formatDuration(
+                                          episode.duration,
+                                        ),
+                                        style: const TextStyle(
+                                          color: Colors.white54,
+                                          fontSize: 12.3,
                                         ),
                                       )
                                     else
-                                      Padding(
-                                        padding: const EdgeInsets.only(top: 2),
-                                        child: Text(
-                                          'Episodio $epNum',
-                                          style: const TextStyle(
-                                            color: Colors.white54,
-                                            fontSize: 12.3,
-                                          ),
+                                      Text(
+                                        'Episodio $epNum',
+                                        style: const TextStyle(
+                                          color: Colors.white54,
+                                          fontSize: 12.3,
                                         ),
                                       ),
                                   ],
@@ -2301,6 +2355,34 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
             },
           ),
       ],
+    );
+  }
+
+  Widget _buildEpisodeProgressIndicator(M3UItem episode) {
+    return FutureBuilder<WatchProgress?>(
+      future: WatchProgressService().getProgressForItem(episode),
+      builder: (context, snapshot) {
+        if (snapshot.hasData && snapshot.data != null) {
+          final progress = snapshot.data!.progressPercentage;
+          if (progress > 5) {
+            return Positioned(
+              bottom: 0,
+              left: 0,
+              right: 0,
+              child: Container(
+                height: 3,
+                color: Colors.white24,
+                child: FractionallySizedBox(
+                  alignment: Alignment.centerLeft,
+                  widthFactor: progress / 100,
+                  child: Container(color: Colors.red),
+                ),
+              ),
+            );
+          }
+        }
+        return const SizedBox.shrink();
+      },
     );
   }
 

@@ -189,6 +189,7 @@ class TMDBService {
     }
 
     return {
+      'id': details['id'],
       'overview': overview,
       'trailer_url': trailerUrl,
       'poster_url': getImageUrl(details['poster_path']),
@@ -249,5 +250,46 @@ class TMDBService {
       print('Error fetching trending titles: $e');
     }
     return [];
+  }
+
+  /// Obtiene los detalles y miniaturas de cada episodio de una temporada desde TMDB.
+  Future<Map<int, Map<String, dynamic>>> getSeasonEpisodes(
+    int seriesId,
+    int seasonNumber,
+  ) async {
+    try {
+      final url =
+          '$_baseUrl/tv/$seriesId/season/$seasonNumber?api_key=$_apiKey&language=es-ES';
+      final response = await http.get(Uri.parse(url));
+
+      if (response.statusCode != 200) return {};
+
+      final data = json.decode(response.body);
+      final episodes = data['episodes'] as List?;
+      if (episodes == null) return {};
+
+      final Map<int, Map<String, dynamic>> result = {};
+      for (final ep in episodes) {
+        if (ep is Map) {
+          final epNum = ep['episode_number'];
+          final stillPath = ep['still_path'];
+          if (epNum is int) {
+            result[epNum] = {
+              'name': ep['name']?.toString(),
+              'still_url':
+                  (stillPath != null && stillPath.toString().isNotEmpty)
+                      ? 'https://image.tmdb.org/t/p/w300$stillPath'
+                      : null,
+              'overview': ep['overview']?.toString(),
+              'vote_average': ep['vote_average'],
+            };
+          }
+        }
+      }
+      return result;
+    } catch (e) {
+      print('Error fetching TMDB season episodes: $e');
+      return {};
+    }
   }
 }
