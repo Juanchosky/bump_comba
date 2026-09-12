@@ -619,7 +619,11 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
   /// constantes. Es el mismo fallo que ya se corrigio en el receptor cuando el
   /// telefono no mandaba `isLive`.
   Future<void> _ajustarPerfilSegunFuente(String url) async {
-    final esHls = url.toLowerCase().contains('.m3u8');
+    final low = url.toLowerCase();
+    final esHls = low.contains('.m3u8') ||
+        low.contains('/hls') ||
+        low.contains('output=m3u8') ||
+        DynamicScraperService().isSupported(widget.item.url);
     try {
       final mpv = _player.platform as dynamic;
       if (mpv == null) return;
@@ -629,6 +633,8 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         await mpv.setProperty('hls-bitrate', 'max');
         await mpv.setProperty('hls-forward-cache-secs', '30');
         await mpv.setProperty('hls-back-cache-secs', '10');
+        await mpv.setProperty('cache-pause-initial', 'no');
+        await mpv.setProperty('cache-pause-wait', '2');
         await mpv.setProperty('demuxer-cache-wait', 'no');
         debugPrint('TvPlayer: perfil HLS aplicado');
       } else {
@@ -636,6 +642,8 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         // servidor anterior era una lista HLS y los dejo bajados.
         await mpv.setProperty('cache-secs', '120');
         await mpv.setProperty('demuxer-readahead-secs', '90');
+        await mpv.setProperty('cache-pause-initial', 'yes');
+        await mpv.setProperty('cache-pause-wait', '4');
       }
     } catch (e) {
       debugPrint('TvPlayer: no se pudo ajustar el perfil: $e');
@@ -1044,7 +1052,7 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     // Son los mismos valores que ya usa el receptor para HLS, y todos BAJAN
     // respecto al perfil VOD, asi que no tocan el techo del VPS.
     if (_muerto) return;
-    await _ajustarPerfilSegunFuente(original);
+    await _ajustarPerfilSegunFuente(url);
 
     // ── QUE EL EXTRACTOR SE HAYA IDO DEL TODO ─────────────────────────────
     //
@@ -1059,6 +1067,14 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     await DynamicScraperService().stopCurrentScraping();
     await Future<void>.delayed(const Duration(milliseconds: 300));
 
+    final lowUrl = url.toLowerCase();
+    final lowOrig = original.toLowerCase();
+    final bool esHls = lowUrl.contains('.m3u8') ||
+        lowOrig.contains('.m3u8') ||
+        lowUrl.contains('/hls') ||
+        lowUrl.contains('output=m3u8') ||
+        DynamicScraperService().isSupported(widget.item.url);
+
     if (_muerto) return;
     await _player.open(
       Media(
@@ -1066,12 +1082,41 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         // Si TurboProxy no entro, MPV pide directo y necesita las cabeceras el
         // mismo. Con el envoltorio puesto no estorban: la URL ya es local.
         httpHeaders: cabeceras,
-        start: desde > Duration.zero ? desde : null,
+        // En HLS, pasar start a Media() cuelga el demuxer por 20s (network-timeout)
+        // y dispara el watchdog de failover del TV (9s). Se abre en 0s y se salta en caliente.
+        start: esHls ? null : (desde > Duration.zero ? desde : null),
       ),
     );
 
     // Y los subtitulos que vinieran con la pagina, ya con el medio abierto.
     await _cargarSubsWeb();
+
+    if (esHls && desde > Duration.zero) {
+      unawaited(() async {
+        int waitCount = 0;
+        while (waitCount < 60 && !_muerto && mounted) {
+          final st = _player.state;
+          final bool hasVideo = (st.width ?? 0) > 0 || _primerFrameListo;
+          final bool hasPlayback =
+              st.playing && st.position.inMilliseconds > 100;
+          if (hasVideo && hasPlayback) {
+            break;
+          }
+          await Future.delayed(const Duration(milliseconds: 100));
+          waitCount++;
+        }
+        if (!_muerto && mounted) {
+          final pos = _player.state.position.inSeconds;
+          if (pos < desde.inSeconds - 5) {
+            debugPrint(
+              'TvPlayer: aplicando seek rápido a ${desde.inSeconds}s tras inicio de stream HLS',
+            );
+            _posReferencia = desde;
+            await _player.seek(desde);
+          }
+        }
+      }());
+    }
   }
 
   // ── Guardar por donde va ─────────────────────────────────────────────────
@@ -1223,8 +1268,11 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         // TurboProxy si sabe lo que esta bajando, porque es quien lo baja.
         // Sus bytes son la prueba de que el servidor responde.
         final bytes = TurboProxy.instance.currentBytesDownloaded;
-        final hayDatos =
-            bytes > _bytesVigilados || _kbps > 0 || _bufer > _buferVigilado;
+        final hayDatos = bytes > _bytesVigilados ||
+            _kbps > 0 ||
+            _bufer > _buferVigilado ||
+            _primerFrameListo ||
+            (_player.state.width ?? 0) > 0;
         _bytesVigilados = bytes;
         _buferVigilado = _bufer;
         _segundosSinDatos = hayDatos ? 0 : _segundosSinDatos + 1;

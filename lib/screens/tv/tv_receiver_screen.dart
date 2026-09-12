@@ -367,6 +367,11 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     try {
       final bool isFromDB = msg['isFromDB'] == true;
       final bool isLive = msg['isLive'] == true;
+      final lowUrl = url.toLowerCase();
+      final bool esHls = lowUrl.contains('.m3u8') ||
+          lowUrl.contains('/hls') ||
+          lowUrl.contains('output=m3u8') ||
+          isLive;
       try {
         final mpv = _player.platform as dynamic;
         if (mpv != null) {
@@ -382,14 +387,14 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
           // Son los mismos valores que el reproductor del telefono usa para
           // directo, que es donde el mismo titulo se ve bien. Todos BAJAN
           // respecto al perfil VOD, asi que no tocan el techo del VPS.
-          if (isLive) {
+          if (esHls) {
             await mpv.setProperty('cache-secs', '60');
             await mpv.setProperty('demuxer-readahead-secs', '20');
-            await mpv.setProperty('hls-bitrate', 'auto');
+            await mpv.setProperty('hls-bitrate', isFromDB ? 'max' : 'auto');
             await mpv.setProperty('hls-forward-cache-secs', '30');
             await mpv.setProperty('hls-back-cache-secs', '10');
-            // En directo no se puede acumular bufer por adelantado sin quedarse
-            // atras de la emision: se arranca en cuanto hay datos.
+            // En directo y HLS no se puede acumular bufer por adelantado sin quedarse
+            // atras de la emision o trabar el demuxer: se arranca en cuanto hay datos.
             await mpv.setProperty('cache-pause-initial', 'no');
             await mpv.setProperty('cache-pause-wait', '2');
             await mpv.setProperty('demuxer-cache-wait', 'no');
@@ -419,19 +424,17 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
         }
       } catch (_) {}
 
-      // `start:` y no abrir-en-0-y-saltar-despues.
+      // `start:` y no abrir-en-0-y-saltar-despues para archivos directos.
       //
       // MPV abre DIRECTAMENTE en esa posicion, asi que la primera peticion al
-      // origen (o a TurboProxy) ya lleva el Range correcto. Abriendo en 0 y
-      // buscando luego, el demuxer se traga la cabecera, empieza a bajar desde
-      // el principio y solo entonces salta — y con una reanudacion a los 97
-      // minutos de un archivo de 2,3 GB eso es carisimo. Es lo que ya hace el
-      // reproductor del telefono.
+      // origen (o a TurboProxy) ya lleva el Range correcto.
       //
-      // `_seekWhenReady` se queda como red por si la posicion real acaba lejos
-      // del objetivo, pero en el camino normal ya no tiene nada que corregir.
+      // OJO HLS: en listas HLS (.m3u8), pasar `start:` a Media() cuelga el
+      // demuxer de ffmpeg durante 20s (network-timeout). Por eso en HLS
+      // abrimos sin start (carga en ~1s como si empezara de 0) y _seekWhenReady
+      // aplica el salto suavemente en caliente una vez conocida la duración.
       final inicio =
-          position > 0
+          (position > 0 && !esHls)
               ? Duration(milliseconds: (position * 1000).round())
               : null;
       await _player.open(

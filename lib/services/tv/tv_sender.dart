@@ -100,6 +100,7 @@ class TvSender {
     int? episode,
     bool isFromDB = false,
     List<Map<String, String>>? subtitles,
+    bool isLive = false,
   }) {
     _send(TvProto.cmdLoad, {
       'url': url,
@@ -111,6 +112,7 @@ class TvSender {
       if (season != null) 'season': season,
       if (episode != null) 'episode': episode,
       if (isFromDB) 'isFromDB': true,
+      if (isLive) 'isLive': true,
       // Subtitulos EXTERNOS (VTT/SRT con URL propia), que es como vienen los
       // del contenido de la base de datos. No estan dentro del archivo, asi que
       // el TV no puede descubrirlos solo: `_handleLoad` los espera en este

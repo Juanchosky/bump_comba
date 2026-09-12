@@ -792,6 +792,7 @@ class CastService {
       title: title,
       thumbnailUrl: thumbnailUrl,
       startPosition: startPosition,
+      subtitles: subtitles,
     );
   }
 
@@ -801,13 +802,18 @@ class CastService {
     required String title,
     String? thumbnailUrl,
     double startPosition = 0.0,
+    List<Map<String, String>>? subtitles,
   }) {
     if (_session == null) return;
 
     // Auto-detectar tipo de contenido
     final lowUrl = url.toLowerCase();
+    final bool isHlsUrl = lowUrl.contains('.m3u8') ||
+        lowUrl.contains('type=m3u8') ||
+        lowUrl.contains('output=m3u8') ||
+        lowUrl.contains('/hls');
     String resolvedContentType = 'video/mp4';
-    if (lowUrl.contains('.m3u8') || lowUrl.contains('type=m3u8')) {
+    if (isHlsUrl) {
       resolvedContentType = 'application/x-mpegURL';
     } else if (lowUrl.contains('.mpd')) {
       resolvedContentType = 'application/dash+xml';
@@ -831,10 +837,30 @@ class CastService {
     // antes de necesitarlos (especialmente útil en conexiones Wi-Fi compartidas).
     final int preloadSeconds = isLive ? 15 : 60;
 
+    final List<Map<String, dynamic>> tracks = [];
+    if (subtitles != null && subtitles.isNotEmpty) {
+      int trackId = 1;
+      for (final sub in subtitles) {
+        final subUrl = sub['url'];
+        if (subUrl != null && subUrl.isNotEmpty) {
+          tracks.add({
+            'trackId': trackId++,
+            'type': 'TEXT',
+            'trackContentType': 'text/vtt',
+            'trackContentId': subUrl,
+            'name': sub['label'] ?? 'Español',
+            'language': sub['language'] ?? 'es',
+            'subtype': 'SUBTITLES',
+          });
+        }
+      }
+    }
+
     final Map<String, dynamic> mediaInfo = {
       'contentId': url,
       'contentType': resolvedContentType,
       'streamType': streamType,
+      if (tracks.isNotEmpty) 'tracks': tracks,
       'metadata': {
         'type': 0,
         'metadataType': 0,
@@ -851,7 +877,7 @@ class CastService {
       'playbackConfig': {
         // Iniciar reproducción solo cuando haya al menos 5 segundos en buffer
         'initialBandwidth': 10000000, // 10 Mbps hint para elección de bitrate
-        'protocolType': isLive ? 0 : 1, // 0=HLS, 1=DASH (hint)
+        'protocolType': (isLive || isHlsUrl) ? 0 : 1, // 0=HLS, 1=DASH (hint)
       },
       // HACK para audio: Algunos receptores activan decodificadores extra con estas flags
       'customData': {
@@ -1216,6 +1242,7 @@ class CastService {
       // Tambien al reenviar tras una reconexion: si no, el TV se queda sin
       // subtitulos aunque los tuviera antes de perder la conexion.
       subtitles: _tvLastSubtitles,
+      isLive: _tvLastIsLive,
     );
   }
 
