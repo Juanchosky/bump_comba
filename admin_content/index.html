@@ -360,6 +360,25 @@
         </div>
     </div>
 
+    <!-- Modal de Verificación de Solicitudes en Catálogo -->
+    <div id="verify-request-modal" class="modal">
+        <div class="modal-content glass" style="max-width:620px;">
+            <div class="modal-header">
+                <h2 style="display:flex;align-items:center;gap:.75rem;">
+                    <i data-lucide="search-check" style="color:var(--primary)"></i>
+                    <span>Verificar Solicitud en Catálogo</span>
+                </h2>
+                <button class="close-verify-modal close-modal"><i data-lucide="x"></i></button>
+            </div>
+            <div class="modal-body" id="verify-request-modal-body" style="display:flex;flex-direction:column;gap:1.25rem;">
+                <!-- Contenido generado dinámicamente -->
+            </div>
+            <div class="modal-footer" id="verify-request-modal-footer" style="padding-top:1.25rem;">
+                <button type="button" class="btn btn-secondary close-verify-modal">Cerrar</button>
+            </div>
+        </div>
+    </div>
+
     <script src="app.js"></script>
     <script>
         lucide.createIcons();

@@ -232,6 +232,245 @@ async function searchTmdbForManualForm() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PREVENCIÓN DE DUPLICADOS Y VERIFICACIÓN EN CATÁLOGO
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Extrae un título legible desde el slug de una URL (ej: /drama/la-reina-de-las-lagrimas -> "la reina de las lagrimas")
+ */
+function extractTitleFromUrl(url) {
+    if (!url) return '';
+    try {
+        const u = new URL(url);
+        const parts = u.pathname.split('/').filter(Boolean);
+        const last = parts.pop() || '';
+        const slug = /^\d+$/.test(last) ? (parts.pop() || last) : last;
+        return slug.replace(/[-_]+/g, ' ').trim();
+    } catch (_) {
+        return '';
+    }
+}
+
+/**
+ * Comprueba si un contenido ya existe en el catálogo local (allContent).
+ * Compara por URL de video limpia y por título normalizado / año.
+ */
+function findExistingInCatalog(title, url, type) {
+    if (!allContent || allContent.length === 0) return null;
+
+    const cleanUrl = url ? cleanVideoUrl(url) : null;
+    let effectiveTitle = title;
+    if (!effectiveTitle && url) {
+        effectiveTitle = extractTitleFromUrl(url);
+    }
+    const nTargetTitle = effectiveTitle ? normalizeTextForMatch(effectiveTitle) : '';
+    const targetCleanBase = effectiveTitle ? cleanTitleForTmdb(effectiveTitle) : '';
+    const targetYearMatch = effectiveTitle ? effectiveTitle.match(/\((\d{4})\)$/) : null;
+    const targetYear = targetYearMatch ? targetYearMatch[1] : null;
+
+    for (const item of allContent) {
+        if (type && item.type !== type) continue;
+
+        // 1. Coincidencia por URL de video
+        if (cleanUrl && item.video_url && cleanVideoUrl(item.video_url) === cleanUrl) {
+            return item;
+        }
+
+        // 2. Coincidencia exacta de título normalizado completo
+        if (nTargetTitle && normalizeTextForMatch(item.title) === nTargetTitle) {
+            return item;
+        }
+
+        // 3. Coincidencia por título base limpio y año
+        if (targetCleanBase) {
+            const itemCleanBase = cleanTitleForTmdb(item.title);
+            const itemYearMatch = item.title ? item.title.match(/\((\d{4})\)$/) : null;
+            const itemYear = itemYearMatch ? itemYearMatch[1] : null;
+
+            if (itemCleanBase && normalizeTextForMatch(itemCleanBase) === normalizeTextForMatch(targetCleanBase)) {
+                // Si ambos tienen año y coincide, o si ninguno especificó año
+                if ((targetYear && itemYear && targetYear === itemYear) || (!targetYear && !itemYear)) {
+                    return item;
+                }
+                // Si uno no tiene año, se considera coincidencia del mismo contenido
+                if (!targetYear || !itemYear) {
+                    return item;
+                }
+            }
+        }
+    }
+    return null;
+}
+
+/**
+ * Busca contenidos en el catálogo que coincidan con una solicitud de usuario.
+ * Retorna un arreglo de contenidos coincidentes ordenados por relevancia.
+ */
+function findMatchesInCatalog(requestTitle) {
+    if (!requestTitle || !allContent || allContent.length === 0) return [];
+    const reqNorm = normalizeTextForMatch(requestTitle);
+    const reqClean = normalizeTextForMatch(cleanTitleForTmdb(requestTitle));
+    const reqWords = reqClean.split(' ').filter(w => w.length >= 3);
+
+    const scored = [];
+
+    for (const item of allContent) {
+        if (item.type !== 'movie' && item.type !== 'series') continue;
+
+        const itemNorm = normalizeTextForMatch(item.title);
+        const itemClean = normalizeTextForMatch(cleanTitleForTmdb(item.title));
+
+        // 1. Coincidencia exacta de título limpio
+        if (reqClean && itemClean && reqClean === itemClean) {
+            scored.push({ item, score: 100 });
+            continue;
+        }
+
+        // 2. Coincidencia directa de título completo
+        if (reqNorm && itemNorm && (reqNorm === itemNorm || itemNorm.startsWith(reqNorm) || reqNorm.startsWith(itemNorm))) {
+            scored.push({ item, score: 90 });
+            continue;
+        }
+
+        // 3. Subcadena en el título limpio
+        if (reqClean.length >= 4 && itemClean.includes(reqClean)) {
+            scored.push({ item, score: 80 });
+            continue;
+        }
+        if (itemClean.length >= 4 && reqClean.includes(itemClean)) {
+            scored.push({ item, score: 80 });
+            continue;
+        }
+
+        // 4. Coincidencia de palabras clave
+        if (reqWords.length > 0) {
+            const itemWords = itemClean.split(' ').filter(w => w.length >= 3);
+            const overlap = reqWords.filter(w => itemWords.includes(w));
+            if (overlap.length >= 2 && overlap.length >= reqWords.length * 0.7) {
+                scored.push({ item, score: 70 });
+            }
+        }
+    }
+
+    return scored.sort((a, b) => b.score - a.score).map(s => s.item);
+}
+
+/**
+ * Abre el modal interactivo para verificar si una solicitud ya está en el catálogo.
+ */
+function openVerifyRequestModal(requestId) {
+    const req = contentRequests.find(r => r.id === requestId);
+    if (!req) return;
+
+    const modal = document.getElementById('verify-request-modal');
+    const modalBody = document.getElementById('verify-request-modal-body');
+    const modalFooter = document.getElementById('verify-request-modal-footer');
+    if (!modal || !modalBody) return;
+
+    const matches = findMatchesInCatalog(req.title);
+    const dateStr = new Date(req.created_at).toLocaleDateString('es-ES', {
+        day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+    });
+
+    let matchesHtml = '';
+    if (matches.length > 0) {
+        matchesHtml = `
+            <div>
+                <div style="font-size:0.9rem;font-weight:600;color:var(--text-main);margin-bottom:0.75rem;display:flex;align-items:center;gap:0.4rem;">
+                    <i data-lucide="sparkles" style="color:var(--accent-green);width:16px;height:16px;"></i>
+                    <span>Coincidencia(s) encontrada(s) en tu catálogo (${matches.length})</span>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:0.75rem;max-height:300px;overflow-y:auto;padding-right:0.3rem;">
+                    ${matches.map(item => {
+                        const isMovie = item.type === 'movie';
+                        const epCount = !isMovie ? (episodeCountMap[item.id] || 0) : null;
+                        const poster = item.thumbnail_url || 'logo.png';
+                        return `
+                            <div class="verify-match-card">
+                                <img src="${poster}" alt="${item.title}" style="width:50px;height:75px;object-fit:cover;border-radius:0.5rem;background:#000;flex-shrink:0;" onerror="this.src='logo.png'">
+                                <div style="flex:1;min-width:0;">
+                                    <div style="font-weight:700;font-size:1rem;color:var(--text-main);margin-bottom:0.25rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                                        ${item.title}
+                                    </div>
+                                    <div style="display:flex;gap:0.4rem;flex-wrap:wrap;font-size:0.78rem;color:var(--text-muted);align-items:center;">
+                                        <span class="badge" style="padding:0.15rem 0.5rem;font-size:0.72rem;background:${isMovie ? 'rgba(56,189,248,0.15)' : 'rgba(244,114,182,0.15)'};color:${isMovie ? 'var(--primary)' : '#f472b6'};">
+                                            ${isMovie ? 'Película' : 'Serie'}
+                                        </span>
+                                        <span>${item.category || 'General'}</span>
+                                        ${epCount !== null ? `<span>• ${epCount} capítulos</span>` : ''}
+                                        <span>• ${item.is_active ? '<span style="color:#34d399;">Visible</span>' : '<span style="color:#f87171;">Oculto</span>'}</span>
+                                    </div>
+                                </div>
+                                <div style="flex-shrink:0;">
+                                    ${req.status !== 'added' ? `
+                                    <button class="btn btn-primary" style="padding:0.45rem 0.75rem;font-size:0.78rem;gap:0.35rem;white-space:nowrap;background:var(--accent-green);border-color:transparent;" onclick="confirmRequestAsAdded('${req.id}', '${item.title.replace(/'/g, "\\'")}')">
+                                        <i data-lucide="check"></i> ¡Sí es este! Marcar agregado
+                                    </button>
+                                    ` : `
+                                    <span class="badge badge-added" style="font-size:0.78rem;padding:0.35rem 0.65rem;">Ya agregado</span>
+                                    `}
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            </div>
+        `;
+    } else {
+        matchesHtml = `
+            <div style="background:rgba(255,255,255,0.03);border:1px dashed var(--border-color);border-radius:0.75rem;padding:1.5rem;text-align:center;color:var(--text-muted);">
+                <i data-lucide="help-circle" style="width:32px;height:32px;margin-bottom:0.5rem;opacity:0.6;color:var(--text-muted);"></i>
+                <div style="font-weight:600;color:var(--text-main);font-size:0.95rem;margin-bottom:0.25rem;">No encontrado en el catálogo</div>
+                <p style="font-size:0.85rem;line-height:1.5;margin:0;">No se encontró contenido con título similar a <strong>"${req.title}"</strong> en tu catálogo actual. Puedes importarlo directamente.</p>
+            </div>
+        `;
+    }
+
+    modalBody.innerHTML = `
+        <!-- Tarjeta de Solicitud del Usuario -->
+        <div style="background:rgba(56,189,248,0.05);border:1px solid rgba(56,189,248,0.2);border-radius:0.75rem;padding:1rem;">
+            <div style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--primary);font-weight:700;margin-bottom:0.35rem;">
+                Solicitud del Usuario
+            </div>
+            <div style="font-size:1.15rem;font-weight:700;color:var(--text-main);margin-bottom:0.35rem;">
+                ${req.title}
+            </div>
+            <div style="font-size:0.85rem;color:var(--text-muted);margin-bottom:0.5rem;">
+                <strong>Detalles / Notas:</strong> ${req.details ? req.details : '<span style="font-style:italic;">Ninguno</span>'}
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;font-size:0.78rem;color:var(--text-muted);border-top:1px solid rgba(255,255,255,0.05);padding-top:0.5rem;margin-top:0.5rem;">
+                <span>Fecha: ${dateStr}</span>
+                <span>Estado actual: <strong>${req.status === 'added' ? 'Agregado' : req.status === 'rejected' ? 'Rechazado' : 'Pendiente'}</strong></span>
+            </div>
+        </div>
+
+        <!-- Coincidencias en Catálogo -->
+        ${matchesHtml}
+    `;
+
+    modalFooter.innerHTML = `
+        <button type="button" class="btn btn-secondary close-verify-modal">Cerrar</button>
+        <button type="button" class="btn btn-primary" onclick="document.getElementById('verify-request-modal').style.display='none'; openAutoImportWithTitle('${req.title.replace(/'/g, "\\'")}', '${req.id}')">
+            <i data-lucide="zap"></i> Importar este Contenido
+        </button>
+    `;
+
+    modal.querySelectorAll('.close-verify-modal').forEach(b => {
+        b.onclick = () => modal.style.display = 'none';
+    });
+
+    modal.style.display = 'block';
+    lucide.createIcons();
+}
+
+async function confirmRequestAsAdded(requestId, itemTitle) {
+    const modal = document.getElementById('verify-request-modal');
+    if (modal) modal.style.display = 'none';
+    await updateRequestStatus(requestId, 'added');
+    showToast(`Solicitud marcada como agregada (vinculada a "${itemTitle}")`, 'success');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // AUTH — Login / Logout usando tabla admin_users
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -684,18 +923,48 @@ function renderRequests() {
         if (req.status === 'added') { statusClass = 'badge-added'; statusText = 'Agregado'; }
         else if (req.status === 'rejected') { statusClass = 'badge-rejected'; statusText = 'Rechazado'; }
 
+        // Coincidencias en catálogo
+        const matches = findMatchesInCatalog(req.title);
+        const hasMatch = matches.length > 0;
+        let matchBadgeHtml = '';
+
+        if (hasMatch) {
+            const topMatch = matches[0];
+            const matchCountLabel = matches.length === 1 ? '1 coincidencia' : `${matches.length} coincidencias`;
+            matchBadgeHtml = `
+                <div style="margin-top:0.35rem;">
+                    <button type="button" class="btn-catalog-match" onclick="openVerifyRequestModal('${req.id}')" title="Click para verificar si este contenido ya está en el catálogo">
+                        <i data-lucide="check-circle-2" style="width:13px;height:13px;flex-shrink:0;"></i>
+                        <span>En catálogo (${matchCountLabel}: <strong>${topMatch.title}</strong>)</span>
+                    </button>
+                </div>
+            `;
+        } else {
+            matchBadgeHtml = `
+                <div style="margin-top:0.25rem;">
+                    <span style="display:inline-flex;align-items:center;gap:0.3rem;font-size:0.75rem;color:var(--text-muted);opacity:0.85;">
+                        <i data-lucide="help-circle" style="width:12px;height:12px;"></i> No detectado en catálogo
+                    </span>
+                </div>
+            `;
+        }
+
         tr.innerHTML = `
             <td style="text-align:center;">
                 <input type="checkbox" class="request-checkbox" value="${req.id}" ${isChecked ? 'checked' : ''} onchange="onRequestCheckboxChange('${req.id}', this.checked)" style="width:16px;height:16px;cursor:pointer;">
             </td>
             <td>
                 <div style="font-weight:600;font-size:1rem;color:var(--text-primary);">${req.title}</div>
+                ${matchBadgeHtml}
             </td>
             <td>${req.details ? req.details : '<span style="color:var(--text-muted);font-style:italic;">Sin detalles</span>'}</td>
             <td style="font-size:0.85rem;color:var(--text-muted);">${dateStr}</td>
             <td><span class="badge ${statusClass}">${statusText}</span></td>
             <td>
                 <div class="actions" style="gap:0.5rem;">
+                    <button class="btn btn-secondary" style="padding:0.4rem 0.8rem;font-size:0.8rem;gap:0.3rem;background:rgba(99,102,241,0.12);color:#818cf8;border-color:rgba(99,102,241,0.25);" onclick="openVerifyRequestModal('${req.id}')" title="Verificar si coincide con contenidos existentes">
+                        <i data-lucide="search-check"></i> Verificar
+                    </button>
                     <button class="btn btn-secondary" style="padding:0.4rem 0.8rem;font-size:0.8rem;gap:0.3rem;" onclick="openAutoImportWithTitle('${req.title.replace(/'/g, "\\'")}', '${req.id}')">
                         <i data-lucide="zap"></i> Importar
                     </button>
@@ -1272,6 +1541,8 @@ function setupEventListeners() {
         if (event.target == contentModal) closeModal();
         if (event.target == importModal) importModal.style.display = 'none';
         if (event.target == bulkDeleteModal) bulkDeleteModal.style.display = 'none';
+        const verifyModal = document.getElementById('verify-request-modal');
+        if (verifyModal && event.target == verifyModal) verifyModal.style.display = 'none';
     };
 
 
@@ -1412,6 +1683,7 @@ function setupEventListeners() {
         if (statusEl) statusEl.textContent = `Procesando ${importEntries.length} enlace(s) → ${selectedCategory}...`;
 
         let successCount = 0;
+        let skippedCount = 0;
         let failCount = 0;
 
         try {
@@ -1419,7 +1691,7 @@ function setupEventListeners() {
                 const { url, customTitle } = importEntries[i];
                 const pct = Math.round(((i + 1) / importEntries.length) * 100);
                 if (barEl) barEl.style.width = pct + '%';
-                if (statusEl) statusEl.textContent = `Importando (${i + 1}/${importEntries.length}): ${customTitle || url.split('/').pop()}...`;
+                if (statusEl) statusEl.textContent = `Procesando (${i + 1}/${importEntries.length}): ${customTitle || url.split('/').pop()}...`;
 
                 // Detectar películas por URL — todo lo demás se importa como serie via edge function import-full-series
                 const isMovie = url.includes('/movie/') || url.includes('/pelicula/') || url.includes('/film/');
@@ -1427,6 +1699,17 @@ function setupEventListeners() {
                 if (isMovie) {
                     // ── Importar como película ──
                     try {
+                        // 1. Verificar si la película ya existe en el catálogo por URL
+                        const existingByUrl = findExistingInCatalog(null, url, 'movie');
+                        if (existingByUrl) {
+                            skippedCount++;
+                            const skipMsg = `Omitido (ya existe en catálogo): "${existingByUrl.title}"`;
+                            if (statusEl) statusEl.textContent = `${skipMsg} (${i + 1}/${importEntries.length})`;
+                            console.log(`[Import] Omitiendo película duplicada por URL: ${url} -> ${existingByUrl.title}`);
+                            await sleep(250);
+                            continue;
+                        }
+
                         if (statusEl) statusEl.textContent = `Consultando TMDB y analizando película (${i + 1}/${importEntries.length}): ${customTitle || url.split('/').pop()}...`;
                         const meta = await parseMovieMetadataFromUrl(url);
 
@@ -1457,17 +1740,39 @@ function setupEventListeners() {
                             }
                         }
 
-                        const { error } = await supabaseClient
+                        // 2. Verificar si la película ya existe en el catálogo por título final (con año)
+                        const existingByTitle = findExistingInCatalog(finalTitle, url, 'movie');
+                        if (existingByTitle) {
+                            skippedCount++;
+                            const skipMsg = `Omitido (ya existe en catálogo): "${existingByTitle.title}"`;
+                            if (statusEl) statusEl.textContent = `${skipMsg} (${i + 1}/${importEntries.length})`;
+                            console.log(`[Import] Omitiendo película duplicada por título: "${finalTitle}" -> "${existingByTitle.title}"`);
+                            await sleep(250);
+                            continue;
+                        }
+
+                        const newItem = {
+                            title: finalTitle,
+                            video_url: url,
+                            thumbnail_url: meta.thumbnail_url,
+                            type: 'movie',
+                            category: selectedCategory,
+                            is_active: true
+                        };
+
+                        const { data: insertedRows, error } = await supabaseClient
                             .from('custom_content')
-                            .insert([{
-                                title: finalTitle,
-                                video_url: url,
-                                thumbnail_url: meta.thumbnail_url,
-                                type: 'movie',
-                                category: selectedCategory,
-                                is_active: true
-                            }]);
+                            .insert([newItem])
+                            .select();
                         if (error) throw error;
+
+                        // Registrar en allContent para evitar duplicados en el mismo lote
+                        if (insertedRows && insertedRows[0]) {
+                            allContent.push(insertedRows[0]);
+                        } else {
+                            allContent.push(newItem);
+                        }
+
                         successCount++;
                     } catch (mErr) {
                         console.error('Error al importar película:', mErr);
@@ -1476,10 +1781,34 @@ function setupEventListeners() {
                 } else {
                     // ── Importar como serie via edge function import-full-series ──
                     try {
-                        if (statusEl) statusEl.textContent = `Consultando TMDB y preparando serie (${i + 1}/${importEntries.length}): ${customTitle || url.split('/').pop()}...`;
-
                         let seriesTitleToSend = customTitle ? customTitle.trim() : null;
                         let seriesYear = null;
+
+                        // 1. Verificar si la serie ya existe por título personalizado antes de llamar
+                        if (seriesTitleToSend) {
+                            const existingSeriesByTitle = findExistingInCatalog(seriesTitleToSend, null, 'series');
+                            if (existingSeriesByTitle) {
+                                skippedCount++;
+                                const skipMsg = `Omitido (ya existe en catálogo): "${existingSeriesByTitle.title}"`;
+                                if (statusEl) statusEl.textContent = `${skipMsg} (${i + 1}/${importEntries.length})`;
+                                console.log(`[Import] Omitiendo serie duplicada por título: "${seriesTitleToSend}" -> "${existingSeriesByTitle.title}"`);
+                                await sleep(250);
+                                continue;
+                            }
+                        }
+
+                        // 2. Verificar si ya existe a partir del slug de la URL
+                        const existingSeriesByUrl = findExistingInCatalog(null, url, 'series');
+                        if (existingSeriesByUrl) {
+                            skippedCount++;
+                            const skipMsg = `Omitido (ya existe en catálogo): "${existingSeriesByUrl.title}"`;
+                            if (statusEl) statusEl.textContent = `${skipMsg} (${i + 1}/${importEntries.length})`;
+                            console.log(`[Import] Omitiendo serie duplicada por slug/URL: ${url} -> "${existingSeriesByUrl.title}"`);
+                            await sleep(250);
+                            continue;
+                        }
+
+                        if (statusEl) statusEl.textContent = `Consultando TMDB y preparando serie (${i + 1}/${importEntries.length}): ${customTitle || url.split('/').pop()}...`;
 
                         // Si el usuario especificó un título personalizado pero no trae año, buscarlo en TMDB
                         if (seriesTitleToSend) {
@@ -1506,6 +1835,16 @@ function setupEventListeners() {
                         });
                         if (error) throw error;
                         if (data && data.error) throw new Error(data.error);
+
+                        // Si la serie ya estaba y todos sus capítulos ya existían (total_episodes === 0)
+                        if (data && data.total_episodes === 0 && (data.seasons_processed > 0 || data.series_id)) {
+                            skippedCount++;
+                            const skipMsg = `Omitido (ya existía serie con todos sus capítulos): "${data.series_title || seriesTitleToSend || 'Serie'}"`;
+                            if (statusEl) statusEl.textContent = `${skipMsg} (${i + 1}/${importEntries.length})`;
+                            console.log(`[Import] Serie ya completada en catálogo: ${data.series_title}`);
+                            await sleep(250);
+                            continue;
+                        }
 
                         // Después de importar la serie, asegurar título con año correcto y categoría en la BD
                         const seriesId = data?.series_id || data?.series?.id;
@@ -1543,6 +1882,17 @@ function setupEventListeners() {
                                     .update({ category: selectedCategory })
                                     .eq('parent_id', seriesId);
                             }
+
+                            // Registrar la serie en allContent para evitar duplicaciones en el mismo lote
+                            if (!allContent.some(it => it.id === seriesId)) {
+                                allContent.push({
+                                    id: seriesId,
+                                    title: finalTitle,
+                                    type: 'series',
+                                    category: selectedCategory,
+                                    is_active: true
+                                });
+                            }
                         }
 
                         successCount++;
@@ -1554,9 +1904,13 @@ function setupEventListeners() {
             }
 
             if (barEl) { barEl.style.width = '100%'; barEl.style.background = 'var(--accent-green)'; }
-            const msg = `¡Listo! ${successCount} contenido(s) importados correctamente${failCount > 0 ? `, ${failCount} fallidos` : ''}.`;
+            const msgParts = [];
+            if (successCount > 0) msgParts.push(`${successCount} importado(s)`);
+            if (skippedCount > 0) msgParts.push(`${skippedCount} ya existían (omitidos)`);
+            if (failCount > 0) msgParts.push(`${failCount} fallidos`);
+            const msg = msgParts.length > 0 ? `¡Listo! ${msgParts.join(', ')}.` : 'No se importó ningún contenido nuevo.';
             if (statusEl) statusEl.textContent = msg;
-            showToast(msg, 'success');
+            showToast(msg, successCount > 0 ? 'success' : (skippedCount > 0 ? 'info' : 'error'));
 
             await sleep(1800);
             importModal.style.display = 'none';
