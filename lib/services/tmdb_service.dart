@@ -252,11 +252,18 @@ class TMDBService {
     return [];
   }
 
+  static final Map<String, Map<int, Map<String, dynamic>>> _seasonCache = {};
+
   /// Obtiene los detalles y miniaturas de cada episodio de una temporada desde TMDB.
   Future<Map<int, Map<String, dynamic>>> getSeasonEpisodes(
     int seriesId,
     int seasonNumber,
   ) async {
+    final cacheKey = '${seriesId}_$seasonNumber';
+    if (_seasonCache.containsKey(cacheKey)) {
+      return _seasonCache[cacheKey]!;
+    }
+
     try {
       final url =
           '$_baseUrl/tv/$seriesId/season/$seasonNumber?api_key=$_apiKey&language=es-ES';
@@ -285,6 +292,9 @@ class TMDBService {
             };
           }
         }
+      }
+      if (result.isNotEmpty) {
+        _seasonCache[cacheKey] = result;
       }
       return result;
     } catch (e) {

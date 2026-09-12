@@ -2129,142 +2129,162 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
             ),
           )
         else
-          ListView.builder(
-            padding: EdgeInsets.zero,
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: episodes.length,
-            itemBuilder: (context, index) {
-              final episode = episodes[index];
-              return InkWell(
-                onTap: () {
-                  _playContent(episode, playlist: episodes);
-                },
-                child: Container(
-                  margin: const EdgeInsets.only(bottom: 16),
-                  child: Row(
-                    children: [
-                      // Episode Thumbnail o Placeholder elegante si la imagen es repetida
-                      Builder(
-                        builder: (context) {
-                          final epNum =
-                              episode.episodeNumber ??
-                              NormalizationUtils.parseEpisodeNumber(
-                                episode.name,
-                              ) ??
-                              (index + 1);
+          Builder(
+            builder: (context) {
+              // Precomputar logotipos duplicados en esta temporada para evitar mostrar carátulas genéricas repetidas
+              final Map<String, int> logoOccurrences = {};
+              for (final ep in episodes) {
+                final l = ep.logo;
+                if (l != null && l.isNotEmpty) {
+                  logoOccurrences[l] = (logoOccurrences[l] ?? 0) + 1;
+                }
+              }
+              final Set<String> duplicateLogosInSeason = logoOccurrences.entries
+                  .where((entry) => entry.value > 1)
+                  .map((entry) => entry.key)
+                  .toSet();
 
-                          final tmdbEp =
-                              _tmdbSeasonData[_selectedSeason]?[epNum];
-                          final String? tmdbStill =
-                              tmdbEp?['still_url'] as String?;
+              return ListView.builder(
+                padding: EdgeInsets.zero,
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: episodes.length,
+                itemBuilder: (context, index) {
+                  final episode = episodes[index];
+                  return InkWell(
+                    onTap: () {
+                      _playContent(episode, playlist: episodes);
+                    },
+                    child: Container(
+                      margin: const EdgeInsets.only(bottom: 16),
+                      child: Row(
+                        children: [
+                          // Episode Thumbnail o Placeholder elegante si la imagen es repetida
+                          Builder(
+                            builder: (context) {
+                              final epNum =
+                                  episode.episodeNumber ??
+                                  NormalizationUtils.parseEpisodeNumber(
+                                    episode.name,
+                                  ) ??
+                                  (index + 1);
 
-                          final String? epLogo =
-                              (episode.logo != null && episode.logo!.isNotEmpty)
-                                  ? episode.logo
-                                  : null;
-                          final String? seriesLogo =
-                              (widget.item.logo != null &&
-                                      widget.item.logo!.isNotEmpty)
-                                  ? widget.item.logo
-                                  : null;
-                          final bool isDistinctLogo =
-                              epLogo != null && epLogo != seriesLogo;
-                          final String? effectiveImage =
-                              tmdbStill ?? (isDistinctLogo ? epLogo : null);
+                              final tmdbEp =
+                                  _tmdbSeasonData[_selectedSeason]?[epNum];
+                              final String? tmdbStill =
+                                  tmdbEp?['still_url'] as String?;
 
-                          if (effectiveImage != null &&
-                              effectiveImage.isNotEmpty) {
-                            return SizedBox(
-                              width: 120,
-                              height: 70,
-                              child: Stack(
-                                children: [
-                                  FastThumbnail(
-                                    url: effectiveImage,
-                                    title: episode.name,
-                                    width: 120,
-                                    height: 70,
-                                    fit: BoxFit.cover,
-                                    borderRadius: BorderRadius.circular(8),
-                                    isHD:
-                                        _isGoodNetwork &&
-                                        !PerformanceService().lowMemoryLimit,
-                                    onError: () {
-                                      _m3uService.reportFailedLogo(
-                                        effectiveImage,
-                                      );
-                                    },
-                                  ),
-                                  Center(
-                                    child: Icon(
-                                      Icons.play_circle_outline,
-                                      color: Colors.white.withValues(alpha: 0.8),
-                                      size: 32,
-                                    ),
-                                  ),
-                                  _buildEpisodeProgressIndicator(episode),
-                                ],
-                              ),
-                            );
-                          }
+                              final String? epLogo =
+                                  (episode.logo != null && episode.logo!.isNotEmpty)
+                                      ? episode.logo
+                                      : null;
+                              final String? seriesLogo =
+                                  (widget.item.logo != null &&
+                                          widget.item.logo!.isNotEmpty)
+                                      ? widget.item.logo
+                                      : null;
 
-                          // Diseño limpio y moderno de respaldo cuando no hay foto única
-                          return SizedBox(
-                            width: 120,
-                            height: 70,
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(8),
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  gradient: const LinearGradient(
-                                    begin: Alignment.topLeft,
-                                    end: Alignment.bottomRight,
-                                    colors: [
-                                      Color(0xFF262626),
-                                      Color(0xFF141414),
-                                    ],
-                                  ),
-                                  borderRadius: BorderRadius.circular(8),
-                                  border: Border.all(
-                                    color: Colors.white.withValues(alpha: 0.12),
-                                    width: 0.8,
-                                  ),
-                                ),
-                                child: Stack(
-                                  children: [
-                                    Center(
-                                      child: Column(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Icon(
-                                            Icons.play_circle_outline,
-                                            color: Colors.white.withValues(
-                                              alpha: 0.85,
+                              // Un logo es genuinamente un screenshot del episodio SOLO si:
+                              // 1. No es igual al póster de la serie completa
+                              // 2. No se repite en otros capítulos de la misma temporada
+                              final bool isDuplicateOrGeneric =
+                                  epLogo == null ||
+                                  epLogo == seriesLogo ||
+                                  duplicateLogosInSeason.contains(epLogo);
+
+                              final String? effectiveImage =
+                                  tmdbStill ?? (!isDuplicateOrGeneric ? epLogo : null);
+
+                              return SizedBox(
+                                width: 120,
+                                height: 70,
+                                child: AnimatedSwitcher(
+                                  duration: const Duration(milliseconds: 250),
+                                  child: (effectiveImage != null &&
+                                          effectiveImage.isNotEmpty)
+                                      ? Stack(
+                                          key: ValueKey('still_${episode.url}_$effectiveImage'),
+                                          children: [
+                                            FastThumbnail(
+                                              url: effectiveImage,
+                                              title: episode.name,
+                                              width: 120,
+                                              height: 70,
+                                              fit: BoxFit.cover,
+                                              borderRadius: BorderRadius.circular(8),
+                                              isHD:
+                                                  _isGoodNetwork &&
+                                                  !PerformanceService().lowMemoryLimit,
+                                              onError: () {
+                                                _m3uService.reportFailedLogo(
+                                                  effectiveImage,
+                                                );
+                                              },
                                             ),
-                                            size: 26,
-                                          ),
-                                          const SizedBox(height: 3),
-                                          Text(
-                                            'EP $epNum',
-                                            style: const TextStyle(
-                                              color: Colors.white70,
-                                              fontSize: 11,
-                                              fontWeight: FontWeight.w600,
-                                              letterSpacing: 0.5,
+                                            Center(
+                                              child: Icon(
+                                                Icons.play_circle_outline,
+                                                color: Colors.white.withValues(alpha: 0.8),
+                                                size: 32,
+                                              ),
+                                            ),
+                                            _buildEpisodeProgressIndicator(episode),
+                                          ],
+                                        )
+                                      : ClipRRect(
+                                          key: ValueKey('placeholder_${episode.url}_$epNum'),
+                                          borderRadius: BorderRadius.circular(8),
+                                          child: Container(
+                                            decoration: BoxDecoration(
+                                              gradient: const LinearGradient(
+                                                begin: Alignment.topLeft,
+                                                end: Alignment.bottomRight,
+                                                colors: [
+                                                  Color(0xFF262626),
+                                                  Color(0xFF141414),
+                                                ],
+                                              ),
+                                              borderRadius: BorderRadius.circular(8),
+                                              border: Border.all(
+                                                color: Colors.white.withValues(alpha: 0.12),
+                                                width: 0.8,
+                                              ),
+                                            ),
+                                            child: Stack(
+                                              children: [
+                                                Center(
+                                                  child: Column(
+                                                    mainAxisSize: MainAxisSize.min,
+                                                    children: [
+                                                      Icon(
+                                                        Icons.play_circle_outline,
+                                                        color: Colors.white.withValues(
+                                                          alpha: 0.85,
+                                                        ),
+                                                        size: 26,
+                                                      ),
+                                                      const SizedBox(height: 3),
+                                                      Text(
+                                                        'EP $epNum',
+                                                        style: const TextStyle(
+                                                          color: Colors.white70,
+                                                          fontSize: 11,
+                                                          fontWeight: FontWeight.w600,
+                                                          letterSpacing: 0.5,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                                _buildEpisodeProgressIndicator(episode),
+                                              ],
                                             ),
                                           ),
-                                        ],
-                                      ),
-                                    ),
-                                    _buildEpisodeProgressIndicator(episode),
-                                  ],
+                                        ),
                                 ),
-                              ),
-                            ),
-                          );
-                        },
-                      ),
+                              );
+                            },
+                          ),
                       const SizedBox(width: 16),
                       Expanded(
                         child: Column(
@@ -2366,7 +2386,9 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                 ),
               );
             },
-          ),
+          );
+        },
+      ),
       ],
     );
   }
