@@ -6963,7 +6963,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         // lo deja al mismo nivel que los botones de reproducir y pausa.
         Center(
           child: Transform.translate(
-            offset: Offset(0, spinnerSize / 2 + 30),
+            offset: Offset(0, spinnerSize / 2 + 30.7),
             child: DecoratedBox(
               decoration: BoxDecoration(
                 color: Colors.black.withValues(alpha: 0.45),
