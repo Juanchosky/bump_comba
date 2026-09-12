@@ -566,9 +566,22 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   }
 
   void _showReportOptions() {
+    final catLower = widget.item.category.toLowerCase();
+    final bool esSerie = widget.item.isSeries ||
+        _allEpisodes.isNotEmpty ||
+        catLower.contains('serie') ||
+        catLower.contains('anime') ||
+        catLower.contains('dorama') ||
+        catLower.contains('novela') ||
+        catLower.contains('show');
+
     final reasons = [
       'No carga el video',
       'Se traba / Mucho buffering',
+      if (esSerie)
+        'Serie desactualizada (faltan capítulos / temporadas)'
+      else
+        'Contenido desactualizado / Nueva versión',
       'Audio desincronizado / Sin audio',
       'Subtítulos faltantes o mal sincronizados',
       'El contenido no corresponde al título',

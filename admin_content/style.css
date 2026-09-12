@@ -123,7 +123,8 @@ body {
 /* Main Content */
 .main-content {
     flex: 1;
-    padding: 2rem 3rem;
+    min-width: 0;
+    padding: 1.75rem 2rem;
     background-image: 
         radial-gradient(circle at top right, rgba(56, 189, 248, 0.05), transparent 400px),
         radial-gradient(circle at bottom left, rgba(244, 114, 182, 0.05), transparent 400px);
@@ -371,9 +372,12 @@ select option {
 .data-grid-container {
     background-color: var(--bg-card);
     border-radius: 1.25rem;
-    overflow: hidden;
+    overflow-x: auto;
+    overflow-y: hidden;
     border: 1px solid var(--border-color);
     box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+    width: 100%;
+    -webkit-overflow-scrolling: touch;
 }
 
 .data-table {
@@ -383,23 +387,25 @@ select option {
 
 .data-table th {
     background-color: rgba(255, 255, 255, 0.02);
-    padding: 1.25rem 1.5rem;
+    padding: 0.85rem 1.1rem;
     text-align: left;
-    font-size: 0.85rem;
+    font-size: 0.8rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--text-muted);
     font-weight: 600;
+    white-space: nowrap;
 }
 
 .data-table td {
-    padding: 1.25rem 1.5rem;
+    padding: 0.85rem 1.1rem;
     border-top: 1px solid var(--border-color);
-    font-size: 0.95rem;
+    font-size: 0.9rem;
+    vertical-align: middle;
 }
 
 .data-table tr:hover {
-    background-color: rgba(255, 255, 255, 0.01);
+    background-color: rgba(255, 255, 255, 0.015);
 }
 
 /* Badges */
@@ -427,7 +433,9 @@ select option {
 
 .badge-pending { background-color: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
 .badge-added { background-color: rgba(34, 197, 94, 0.2); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.3); }
+.badge-resolved { background-color: rgba(34, 197, 94, 0.2); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.3); }
 .badge-rejected { background-color: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
+.badge-outdated { background-color: rgba(244, 114, 182, 0.2); color: #f472b6; border: 1px solid rgba(244, 114, 182, 0.3); }
 
 /* Switches */
 .switch {
@@ -465,23 +473,29 @@ input:checked + .slider:before { transform: translateX(18px); }
 /* Actions */
 .actions {
     display: flex;
-    gap: 0.75rem;
+    gap: 0.45rem;
+    align-items: center;
+    white-space: nowrap;
 }
 
 .btn-icon {
-    width: 36px;
-    height: 36px;
-    border-radius: 0.75rem;
+    width: 34px;
+    height: 34px;
+    border-radius: 0.65rem;
     border: none;
-    display: flex;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
     cursor: pointer;
     transition: all 0.2s;
+    flex-shrink: 0;
 }
 
 .btn-edit { background-color: rgba(255, 255, 255, 0.05); color: var(--text-main); }
 .btn-edit:hover { background-color: var(--primary); color: var(--bg-dark); }
+
+.btn-search-action { background-color: rgba(56, 189, 248, 0.12); color: var(--primary); }
+.btn-search-action:hover { background-color: var(--primary); color: var(--bg-dark); }
 
 .btn-delete { background-color: rgba(239, 68, 68, 0.1); color: #f87171; }
 .btn-delete:hover { background-color: #ef4444; color: white; }

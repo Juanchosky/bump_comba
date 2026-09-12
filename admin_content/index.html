@@ -118,6 +118,10 @@
                         <i data-lucide="message-square-plus"></i> Solicitudes
                         <span id="requests-badge" class="badge-count hidden">0</span>
                     </button>
+                    <button class="tab-btn" data-tab="reports">
+                        <i data-lucide="flag"></i> Reportes
+                        <span id="reports-badge" class="badge-count hidden">0</span>
+                    </button>
                 </div>
 
                 <div class="section-header">
@@ -142,6 +146,15 @@
                         </select>
                         <select id="filter-season" class="hidden">
                             <option value="all">Todas las Temporadas</option>
+                        </select>
+                        <select id="filter-report-reason" class="hidden">
+                            <option value="all">Todos los Motivos</option>
+                            <option value="Serie desactualizada">Serie desactualizada</option>
+                            <option value="No carga">No carga el video</option>
+                            <option value="buffering">Se traba / Buffering</option>
+                            <option value="Audio">Audio desincronizado</option>
+                            <option value="Subtítulos">Subtítulos</option>
+                            <option value="Otro">Otro problema</option>
                         </select>
                         <button id="manage-seasons-btn" class="btn hidden" title="Borrar temporadas de esta serie"
                             style="background-color:rgba(239,68,68,.15);color:#f87171;border:1px solid rgba(239,68,68,.3);padding:.5rem 1rem;gap:.4rem;">
@@ -192,6 +205,26 @@
                             </thead>
                             <tbody id="requests-list-body">
                                 <!-- Las solicitudes se cargarán aquí dinámicamente -->
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Table for Content Reports from Users -->
+                    <div id="reports-container" class="data-grid-container hidden">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th style="width:40px;text-align:center;"><input type="checkbox" id="select-all-reports-checkbox" onchange="toggleSelectAllReports(this.checked)" style="width:16px;height:16px;cursor:pointer;" title="Seleccionar todo"></th>
+                                    <th>Contenido Reportado</th>
+                                    <th>Motivo del Reporte</th>
+                                    <th>Categoría</th>
+                                    <th>Fecha</th>
+                                    <th>Estado</th>
+                                    <th style="width:130px;">Acciones</th>
+                                </tr>
+                            </thead>
+                            <tbody id="reports-list-body">
+                                <!-- Los reportes se cargarán aquí dinámicamente -->
                             </tbody>
                         </table>
                     </div>

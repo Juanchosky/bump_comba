@@ -649,6 +649,7 @@ const parentIdSelect = document.getElementById('parent_id');
 const searchInput = document.getElementById('global-search');
 const filterCategory = document.getElementById('filter-category');
 const filterSeason = document.getElementById('filter-season');
+const filterReportReason = document.getElementById('filter-report-reason');
 const seriesGrid = document.getElementById('series-grid');
 const dataTableContainer = document.getElementById('data-table-container');
 const tabButtons = document.querySelectorAll('.tab-btn');
@@ -849,6 +850,7 @@ async function fetchContent() {
     populateSeriesSelect();
     applyFilters();
     fetchContentRequests();
+    fetchContentReports();
 }
 
 let contentRequests = [];
@@ -1042,6 +1044,272 @@ async function deleteRequest(id) {
     showToast('Solicitud eliminada', 'success');
     await fetchContentRequests();
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REPORTES DE USUARIOS (CRUD COMPLETO)
+// ─────────────────────────────────────────────────────────────────────────────
+let contentReports = [];
+let selectedReportIds = new Set();
+
+async function fetchContentReports() {
+    const { data, error } = await supabaseClient
+        .from('content_reports')
+        .select('*')
+        .order('created_at', { ascending: false });
+    
+    if (error) {
+        console.error('Error fetching content reports:', error);
+        return;
+    }
+
+    contentReports = data || [];
+    updateReportsBadge();
+    if (currentTab === 'reports') {
+        renderReports();
+    }
+}
+
+function updateReportsBadge() {
+    const badge = document.getElementById('reports-badge');
+    if (!badge) return;
+    const pendingCount = contentReports.filter(r => (r.status || 'pending') === 'pending').length;
+    if (pendingCount > 0) {
+        badge.textContent = pendingCount;
+        badge.classList.remove('hidden');
+    } else {
+        badge.classList.add('hidden');
+    }
+}
+
+function renderReports() {
+    const reportsContainer = document.getElementById('reports-container');
+    const reportsBody = document.getElementById('reports-list-body');
+    const seriesGrid = document.getElementById('series-grid');
+    const dataTableContainer = document.getElementById('data-table-container');
+    const requestsContainer = document.getElementById('requests-container');
+
+    if (seriesGrid) seriesGrid.classList.add('hidden');
+    if (dataTableContainer) dataTableContainer.classList.add('hidden');
+    if (requestsContainer) requestsContainer.classList.add('hidden');
+    if (reportsContainer) reportsContainer.classList.remove('hidden');
+
+    if (!reportsBody) return;
+    reportsBody.innerHTML = '';
+
+    const query = (searchInput && searchInput.value ? searchInput.value.trim().toLowerCase() : '');
+    const reasonFilter = filterReportReason ? filterReportReason.value : 'all';
+
+    const filtered = contentReports.filter(rep => {
+        const nameMatches = rep.content_name && rep.content_name.toLowerCase().includes(query);
+        const reasonMatches = rep.reason && rep.reason.toLowerCase().includes(query);
+        const catMatches = rep.category && rep.category.toLowerCase().includes(query);
+        const matchesQuery = !query || nameMatches || reasonMatches || catMatches;
+
+        let matchesReason = true;
+        if (reasonFilter !== 'all') {
+            matchesReason = rep.reason && rep.reason.toLowerCase().includes(reasonFilter.toLowerCase());
+        }
+
+        return matchesQuery && matchesReason;
+    });
+
+    if (filtered.length === 0) {
+        reportsBody.innerHTML = `
+            <tr>
+                <td colspan="7" style="text-align:center;padding:2.5rem;color:var(--text-muted);">
+                    <div style="font-size:1.1rem;font-weight:600;margin-bottom:0.4rem;">Sin Reportes</div>
+                    ${contentReports.length === 0 ? 'No hay reportes registrados por los usuarios aún.' : 'No hay reportes que coincidan con los filtros aplicados.'}
+                </td>
+            </tr>
+        `;
+        updateSelectedReportsCount();
+        return;
+    }
+
+    filtered.forEach(rep => {
+        const tr = document.createElement('tr');
+        const isChecked = selectedReportIds.has(rep.id);
+        const dateStr = rep.created_at ? new Date(rep.created_at).toLocaleDateString('es-ES', {
+            day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+        }) : '-';
+
+        const isResolved = rep.status === 'resolved';
+        const statusClass = isResolved ? 'badge-resolved' : 'badge-pending';
+        const statusText = isResolved ? 'Resuelto' : 'Pendiente';
+
+        const isOutdated = rep.reason && /desactualizad/i.test(rep.reason);
+        const reasonBadgeClass = isOutdated ? 'badge-outdated' : '';
+        const reasonIcon = isOutdated ? 'clock' : 'alert-circle';
+
+        // Detectar si el contenido existe en el catálogo para dar contexto visual
+        const matches = findMatchesInCatalog(rep.content_name || '');
+        const matchedItem = matches.length > 0 ? matches[0] : null;
+
+        tr.innerHTML = `
+            <td style="text-align:center;">
+                <input type="checkbox" class="report-checkbox" value="${rep.id}" ${isChecked ? 'checked' : ''} onchange="onReportCheckboxChange('${rep.id}', this.checked)" style="width:16px;height:16px;cursor:pointer;">
+            </td>
+            <td>
+                <div style="font-weight:600;font-size:1rem;color:var(--text-primary);margin-bottom:0.2rem;">${rep.content_name || 'Sin título'}</div>
+                ${matchedItem ? `
+                <div style="font-size:0.75rem;color:var(--accent-green);display:inline-flex;align-items:center;gap:0.3rem;">
+                    <i data-lucide="check-circle-2" style="width:12px;height:12px;"></i>
+                    <span>En catálogo: <strong>${matchedItem.title}</strong> (${matchedItem.type === 'series' ? 'Serie' : 'Película'})</span>
+                </div>` : `
+                <div style="font-size:0.72rem;color:var(--text-muted);opacity:0.8;">
+                    <span>${rep.url ? `ID/URL: ${rep.url.slice(0, 45)}...` : ''}</span>
+                </div>
+                `}
+            </td>
+            <td>
+                <span class="badge ${reasonBadgeClass}" style="display:inline-flex;align-items:center;gap:0.35rem;font-size:0.8rem;text-transform:none;font-weight:500;white-space:nowrap;">
+                    <i data-lucide="${reasonIcon}" style="width:13px;height:13px;"></i>
+                    <span>${rep.reason || 'Sin especificar'}</span>
+                </span>
+            </td>
+            <td><span style="color:var(--text-muted);font-size:0.88rem;white-space:nowrap;">${rep.category || 'General'}</span></td>
+            <td style="font-size:0.85rem;color:var(--text-muted);white-space:nowrap;">${dateStr}</td>
+            <td style="white-space:nowrap;"><span class="badge ${statusClass}">${statusText}</span></td>
+            <td style="width:130px;">
+                <div class="actions">
+                    ${!isResolved ? `
+                    <button class="btn-icon" style="background:rgba(34,197,94,0.15);color:#4ade80;" title="Marcar como Resuelto" onclick="updateReportStatus('${rep.id}', 'resolved')">
+                        <i data-lucide="check"></i>
+                    </button>
+                    ` : `
+                    <button class="btn-icon" style="background:rgba(245,158,11,0.15);color:#fbbf24;" title="Reabrir (Marcar como Pendiente)" onclick="updateReportStatus('${rep.id}', 'pending')">
+                        <i data-lucide="rotate-ccw"></i>
+                    </button>
+                    `}
+                    <button class="btn-icon btn-search-action" title="Buscar en catálogo para actualizar" onclick="goToContentInCatalog('${(rep.content_name || '').replace(/'/g, "\\'")}')">
+                        <i data-lucide="search"></i>
+                    </button>
+                    <button class="btn-icon btn-delete" title="Eliminar reporte" onclick="deleteReport('${rep.id}')">
+                        <i data-lucide="trash-2"></i>
+                    </button>
+                </div>
+            </td>
+        `;
+        reportsBody.appendChild(tr);
+    });
+
+    lucide.createIcons();
+    updateSelectedReportsCount();
+}
+
+function goToContentInCatalog(contentName) {
+    if (!contentName) return;
+    const cleanName = cleanTitleForTmdb(contentName) || contentName;
+    const matches = findMatchesInCatalog(contentName);
+    
+    // Si la coincidencia es una película ir a 'movies', de lo contrario ir a 'series'
+    const targetTab = (matches.length > 0 && matches[0].type === 'movie') ? 'movies' : 'series';
+
+    // Activar pestaña adecuada
+    tabButtons.forEach(btn => {
+        if (btn.dataset.tab === targetTab) {
+            btn.click();
+        }
+    });
+
+    // Poner el título en el buscador y aplicar filtro
+    if (searchInput) {
+        searchInput.value = cleanName;
+        applyFilters();
+    }
+    showToast(`Buscando "${cleanName}" en ${targetTab === 'series' ? 'Series' : 'Películas'}`, 'info');
+}
+
+async function updateReportStatus(id, newStatus) {
+    const { error } = await supabaseClient
+        .from('content_reports')
+        .update({ status: newStatus })
+        .eq('id', id);
+
+    if (error) {
+        showToast('Error al actualizar reporte: ' + error.message, 'error');
+        return;
+    }
+    showToast(`Reporte marcado como ${newStatus === 'resolved' ? 'resuelto' : 'pendiente'}`, 'success');
+    await fetchContentReports();
+}
+
+async function deleteReport(id) {
+    if (!confirm('¿Deseas eliminar este reporte?')) return;
+    const { error } = await supabaseClient
+        .from('content_reports')
+        .delete()
+        .eq('id', id);
+
+    if (error) {
+        showToast('Error al eliminar reporte: ' + error.message, 'error');
+        return;
+    }
+    selectedReportIds.delete(id);
+    showToast('Reporte eliminado', 'success');
+    await fetchContentReports();
+}
+
+function toggleSelectAllReports(isChecked) {
+    const query = (searchInput && searchInput.value ? searchInput.value.trim().toLowerCase() : '');
+    const reasonFilter = filterReportReason ? filterReportReason.value : 'all';
+
+    const visibleReports = contentReports.filter(rep => {
+        const nameMatches = rep.content_name && rep.content_name.toLowerCase().includes(query);
+        const reasonMatches = rep.reason && rep.reason.toLowerCase().includes(query);
+        const catMatches = rep.category && rep.category.toLowerCase().includes(query);
+        const matchesQuery = !query || nameMatches || reasonMatches || catMatches;
+
+        let matchesReason = true;
+        if (reasonFilter !== 'all') {
+            matchesReason = rep.reason && rep.reason.toLowerCase().includes(reasonFilter.toLowerCase());
+        }
+        return matchesQuery && matchesReason;
+    });
+
+    visibleReports.forEach(rep => {
+        if (isChecked) {
+            selectedReportIds.add(rep.id);
+        } else {
+            selectedReportIds.delete(rep.id);
+        }
+    });
+
+    const checkboxes = document.querySelectorAll('.report-checkbox');
+    checkboxes.forEach(cb => cb.checked = isChecked);
+    updateSelectedReportsCount();
+}
+
+function onReportCheckboxChange(id, isChecked) {
+    if (isChecked) {
+        selectedReportIds.add(id);
+    } else {
+        selectedReportIds.delete(id);
+    }
+    updateSelectedReportsCount();
+}
+
+function updateSelectedReportsCount() {
+    const deleteBtn = document.getElementById('delete-selected-btn');
+    const deleteText = document.getElementById('delete-selected-text');
+    const selectAllCb = document.getElementById('select-all-reports-checkbox');
+
+    const count = selectedReportIds.size;
+    if (deleteBtn && deleteText) {
+        if (count > 0) {
+            deleteText.textContent = `Borrar (${count})`;
+            deleteBtn.classList.remove('hidden');
+        } else {
+            deleteBtn.classList.add('hidden');
+        }
+    }
+
+    if (selectAllCb && contentReports.length > 0) {
+        const allSelected = contentReports.every(rep => selectedReportIds.has(rep.id));
+        selectAllCb.checked = allSelected;
+    }
+}
+
 
 
 // Carga episodios de una serie específica (solo cuando el usuario entra a la serie)
@@ -1444,6 +1712,28 @@ function updateSelectedRequestsCount() {
 }
 
 async function deleteSelectedItems() {
+    if (currentTab === 'reports') {
+        if (selectedReportIds.size === 0) return;
+        const count = selectedReportIds.size;
+        if (!confirm(`¿Estás seguro de que deseas eliminar ${count} reportes seleccionados?`)) return;
+
+        const idsToDelete = Array.from(selectedReportIds);
+        const { error } = await supabaseClient
+            .from('content_reports')
+            .delete()
+            .in('id', idsToDelete);
+
+        if (error) {
+            showToast('Error al eliminar reportes: ' + error.message, 'error');
+            return;
+        }
+
+        selectedReportIds.clear();
+        showToast(`Se eliminaron ${count} reportes con éxito`, 'success');
+        fetchContentReports();
+        return;
+    }
+
     if (currentTab === 'requests') {
         if (selectedRequestIds.size === 0) return;
         const count = selectedRequestIds.size;
@@ -1553,19 +1843,42 @@ function setupEventListeners() {
             currentTab = btn.dataset.tab;
             selectedItemIds.clear();
             selectedRequestIds.clear();
+            selectedReportIds.clear();
             const delBtn = document.getElementById('delete-selected-btn');
             if (delBtn) delBtn.classList.add('hidden');
 
             const requestsContainer = document.getElementById('requests-container');
+            const reportsContainer = document.getElementById('reports-container');
+            const viewToggleEl = document.querySelector('.view-toggle');
 
             if (currentTab === 'requests') {
+                if (viewToggleEl) viewToggleEl.classList.add('hidden');
+                if (reportsContainer) reportsContainer.classList.add('hidden');
+                if (filterReportReason) filterReportReason.classList.add('hidden');
+                backToSeriesBtn.classList.add('hidden');
                 pageTitle.textContent = 'Solicitudes de Usuarios';
                 filterCategory.classList.add('hidden');
                 filterSeason.classList.add('hidden');
                 manageSeasonsBtn.classList.add('hidden');
                 renderRequests();
-            } else {
+            } else if (currentTab === 'reports') {
+                if (viewToggleEl) viewToggleEl.classList.add('hidden');
                 if (requestsContainer) requestsContainer.classList.add('hidden');
+                if (seriesGrid) seriesGrid.classList.add('hidden');
+                if (dataTableContainer) dataTableContainer.classList.add('hidden');
+                if (reportsContainer) reportsContainer.classList.remove('hidden');
+                if (filterReportReason) filterReportReason.classList.remove('hidden');
+                backToSeriesBtn.classList.add('hidden');
+                pageTitle.textContent = 'Reportes de Contenido';
+                filterCategory.classList.add('hidden');
+                filterSeason.classList.add('hidden');
+                manageSeasonsBtn.classList.add('hidden');
+                renderReports();
+            } else {
+                if (viewToggleEl) viewToggleEl.classList.remove('hidden');
+                if (requestsContainer) requestsContainer.classList.add('hidden');
+                if (reportsContainer) reportsContainer.classList.add('hidden');
+                if (filterReportReason) filterReportReason.classList.add('hidden');
                 filterCategory.classList.remove('hidden');
                 pageTitle.textContent = currentTab === 'movies' ? 'Mis Películas' : 'Mis Series';
                 if (!localStorage.getItem('viewMode')) viewMode = currentTab === 'series' ? 'grid' : 'list';
@@ -1580,9 +1893,22 @@ function setupEventListeners() {
     contentForm.onsubmit = saveContent;
     const btnSearchTmdb = document.getElementById('btn-search-tmdb');
     if (btnSearchTmdb) btnSearchTmdb.onclick = searchTmdbForManualForm;
-    searchInput.oninput = applyFilters;
+    searchInput.oninput = () => {
+        if (currentTab === 'requests') {
+            renderRequests();
+        } else if (currentTab === 'reports') {
+            renderReports();
+        } else {
+            applyFilters();
+        }
+    };
     filterCategory.onchange = applyFilters;
     filterSeason.onchange = applyFilters;
+    if (filterReportReason) {
+        filterReportReason.onchange = () => {
+            if (currentTab === 'reports') renderReports();
+        };
+    }
     
     manageSeasonsBtn.onclick = openBulkDeleteModal;
     const deleteSelectedBtn = document.getElementById('delete-selected-btn');
@@ -2271,7 +2597,7 @@ function showToast(message, type = 'success') {
 
     // Obtener el checkbox de una fila
     function getCheckbox(row) {
-        return row ? row.querySelector('.row-checkbox, .request-checkbox') : null;
+        return row ? row.querySelector('.row-checkbox, .request-checkbox, .report-checkbox') : null;
     }
 
     // Aplicar el estado de selección a un checkbox
@@ -2284,6 +2610,8 @@ function showToast(message, type = 'success') {
             onRowCheckboxChange(id, dragSelectState);
         } else if (cb.classList.contains('request-checkbox')) {
             onRequestCheckboxChange(id, dragSelectState);
+        } else if (cb.classList.contains('report-checkbox')) {
+            onReportCheckboxChange(id, dragSelectState);
         }
     }
 
