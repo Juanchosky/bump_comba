@@ -86,7 +86,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool _isScraping = false;
   String? _scrapingError;
 
-
   String get _currentUserAgent =>
       _userAgents[_userAgentIndex % _userAgents.length];
 
@@ -1543,7 +1542,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
 
     // 1. Manejo de Scraping (enlaces dinámicos)
-    final bool esContenidoScrapeado = DynamicScraperService().isSupported(item.url);
+    final bool esContenidoScrapeado = DynamicScraperService().isSupported(
+      item.url,
+    );
     if (esContenidoScrapeado) {
       setState(() {
         _isScraping = true;
@@ -2015,6 +2016,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           }
           _activeDecoder = decoder;
 
+          final bool tieneResumePendiente =
+              startFrom != null && startFrom.inSeconds > 5;
+          final bool activarPrebufferInicial =
+              _usaPrebufferPremium && !tieneResumePendiente;
+
           final futures = <Future<dynamic>>[
             mpv.setProperty('alang', 'es,spa,esp,es-ES,es-MX,es-419'),
             mpv.setProperty('cache', 'yes'),
@@ -2041,22 +2047,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             //
             // `cache-pause-initial=yes` hace que MPV NO empiece a reproducir
             // hasta tener `cache-pause-wait` segundos de contenido en el
-            // buffer. Es el equivalente premium del anuncio: el free tiene
-            // 15-30s de anuncio durante los cuales el video va bajando (ver
-            // `_startAdTimePrewarm`); el premium no tiene ninguna ventana, asi
-            // que si arranca al primer byte se queda sin datos a los pocos
-            // segundos y ese es el corte que mas se nota — justo despues de
-            // darle a play, cuando parece que "no funciona".
-            //
-            // Cuesta unos segundos UNA vez, con un aviso en pantalla, en vez
-            // de microcortes durante toda la pelicula. Si venimos de un player
-            // precalentado el buffer ya esta lleno y no cuesta nada.
-            //
-            // En vivo NO: ahi acumular buffer por adelantado te deja atras de
-            // la emision, y el `cache-pause-wait` ya es de 2s.
+            // buffer.
+            // Si vamos a reanudar una posición guardada, NO pre-bufferizamos en 0s
+            // porque sería gastar 8s acumulando datos que se descartarán con el seek.
             mpv.setProperty(
               'cache-pause-initial',
-              _usaPrebufferPremium ? 'yes' : 'no',
+              activarPrebufferInicial ? 'yes' : 'no',
             ),
             mpv.setProperty(
               'stream-buffer-size',
@@ -2177,18 +2173,19 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           // sin pasar por ahi y se ignoran; quedan puestos para cuando el
           // reintento baja a `mediacodec-copy`, que si pasa por el renderizador.
           if (_currentItem.sourceName == 'Supabase' && !lowPerf) {
-            for (final p in const {
-              'hls-bitrate': 'max',
-              'scale': 'mitchell',
-              'cscale': 'mitchell',
-              'linear-upscaling': 'yes',
-              'sigmoid-upscaling': 'yes',
-              'deband': 'yes',
-              'deband-iterations': '2',
-              'deband-threshold': '35',
-              'deband-range': '20',
-              'deband-grain': '5',
-            }.entries) {
+            for (final p
+                in const {
+                  'hls-bitrate': 'max',
+                  'scale': 'mitchell',
+                  'cscale': 'mitchell',
+                  'linear-upscaling': 'yes',
+                  'sigmoid-upscaling': 'yes',
+                  'deband': 'yes',
+                  'deband-iterations': '2',
+                  'deband-threshold': '35',
+                  'deband-range': '20',
+                  'deband-grain': '5',
+                }.entries) {
               try {
                 await mpv.setProperty(p.key, p.value);
               } catch (e) {
@@ -2299,9 +2296,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         final bool esperarPrimerFrame =
             isLocalReload && shouldPlayLocally && !_isLiveContent;
 
-        final bool isHls = playbackUrl.toLowerCase().contains('.m3u8') ||
-            playbackUrl.toLowerCase().contains('/hls/');
-        final Duration? startParam = isHls ? null : startFrom;
+        final lowPlayback = playbackUrl.toLowerCase();
+        final bool isHlsOrScraped =
+            esContenidoScrapeado ||
+            lowPlayback.contains('.m3u8') ||
+            lowPlayback.contains('/hls') ||
+            lowPlayback.contains('hls2') ||
+            lowPlayback.contains('output=m3u8');
+        final Duration? startParam = isHlsOrScraped ? null : startFrom;
 
         await _player!.open(
           Media(playbackUrl, httpHeaders: headers, start: startParam),
@@ -2426,7 +2428,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           isLive: _isLiveContent,
         );
       }
-
 
       if (!castService.isCasting.value) {
         final bool isIOS = defaultTargetPlatform == TargetPlatform.iOS;
