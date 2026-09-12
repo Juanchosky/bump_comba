@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart';
+import 'dynamic_scraper_service.dart';
 import 'm3u_service.dart';
 
 class VideoPrewarmService {
@@ -14,6 +15,13 @@ class VideoPrewarmService {
     if (item.isSeries) return;
     final url = item.url;
     if (!url.startsWith('http://') && !url.startsWith('https://')) return;
+    // Los enlaces que requieren scraping son páginas web HTML, no streams de video.
+    // Intentar abrirlos en MPV corrompe el reproductor y provoca pantallas congeladas.
+    if (DynamicScraperService().isSupported(url)) return;
+    final low = url.toLowerCase();
+    if (low.endsWith('.html') || low.endsWith('.htm') || low.endsWith('.php')) {
+      return;
+    }
     if (_prewarmedPlayers.containsKey(url)) return;
 
     // Limit to 1 prewarmed player to save resources (Critical for Android 15/Motorola)

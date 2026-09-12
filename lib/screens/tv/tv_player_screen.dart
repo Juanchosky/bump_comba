@@ -225,7 +225,7 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
   //
   // Mismo problema que en la transmision y misma solucion: el titulo puede
   // estar en varios sitios y el primero no siempre responde.
-  late final List<String> _urls;
+  late List<String> _urls;
   int _idxServidor = 0;
   VoidCallback? _m3uListener;
 
@@ -494,12 +494,11 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         final mpv = _player.platform as dynamic;
         if (mpv != null) {
           await mpv.setProperty('hls-bitrate', 'max');
-          await mpv.setProperty('scale', 'mitchell');
-          await mpv.setProperty('cscale', 'mitchell');
-          await mpv.setProperty('linear-upscaling', 'yes');
-          await mpv.setProperty('sigmoid-upscaling', 'yes');
-          await mpv.setProperty('vd-lavc-skiploopfilter', 'none');
-          await mpv.setProperty('sws-scaler', 'bicubic');
+          await mpv.setProperty('scale', 'bilinear');
+          await mpv.setProperty('cscale', 'bilinear');
+          await mpv.setProperty('linear-upscaling', 'no');
+          await mpv.setProperty('sigmoid-upscaling', 'no');
+          await mpv.setProperty('vd-lavc-skiploopfilter', 'all');
         }
       } catch (e) {
         debugPrint('TvPlayer: error aplicando perfil BD: $e');
@@ -628,15 +627,32 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
       final mpv = _player.platform as dynamic;
       if (mpv == null) return;
       if (esHls) {
-        await mpv.setProperty('cache-secs', '60');
-        await mpv.setProperty('demuxer-readahead-secs', '20');
-        await mpv.setProperty('hls-bitrate', 'max');
-        await mpv.setProperty('hls-forward-cache-secs', '30');
-        await mpv.setProperty('hls-back-cache-secs', '10');
-        await mpv.setProperty('cache-pause-initial', 'no');
-        await mpv.setProperty('cache-pause-wait', '2');
-        await mpv.setProperty('demuxer-cache-wait', 'no');
-        debugPrint('TvPlayer: perfil HLS aplicado');
+        if (widget.item.isLive) {
+          await mpv.setProperty('cache-secs', '60');
+          await mpv.setProperty('demuxer-readahead-secs', '20');
+          await mpv.setProperty('hls-bitrate', 'max');
+          await mpv.setProperty('hls-forward-cache-secs', '30');
+          await mpv.setProperty('hls-back-cache-secs', '10');
+          await mpv.setProperty('cache-pause-initial', 'no');
+          await mpv.setProperty('cache-pause-wait', '2');
+          await mpv.setProperty('demuxer-cache-wait', 'no');
+          debugPrint('TvPlayer: perfil HLS DIRECTO aplicado');
+        } else {
+          // HLS VOD (películas / series con manifiesto .m3u8):
+          // Tienen toda la duración disponible. Un readahead de 45s y cache-pause-wait de 2s
+          // permite iniciar de inmediato y saltar sin pausas excesivas.
+          await mpv.setProperty('cache-secs', '120');
+          await mpv.setProperty('demuxer-readahead-secs', '45');
+          await mpv.setProperty('hls-bitrate', 'max');
+          await mpv.setProperty('hls-forward-cache-secs', '45');
+          await mpv.setProperty('hls-back-cache-secs', '30');
+          await mpv.setProperty('cache-pause-initial', 'no');
+          await mpv.setProperty('cache-pause-wait', '2');
+          await mpv.setProperty('demuxer-cache-wait', 'yes');
+          await mpv.setProperty('hr-seek', 'default');
+          await mpv.setProperty('hr-seek-framedrop', 'yes');
+          debugPrint('TvPlayer: perfil HLS VOD aplicado');
+        }
       } else {
         // Fichero entero: se restauran los valores del perfil base, por si el
         // servidor anterior era una lista HLS y los dejo bajados.
@@ -694,6 +710,13 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
 
         if (r != null && r.videoUrl.isNotEmpty) {
           _resueltos[indice] = r.videoUrl;
+          if (r.alternativeUrls.isNotEmpty) {
+            for (final alt in r.alternativeUrls) {
+              if (!_urls.contains(alt)) {
+                _urls.add(alt);
+              }
+            }
+          }
           // LOS SUBTITULOS SE GUARDAN, no se tiran.
           //
           // El extractor los devuelve junto al video —el telefono los recoge
@@ -713,9 +736,11 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         }
         debugPrint('TvPlayer: la pagina del servidor $indice no solto video');
       }
+      DynamicScraperService().invalidateCache(pagina);
       _rotos.add(indice);
     } catch (e) {
       debugPrint('TvPlayer: no se pudo resolver el servidor $indice: $e');
+      DynamicScraperService().invalidateCache(pagina);
       _rotos.add(indice);
     } finally {
       _resolviendo.remove(indice);
@@ -1272,7 +1297,10 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
             _kbps > 0 ||
             _bufer > _buferVigilado ||
             _primerFrameListo ||
-            (_player.state.width ?? 0) > 0;
+            (_player.state.width ?? 0) > 0 ||
+            _posicion > Duration.zero ||
+            _reproduciendo ||
+            _player.state.playing;
         _bytesVigilados = bytes;
         _buferVigilado = _bufer;
         _segundosSinDatos = hayDatos ? 0 : _segundosSinDatos + 1;
@@ -1664,15 +1692,21 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
       if (_menuTab == 0) {
         final l = _pistasAudio;
         if (_menuIdx >= 0 && _menuIdx < l.length) {
+          if (_player.state.track.audio.id == l[_menuIdx].id) return;
           await _player.setAudioTrack(l[_menuIdx]);
         }
       } else {
         if (_menuIdx == 0) {
+          final actual = _player.state.track.subtitle.id;
+          if (actual == 'no' || actual == 'auto') return;
           await _player.setSubtitleTrack(SubtitleTrack.no());
         } else {
           final l = _pistasSubs;
           final i = _menuIdx - 1;
-          if (i >= 0 && i < l.length) await _player.setSubtitleTrack(l[i]);
+          if (i >= 0 && i < l.length) {
+            if (_player.state.track.subtitle.id == l[i].id) return;
+            await _player.setSubtitleTrack(l[i]);
+          }
         }
       }
     } catch (_) {}

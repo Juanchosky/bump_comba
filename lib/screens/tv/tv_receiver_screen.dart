@@ -301,14 +301,18 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
         case TvProto.cmdSetAudio:
           final id = msg['trackId']?.toString();
           if (id != null) {
+            if (_player.state.track.audio.id == id) break;
             await _player.setAudioTrack(AudioTrack(id, null, null));
           }
           break;
         case TvProto.cmdSetSubtitle:
           final id = msg['trackId']?.toString();
           if (id == null || id == TvProto.subtitleOff) {
+            final actual = _player.state.track.subtitle.id;
+            if (actual == 'no' || actual == 'auto') break;
             await _player.setSubtitleTrack(SubtitleTrack.no());
           } else {
+            if (_player.state.track.subtitle.id == id) break;
             await _player.setSubtitleTrack(SubtitleTrack(id, null, null));
           }
           break;
@@ -388,16 +392,31 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
           // directo, que es donde el mismo titulo se ve bien. Todos BAJAN
           // respecto al perfil VOD, asi que no tocan el techo del VPS.
           if (esHls) {
-            await mpv.setProperty('cache-secs', '60');
-            await mpv.setProperty('demuxer-readahead-secs', '20');
-            await mpv.setProperty('hls-bitrate', isFromDB ? 'max' : 'auto');
-            await mpv.setProperty('hls-forward-cache-secs', '30');
-            await mpv.setProperty('hls-back-cache-secs', '10');
-            // En directo y HLS no se puede acumular bufer por adelantado sin quedarse
-            // atras de la emision o trabar el demuxer: se arranca en cuanto hay datos.
-            await mpv.setProperty('cache-pause-initial', 'no');
-            await mpv.setProperty('cache-pause-wait', '2');
-            await mpv.setProperty('demuxer-cache-wait', 'no');
+            if (isLive) {
+              await mpv.setProperty('cache-secs', '60');
+              await mpv.setProperty('demuxer-readahead-secs', '20');
+              await mpv.setProperty('hls-bitrate', isFromDB ? 'max' : 'auto');
+              await mpv.setProperty('hls-forward-cache-secs', '30');
+              await mpv.setProperty('hls-back-cache-secs', '10');
+              // En directo y HLS no se puede acumular bufer por adelantado sin quedarse
+              // atras de la emision o trabar el demuxer: se arranca en cuanto hay datos.
+              await mpv.setProperty('cache-pause-initial', 'no');
+              await mpv.setProperty('cache-pause-wait', '2');
+              await mpv.setProperty('demuxer-cache-wait', 'no');
+            } else {
+              // HLS VOD (películas / series con manifiesto .m3u8):
+              // Tienen toda la duración disponible. Un readahead de 45s y cache-pause-wait de 4s
+              // evita que tras un salto el bufer se agote inmediatamente y entre en
+              // bucle de flapping (buffering=true/false repetido) y desincronización A/V.
+              await mpv.setProperty('cache-secs', '120');
+              await mpv.setProperty('demuxer-readahead-secs', '45');
+              await mpv.setProperty('hls-bitrate', 'max');
+              await mpv.setProperty('hls-forward-cache-secs', '45');
+              await mpv.setProperty('hls-back-cache-secs', '30');
+              await mpv.setProperty('cache-pause-initial', 'no');
+              await mpv.setProperty('cache-pause-wait', '4');
+              await mpv.setProperty('demuxer-cache-wait', 'yes');
+            }
           } else {
             // VOD: se restauran los valores del perfil de arranque, por si el
             // contenido anterior era un directo y los dejo bajados.
@@ -409,12 +428,14 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
 
           if (isFromDB) {
             await mpv.setProperty('hls-bitrate', 'max');
-            await mpv.setProperty('scale', 'mitchell');
-            await mpv.setProperty('cscale', 'mitchell');
-            await mpv.setProperty('linear-upscaling', 'yes');
-            await mpv.setProperty('sigmoid-upscaling', 'yes');
-            await mpv.setProperty('vd-lavc-skiploopfilter', 'none');
-            await mpv.setProperty('sws-scaler', 'bicubic');
+            // En TV (Chromecast / Android TV), NO sobrecargar la GPU con shaders pesados
+            // (mitchell, linear-upscaling, sigmoid-upscaling, skiploopfilter=none).
+            // Mantenemos bilinear y skiploopfilter=all de TvMpvConfig para fluidez total.
+            await mpv.setProperty('scale', 'bilinear');
+            await mpv.setProperty('cscale', 'bilinear');
+            await mpv.setProperty('linear-upscaling', 'no');
+            await mpv.setProperty('sigmoid-upscaling', 'no');
+            await mpv.setProperty('vd-lavc-skiploopfilter', 'all');
           } else {
             // Canales IPTV normales: optimizado para evitar cortes en TV
             await mpv.setProperty('hls-bitrate', 'min');
@@ -1021,6 +1042,14 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
       return true;
     }
 
+    // Si había una previsualización de seek en curso, cancelarla sin saltar.
+    if (_previewing) {
+      _seekDebounce?.cancel();
+      _previewing = false;
+      if (mounted) setState(() {});
+      return true;
+    }
+
     // 2. Con los controles a la vista, atras los esconde.
     if (_controlsVisible && _playing) {
       _hideControlsTimer?.cancel();
@@ -1072,18 +1101,24 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
       if (_menuTab == 0) {
         final lista = _pistasAudio;
         if (_menuIdx < 0 || _menuIdx >= lista.length) return;
-        await _player.setAudioTrack(lista[_menuIdx]);
-        debugPrint('TvReceiver: audio -> ${lista[_menuIdx].id}');
+        final selected = lista[_menuIdx];
+        if (_player.state.track.audio.id == selected.id) return;
+        await _player.setAudioTrack(selected);
+        debugPrint('TvReceiver: audio -> ${selected.id}');
       } else {
         if (_menuIdx == 0) {
+          final actual = _player.state.track.subtitle.id;
+          if (actual == 'no' || actual == 'auto') return;
           await _player.setSubtitleTrack(SubtitleTrack.no());
           debugPrint('TvReceiver: subtitulos desactivados');
         } else {
           final lista = _pistasSubs;
           final i = _menuIdx - 1;
           if (i < 0 || i >= lista.length) return;
-          await _player.setSubtitleTrack(lista[i]);
-          debugPrint('TvReceiver: subtitulos -> ${lista[i].id}');
+          final selected = lista[i];
+          if (_player.state.track.subtitle.id == selected.id) return;
+          await _player.setSubtitleTrack(selected);
+          debugPrint('TvReceiver: subtitulos -> ${selected.id}');
         }
       }
     } catch (e) {
@@ -1178,15 +1213,6 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     _pushStatus();
   }
 
-  Future<void> _seekRelative(int seconds) async {
-    final target = _position + Duration(seconds: seconds);
-    final clamped =
-        target < Duration.zero
-            ? Duration.zero
-            : (target > _duration ? _duration : target);
-    await _player.seek(clamped);
-    _pushStatus();
-  }
 
   /// Mueve la posición de VISTA PREVIA sin bombardear al player con seeks. El
   /// salto real se aplica tras ~700ms sin pulsar (o con OK).
@@ -1213,8 +1239,13 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     if (!_previewing) return;
     final target = _previewPos;
     _previewing = false;
-    _player.seek(target);
+    try {
+      _player.seek(target);
+    } catch (e) {
+      debugPrint('TvReceiver: error en seek: $e');
+    }
     _pushStatus();
+    if (mounted) setState(() {});
   }
 
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
@@ -1337,13 +1368,15 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     }
     if (key == LogicalKeyboardKey.mediaFastForward ||
         key == LogicalKeyboardKey.mediaTrackNext) {
-      _seekRelative(10);
+      final step = held ? 30 : 10;
+      _previewSeekBy(step);
       _showControls();
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.mediaRewind ||
         key == LogicalKeyboardKey.mediaTrackPrevious) {
-      _seekRelative(-10);
+      final step = held ? 30 : 10;
+      _previewSeekBy(-step);
       _showControls();
       return KeyEventResult.handled;
     }
@@ -1428,16 +1461,21 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     }
 
     // ── Botón play/pausa (único botón) ──
-    // Izquierda/derecha saltan directo ±10s (sin botones dedicados).
+    // Izquierda/derecha usan preview seek para no bombardear al player con seeks si se mantiene pulsado.
     if (key == LogicalKeyboardKey.arrowLeft) {
-      _seekRelative(-10);
+      final step = held ? 30 : 10;
+      _previewSeekBy(-step);
+      _showControls();
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.arrowRight) {
-      _seekRelative(10);
+      final step = held ? 30 : 10;
+      _previewSeekBy(step);
+      _showControls();
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.arrowDown) {
+      if (_previewing) _commitPreviewSeek();
       setState(() {
         _focusArea = 1;
         _previewing = true;
@@ -1446,6 +1484,10 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
       return KeyEventResult.handled;
     }
     if (select) {
+      if (_previewing) {
+        _commitPreviewSeek();
+        return KeyEventResult.handled;
+      }
       _togglePlay();
       return KeyEventResult.handled;
     }

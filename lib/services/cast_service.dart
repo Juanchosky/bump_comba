@@ -688,6 +688,11 @@ class CastService {
     List<Map<String, String>>? subtitles,
     bool isLive = false,
   }) async {
+    if (startPosition > 0) {
+      lastKnownPosition = Duration(
+        milliseconds: (startPosition * 1000).round(),
+      );
+    }
     // ── Backend MiApp TV: media_kit reproduce MKV/AC3 directamente, asi que
     // no hay conversión HLS. El VOD va por TurboProxy (ver _enviarLoadAlTv). ──
     if (isTvBackend) {
@@ -964,11 +969,15 @@ class CastService {
 
   /// Busca a una posición específica (en segundos).
   void seek(double positionSeconds) {
+    final pos = Duration(
+      milliseconds: (positionSeconds * 1000).toInt(),
+    );
+    if (pos > Duration.zero) {
+      lastKnownPosition = pos;
+    }
     if (isTvBackend) {
       _tvSender?.seek(positionSeconds);
-      castPosition.value = Duration(
-        milliseconds: (positionSeconds * 1000).toInt(),
-      );
+      castPosition.value = pos;
       return;
     }
     if (_session == null || _mediaSessionId == null) return;
@@ -979,9 +988,7 @@ class CastService {
       'mediaSessionId': int.tryParse(_mediaSessionId!) ?? _mediaSessionId,
     });
     // Actualizar posición local inmediatamente para feedback visual rápido
-    castPosition.value = Duration(
-      milliseconds: (positionSeconds * 1000).toInt(),
-    );
+    castPosition.value = pos;
   }
 
   /// Avanza 10 segundos.
@@ -1388,6 +1395,9 @@ class CastService {
   /// Desconecta del dispositivo Chromecast actual.
   Future<void> disconnect() async {
     try {
+      if (castPosition.value > Duration.zero) {
+        lastKnownPosition = castPosition.value;
+      }
       _stopStatusPolling();
       _loadingMediaTimer?.cancel();
       _loadingMediaTimer = null;

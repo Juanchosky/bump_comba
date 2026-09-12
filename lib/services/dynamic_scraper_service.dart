@@ -227,8 +227,13 @@ class ScrapedSubtitle {
 class ExtractedStreamResult {
   final String videoUrl;
   final List<ScrapedSubtitle> subtitles;
+  final List<String> alternativeUrls;
 
-  ExtractedStreamResult({required this.videoUrl, this.subtitles = const []});
+  ExtractedStreamResult({
+    required this.videoUrl,
+    this.subtitles = const [],
+    this.alternativeUrls = const [],
+  });
 }
 
 class ScrapedMetadata {
@@ -796,6 +801,14 @@ class DynamicScraperService {
     return DateTime.now().add(const Duration(minutes: 10));
   }
 
+  void invalidateCache([String? pageUrl]) {
+    if (pageUrl != null) {
+      _resueltas.remove(pageUrl);
+    } else {
+      _resueltas.clear();
+    }
+  }
+
   Future<ExtractedStreamResult?> extractStreamResult(String pageUrl) async {
     if (!isSupported(pageUrl)) return null;
 
@@ -1335,8 +1348,111 @@ class DynamicScraperService {
         low.contains('johnfullwonder') ||
         low.contains('voe-network') ||
         low.contains('voe.') ||
-        low.contains('peliculasrey.me')) {
+        low.contains('peliculasrey.me') ||
+        low.contains('auroravid')) {
       return await _extractVoeStream(pageUrl);
+    }
+    if (low.contains('ibelin') ||
+        low.contains('divxplayer') ||
+        low.contains('metaverseid') ||
+        low.contains('akpdm') ||
+        low.contains('cvary')) {
+      return await _extractIbelinStream(pageUrl);
+    }
+    return null;
+  }
+
+  Future<ExtractedStreamResult?> _extractDirectStreamFromEmbed(
+    String embedUrl,
+  ) async {
+    final low = embedUrl.toLowerCase();
+    if (low.contains('voe.sx') ||
+        low.contains('johnfullwonder') ||
+        low.contains('voe-network') ||
+        low.contains('voe.') ||
+        low.contains('peliculasrey.me') ||
+        low.contains('auroravid')) {
+      return await _extractVoeStream(embedUrl);
+    }
+    if (low.contains('ibelin') ||
+        low.contains('divxplayer') ||
+        low.contains('metaverseid') ||
+        low.contains('akpdm') ||
+        low.contains('cvary')) {
+      return await _extractIbelinStream(embedUrl);
+    }
+
+    // Intento genérico para otros servidores embebidos
+    try {
+      final client = http.Client();
+      final res = await client.get(
+        Uri.parse(embedUrl),
+        headers: {
+          'User-Agent': _ua,
+          'Accept':
+              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+      ).timeout(const Duration(seconds: 4));
+      client.close();
+      if (res.statusCode == 200) {
+        final m3u8Match = RegExp(
+          r'''['"](https?://[^\s"'<>]+\.m3u8[^\s"'<>]*)['"]''',
+          caseSensitive: false,
+        ).firstMatch(res.body);
+        if (m3u8Match != null) {
+          return ExtractedStreamResult(videoUrl: m3u8Match.group(1)!);
+        }
+        final mp4Match = RegExp(
+          r'''['"](https?://[^\s"'<>]+\.mp4[^\s"'<>]*)['"]''',
+          caseSensitive: false,
+        ).firstMatch(res.body);
+        if (mp4Match != null) {
+          return ExtractedStreamResult(videoUrl: mp4Match.group(1)!);
+        }
+      }
+    } catch (_) {}
+
+    return null;
+  }
+
+  Future<ExtractedStreamResult?> _extractIbelinStream(String ibelinUrl) async {
+    try {
+      final client = http.Client();
+      final res = await client.get(
+        Uri.parse(ibelinUrl),
+        headers: {
+          'User-Agent': _ua,
+          'Accept':
+              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+          'Referer': 'https://www.peelink2.com/',
+        },
+      ).timeout(const Duration(seconds: 5));
+      client.close();
+
+      if (res.statusCode != 200) return null;
+      final html = res.body;
+
+      final m3u8Match = RegExp(
+        r'''(https?://[^\s"'<>]+\.m3u8[^\s"'<>]*)''',
+        caseSensitive: false,
+      ).firstMatch(html);
+      if (m3u8Match != null) {
+        debugPrint(
+          'DynamicScraperService: Ibelin stream resuelto -> ${m3u8Match.group(1)}',
+        );
+        return ExtractedStreamResult(videoUrl: m3u8Match.group(1)!);
+      }
+
+      final mp4Match = RegExp(
+        r'''(https?://[^\s"'<>]+\.mp4[^\s"'<>]*)''',
+        caseSensitive: false,
+      ).firstMatch(html);
+      if (mp4Match != null) {
+        return ExtractedStreamResult(videoUrl: mp4Match.group(1)!);
+      }
+    } catch (e) {
+      debugPrint('DynamicScraperService: error extractIbelinStream: $e');
     }
     return null;
   }
@@ -1354,7 +1470,7 @@ class DynamicScraperService {
               'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
           'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
         },
-      ).timeout(const Duration(seconds: 8));
+      ).timeout(const Duration(seconds: 7));
       client.close();
 
       if (res.statusCode != 200) return null;
@@ -1421,6 +1537,8 @@ class DynamicScraperService {
         'DynamicScraperService (Peelink): ${candidateServerUrls.length} servidores encontrados',
       );
 
+      final List<ExtractedStreamResult> extractedResults = [];
+
       for (final serverUrl in candidateServerUrls) {
         var target = serverUrl;
 
@@ -1438,15 +1556,32 @@ class DynamicScraperService {
           } catch (_) {}
         }
 
-        if (target.contains('voe.sx') ||
-            target.contains('voe.') ||
-            target.contains('johnfullwonder') ||
-            target.contains('voe-network')) {
-          final voeResult = await _extractVoeStream(target);
-          if (voeResult != null && voeResult.videoUrl.isNotEmpty) {
-            return voeResult;
-          }
+        final result = await _extractDirectStreamFromEmbed(target);
+        if (result != null && result.videoUrl.isNotEmpty) {
+          extractedResults.add(result);
+          // Si ya tenemos al menos 2 servidores alternativos listos, resolvemos inmediatamente
+          if (extractedResults.length >= 2) break;
         }
+      }
+
+      if (extractedResults.isNotEmpty) {
+        final primary = extractedResults.first;
+        final altUrls = extractedResults
+            .skip(1)
+            .map((r) => r.videoUrl)
+            .where((u) => u != primary.videoUrl)
+            .toList();
+
+        final Set<ScrapedSubtitle> allSubs = {};
+        for (final r in extractedResults) {
+          allSubs.addAll(r.subtitles);
+        }
+
+        return ExtractedStreamResult(
+          videoUrl: primary.videoUrl,
+          subtitles: allSubs.toList(),
+          alternativeUrls: altUrls,
+        );
       }
     } catch (e) {
       debugPrint('DynamicScraperService: error extractPeelinkStream: $e');
@@ -1482,7 +1617,7 @@ class DynamicScraperService {
               'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
           'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
         },
-      ).timeout(const Duration(seconds: 8));
+      ).timeout(const Duration(seconds: 7));
 
       // Redirección JavaScript de VOE a dominio de entrega
       if (res.body.contains("window.location.href = '") ||
@@ -1499,26 +1634,64 @@ class DynamicScraperService {
               'User-Agent': _ua,
               'Referer': voeUrl,
             },
-          ).timeout(const Duration(seconds: 8));
+          ).timeout(const Duration(seconds: 7));
         }
       }
       client.close();
 
       final html = res.body;
 
-      // Patrón de carga útil cifrada: type="application/json">["..."]
-      final jsonTagMatch = RegExp(
-        r'''type=['"]application/json['"]\s*>\s*\[\s*['"]([^'"]+)['"]\s*\]''',
+      // Patrón de carga útil cifrada: <script ... type="application/json" ...>["..."]</script>
+      RegExpMatch? jsonTagMatch = RegExp(
+        r'''<script[^>]*type=['"]application/json['"][^>]*>\s*\[\s*['"]([^'"]+)['"]\s*\]''',
+        caseSensitive: false,
       ).firstMatch(html);
+
+      jsonTagMatch ??= RegExp(
+        r'''type=['"]application/json['"][^>]*>\s*\[\s*['"]([^'"]+)['"]\s*\]''',
+        caseSensitive: false,
+      ).firstMatch(html);
+
+      jsonTagMatch ??= RegExp(
+        r'''\[\s*['"]([A-Za-z0-9+/=~@%?*!#&@\$\^\-]{50,})['"]\s*\]''',
+      ).firstMatch(html);
+
       if (jsonTagMatch != null) {
         final payload = jsonTagMatch.group(1)!;
         final decryptedJson = _decryptVoePayload(payload);
         if (decryptedJson != null) {
           final Map<String, dynamic> data = jsonDecode(decryptedJson);
-          final streamUrl =
+          final rawUrl =
               data['source']?.toString() ??
               data['direct_access_url']?.toString();
-          if (streamUrl != null && streamUrl.isNotEmpty) {
+          if (rawUrl != null && rawUrl.isNotEmpty) {
+            String streamUrl = rawUrl;
+            // Resolver master playlist HLS directamente para arranque y seeks ultra rápidos
+            if (streamUrl.contains('master.m3u8')) {
+              try {
+                final masterClient = http.Client();
+                final masterRes = await masterClient.get(
+                  Uri.parse(streamUrl),
+                  headers: {'User-Agent': _ua},
+                ).timeout(const Duration(seconds: 2));
+                masterClient.close();
+                if (masterRes.statusCode == 200) {
+                  final lines = masterRes.body.split('\n');
+                  for (final l in lines) {
+                    final trimmed = l.trim();
+                    if (trimmed.isNotEmpty && !trimmed.startsWith('#')) {
+                      final resolvedUri = Uri.parse(streamUrl).resolve(trimmed);
+                      streamUrl = resolvedUri.toString();
+                      debugPrint(
+                        'DynamicScraperService: Master playlist pre-resuelta a -> $streamUrl',
+                      );
+                      break;
+                    }
+                  }
+                }
+              } catch (_) {}
+            }
+
             final List<ScrapedSubtitle> subs = [];
             if (data['captions'] is List) {
               for (var c in data['captions']) {

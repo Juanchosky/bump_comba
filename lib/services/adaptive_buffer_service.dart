@@ -108,7 +108,7 @@ class AdaptiveBufferService {
     demuxerMaxBackBytes: 10485760, // 10 MB
     streamBufferSize: 4194304, // 4 MB
     demuxerReadaheadSecs: 30,
-    cachePauseWait: '5', // Esperar 5s antes de pausar para acumular buffer
+    cachePauseWait: '3', // Buffer razonable para reanudar sin esperas excesivas
     hwdec: 'mediacodec-copy', // Más estable en dispositivos mid-range
     skipLoopFilter:
         'nonref', // Saltar filtro en frames no-referencia → -20% CPU
@@ -128,7 +128,7 @@ class AdaptiveBufferService {
     demuxerMaxBackBytes: 4194304, // 4 MB
     streamBufferSize: 2097152, // 2 MB
     demuxerReadaheadSecs: 10,
-    cachePauseWait: '8', // Acumular más buffer antes de reproducir
+    cachePauseWait: '4', // Acumular 4s de buffer en emergencia (no 8s para no colgar el arranque)
     hwdec: 'mediacodec-copy',
     skipLoopFilter: 'nonkey', // Solo decodificar keyframes referencia
     framedrop: 'decoder+vo',

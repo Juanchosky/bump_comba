@@ -27,12 +27,21 @@
 bool esEnVivoPorUrl(String url) {
   final u = url.toLowerCase();
 
-  // 1. Ruta de catálogo: hay un archivo detrás. No es directo, se ponga como
-  //    se ponga la extensión.
+  // 1. Ruta de catálogo o proveedores VOD conocidos (Peelink, VOE, CDNs): hay un archivo detrás.
+  //    No es directo, se ponga como se ponga la extensión.
   if (u.contains('/movie/') ||
       u.contains('/movies/') ||
       u.contains('/series/') ||
-      u.contains('/vod/')) {
+      u.contains('/vod/') ||
+      u.contains('hls-vod') ||
+      u.contains('cloudwindow') ||
+      u.contains('hls2-c') ||
+      u.contains('.urlset') ||
+      u.contains('/engine/') ||
+      u.contains('voe') ||
+      u.contains('peelink') ||
+      u.contains('ibelin') ||
+      u.contains('cfglobalcdn')) {
     return false;
   }
 

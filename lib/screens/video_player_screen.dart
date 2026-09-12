@@ -992,51 +992,108 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   ///
   /// Durante el cast se desactiva la pista de video (`vid=no`) y en muchos
   /// casos el player local se detiene por completo (stop() para liberar la red
-  /// al TV). Sin esta restauración el teléfono queda con audio pero PANTALLA
-  /// NEGRA. Aquí: recreamos el VideoController, reactivamos `vid=auto` y, si
-  /// el player quedó sin media, recargamos en la última posición conocida.
+  bool _isRestoringLocalPlayback = false;
+
+  /// Restaura la reproducción local tras terminar (o caerse) una transmisión.
+  ///
+  /// Durante el cast se desactiva la pista de video (`vid=no`) y el player local
+  /// se mantiene en pausa mientras el TV reproduce.
+  /// Al desconectar:
+  /// 1. Recreamos el VideoController (si fue liberado)
+  /// 2. Reactivamos `vid=auto`
+  /// 3. Obtenemos la última posición conocida donde iba el TV
+  /// 4. Si el player local tiene media: aplicamos seek a la posición del TV y reanudamos.
+  /// 5. Si no tiene media: recargamos el contenido arrancando en la posición del TV.
   Future<void> _restoreLocalPlayback() async {
     if (!mounted || _player == null || CastService().isCasting.value) return;
+    if (_isRestoringLocalPlayback) return;
+    _isRestoringLocalPlayback = true;
 
-    // 1. Recuperar el controlador de video si fue destruido.
-    if (_videoControllerNotifier.value == null) {
-      debugPrint('CastService: Restoring VideoController after Cast');
-      final currentController = VideoController(
-        _player!,
-        configuration: const VideoControllerConfiguration(
-          enableHardwareAcceleration: true,
-        ),
-      );
-      _videoControllerNotifier.value = currentController;
-    }
-
-    // 2. Reactivar la pista de video (se puso vid=no al iniciar el cast).
     try {
-      final mpv = _player?.platform as dynamic;
-      await mpv?.setProperty('vid', 'auto');
-    } catch (_) {}
+      // 1. Recuperar el controlador de video si fue destruido.
+      if (_videoControllerNotifier.value == null) {
+        debugPrint('CastService: Restoring VideoController after Cast');
+        final currentController = VideoController(
+          _player!,
+          configuration: const VideoControllerConfiguration(
+            enableHardwareAcceleration: true,
+          ),
+        );
+        _videoControllerNotifier.value = currentController;
+      }
 
-    if (!mounted || _player == null || CastService().isCasting.value) return;
+      // 2. Reactivar la pista de video (se puso vid=no al iniciar el cast).
+      try {
+        final mpv = _player?.platform as dynamic;
+        await mpv?.setProperty('vid', 'auto');
+      } catch (_) {}
 
-    // 3. Si el player local quedó SIN media (fue detenido durante el cast),
-    //    recargar el contenido en la última posición que reportó el TV.
-    final hasMedia =
-        _player!.state.duration > Duration.zero ||
-        _player!.state.playlist.medias.isNotEmpty;
-    if (!hasMedia) {
-      final resume = CastService().lastKnownPosition;
+      if (!mounted || _player == null || CastService().isCasting.value) return;
+
+      // 3. Determinar la última posición donde iba la transmisión en el TV.
+      Duration resume = CastService().lastKnownPosition;
+      if (resume <= Duration.zero &&
+          CastService().castPosition.value > Duration.zero) {
+        resume = CastService().castPosition.value;
+      }
+      if (resume <= Duration.zero) {
+        try {
+          final p = await _watchProgressService.getProgressForItem(
+            _currentItem,
+          );
+          if (p != null && p.positionSeconds > 0) {
+            resume = Duration(seconds: p.positionSeconds);
+          }
+        } catch (_) {}
+      }
+
       debugPrint(
-        'CastService: Local player was stopped — reloading at '
-        '${resume.inSeconds}s after cast drop',
+        'CastService: Restoring local playback at ${resume.inSeconds}s '
+        'after transmission stopped (TV was at: ${resume.inSeconds}s)',
       );
-      await _initializePlayer(
-        _currentItem,
-        startFrom: resume > Duration.zero ? resume : null,
-        isLocalReload: true,
-      );
-    } else if (!_player!.state.playing) {
-      _player!.play();
-      if (mounted) setState(() => _hasPlaybackStarted = true);
+
+      final hasMedia =
+          _player!.state.duration > Duration.zero ||
+          _player!.state.playlist.medias.isNotEmpty;
+
+      if (!hasMedia) {
+        debugPrint(
+          'CastService: Local player was stopped/empty — reloading at '
+          '${resume.inSeconds}s after cast drop',
+        );
+        await _initializePlayer(
+          _currentItem,
+          startFrom: resume > Duration.zero ? resume : null,
+          isLocalReload: true,
+        );
+      } else {
+        // El player local ya tiene el medio cargado (estaba en pausa mientras el TV reproducía).
+        // Saltamos a donde iba el TV y reproducimos.
+        if (!_isLiveContent && resume > Duration.zero) {
+          debugPrint(
+            'CastService: Seeking local player to TV position: ${resume.inSeconds}s',
+          );
+          _lastSeekTime = DateTime.now();
+          try {
+            await _player!.seek(resume);
+          } catch (e) {
+            debugPrint('CastService: Error seeking local player: $e');
+          }
+        }
+        try {
+          await _player!.play();
+        } catch (_) {}
+        if (mounted) {
+          setState(() {
+            _hasPlaybackStarted = true;
+            _isVideoLoading = false;
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('CastService: Error in _restoreLocalPlayback: $e');
+    } finally {
+      _isRestoringLocalPlayback = false;
     }
   }
 
@@ -1575,7 +1632,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         if (!mounted) return;
 
         if (streamResult != null && streamResult.videoUrl.isNotEmpty) {
-          item = item.copyWith(url: streamResult.videoUrl);
+          final List<M3UItem> extraAlts = [];
+          for (final altUrl in streamResult.alternativeUrls) {
+            if (altUrl != streamResult.videoUrl) {
+              extraAlts.add(item.copyWith(url: altUrl));
+            }
+          }
+          item = item.copyWith(
+            url: streamResult.videoUrl,
+            alternatives: [...item.alternatives, ...extraAlts],
+          );
           _scrapedSubtitles = streamResult.subtitles;
         } else {
           setState(() {
@@ -1607,16 +1673,21 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     try {
       final bool isIOSPlatform = defaultTargetPlatform == TargetPlatform.iOS;
       final incomingPrewarm = _incomingPrewarmedPlayer;
+      final bool esScrapeado =
+          esContenidoScrapeado ||
+          DynamicScraperService().isSupported(widget.item.url);
       final isPrewarmed =
           !isLocalReload &&
           (!isIOSPlatform &&
               incomingPrewarm != null &&
               incomingPrewarm.platform != null &&
-              _retryCount == 0);
+              _retryCount == 0 &&
+              !esScrapeado);
 
-      // Si llegó un player precalentado en iOS (no debería, pero por seguridad),
+      // Si llegó un player precalentado en iOS o para contenido scrapeado
+      // (el prewarm se habría hecho contra la URL web y no contra el stream real),
       // lo liberamos para que no quede consumiendo recursos en segundo plano.
-      if (isIOSPlatform &&
+      if ((isIOSPlatform || esScrapeado) &&
           incomingPrewarm != null &&
           _retryCount == 0 &&
           !isLocalReload) {
@@ -1652,13 +1723,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         _midRollNoticeShown = false;
         _adCountdown = null;
 
-        // Regla unica y compartida (ver `esEnVivoPorUrl`). Antes se decidia
-        // aqui con un heuristico propio que daba por DIRECTO cualquier .m3u8
-        // sin `/vod/`, incluidas las peliculas servidas como
-        // `/movie/.../12345.m3u8`. Un VOD marcado como directo se queda fuera
-        // de TurboProxy y el televisor se come las reconexiones del proveedor
-        // una a una.
-        _isLiveContent = esEnVivoPorUrl(item.url);
+        // Regla unica y compartida (ver `esEnVivoPorUrl`).
+        // El contenido scrapeado (Peelink, VOE, etc.) y películas/series son SIEMPRE VOD.
+        _isLiveContent =
+            !esContenidoScrapeado &&
+            !item.isSeries &&
+            item.episodeNumber == null &&
+            (item.isLive || esEnVivoPorUrl(item.url));
         // Servidor nuevo, cuenta nueva: la corrupcion del anterior no
         // puede condenar a este.
         _corrupcionLocal.clear();
@@ -1668,6 +1739,19 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         final existingIdx = _serverUrls.indexOf(item.url);
         if (existingIdx != -1) {
           _currentServerIndex = existingIdx;
+        } else if (_serverItems.length > 1 &&
+            _serverItems.any(
+              (s) =>
+                  s.name == item.name ||
+                  (s.seriesName != null && s.seriesName == item.seriesName),
+            )) {
+          // Ya tenemos la lista de servidores para este contenido.
+          // Si el scraper resolvió la URL de una página a un stream de video,
+          // actualizamos la URL en la lista existente sin destruir las demás alternativas.
+          if (_currentServerIndex < _serverUrls.length) {
+            _serverUrls[_currentServerIndex] = item.url;
+            _serverItems[_currentServerIndex] = item;
+          }
         } else {
           final logoToUse = _primaryLogo ?? item.logo;
           _serverItems =
@@ -1726,14 +1810,17 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           // parado a proposito y no significa que nada vaya mal.
           if (CastService().isCasting.value) return;
 
-          // ¿Entro algo desde la ultima vuelta? Vale cualquiera de las dos
-          // señales: que el bufer haya crecido —ya hay video demuxado— o que
-          // `cache-speed` reporte bytes —todavia se esta bajando la cabecera—.
+          // ¿Entró algo desde la última vuelta o ya está reproduciendo?
           final bufer = _player?.state.buffer ?? Duration.zero;
           final velocidad = await _leerCacheSpeedBytes();
+          final pos = _player?.state.position ?? Duration.zero;
+          final isPlaying = _player?.state.playing ?? false;
           if (!mounted) return;
 
-          if (bufer > _buferVistoWatchdog || velocidad > 0) {
+          if (bufer > _buferVistoWatchdog ||
+              velocidad > 0 ||
+              pos > Duration.zero ||
+              isPlaying) {
             _buferVistoWatchdog = bufer;
             _segundosSinProgreso = 0;
             return;
@@ -1752,6 +1839,29 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           if (!sinProgreso && !pasadoElTope) return;
 
           t.cancel();
+          if (_serverItems.length > 1) {
+            debugPrint(
+              'Arranque: "${_currentItem.name}" sin progreso (${_segundosSinProgreso}s) — cambiando de servidor alternativo...',
+            );
+            final bool isCasting = CastService().isCasting.value;
+            final int siguiente =
+                (_currentServerIndex < _serverItems.length - 1)
+                    ? _currentServerIndex + 1
+                    : 0;
+            final currentPos =
+                isCasting
+                    ? CastService().castPosition.value
+                    : (_player?.state.position ?? startFrom);
+            _currentServerIndex = siguiente;
+            final nextItem = _serverItems[siguiente];
+            _initializePlayer(
+              nextItem,
+              startFrom: currentPos,
+              isLocalReload: true,
+            );
+            return;
+          }
+
           debugPrint(
             'Arranque: "${_currentItem.name}" se rinde — '
             '${sinProgreso ? "${_segundosSinProgreso}s sin recibir datos" : "tope de ${_topeAbsolutoArranque.inMinutes} min"}',
@@ -1760,6 +1870,19 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         });
 
         _serverFailoverTimer?.cancel();
+        // HLS (especialmente scrapeado: Peelink/VOE) necesita más tiempo
+        // para el arranque en frío: descargar master.m3u8 → variant.m3u8
+        // → primer segmento .ts (~2 MB) → demux → decode. Con 9s no
+        // alcanza y el failover mata servidores que sí responden.
+        final bool isHlsUrl =
+            item.url.toLowerCase().contains('.m3u8') ||
+            item.url.toLowerCase().contains('/hls') ||
+            item.url.toLowerCase().contains('hls2') ||
+            item.url.toLowerCase().contains('output=m3u8');
+        final int arranqueTimeoutSec =
+            (esContenidoScrapeado || esScrapeado || isHlsUrl)
+                ? 25
+                : _castStallThresholdSeconds;
         if (_serverItems.length <= 1) {
           // Sin alternativa no hay failover posible, y sin esta linea el
           // sintoma es indistinguible de un fallo: el televisor se queda
@@ -1771,7 +1894,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         }
         if (_serverItems.length > 1) {
           debugPrint(
-            'Failover de arranque armado: ${_castStallThresholdSeconds}s para '
+            'Failover de arranque armado: ${arranqueTimeoutSec}s para '
             'el servidor $_currentServerIndex de ${_serverItems.length}',
           );
           // ── COMO SE DECIDE QUE "NO ARRANCO" ─────────────────────────────
@@ -1821,9 +1944,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               final st = _player?.state;
               if (st != null) {
                 refPos ??= st.position;
-                if (!_isVideoLoading &&
-                    st.playing &&
-                    st.position > refPos! + const Duration(milliseconds: 500)) {
+                final bool hasVideo = (st.width ?? 0) > 0;
+                final bool hasData = st.buffer.inSeconds >= 1;
+                final bool hasMoved =
+                    st.position > refPos! + const Duration(milliseconds: 500);
+                if (st.playing && (hasMoved || hasVideo || hasData)) {
                   arranco = true;
                 }
               }
@@ -1835,7 +1960,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               _serverFailoverTimer = null;
               return;
             }
-            if (transcurrido < _castStallThresholdSeconds) return;
+            if (transcurrido < arranqueTimeoutSec) return;
 
             t.cancel();
             _serverFailoverTimer = null;
@@ -1857,9 +1982,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             debugPrint(
               'Failover de arranque (isCasting=$isCasting): el servidor '
               '$_currentServerIndex no arranco en '
-              '${_castStallThresholdSeconds}s (posicion clavada en '
+              '${arranqueTimeoutSec}s (posicion clavada en '
               '${refPos?.inSeconds ?? -1}s) -> pasando al $siguiente',
             );
+            DynamicScraperService().invalidateCache();
             final currentPos =
                 isCasting
                     ? CastService().castPosition.value
@@ -2021,27 +2147,28 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           final bool activarPrebufferInicial =
               _usaPrebufferPremium && !tieneResumePendiente;
 
+          final lowPlayback = currentUrl.toLowerCase();
+          final bool isHlsStream =
+              esContenidoScrapeado ||
+              lowPlayback.contains('.m3u8') ||
+              lowPlayback.contains('/hls') ||
+              lowPlayback.contains('hls2') ||
+              lowPlayback.contains('output=m3u8');
+
           final futures = <Future<dynamic>>[
             mpv.setProperty('alang', 'es,spa,esp,es-ES,es-MX,es-419'),
             mpv.setProperty('cache', 'yes'),
             mpv.setProperty('cache-pause', 'yes'),
             mpv.setProperty('cache-on-disk', 'no'),
+            mpv.setProperty('hr-seek', 'default'),
+            mpv.setProperty('hr-seek-framedrop', 'yes'),
             // Cuanto búfer se junta ANTES de reanudar tras quedarse sin datos.
-            //
-            // Estaba en 1,5s para VOD y era muy poco: este proveedor entrega a
-            // ráfagas (se comprobó que trunca las respuestas), asi que 1,5s se
-            // consumian de inmediato y el ciclo se repetia -> "se para cada 2
-            // segundos". Peor aun, el audio conserva su búfer y sigue mientras
-            // el video se queda sin datos: al llegar la ráfaga siguiente el
-            // video ACELERA para alcanzarlo, que es el desfase visible.
-            //
-            // Con 5s se pausa menos veces pero de verdad: una espera algo mas
-            // larga y despues reproduccion continua, en vez de microcortes
-            // constantes. En vivo se mantiene bajo porque ahi no se puede
-            // acumular búfer sin quedarse atras de la emision.
+            // Para HLS VOD, 2s da un arranque y adelantado instantáneo (como en web).
             mpv.setProperty(
               'cache-pause-wait',
-              _isLiveContent ? '2' : (lowPerf ? '4' : '5'),
+              _isLiveContent
+                  ? '2'
+                  : (isHlsStream ? '1.5' : (lowPerf ? '4' : '5')),
             ),
             // ── PREBUFFER DE ARRANQUE (premium) ──────────────────────
             //
@@ -2104,47 +2231,24 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             ]);
           } else {
             futures.addAll([
-              // ── Cuánto se adelanta la descarga ─────────────────────────
-              //
-              // Estaba en 300s / 256 MB / 180s de readahead: unos 340 segundos
-              // de película metidos en RAM del teléfono por reproducción. Eso
-              // hacía que un stream de 6 Mbps descargara a 30-46 Mbps en
-              // ráfagas (se midió en el log), o sea seis veces más de lo que
-              // necesita para verse.
-              //
-              // POR QUE IMPORTA MAS DE LO QUE PARECE: el puerto del VPS es de
-              // 200 Mbit/s y en hora pico hay decenas de streams a la vez. Cada
-              // uno pidiendo 40 Mbps satura el puerto, nginx no puede leer del
-              // origen a tiempo, la petición se alarga, y el proveedor la corta.
-              // Es el mismo `upstream prematurely closed connection` del log.
-              // O sea que el exceso de buffer no solo gastaba de más: estaba
-              // CAUSANDO los cortes que el buffer pretendía cubrir.
-              //
-              // 120s sigue siendo muchísimo para VOD —aguanta dos minutos de
-              // caída total— y los cortes que vimos duran segundos, no minutos.
-              // Los cuatro valores van coherentes entre sí: 96 MB a 6 Mbps son
-              // ~128s, justo por encima de los 120s de cache. Antes el tope de
-              // bytes (340s) era mayor que el de tiempo, así que no limitaba
-              // nada.
-              //
-              // De paso, bajar de 256 MB a 96 MB por reproducción quita presión
-              // de memoria al teléfono, que es sospechoso de los ANR.
               mpv.setProperty('cache-secs', lowPerf ? '60' : '120'),
               mpv.setProperty(
                 'demuxer-max-bytes',
-                lowPerf ? '50331648' : '100663296',
+                isHlsStream
+                    ? '134217728'
+                    : (lowPerf ? '50331648' : '100663296'),
               ),
-              // Búfer HACIA ATRAS. Importa mas de lo que parece: al cambiar de
-              // idioma o activar subtitulos, MPV vuelve a demuxar la posicion
-              // actual para la pista nueva, y esos bytes ya quedaron detras de
-              // la cabeza del demuxer. Si el bufer de atras es corto hay que
-              // repedirlos por red, con seek y parón. 48 MB son ~64s a 6 Mbps.
               mpv.setProperty(
                 'demuxer-max-back-bytes',
-                lowPerf ? '25165824' : '50331648',
+                isHlsStream ? '67108864' : (lowPerf ? '25165824' : '50331648'),
               ),
               mpv.setProperty('demuxer-readahead-secs', lowPerf ? '45' : '90'),
-              mpv.setProperty('hls-bitrate', 'auto'),
+              mpv.setProperty('hls-bitrate', 'max'),
+              if (isHlsStream) ...[
+                mpv.setProperty('hls-forward-cache-secs', '45'),
+                mpv.setProperty('hls-back-cache-secs', '30'),
+                mpv.setProperty('demuxer-cache-wait', 'no'),
+              ],
               mpv.setProperty('force-seekable', 'yes'),
               mpv.setProperty(
                 'stream-lavf-o',
@@ -2447,7 +2551,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           }
           final isPlayingAndAdvanced =
               state.playing && state.position.inMilliseconds > 200;
-          final hasBuffer = _isLiveContent || state.buffer.inSeconds >= 2;
+          final hasBuffer =
+              _isLiveContent ||
+              state.buffer.inSeconds >= 1 ||
+              state.position.inMilliseconds > 300;
 
           if (hasVideo && isPlayingAndAdvanced && hasBuffer) {
             _serverFailoverTimer?.cancel();
@@ -2483,18 +2590,44 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         // y aplicamos el seek aquí, cuando el decodificador MediaTek ya está
         // activo, decodificando y con buffer listo.
         if (startFrom != null &&
-            startFrom.inSeconds > 5 &&
+            startFrom.inSeconds > 0 &&
             mounted &&
             _player != null &&
             !castService.isCasting.value) {
-          final pos = _player!.state.position.inSeconds;
-          if (pos < startFrom.inSeconds - 5) {
-            debugPrint(
-              'Resume: reproductor en ${pos}s, aplicando seek a ${startFrom.inSeconds}s tras inicio rápido...',
-            );
-            _lastSeekTime = DateTime.now();
-            await _player!.seek(startFrom);
-          }
+          unawaited(() async {
+            int waitFrames = 0;
+            bool streamReady = false;
+            while (waitFrames < 200 && mounted && _player != null) {
+              final st = _player!.state;
+              final bool hasVideo = (st.width ?? 0) > 0;
+              final bool hasPlayback =
+                  st.playing && st.position.inMilliseconds > 200;
+              if (hasVideo && hasPlayback) {
+                streamReady = true;
+                break;
+              }
+              await Future.delayed(const Duration(milliseconds: 100));
+              waitFrames++;
+            }
+            // SOLO hacer seek si el stream REALMENTE arrancó (el loop rompió
+            // por éxito). Si agotó los 60 ciclos sin video, un seek a N
+            // segundos colapsaría el demuxer HLS que todavía no tiene la
+            // estructura de la playlist descargada.
+            if (streamReady && mounted && _player != null) {
+              final pos = _player!.state.position.inSeconds;
+              if (pos < startFrom.inSeconds - 2) {
+                debugPrint(
+                  'Resume: stream activo en ${pos}s, aplicando seek a ${startFrom.inSeconds}s tras inicio rápido...',
+                );
+                _lastSeekTime = DateTime.now();
+                await _player!.seek(startFrom);
+              }
+            } else if (!streamReady) {
+              debugPrint(
+                'Resume: stream NO arrancó en 20s, seek a ${startFrom.inSeconds}s POSPUESTO hasta que haya video',
+              );
+            }
+          }());
         }
       }
 
@@ -2523,6 +2656,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     } catch (e) {
       if (mounted) {
         _serverFailoverTimer?.cancel();
+        DynamicScraperService().invalidateCache();
         if (_currentServerIndex == 0 && _serverItems.length > 1) {
           debugPrint(
             'Xtream error: Server 1 failed ($e). Auto-switching to fast DB server (Server 2)...',
@@ -3405,6 +3539,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // player local (que como mucho lleva el audio) no dice nada de la red que
     // importa.
     if (CastService().isCasting.value) return;
+    // CRÍTICO: Durante la carga inicial o antes de que el video empiece a reproducir,
+    // el buffer SIEMPRE es 0 porque apenas está negociando la conexión HTTP.
+    // Reportar "hambre con 0 Mbps" aquí arruina la estimación de red y degrada el
+    // reproductor a "Poor — Emergency Mode" (esperas de buffer de 8s en pleno arranque).
+    if (_isVideoLoading || !_hasPlaybackStarted) return;
     final st = _player?.state;
     if (st == null || !st.playing) return;
     final margen = st.buffer.inSeconds - st.position.inSeconds;
@@ -3785,6 +3924,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           debugPrint('Stall persistente (${_stallSeconds}s). Recargando...');
           _stallSeconds = 0;
           _stallPorRotura = false;
+          DynamicScraperService().invalidateCache();
           // Señal explicita: SOLO este camino (congelamiento real) autoriza
           // saltar al servidor de la BD.
           _saltarABDPorCongelamiento = true;
@@ -4233,6 +4373,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             debugPrint(
               'VOD reload pesado #$_retryCount at ${currentPos.inSeconds}s. UA: $_currentUserAgent',
             );
+            DynamicScraperService().invalidateCache();
             await _initializePlayer(
               _currentItem,
               startFrom: startFrom,
@@ -6151,17 +6292,20 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                 ),
                                 elevation: 0,
                               ),
-                              onPressed: () {
-                                castService.disconnect();
-                                setState(() => _localAudioDuringCast = false);
-                                // Re-activar track de video y reanudar
-                                try {
-                                  final mpv = _player?.platform as dynamic;
-                                  mpv?.setProperty('vid', 'auto');
-                                } catch (_) {}
-                                _player?.play();
+                              onPressed: () async {
+                                final resume =
+                                    castService.castPosition.value >
+                                            Duration.zero
+                                        ? castService.castPosition.value
+                                        : castService.lastKnownPosition;
+                                if (resume > Duration.zero) {
+                                  castService.lastKnownPosition = resume;
+                                }
                                 Navigator.pop(context);
                                 _showVisualNotice('Transmisión finalizada');
+                                setState(() => _localAudioDuringCast = false);
+                                await castService.disconnect();
+                                await _restoreLocalPlayback();
                               },
                             ),
                           ),
@@ -7497,6 +7641,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                               onChangeEnd: (
                                                                 newValue,
                                                               ) {
+                                                                _lastSeekTime =
+                                                                    DateTime.now();
                                                                 final castService =
                                                                     CastService();
                                                                 if (castService
@@ -8408,6 +8554,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                                           v,
                                                                 ),
                                                             onChangeEnd: (v) {
+                                                              _lastSeekTime =
+                                                                  DateTime.now();
                                                               final cs =
                                                                   CastService();
                                                               if (cs
