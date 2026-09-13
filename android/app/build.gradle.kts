@@ -33,10 +33,6 @@ android {
         targetSdk = 36
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
-        }
     }
 
     val keystoreProperties = Properties()
@@ -58,7 +54,12 @@ android {
 
     buildTypes {
         release {
-            proguardFiles(getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro")
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
             if (keystorePropertiesFile.exists()) {
                 signingConfig = signingConfigs.getByName("release")
             } else {

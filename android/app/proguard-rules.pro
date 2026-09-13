@@ -31,3 +31,20 @@
 -keep class * extends com.google.gson.reflect.TypeToken
 -keep public class * implements java.lang.reflect.Type
 
+# MediaKit / MPV
+-keep class com.alexmercerind.mediakit.** { *; }
+-dontwarn com.alexmercerind.mediakit.**
+
+# Audio Service
+-keep class com.ryanheise.audioservice.** { *; }
+-dontwarn com.ryanheise.audioservice.**
+
+# Background Downloader
+-keep class com.bbflight.background_downloader.** { *; }
+-dontwarn com.bbflight.background_downloader.**
+
+# Bonsoir
+-keep class fr.skyost.bonsoir.** { *; }
+-dontwarn fr.skyost.bonsoir.**
+
+

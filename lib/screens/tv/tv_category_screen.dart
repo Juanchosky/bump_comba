@@ -40,20 +40,9 @@ class _TvCategoryScreenState extends State<TvCategoryScreen> {
       body: Stack(
         fit: StackFit.expand,
         children: [
-          // El mismo fondo que la ficha, para que las tres pantallas del
-          // televisor se lean como la misma app y no como tres apps pegadas.
+          // El mismo fondo plano que la ficha y el catalogo (AppColors.fondoTv).
           const DecoratedBox(
-            decoration: BoxDecoration(
-              color: Colors.black,
-              image: DecorationImage(
-                image: AssetImage('assets/images/detallestv.png'),
-                fit: BoxFit.cover,
-              ),
-            ),
-            child: SizedBox.expand(),
-          ),
-          const DecoratedBox(
-            decoration: BoxDecoration(color: Color(0xD9000000)),
+            decoration: BoxDecoration(color: AppColors.fondoTv),
             child: SizedBox.expand(),
           ),
 

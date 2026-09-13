@@ -632,8 +632,8 @@ class AppCacheManager {
   static final CacheManager instance = CacheManager(
     Config(
       key,
-      stalePeriod: const Duration(days: 7),
-      maxNrOfCacheObjects: 3000,
+      stalePeriod: const Duration(days: 3),
+      maxNrOfCacheObjects: 400,
       fileService: _ValidatingImageFileService(),
     ),
   );

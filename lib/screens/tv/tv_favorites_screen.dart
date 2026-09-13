@@ -68,19 +68,9 @@ class _TvFavoritesScreenState extends State<TvFavoritesScreen> {
         body: Stack(
           fit: StackFit.expand,
           children: [
-          // Fondo temático compartido con la ficha y las categorías de TV:
+          // Fondo oscuro plano unificado con la ficha y el catálogo (AppColors.fondoTv).
           const DecoratedBox(
-            decoration: BoxDecoration(
-              color: Colors.black,
-              image: DecorationImage(
-                image: AssetImage('assets/images/detallestv.png'),
-                fit: BoxFit.cover,
-              ),
-            ),
-            child: SizedBox.expand(),
-          ),
-          const DecoratedBox(
-            decoration: BoxDecoration(color: Color(0xD9000000)),
+            decoration: BoxDecoration(color: AppColors.fondoTv),
             child: SizedBox.expand(),
           ),
 
