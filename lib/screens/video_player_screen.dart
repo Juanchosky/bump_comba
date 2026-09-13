@@ -290,6 +290,31 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   static const int _graciaArranqueSegundos = 30;
 
   int _margenBajoSegundos = 0;
+
+  /// Si el reproductor se quedo sin datos ALGUNA vez durante la racha de
+  /// margen bajo que esta en curso.
+  ///
+  /// POR QUE HACE FALTA
+  /// El umbral de `_margenCritico` (12s) se calibro contra el perfil de VOD
+  /// directo, donde `cache-secs=120` y `readahead=90` hacen que un stream sano
+  /// viva con decenas de segundos de colchon. En HLS ese razonamiento no vale:
+  /// el perfil fija `hls-forward-cache-secs: 45`, o sea que el colchon esta
+  /// TOPADO por diseño, y en un enlace modesto un HLS perfectamente sano se
+  /// asienta entre 7 y 10 segundos y ahi se queda.
+  ///
+  /// El 2026-09-13, con `dang-1x08`, eso salio caro: 40 segundos de decodifi-
+  /// cacion impecable —24-26 fps entrando y saliendo cada segundo, ni un solo
+  /// stall— y el vigilante saltando igual porque el margen rondaba los 9s. El
+  /// salto no arreglo nada que estuviera roto: el servidor 1 no arranco en 25s
+  /// y hubo que volver al 0. Casi un minuto de cortes creado por el vigilante
+  /// para prevenir un corte que no venia.
+  ///
+  /// Un numero bajo no es sintoma; quedarse sin datos si. Asi que el salto
+  /// preventivo exige ademas que haya habido al menos un vaciado real durante
+  /// la racha. Eso conserva el caso para el que se escribio el vigilante —el
+  /// log del 2026-08-25, donde el margen oscilaba entre 4 y 0 CON stalls
+  /// encima— y deja en paz al que solo va justo pero llega.
+  bool _huboStallEnRachaMargen = false;
   DateTime? _ultimoSaltoPorMargen;
   bool _pausaLargaAplicada = false;
 
@@ -1718,6 +1743,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         // pelicula anterior no pueden condenar al servidor de esta.
         _episodiosStall.clear();
         _margenBajoSegundos = 0;
+        _huboStallEnRachaMargen = false;
         _ultimoSaltoPorMargen = null;
         _pausaLargaAplicada = false;
         _autoPlayCancelled = false;
@@ -3671,7 +3697,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // —justo el enfermo— borrara la cuenta cada pocos segundos y no llegara
     // nunca al umbral. Se congela el contador y se sale; lo unico que lo baja
     // a cero es que el margen vuelva a estar sano (rama de abajo).
-    if (bufferandoAhora) return false;
+    if (bufferandoAhora) {
+      // Quedarse sin datos es la corroboracion que le faltaba al margen bajo.
+      _huboStallEnRachaMargen = true;
+      return false;
+    }
 
     // Ventanas donde un margen corto es NORMAL y no significa nada:
     // el arranque, un seek reciente y una reanudacion reciente. En las tres el
@@ -3685,6 +3715,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         enGracia(_lastSeekTime) ||
         enGracia(_lastResumeTime)) {
       _margenBajoSegundos = 0;
+      _huboStallEnRachaMargen = false;
       return false;
     }
 
@@ -3694,6 +3725,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // posicion nueva. No es un margen malo, es que no hay margen medible.
     if (margen < 0) {
       _margenBajoSegundos = 0;
+      _huboStallEnRachaMargen = false;
       return false;
     }
 
@@ -3712,9 +3744,22 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       }
     } else {
       _margenBajoSegundos = 0;
+      _huboStallEnRachaMargen = false;
     }
 
     if (_margenBajoSegundos < _confirmacionesNecesarias(margen)) return false;
+
+    // Margen bajo PERO sin un solo vaciado: el stream va justo y llega. Saltar
+    // aqui cambia algo que se ve bien por una reconexion que puede no arrancar.
+    if (!_huboStallEnRachaMargen) {
+      if (_margenBajoSegundos % 10 == 0) {
+        debugPrint(
+          'Margen bajo (${margen}s) pero sin cortes reales: no se salta, '
+          'el stream va justo y llega.',
+        );
+      }
+      return false;
+    }
 
     final enReposo =
         _ultimoSaltoPorMargen != null &&
@@ -3752,6 +3797,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       );
       _ultimoSaltoPorMargen = ahora;
       _margenBajoSegundos = 0;
+      _huboStallEnRachaMargen = false;
       _stallSeconds = 0;
       _saltarABDPorCongelamiento = true;
       _reloadVideo();
