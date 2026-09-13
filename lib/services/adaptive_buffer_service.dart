@@ -118,7 +118,7 @@ class AdaptiveBufferService {
     networkTimeout: 30,
     reconnectSleep: '1',
     httpPipelining: false, // Desactivar para conexiones inestables
-    hlsBitrate: 'min', // HLS: usar el segmento de menor calidad
+    hlsBitrate: 'auto', // HLS VOD: mantener selección adaptativa, no forzar calidad mínima
   );
 
   static const AdaptiveBufferConfig _poor = AdaptiveBufferConfig(
@@ -138,7 +138,7 @@ class AdaptiveBufferService {
     reconnectSleep: '2',
     httpPipelining: false,
     dropNonRefFrames: true, // Modo de emergencia: solo keyframes
-    hlsBitrate: 'min',
+    hlsBitrate: 'auto',
   );
 
   void resetState() {}
@@ -235,7 +235,7 @@ class AdaptiveBufferService {
         ); // solo en pantalla, nunca en el codec
         await mpv.setProperty(
           'vd-lavc-o',
-          'err_detect=ignore_err,flags2=+fast',
+          'err_detect=ignore_err',
         );
       } else {
         await mpv.setProperty('vd-lavc-skiploopfilter', cfg.skipLoopFilter);
@@ -244,12 +244,12 @@ class AdaptiveBufferService {
         if (cfg.dropNonRefFrames) {
           await mpv.setProperty(
             'vd-lavc-o',
-            'err_detect=ignore_err,flags2=+fast,skip_frame=nonref',
+            'err_detect=ignore_err,skip_frame=nonref',
           );
         } else {
           await mpv.setProperty(
             'vd-lavc-o',
-            'err_detect=ignore_err,flags2=+fast',
+            'err_detect=ignore_err',
           );
         }
       }

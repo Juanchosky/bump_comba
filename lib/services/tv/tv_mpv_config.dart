@@ -31,15 +31,13 @@ class TvMpvConfig {
       final opciones = <String, String>{
         'vd-lavc-threads': '0',
         'vd-lavc-fast': 'yes',
-        'vd-lavc-skiploopfilter': 'all',
+        'vd-lavc-skiploopfilter': 'nonref',
         'video-sync': 'audio',
-        // 'vo' y no 'decoder+vo'. Con 'decoder' MPV descarta fotogramas ANTES
-        // de decodificarlos cuando va tarde, que es justo lo que amplifica el
-        // sintoma con este proveedor: se queda sin datos, el audio sigue con su
-        // propio bufer, y al llegar la rafaga siguiente el video corre a
-        // alcanzarlo tirando fotogramas -> el "aceleron" visible. El telefono
-        // ya llego a 'vo' peleando contra este mismo proveedor.
         'framedrop': 'vo',
+        'scale': 'bilinear',
+        'cscale': 'bilinear',
+        'linear-upscaling': 'no',
+        'sigmoid-upscaling': 'no',
         'deband': 'no',
         'dither-depth': 'no',
         'cache': 'yes',

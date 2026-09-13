@@ -485,19 +485,21 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
 
           if (isFromDB) {
             await mpv.setProperty('hls-bitrate', 'auto');
-            // En TV (Chromecast / Android TV), NO sobrecargar la GPU con shaders pesados
-            // (mitchell, linear-upscaling, sigmoid-upscaling, skiploopfilter=none).
-            // Mantenemos bilinear y skiploopfilter=all de TvMpvConfig para fluidez total.
             await mpv.setProperty('scale', 'bilinear');
             await mpv.setProperty('cscale', 'bilinear');
             await mpv.setProperty('linear-upscaling', 'no');
             await mpv.setProperty('sigmoid-upscaling', 'no');
-            await mpv.setProperty('vd-lavc-skiploopfilter', 'all');
+            await mpv.setProperty('deband', 'no');
+            await mpv.setProperty('dither-depth', 'no');
+            await mpv.setProperty('vd-lavc-fast', 'yes');
+            await mpv.setProperty('vd-lavc-skiploopfilter', 'nonref');
           } else {
             // Canales IPTV normales: optimizado para evitar cortes en TV
-            await mpv.setProperty('hls-bitrate', 'min');
+            await mpv.setProperty('hls-bitrate', 'auto');
             await mpv.setProperty('scale', 'bilinear');
+            await mpv.setProperty('cscale', 'bilinear');
             await mpv.setProperty('deband', 'no');
+            await mpv.setProperty('vd-lavc-skiploopfilter', 'nonref');
           }
         }
       } catch (_) {}
@@ -2269,9 +2271,11 @@ class _TvControlsOverlay extends StatelessWidget {
                     if (thumbnailUrl != null) ...[
                       Image.network(
                         thumbnailUrl!,
-                        width: 90,
-                        height: 130,
+                        width: 100,
+                        height: 150,
                         fit: BoxFit.cover,
+                        cacheWidth: 220,
+                        cacheHeight: 320,
                         // Si la carátula falla, no mostramos nada (sin hueco feo).
                         errorBuilder: (_, _, _) => const SizedBox.shrink(),
                       ),

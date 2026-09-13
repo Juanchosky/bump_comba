@@ -91,13 +91,46 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
   /// fuera de esta pantalla, así que hay que medirle el hueco y decírselo.
   final GlobalKey _huecoVistaPrevia = GlobalKey();
 
+  bool _isFavorite = false;
+
   @override
   void initState() {
     super.initState();
+    _isFavorite = widget.item.isFavorite ||
+        M3UService().getFavorites().any(
+          (f) =>
+              (f.url.isNotEmpty && f.url == widget.item.url) ||
+              (f.name == widget.item.name &&
+                  f.seriesName == widget.item.seriesName),
+        );
     if (DynamicScraperService().isSupported(widget.item.url)) {
       unawaited(DynamicScraperService().extractStreamResult(widget.item.url));
     }
     _prepararFicha();
+  }
+
+  Future<void> _toggleFavorite() async {
+    try {
+      await M3UService().toggleFavorite(widget.item);
+      if (mounted) {
+        setState(() {
+          _isFavorite = widget.item.isFavorite;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              e.toString().replaceAll('Exception: ', ''),
+              style: const TextStyle(color: Colors.white, fontSize: 16),
+            ),
+            backgroundColor: const Color(0xFFE53935),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    }
   }
 
   /// Junta las tres esperas y enseña la ficha cuando estan las tres.
@@ -786,6 +819,14 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
             ],
           ),
         ),
+
+        const SizedBox(height: 14),
+
+        // ── Botón Mi lista ────────────────────────────────────────────────
+        _BotonMiLista(
+          isFavorite: _isFavorite,
+          onOk: _toggleFavorite,
+        ),
       ],
     );
   }
@@ -1309,6 +1350,107 @@ class _ChipTemporadaState extends State<_ChipTemporada> {
             color: color,
             fontSize: 15,
             fontWeight: widget.elegida ? FontWeight.w600 : FontWeight.w400,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Botón "Mi lista" / "En lista" debajo de la sinopsis en el televisor.
+class _BotonMiLista extends StatefulWidget {
+  final bool isFavorite;
+  final VoidCallback onOk;
+
+  const _BotonMiLista({
+    required this.isFavorite,
+    required this.onOk,
+  });
+
+  @override
+  State<_BotonMiLista> createState() => _BotonMiListaState();
+}
+
+class _BotonMiListaState extends State<_BotonMiLista> {
+  bool _foco = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool fav = widget.isFavorite;
+
+    return Focus(
+      onFocusChange: (v) => setState(() => _foco = v),
+      onKeyEvent: (node, event) {
+        if (event is! KeyDownEvent) return KeyEventResult.ignored;
+        final k = event.logicalKey;
+        if (k == LogicalKeyboardKey.select ||
+            k == LogicalKeyboardKey.enter ||
+            k == LogicalKeyboardKey.gameButtonA) {
+          widget.onOk();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: GestureDetector(
+        onTap: widget.onOk,
+        child: AnimatedScale(
+          scale: _foco ? 1.05 : 1.0,
+          duration: const Duration(milliseconds: 140),
+          curve: Curves.easeOut,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 140),
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 9),
+            decoration: BoxDecoration(
+              color: _foco
+                  ? Colors.white
+                  : const Color(0xFF1E1E22).withValues(alpha: 0.85),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: _foco
+                    ? Colors.white
+                    : fav
+                        ? const Color(0xFFF5A623).withValues(alpha: 0.7)
+                        : Colors.white.withValues(alpha: 0.22),
+                width: 1.5,
+              ),
+              boxShadow: _foco
+                  ? [
+                      BoxShadow(
+                        color: Colors.white.withValues(alpha: 0.25),
+                        blurRadius: 12,
+                        spreadRadius: 1,
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  fav ? Icons.check_rounded : Icons.add_rounded,
+                  color: _foco
+                      ? const Color(0xFF0B0B0D)
+                      : fav
+                          ? const Color(0xFFF5A623)
+                          : Colors.white,
+                  size: 19,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  fav ? 'En mi lista' : 'Agregar a mi lista',
+                  style: TextStyle(
+                    color: _foco
+                        ? const Color(0xFF0B0B0D)
+                        : fav
+                            ? const Color(0xFFF5A623)
+                            : Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0.2,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),

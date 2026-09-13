@@ -16,6 +16,7 @@ import 'tv_destacado.dart';
 import 'tv_detail_screen.dart';
 import 'tv_player_screen.dart';
 import 'tv_search_screen.dart';
+import 'tv_favorites_screen.dart';
 
 /// Catálogo del televisor: filas por categoría, navegación con el mando.
 ///
@@ -159,9 +160,13 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     (texto: 'Series', icono: Icons.live_tv_rounded),
     (texto: 'Telenovelas', icono: Icons.theaters_outlined),
     (texto: 'Animacion', icono: Icons.animation_rounded),
+    (texto: 'Mi lista', icono: Icons.bookmark_border_rounded),
     (texto: 'Buscar', icono: Icons.search_rounded),
     (texto: 'Desvincular', icono: Icons.link_off_rounded),
   ];
+
+  /// MI LISTA: abre la pantalla de películas y series guardadas.
+  static const int _iMiLista = 5;
 
   /// BUSCAR no es una seccion del catalogo: es una pantalla aparte.
   ///
@@ -169,7 +174,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   /// —con las mismas flechas y el mismo aspecto—, pero al pulsarla NO cambia
   /// las filas: abre el buscador y al cerrarlo el catalogo sigue como estaba,
   /// en la seccion en la que lo dejaste.
-  static const int _iBuscar = 5;
+  static const int _iBuscar = 6;
 
   /// DESVINCULAR tampoco es una seccion: suelta el televisor de la cuenta y
   /// devuelve la pantalla de emparejar.
@@ -183,7 +188,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   ///
   /// Va la ULTIMA a proposito, detras de BUSCAR: es lo que menos se usa y lo
   /// unico que se lamenta si se pulsa sin querer. Y por eso pregunta antes.
-  static const int _iDesvincular = 6;
+  static const int _iDesvincular = 7;
 
   int _seccion = 0;
 
@@ -1133,6 +1138,11 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       filas.add((titulo: 'Seguir viendo', items: _seguirViendo));
     }
 
+    final favoritos = _agrupar(_servicio.getFavorites());
+    if (favoritos.isNotEmpty) {
+      filas.add((titulo: 'Mi lista', items: favoritos));
+    }
+
     // Y las categorias del proveedor, en el orden que manda el servicio y ya
     // sin las de deportes, religion, canales en directo ni las de cada pais:
     // ese filtro es el que le faltaba al televisor y por el que aparecian de
@@ -1588,6 +1598,20 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                   activa: _seccion,
                   nodos: _nodosMenu,
                   onElegir: (i) async {
+                    if (i == _iMiLista) {
+                      await Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const TvFavoritesScreen(),
+                        ),
+                      );
+                      if (mounted) {
+                        _nodosMenu[_iMiLista].requestFocus();
+                        setState(() {
+                          _filas = _armarFilas();
+                        });
+                      }
+                      return;
+                    }
                     if (i == _iBuscar) {
                       await Navigator.of(context).push(
                         MaterialPageRoute<void>(

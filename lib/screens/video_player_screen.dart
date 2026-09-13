@@ -2203,8 +2203,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             mpv.setProperty('vd-lavc-threads', '0'),
             mpv.setProperty('vd-lavc-skiploopfilter', 'none'),
             mpv.setProperty('framedrop', 'vo'),
-            mpv.setProperty('vd-lavc-fast-decoding', 'yes'),
-            mpv.setProperty('vd-lavc-o', 'err_detect=ignore_err,flags2=+fast'),
+            mpv.setProperty('vd-lavc-fast-decoding', 'no'),
+            mpv.setProperty('vd-lavc-o', 'err_detect=ignore_err'),
             mpv.setProperty('video-sync', 'audio'),
             mpv.setProperty('audio-buffer', '0.2'),
             mpv.setProperty('audio-stream-silence', 'yes'),
@@ -2277,19 +2277,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           // `hwdec: mediacodec` el fotograma va del decodificador a la Surface
           // sin pasar por ahi y se ignoran; quedan puestos para cuando el
           // reintento baja a `mediacodec-copy`, que si pasa por el renderizador.
-          if (_currentItem.sourceName == 'Supabase' && !lowPerf) {
+          if (_currentItem.esDeLaBD && !lowPerf) {
             for (final p
                 in const {
-                  'hls-bitrate': 'max',
-                  'scale': 'mitchell',
-                  'cscale': 'mitchell',
-                  'linear-upscaling': 'yes',
-                  'sigmoid-upscaling': 'yes',
-                  'deband': 'yes',
-                  'deband-iterations': '2',
-                  'deband-threshold': '35',
-                  'deband-range': '20',
-                  'deband-grain': '5',
+                  'hls-bitrate': 'auto',
+                  'scale': 'bilinear',
+                  'cscale': 'bilinear',
+                  'linear-upscaling': 'no',
+                  'sigmoid-upscaling': 'no',
+                  'deband': 'no',
+                  'dither-depth': 'no',
                 }.entries) {
               try {
                 await mpv.setProperty(p.key, p.value);

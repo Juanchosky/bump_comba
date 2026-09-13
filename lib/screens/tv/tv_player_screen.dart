@@ -527,7 +527,10 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
           await mpv.setProperty('cscale', 'bilinear');
           await mpv.setProperty('linear-upscaling', 'no');
           await mpv.setProperty('sigmoid-upscaling', 'no');
-          await mpv.setProperty('vd-lavc-skiploopfilter', 'all');
+          await mpv.setProperty('deband', 'no');
+          await mpv.setProperty('dither-depth', 'no');
+          await mpv.setProperty('vd-lavc-fast', 'yes');
+          await mpv.setProperty('vd-lavc-skiploopfilter', 'nonref');
         }
       } catch (e) {
         debugPrint('TvPlayer: error aplicando perfil BD: $e');
@@ -2320,11 +2323,11 @@ class _Controles extends StatelessWidget {
               if (caratula != null && caratula!.isNotEmpty) ...[
                 Image.network(
                   caratula!,
-                  width: 90,
-                  height: 130,
+                  width: 95,
+                  height: 140,
                   fit: BoxFit.cover,
-                  cacheWidth: 180,
-                  cacheHeight: 260,
+                  cacheWidth: 220,
+                  cacheHeight: 320,
                   // Si la carátula falla no se deja hueco: mejor sin ella que
                   // con un rectángulo vacío.
                   errorBuilder: (_, _, _) => const SizedBox.shrink(),

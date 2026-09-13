@@ -465,7 +465,7 @@ class DynamicScraperService {
         lowerUrl.contains('playlist.m3u8') ||
         lowerUrl.contains('index.m3u8') ||
         lowerUrl.contains('manifest.m3u8')) {
-      return 700;
+      return 1080;
     }
 
     // 5. 540P
@@ -909,7 +909,7 @@ class DynamicScraperService {
         return;
       }
 
-      if (maxScore >= 720 || force) {
+      if (maxScore >= 1080 || force) {
         debugPrint(
           'DynamicScraperService: Best candidate resolved (Score: $maxScore P): $bestUrl',
         );
@@ -1080,7 +1080,7 @@ class DynamicScraperService {
                       if (combined.includes('2160p') || combined.includes('2160') || combined.includes('4k') || combined.includes('uhd') || combined.includes('ultrahd')) return 2160;
                       if (combined.includes('1080p') || combined.includes('1080') || combined.includes('fhd') || combined.includes('fullhd') || combined.includes('full-hd') || combined.includes('microframe-hd') || lowerUrl.includes('1080.m3u8') || lowerUrl.includes('1080/') || lowerUrl.includes('1080_') || lowerUrl.includes('1080-')) return 1080;
                       if (combined.includes('720p') || combined.includes('720') || combined.includes('microframe-sd') || lowerUrl.includes('-sd.m3u8') || lowerUrl.includes('_sd.m3u8') || lowerUrl.includes('hd.m3u8') || lowerUrl.includes('-hd.m3u8') || lowerUrl.includes('_hd.m3u8') || lowerUrl.includes('720.m3u8') || lowerUrl.includes('720/') || lowerUrl.includes('720_') || lowerUrl.includes('720-') || lowerUrl.includes('high.m3u8') || lowerText === 'hd' || lowerText.includes('720')) return 720;
-                      if (lowerUrl.includes('master.m3u8') || lowerUrl.includes('playlist.m3u8') || lowerUrl.includes('index.m3u8') || lowerUrl.includes('manifest.m3u8')) return 700;
+                      if (lowerUrl.includes('master.m3u8') || lowerUrl.includes('playlist.m3u8') || lowerUrl.includes('index.m3u8') || lowerUrl.includes('manifest.m3u8')) return 1080;
                       if (combined.includes('540p') || combined.includes('540') || combined.includes('microframe-ld') || lowerUrl.includes('-ld.m3u8') || lowerUrl.includes('540.m3u8')) return 540;
                       if (combined.includes('480p') || combined.includes('480') || lowerUrl.includes('480.m3u8') || lowerUrl.includes('medium.m3u8')) return 480;
                       if (combined.includes('360p') || combined.includes('360') || combined.includes('240p') || combined.includes('240') || combined.includes('microframe-fd') || lowerUrl.includes('-fd.m3u8') || lowerUrl.includes('360.m3u8') || lowerUrl.includes('low.m3u8')) return 360;
@@ -1140,12 +1140,12 @@ class DynamicScraperService {
                       }
                     }
 
-                    // 4. Click quality button directly (e.g., 720P) if present in DOM
-                    const qualityButtons = document.querySelectorAll('button, li, .quality-btn, .btn-quality, .resolution-btn');
+                    // 4. Click quality button directly (e.g., 1080P, 720P) if present in DOM
+                    const qualityButtons = document.querySelectorAll('button, li, a, .quality-btn, .btn-quality, .resolution-btn, [data-quality], [data-res]');
                     let highestBtn = null;
                     let highestBtnScore = 0;
                     qualityButtons.forEach(btn => {
-                      const text = btn.innerText || btn.textContent || '';
+                      const text = (btn.innerText || btn.textContent || btn.getAttribute('data-quality') || btn.getAttribute('data-res') || '').trim();
                       const score = getQualityScore(text, '');
                       if (score > highestBtnScore && score >= 720) {
                         highestBtnScore = score;
