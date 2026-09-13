@@ -513,6 +513,100 @@ class DynamicScraperService {
       'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36';
 
+  /// Paginas de descarga que TERMINAN en .mp4 pero devuelven HTML.
+  ///
+  /// POR QUE EXISTE
+  /// El barrido del DOM en el WebView recoge cualquier enlace que acabe en
+  /// `.mp4` y lo puntua por el texto de la URL. En GnulaHD eso incluye el
+  /// boton de descarga de multiup.io: `multiup.io/download/<hash>/algo.mp4`
+  /// puntuaba 300 y ganaba, pero no es un video — es una landing con un
+  /// formulario. El reproductor recibia HTML, no avanzaba un solo byte, y el
+  /// watchdog de TurboProxy tardaba 8 s en darse cuenta. Visto desde el sofa:
+  /// "se queda cargando para siempre".
+  ///
+  /// Son alojadores de ficheros, no CDNs de streaming: ninguno sirve para
+  /// reproducir en directo aunque la URL lo aparente.
+  static const List<String> _hostsDeDescarga = [
+    'multiup.io',
+    'multiup.org',
+    'uptobox.com',
+    '1fichier.com',
+    'mediafire.com',
+    'mega.nz',
+    'drive.google.com/file',
+    'zippyshare',
+    'send.cm',
+    'gofile.io',
+    'krakenfiles',
+  ];
+
+  bool _esEnlaceDeDescarga(String url) {
+    final low = url.toLowerCase();
+    for (final h in _hostsDeDescarga) {
+      if (low.contains(h)) return true;
+    }
+    // Rutas de landing de descarga en cualquier host
+    return low.contains('/download/') || low.contains('/descargar/');
+  }
+
+  /// Cliente unico y persistente para la via rapida nativa.
+  ///
+  /// POR QUE NO UNO POR LLAMADA
+  /// Cada `http.Client()` nuevo rehace DNS + handshake TLS contra
+  /// ww3.gnulahd.nu: ~1-3 s en movil antes de mandar el primer byte. Un
+  /// cliente vivo reutiliza la conexion, y el segundo episodio arranca casi
+  /// instantaneo. Nunca se cierra: es un singleton de app.
+  static final http.Client _fastClient = http.Client();
+
+  /// GET con reintentos de plazo CRECIENTE en vez de un unico timeout largo.
+  ///
+  /// POR QUE NO UN PLAZO FIJO
+  /// Un solo intento de 8 s convierte un tropiezo de red en 8 s perdidos y
+  /// ademas tira toda la via rapida al WebView (30 s de anuncios). Pero tres
+  /// intentos de 4 s tampoco valen: el 2026-09-13, con el telefono midiendo
+  /// 1.15 Mbps y 1149 ms de latencia, `dang-1x08` agoto los tres —la pagina
+  /// pesa ~50 KB y no cabia en 4 s— y acabo en el WebView igual.
+  ///
+  /// El plazo crece (5, 9, 14 s) porque los dos casos que hay que cubrir son
+  /// opuestos: el tropiezo puntual, que se arregla reintentando enseguida, y
+  /// el enlace sencillamente lento, que necesita tiempo. Empezar corto
+  /// mantiene rapido el caso normal; terminar largo evita el WebView en el
+  /// caso lento, que es donde mas caro sale caer en el.
+  static const List<Duration> _plazosVieRapida = [
+    Duration(seconds: 5),
+    Duration(seconds: 9),
+    Duration(seconds: 14),
+  ];
+
+  Future<http.Response?> _fastGet(
+    String url, {
+    Map<String, String>? headers,
+    List<Duration> plazos = _plazosVieRapida,
+  }) async {
+    for (var i = 0; i < plazos.length; i++) {
+      try {
+        final res = await _fastClient
+            .get(Uri.parse(url), headers: headers)
+            .timeout(plazos[i]);
+        if (res.statusCode == 200) return res;
+        // 4xx/5xx no se arreglan reintentando salvo 429/5xx transitorios
+        if (res.statusCode < 500 && res.statusCode != 429) return res;
+      } catch (_) {
+        // timeout o socket caido: se reintenta con mas plazo
+      }
+      if (i < plazos.length - 1) {
+        await Future.delayed(Duration(milliseconds: 150 * (i + 1)));
+      }
+    }
+    // Rendirse aqui significa caer al WebView (decenas de segundos). Que quede
+    // escrito: sin esta linea el fallo era invisible en el log y parecia que la
+    // via rapida ni se habia intentado.
+    debugPrint(
+      'DynamicScraperService: via rapida agotada tras ${plazos.length} intentos -> $url',
+    );
+    return null;
+  }
+
   /// Abre un `.m3u8` y devuelve la altura de la MEJOR variante que declara.
   /// `null` si no es una lista maestra o no se pudo leer.
   ///
@@ -530,13 +624,12 @@ class DynamicScraperService {
   static Future<int?> _alturaMaximaDe(String url, String referer) async {
     final cliente = http.Client();
     try {
-      final peticion =
-          http.Request('GET', Uri.parse(url))
-            ..headers.addAll({
-              'User-Agent': _ua,
-              'Referer': referer,
-              'Accept': '*/*',
-            });
+      final peticion = http.Request('GET', Uri.parse(url))
+        ..headers.addAll({
+          'User-Agent': _ua,
+          'Referer': referer,
+          'Accept': '*/*',
+        });
       final respuesta = await cliente
           .send(peticion)
           .timeout(const Duration(seconds: 2));
@@ -887,7 +980,8 @@ class DynamicScraperService {
           candidateUrls.keys
               .where(
                 (u) =>
-                    u.toLowerCase().contains('.m3u8') && !yaSondeadas.contains(u),
+                    u.toLowerCase().contains('.m3u8') &&
+                    !yaSondeadas.contains(u),
               )
               .take(4)
               .toList();
@@ -1025,9 +1119,10 @@ class DynamicScraperService {
           }
 
           // Intercept m3u8/mp4 streams and score them
-          if (urlStr.contains('.m3u8') ||
-              urlStr.contains('.mp4') ||
-              urlStr.contains('googlevideo.com')) {
+          if ((urlStr.contains('.m3u8') ||
+                  urlStr.contains('.mp4') ||
+                  urlStr.contains('googlevideo.com')) &&
+              !_esEnlaceDeDescarga(urlStr)) {
             final score = _getQualityScore(urlStr);
             candidateUrls[urlStr] = score;
             debugPrint(
@@ -1229,7 +1324,13 @@ class DynamicScraperService {
                         final u = itemMap['url']?.toString();
                         final s = itemMap['score'];
                         if (u != null && u.isNotEmpty && s is num) {
-                          candidateUrls[u] = s.toInt();
+                          if (_esEnlaceDeDescarga(u)) {
+                            debugPrint(
+                              'DynamicScraperService: descartado enlace de descarga -> $u',
+                            );
+                          } else {
+                            candidateUrls[u] = s.toInt();
+                          }
                         }
                       }
                     }
@@ -1410,14 +1511,16 @@ class DynamicScraperService {
     // Intento genérico para otros servidores embebidos
     try {
       final client = http.Client();
-      final res = await client.get(
-        Uri.parse(embedUrl),
-        headers: {
-          'User-Agent': _ua,
-          'Accept':
-              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        },
-      ).timeout(const Duration(seconds: 4));
+      final res = await client
+          .get(
+            Uri.parse(embedUrl),
+            headers: {
+              'User-Agent': _ua,
+              'Accept':
+                  'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            },
+          )
+          .timeout(const Duration(seconds: 4));
       client.close();
       if (res.statusCode == 200) {
         final m3u8Match = RegExp(
@@ -1441,26 +1544,25 @@ class DynamicScraperService {
   }
 
   Future<ExtractedStreamResult?> _extractGnulaStream(String pageUrl) async {
-    final client = http.Client();
     try {
-      final res = await client.get(
-        Uri.parse(pageUrl),
+      final res = await _fastGet(
+        pageUrl,
         headers: {
           'User-Agent': _ua,
           'Accept':
               'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
           'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
         },
-      ).timeout(const Duration(seconds: 8));
+      );
 
-      if (res.statusCode != 200) return null;
+      if (res == null || res.statusCode != 200) return null;
       final html = res.body;
 
       // Si nos pasaron la página de serie (/ver/...) en vez de un episodio,
       // extraer el primer episodio de los cards .gnrd-epc
       if (pageUrl.contains('/ver/') && html.contains('gnrd-epc')) {
         final epCardMatch = RegExp(
-          r'''class=["'][^"']*gnrd-epc[^"']*["'][^>]*href=["']([^"']+)["']''',
+          r"""class=["'][^"']*gnrd-epc[^"']*["'][^>]*href=["']([^"']+)["']""",
         ).firstMatch(html);
         if (epCardMatch != null) {
           final firstEpUrl = epCardMatch.group(1)!;
@@ -1473,15 +1575,15 @@ class DynamicScraperService {
 
       final pidMatch = RegExp(r'_gnrdPid\s*=\s*(\d+)').firstMatch(html);
       final tokMatch = RegExp(
-        r'''_gnrdTok\s*=\s*['"]([^'"]+)['"]''',
+        r"""_gnrdTok\s*=\s*['"]([^'"]+)['"]""",
       ).firstMatch(html);
       final vdAuthMatch = RegExp(
-        r'''VD_AUTH\s*=\s*['"]([^'"]+)['"]''',
+        r"""VD_AUTH\s*=\s*['"]([^'"]+)['"]""",
       ).firstMatch(html);
 
       final pid = pidMatch?.group(1);
       final tok = tokMatch?.group(1);
-      final vdAuth = vdAuthMatch?.group(1) ?? '';
+      final vdAuth = vdAuthMatch?.group(1) ?? _lastGnulaVdAuth;
       if (vdAuth.isNotEmpty) {
         _lastGnulaVdAuth = vdAuth;
       }
@@ -1495,15 +1597,12 @@ class DynamicScraperService {
 
       final apiUrl =
           'https://ww3.gnulahd.nu/wp-json/gnrd/v1/player?id=$pid&t=$tok';
-      final apiRes = await client.get(
-        Uri.parse(apiUrl),
-        headers: {
-          'User-Agent': _ua,
-          'Referer': pageUrl,
-        },
-      ).timeout(const Duration(seconds: 8));
+      final apiRes = await _fastGet(
+        apiUrl,
+        headers: {'User-Agent': _ua, 'Referer': pageUrl},
+      );
 
-      if (apiRes.statusCode != 200) return null;
+      if (apiRes == null || apiRes.statusCode != 200) return null;
       final apiJson = jsonDecode(apiRes.body);
       final p = apiJson['p'];
       if (p == null || p is! String) return null;
@@ -1518,19 +1617,27 @@ class DynamicScraperService {
       final Map<String, dynamic> data = jsonDecode(decStr);
 
       final langs = (data['langs'] as List?) ?? [];
-      Future<bool> isVidaraStreamHealthy(String testVidUrl) async {
+
+      /// Comprueba un candidato Vidara: devuelve la URL si sirve, null si no.
+      ///
+      /// Es deliberadamente barato —un GET de 3 s a una lista HLS de unos
+      /// pocos KB— y el DNS del nodo solo se consulta para hosts desconocidos.
+      Future<String?> probarVidara(String testVidUrl) async {
         try {
-          final testRes = await client.get(
-            Uri.parse(testVidUrl),
-            headers: {
-              'User-Agent': _ua,
-              'Referer': pageUrl,
-            },
-          ).timeout(const Duration(seconds: 5));
+          final testRes = await _fastClient
+              .get(
+                Uri.parse(testVidUrl),
+                headers: {'User-Agent': _ua, 'Referer': pageUrl},
+              )
+              // 6 s, no 3: el 2026-09-13 esta comprobacion caduco por timeout
+              // en un enlace de 1.15 Mbps y descarto un nodo que estaba sano.
+              // Como todos los candidatos se prueban en paralelo, el plazo mas
+              // largo no retrasa el arranque salvo cuando no hay respuesta.
+              .timeout(const Duration(seconds: 6));
 
           if (testRes.statusCode != 200 ||
               !testRes.body.startsWith('#EXTM3U')) {
-            return false;
+            return null;
           }
 
           // Descarte inmediato de subdominios con caída conocida de DNS
@@ -1538,13 +1645,13 @@ class DynamicScraperService {
             debugPrint(
               'DynamicScraperService: GnulaHD Vidara descartado por nodo caído en DNS -> s25-wyl3',
             );
-            return false;
+            return null;
           }
 
           // Nodos verificados y activos (s8-t25, s11-t): aprobación instantánea
           if (testRes.body.contains('s8-t25') ||
               testRes.body.contains('s11-t')) {
-            return true;
+            return testVidUrl;
           }
 
           // Validación DNS para otros posibles nodos desconocidos
@@ -1554,21 +1661,21 @@ class DynamicScraperService {
           if (mHost != null) {
             final cdnHost = mHost.group(1)!;
             try {
-              final ips = await InternetAddress.lookup(cdnHost).timeout(
-                const Duration(seconds: 2),
-              );
-              if (ips.isEmpty) return false;
+              final ips = await InternetAddress.lookup(
+                cdnHost,
+              ).timeout(const Duration(seconds: 2));
+              if (ips.isEmpty) return null;
             } catch (_) {
               debugPrint(
                 'DynamicScraperService: GnulaHD Vidara host $cdnHost no resuelve DNS',
               );
-              return false;
+              return null;
             }
           }
-          return true;
+          return testVidUrl;
         } catch (e) {
           debugPrint('DynamicScraperService: Vidara health check fallo: $e');
-          return false;
+          return null;
         }
       }
 
@@ -1584,56 +1691,56 @@ class DynamicScraperService {
       final sortedLangs = List.from(langs)
         ..sort((a, b) => langRank(a).compareTo(langRank(b)));
 
-      String? primaryUrl;
-      final List<String> alternativeUrls = [];
-
+      // Todos los candidatos Vidara, ya en orden de preferencia de idioma.
+      final List<String> candidatos = [];
       for (final l in sortedLangs) {
-        final servers = (l['servers'] as List? ?? []);
-        for (final s in servers) {
+        for (final s in (l['servers'] as List? ?? [])) {
           final src = s['src']?.toString() ?? '';
-          if (src.isEmpty) continue;
-
-          // 1. Servidor Vidara (HLS 1080p directo ultra-rápido)
-          if (src.contains('vidara')) {
-            final m = RegExp(r'https?://([^/]+)/e/([^/?#]+)').firstMatch(src);
-            if (m != null) {
-              final host = m.group(1)!;
-              final code = m.group(2)!;
-              final vidUrl =
-                  'https://ww3.gnulahd.nu/panel/vidara-resolve.php?pl=1&code=$code&host=$host$vdAuth&ext=.m3u8';
-
-              if (primaryUrl == null) {
-                // El candidato primario se verifica para asegurar que no caiga en un nodo muerto
-                if (await isVidaraStreamHealthy(vidUrl)) {
-                  primaryUrl = vidUrl;
-                } else {
-                  // Reintentar una vez por si el balanceador rota de nodo
-                  await Future.delayed(const Duration(milliseconds: 200));
-                  if (await isVidaraStreamHealthy(vidUrl)) {
-                    primaryUrl = vidUrl;
-                  }
-                }
-              } else {
-                if (!alternativeUrls.contains(vidUrl)) {
-                  alternativeUrls.add(vidUrl);
-                }
-              }
-            }
-          }
+          if (src.isEmpty || !src.contains('vidara')) continue;
+          final m = RegExp(r'https?://([^/]+)/e/([^/?#]+)').firstMatch(src);
+          if (m == null) continue;
+          final vidUrl =
+              'https://ww3.gnulahd.nu/panel/vidara-resolve.php?pl=1'
+              '&code=${m.group(2)}&host=${m.group(1)}$vdAuth&ext=.m3u8';
+          if (!candidatos.contains(vidUrl)) candidatos.add(vidUrl);
         }
       }
 
-      if (primaryUrl != null) {
+      if (candidatos.isNotEmpty) {
+        // POR QUE EN PARALELO
+        // Antes se probaba el primer candidato y, si fallaba, se esperaba
+        // 200 ms y se repetia EL MISMO: hasta 10 s mirando un nodo muerto
+        // antes de llegar al segundo. Lanzandolas todas a la vez el coste es
+        // el de la mas lenta (3 s como techo) y casi siempre <500 ms.
+        final resultados = await Future.wait(candidatos.map(probarVidara));
+        final sanos = <String>[
+          for (var i = 0; i < candidatos.length; i++)
+            if (resultados[i] != null) candidatos[i],
+        ];
+
+        if (sanos.isNotEmpty) {
+          debugPrint(
+            'DynamicScraperService: GnulaHD resuelto y verificado exitosamente -> ${sanos.first} (${sanos.length - 1} alternativas activas)',
+          );
+          return ExtractedStreamResult(
+            videoUrl: sanos.first,
+            alternativeUrls: sanos.skip(1).toList(),
+          );
+        }
+
+        // Ningun nodo paso la verificacion. Antes de rendirse al WebView
+        // (30 s de anuncios) se devuelve el primero sin verificar: el failover
+        // del reproductor ya cubre ese caso y es mucho mas rapido que el plan B.
         debugPrint(
-          'DynamicScraperService: GnulaHD resuelto y verificado exitosamente -> $primaryUrl (${alternativeUrls.length} alternativas activas)',
+          'DynamicScraperService: GnulaHD sin nodo verificado; se usa el primer candidato',
         );
         return ExtractedStreamResult(
-          videoUrl: primaryUrl,
-          alternativeUrls: alternativeUrls,
+          videoUrl: candidatos.first,
+          alternativeUrls: candidatos.skip(1).toList(),
         );
       }
 
-      // Si ningún Vidara tuvo nodo saludable en DNS, intentar VOE de respaldo
+      // Si no habia ningun Vidara, intentar VOE de respaldo
       for (final l in sortedLangs) {
         final servers = (l['servers'] as List? ?? []);
         for (final s in servers) {
@@ -1648,8 +1755,6 @@ class DynamicScraperService {
       }
     } catch (e) {
       debugPrint('DynamicScraperService: error extractGnulaStream: $e');
-    } finally {
-      client.close();
     }
     return null;
   }
@@ -1657,16 +1762,18 @@ class DynamicScraperService {
   Future<ExtractedStreamResult?> _extractIbelinStream(String ibelinUrl) async {
     try {
       final client = http.Client();
-      final res = await client.get(
-        Uri.parse(ibelinUrl),
-        headers: {
-          'User-Agent': _ua,
-          'Accept':
-              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-          'Referer': 'https://www.peelink2.com/',
-        },
-      ).timeout(const Duration(seconds: 5));
+      final res = await client
+          .get(
+            Uri.parse(ibelinUrl),
+            headers: {
+              'User-Agent': _ua,
+              'Accept':
+                  'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+              'Referer': 'https://www.peelink2.com/',
+            },
+          )
+          .timeout(const Duration(seconds: 5));
       client.close();
 
       if (res.statusCode != 200) return null;
@@ -1701,15 +1808,17 @@ class DynamicScraperService {
   ) async {
     try {
       final client = http.Client();
-      final res = await client.get(
-        Uri.parse(peelinkUrl),
-        headers: {
-          'User-Agent': _ua,
-          'Accept':
-              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-        },
-      ).timeout(const Duration(seconds: 7));
+      final res = await client
+          .get(
+            Uri.parse(peelinkUrl),
+            headers: {
+              'User-Agent': _ua,
+              'Accept':
+                  'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+            },
+          )
+          .timeout(const Duration(seconds: 7));
       client.close();
 
       if (res.statusCode != 200) return null;
@@ -1763,9 +1872,7 @@ class DynamicScraperService {
         final videoRegex = RegExp(r'''video\[\d+\]\s*=\s*['"]([^'"]+)['"]''');
         for (final vm in videoRegex.allMatches(html)) {
           final vVal = vm.group(1) ?? '';
-          final srcMatch = RegExp(
-            r'''src=['"]([^'"]+)['"]''',
-          ).firstMatch(vVal);
+          final srcMatch = RegExp(r'''src=['"]([^'"]+)['"]''').firstMatch(vVal);
           if (srcMatch != null) {
             candidateServerUrls.add(srcMatch.group(1)!);
           }
@@ -1797,7 +1904,8 @@ class DynamicScraperService {
         var target = serverUrl;
 
         // Desempaquetar redirecciones base64 de peliculasrey si aplica
-        if (target.contains('peliculasrey.me') || target.contains('/red2.php/')) {
+        if (target.contains('peliculasrey.me') ||
+            target.contains('/red2.php/')) {
           final b64Part = target.split('/red2.php/').last;
           try {
             var dec = utf8.decode(base64.decode(b64Part), allowMalformed: true);
@@ -1814,7 +1922,8 @@ class DynamicScraperService {
         // no esperamos por hosts lentos para evitar latencia innecesaria en TV.
         if (extractedResults.isNotEmpty) {
           final lowTarget = target.toLowerCase();
-          final isLikelyFastHost = lowTarget.contains('voe') ||
+          final isLikelyFastHost =
+              lowTarget.contains('voe') ||
               lowTarget.contains('ibelin') ||
               lowTarget.contains('streamwish') ||
               lowTarget.contains('filelions');
@@ -1831,11 +1940,12 @@ class DynamicScraperService {
 
       if (extractedResults.isNotEmpty) {
         final primary = extractedResults.first;
-        final altUrls = extractedResults
-            .skip(1)
-            .map((r) => r.videoUrl)
-            .where((u) => u != primary.videoUrl)
-            .toList();
+        final altUrls =
+            extractedResults
+                .skip(1)
+                .map((r) => r.videoUrl)
+                .where((u) => u != primary.videoUrl)
+                .toList();
 
         final Set<ScrapedSubtitle> allSubs = {};
         for (final r in extractedResults) {
@@ -1874,15 +1984,17 @@ class DynamicScraperService {
       }
 
       final client = http.Client();
-      http.Response res = await client.get(
-        Uri.parse(currentUrl),
-        headers: {
-          'User-Agent': _ua,
-          'Accept':
-              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-        },
-      ).timeout(const Duration(seconds: 7));
+      http.Response res = await client
+          .get(
+            Uri.parse(currentUrl),
+            headers: {
+              'User-Agent': _ua,
+              'Accept':
+                  'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+            },
+          )
+          .timeout(const Duration(seconds: 7));
 
       // Redirección JavaScript de VOE a dominio de entrega
       if (res.body.contains("window.location.href = '") ||
@@ -1893,13 +2005,12 @@ class DynamicScraperService {
         if (redirectMatch != null) {
           final redirectUrl = redirectMatch.group(1)!;
           currentUrl = redirectUrl;
-          res = await client.get(
-            Uri.parse(currentUrl),
-            headers: {
-              'User-Agent': _ua,
-              'Referer': voeUrl,
-            },
-          ).timeout(const Duration(seconds: 7));
+          res = await client
+              .get(
+                Uri.parse(currentUrl),
+                headers: {'User-Agent': _ua, 'Referer': voeUrl},
+              )
+              .timeout(const Duration(seconds: 7));
         }
       }
       client.close();
@@ -1935,10 +2046,9 @@ class DynamicScraperService {
             if (streamUrl.contains('master.m3u8')) {
               try {
                 final masterClient = http.Client();
-                final masterRes = await masterClient.get(
-                  Uri.parse(streamUrl),
-                  headers: {'User-Agent': _ua},
-                ).timeout(const Duration(seconds: 2));
+                final masterRes = await masterClient
+                    .get(Uri.parse(streamUrl), headers: {'User-Agent': _ua})
+                    .timeout(const Duration(seconds: 2));
                 masterClient.close();
                 if (masterRes.statusCode == 200) {
                   final lines = masterRes.body.split('\n');
@@ -2049,15 +2159,17 @@ class DynamicScraperService {
   Future<ScrapedMetadata?> _scrapePeelinkMetadata(String url) async {
     try {
       final client = http.Client();
-      final res = await client.get(
-        Uri.parse(url),
-        headers: {
-          'User-Agent': _ua,
-          'Accept':
-              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-        },
-      ).timeout(const Duration(seconds: 8));
+      final res = await client
+          .get(
+            Uri.parse(url),
+            headers: {
+              'User-Agent': _ua,
+              'Accept':
+                  'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+            },
+          )
+          .timeout(const Duration(seconds: 8));
       client.close();
 
       if (res.statusCode != 200) return null;

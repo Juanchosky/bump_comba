@@ -1622,7 +1622,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
           scraperRetriesCount--;
           if (scraperRetriesCount > 0 && mounted) {
-            await Future.delayed(const Duration(seconds: 2));
+            // 400 ms, no 2 s: la via rapida ya reintenta por dentro, asi que
+            // esta espera solo anadia tiempo muerto visible al usuario.
+            await Future.delayed(const Duration(milliseconds: 400));
             debugPrint(
               'VideoPlayerScreen: Retrying scraper... ($scraperRetriesCount left)',
             );
