@@ -2143,11 +2143,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           }
           _activeDecoder = decoder;
 
-          final bool tieneResumePendiente =
-              startFrom != null && startFrom.inSeconds > 5;
-          final bool activarPrebufferInicial =
-              _usaPrebufferPremium && !tieneResumePendiente;
-
           final lowPlayback = currentUrl.toLowerCase();
           final bool isHlsStream =
               esContenidoScrapeado ||
@@ -2155,6 +2150,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               lowPlayback.contains('/hls') ||
               lowPlayback.contains('hls2') ||
               lowPlayback.contains('output=m3u8');
+
+          final bool tieneResumePendiente =
+              startFrom != null && startFrom.inSeconds > 5;
+          // IMPORTANTE: En HLS (.m3u8), cache-pause-initial=yes CUELGA el demuxer
+          // esperando un flujo continuo de bytes en vez de segmentos, provocando
+          // un stall falso de 21s antes de arrancar. Solo aplica a VOD directo (mp4/mkv).
+          final bool activarPrebufferInicial =
+              _usaPrebufferPremium && !tieneResumePendiente && !isHlsStream;
 
           final futures = <Future<dynamic>>[
             mpv.setProperty('alang', 'es,spa,esp,es-ES,es-MX,es-419'),
@@ -2164,12 +2167,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             mpv.setProperty('hr-seek', 'default'),
             mpv.setProperty('hr-seek-framedrop', 'yes'),
             // Cuanto búfer se junta ANTES de reanudar tras quedarse sin datos.
-            // Para HLS VOD, 2s da un arranque y adelantado instantáneo (como en web).
+            // Para HLS VOD, 0.5s da un arranque instantáneo.
             mpv.setProperty(
               'cache-pause-wait',
               _isLiveContent
                   ? '2'
-                  : (isHlsStream ? '1.5' : (lowPerf ? '4' : '5')),
+                  : (isHlsStream ? '0.5' : (lowPerf ? '4' : '5')),
             ),
             // ── PREBUFFER DE ARRANQUE (premium) ──────────────────────
             //

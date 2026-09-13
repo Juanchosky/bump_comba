@@ -262,6 +262,7 @@ class DynamicScraperService {
   static bool _isScrapingGlobal = false;
   HeadlessInAppWebView? _headlessWebView;
   String? _currentSessionId;
+  String _lastGnulaVdAuth = '&t=1996509fa001341686539b51edab4dc6';
 
   /// Detects if a URL is from a supported dynamic site.
   bool isSupported(String url) {
@@ -1386,7 +1387,7 @@ class DynamicScraperService {
         final code = m.group(2)!;
         return ExtractedStreamResult(
           videoUrl:
-              'https://ww3.gnulahd.nu/panel/vidara-resolve.php?pl=1&code=$code&host=$host&ext=.m3u8',
+              'https://ww3.gnulahd.nu/panel/vidara-resolve.php?pl=1&code=$code&host=$host$_lastGnulaVdAuth&ext=.m3u8',
         );
       }
     }
@@ -1481,6 +1482,9 @@ class DynamicScraperService {
       final pid = pidMatch?.group(1);
       final tok = tokMatch?.group(1);
       final vdAuth = vdAuthMatch?.group(1) ?? '';
+      if (vdAuth.isNotEmpty) {
+        _lastGnulaVdAuth = vdAuth;
+      }
 
       if (pid == null || tok == null) {
         debugPrint(
