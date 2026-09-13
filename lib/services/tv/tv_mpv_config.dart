@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart';
+import '../../utils/cabeceras_stream.dart';
 
 /// Configuracion de MPV para televisores, COMPARTIDA.
 ///
@@ -103,7 +104,10 @@ class TvMpvConfig {
         // el receptor nunca lo recibio. Por eso el mismo titulo va bien en el
         // movil y se corta en la tele.
         'load-unsafe-playlists': 'yes',
-        'hls-bitrate': 'min',
+        'user-agent': kUserAgentPorDefecto,
+        'http-header-fields': 'Connection: keep-alive',
+        'demuxer-cache-wait': 'no',
+        'hls-bitrate': 'auto',
         'stream-buffer-size': '8388608',
         'network-timeout': '35',
         'http-reconnect': 'yes',

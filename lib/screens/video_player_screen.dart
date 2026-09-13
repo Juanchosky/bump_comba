@@ -1642,6 +1642,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             url: streamResult.videoUrl,
             alternatives: [...item.alternatives, ...extraAlts],
           );
+          _currentItem = item;
           _scrapedSubtitles = streamResult.subtitles;
         } else {
           setState(() {

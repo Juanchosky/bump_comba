@@ -8,6 +8,7 @@ import '../services/tv/tv_protocol.dart';
 import '../services/tv/tv_sender.dart';
 import '../services/tv/tv_platform.dart';
 import 'turbo_proxy.dart';
+import 'dynamic_scraper_service.dart';
 
 /// Servicio singleton para descubrir y controlar dispositivos Chromecast.
 ///
@@ -1215,13 +1216,37 @@ class CastService {
     final original = _tvLastUrl;
     if (original == null) return;
 
-    String url = original;
-    if (!_tvLastIsLive) {
+    var url = original;
+    Map<String, String>? headers = _tvLastHeaders;
+
+    if (DynamicScraperService().isSupported(original)) {
+      try {
+        final streamResult =
+            await DynamicScraperService().extractStreamResult(original);
+        if (streamResult != null && streamResult.videoUrl.isNotEmpty) {
+          url = streamResult.videoUrl;
+          if (streamResult.headers.isNotEmpty) {
+            headers = {...?headers, ...streamResult.headers};
+          }
+          debugPrint('CastService: enlace dinámico resuelto para TV -> $url');
+        }
+      } catch (e) {
+        debugPrint('CastService: error resolviendo enlace dinámico: $e');
+      }
+    }
+
+    final lowUrl = url.toLowerCase();
+    final bool esHls = lowUrl.contains('.m3u8') ||
+        lowUrl.contains('/hls') ||
+        lowUrl.contains('output=m3u8') ||
+        _tvLastIsLive;
+
+    if (!_tvLastIsLive && !esHls) {
       try {
         final ip = await _ipLocalHaciaTv();
         if (ip != null) {
           final local = await TurboProxy()
-              .wrap(original, _tvLastHeaders)
+              .wrap(url, headers)
               .timeout(const Duration(seconds: 7));
           final lan = local == null ? null : TurboProxy().paraLan(local, ip);
           if (lan != null) {
@@ -1240,7 +1265,7 @@ class CastService {
       url: url,
       title: _tvLastTitle ?? '',
       position: startPosition,
-      headers: _tvLastHeaders,
+      headers: headers,
       thumbnailUrl: _tvLastThumb,
       seriesName: _tvLastSeriesName,
       season: _tvLastSeason,

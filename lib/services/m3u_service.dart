@@ -1295,22 +1295,37 @@ class M3UService extends ChangeNotifier {
         bool hasMore = true;
         int from = 0;
         const int batchSize = 1000;
+        const String columnas =
+            'id,title,title_aliases,video_url,thumbnail_url,type,parent_id,category,season,episode';
 
         while (hasMore) {
-          final response = await _supabase!
-              .from('custom_content')
-              .select()
-              .eq('is_active', true)
-              .range(from, from + batchSize - 1)
-              .timeout(const Duration(seconds: 8));
+          List<dynamic>? batch;
+          for (int intento = 0; intento < 3; intento++) {
+            try {
+              final response = await _supabase!
+                  .from('custom_content')
+                  .select(columnas)
+                  .eq('is_active', true)
+                  .order('id')
+                  .range(from, from + batchSize - 1)
+                  .timeout(const Duration(seconds: 15));
+              batch = response as List<dynamic>;
+              break;
+            } catch (e) {
+              if (intento == 2) rethrow;
+              await Future<void>.delayed(Duration(milliseconds: 500 * (intento + 1)));
+            }
+          }
 
-          final List<dynamic> batch = response as List;
-          list.addAll(batch);
-
-          if (batch.length < batchSize) {
+          if (batch == null || batch.isEmpty) {
             hasMore = false;
           } else {
-            from += batchSize;
+            list.addAll(batch);
+            if (batch.length < batchSize) {
+              hasMore = false;
+            } else {
+              from += batchSize;
+            }
           }
         }
         debugPrint(
@@ -2882,14 +2897,18 @@ class M3UService extends ChangeNotifier {
     }
 
     // Link alternatives from custom DB series if available
-    if (episodes.isNotEmpty && item.alternatives.isNotEmpty) {
+    if (item.alternatives.isNotEmpty) {
       final customSeriesAlt = item.alternatives.firstWhere(
         (a) => a.episodes.isNotEmpty || a.esDeLaBD,
         orElse: () => M3UItem(name: '', url: '', category: ''),
       );
 
       if (customSeriesAlt.episodes.isNotEmpty) {
-        episodes = _linkEpisodeLists(episodes, customSeriesAlt.episodes);
+        if (episodes.isEmpty) {
+          episodes = customSeriesAlt.episodes;
+        } else {
+          episodes = _linkEpisodeLists(episodes, customSeriesAlt.episodes);
+        }
       }
     }
 
@@ -4433,7 +4452,7 @@ List<M3UItem> _parseCustomContentInBackground(Map<String, dynamic> args) {
       finalItems.add(
         M3UItem(
           name: name,
-          url: '',
+          url: url.isNotEmpty ? url : sId,
           logo: sanitizeLogoUrl(row['thumbnail_url']),
           category: category,
           isFavorite: favorites.contains('${name}_'),

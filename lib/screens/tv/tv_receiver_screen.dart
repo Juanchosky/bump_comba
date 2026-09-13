@@ -15,6 +15,7 @@ import 'tv_loading_animation.dart';
 import 'tv_catalog_screen.dart';
 import 'tv_pairing_screen.dart';
 import '../../services/tv/tv_receiver_service.dart';
+import '../../services/dynamic_scraper_service.dart';
 
 /// Pantalla receptora que corre en el TV. Es dueña del [Player] de media_kit
 /// (el MISMO motor MPV que el teléfono) y ejecuta los comandos que llegan por
@@ -348,11 +349,34 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     final thumb = msg['thumbnailUrl']?.toString();
     _mediaThumb = (thumb == null || thumb.isEmpty) ? null : thumb;
 
+    var playUrl = url;
+    final playHeaders = Map<String, String>.from(headers ?? {});
+    if (DynamicScraperService().isSupported(url)) {
+      debugPrint('TvReceiver: LOAD enlace dinámico detectado: $url');
+      try {
+        final streamResult =
+            await DynamicScraperService().extractStreamResult(url);
+        if (streamResult != null && streamResult.videoUrl.isNotEmpty) {
+          playUrl = streamResult.videoUrl;
+          if (streamResult.headers.isNotEmpty) {
+            playHeaders.addAll(streamResult.headers);
+          }
+          debugPrint('TvReceiver: Enlace dinámico resuelto -> $playUrl');
+        } else {
+          debugPrint(
+            'TvReceiver: No se pudo resolver enlace dinámico, usando URL original',
+          );
+        }
+      } catch (e) {
+        debugPrint('TvReceiver: Error extrayendo stream dinámico: $e');
+      }
+    }
+
     // Que URL llega EXACTAMENTE al televisor. Es el dato que separa las dos
     // hipotesis del corte prematuro: si es un .m3u8 el problema es la lista de
     // segmentos agotandose, y si es un archivo directo es el proveedor.
     debugPrint(
-      'TvReceiver: LOAD url=$url pos=${position.toStringAsFixed(0)}s '
+      'TvReceiver: LOAD url=$playUrl pos=${position.toStringAsFixed(0)}s '
       'live=${msg['isLive'] == true}',
     );
 
@@ -371,7 +395,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     try {
       final bool isFromDB = msg['isFromDB'] == true;
       final bool isLive = msg['isLive'] == true;
-      final lowUrl = url.toLowerCase();
+      final lowUrl = playUrl.toLowerCase();
       final bool esHls = lowUrl.contains('.m3u8') ||
           lowUrl.contains('/hls') ||
           lowUrl.contains('output=m3u8') ||
@@ -395,7 +419,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
             if (isLive) {
               await mpv.setProperty('cache-secs', '60');
               await mpv.setProperty('demuxer-readahead-secs', '20');
-              await mpv.setProperty('hls-bitrate', isFromDB ? 'max' : 'auto');
+              await mpv.setProperty('hls-bitrate', isFromDB ? 'auto' : 'auto');
               await mpv.setProperty('hls-forward-cache-secs', '30');
               await mpv.setProperty('hls-back-cache-secs', '10');
               // En directo y HLS no se puede acumular bufer por adelantado sin quedarse
@@ -408,14 +432,15 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
               // Tienen toda la duración disponible. Un readahead de 45s y cache-pause-wait de 4s
               // evita que tras un salto el bufer se agote inmediatamente y entre en
               // bucle de flapping (buffering=true/false repetido) y desincronización A/V.
+              // demuxer-cache-wait: 'no' evita que MPV se congele esperando 50MB de buffer antes de emitir frames.
               await mpv.setProperty('cache-secs', '120');
               await mpv.setProperty('demuxer-readahead-secs', '45');
-              await mpv.setProperty('hls-bitrate', 'max');
+              await mpv.setProperty('hls-bitrate', 'auto');
               await mpv.setProperty('hls-forward-cache-secs', '45');
               await mpv.setProperty('hls-back-cache-secs', '30');
               await mpv.setProperty('cache-pause-initial', 'no');
               await mpv.setProperty('cache-pause-wait', '4');
-              await mpv.setProperty('demuxer-cache-wait', 'yes');
+              await mpv.setProperty('demuxer-cache-wait', 'no');
             }
           } else {
             // VOD: se restauran los valores del perfil de arranque, por si el
@@ -427,7 +452,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
           }
 
           if (isFromDB) {
-            await mpv.setProperty('hls-bitrate', 'max');
+            await mpv.setProperty('hls-bitrate', 'auto');
             // En TV (Chromecast / Android TV), NO sobrecargar la GPU con shaders pesados
             // (mitchell, linear-upscaling, sigmoid-upscaling, skiploopfilter=none).
             // Mantenemos bilinear y skiploopfilter=all de TvMpvConfig para fluidez total.
@@ -459,7 +484,11 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
               ? Duration(milliseconds: (position * 1000).round())
               : null;
       await _player.open(
-        Media(url, httpHeaders: headers, start: inicio),
+        Media(
+          playUrl,
+          httpHeaders: playHeaders.isEmpty ? null : playHeaders,
+          start: inicio,
+        ),
         play: true,
       );
 
@@ -1160,6 +1189,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     });
   }
 
+  // ignore: unused_element
   void _mostrarPregunta(Map<String, dynamic> msg) {
     _preguntaTimer?.cancel();
     _avisoSalirTimer?.cancel();

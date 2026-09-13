@@ -9,6 +9,7 @@ import '../../services/fast_image_service.dart';
 import '../../services/m3u_service.dart';
 import '../../services/tmdb_service.dart';
 import '../../services/tv/tv_vista_previa.dart';
+import '../../services/dynamic_scraper_service.dart';
 import '../../utils/colors.dart';
 import '../../utils/titulo_tmdb.dart';
 import 'tv_player_screen.dart';
@@ -93,6 +94,9 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
   @override
   void initState() {
     super.initState();
+    if (DynamicScraperService().isSupported(widget.item.url)) {
+      unawaited(DynamicScraperService().extractStreamResult(widget.item.url));
+    }
     _prepararFicha();
   }
 

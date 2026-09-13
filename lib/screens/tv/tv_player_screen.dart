@@ -489,11 +489,11 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     // — justo lo que este perfil existe para evitar.
     await TvMpvConfig.aplicarBase(_player);
 
-    if (widget.item.sourceName == 'Supabase') {
+    if (widget.item.esDeLaBD) {
       try {
         final mpv = _player.platform as dynamic;
         if (mpv != null) {
-          await mpv.setProperty('hls-bitrate', 'max');
+          await mpv.setProperty('hls-bitrate', 'auto');
           await mpv.setProperty('scale', 'bilinear');
           await mpv.setProperty('cscale', 'bilinear');
           await mpv.setProperty('linear-upscaling', 'no');
@@ -643,12 +643,12 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
           // permite iniciar de inmediato y saltar sin pausas excesivas.
           await mpv.setProperty('cache-secs', '120');
           await mpv.setProperty('demuxer-readahead-secs', '45');
-          await mpv.setProperty('hls-bitrate', 'max');
+          await mpv.setProperty('hls-bitrate', 'auto');
           await mpv.setProperty('hls-forward-cache-secs', '45');
           await mpv.setProperty('hls-back-cache-secs', '30');
           await mpv.setProperty('cache-pause-initial', 'no');
           await mpv.setProperty('cache-pause-wait', '2');
-          await mpv.setProperty('demuxer-cache-wait', 'yes');
+          await mpv.setProperty('demuxer-cache-wait', 'no');
           await mpv.setProperty('hr-seek', 'default');
           await mpv.setProperty('hr-seek-framedrop', 'yes');
           debugPrint('TvPlayer: perfil HLS VOD aplicado');
@@ -710,6 +710,9 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
 
         if (r != null && r.videoUrl.isNotEmpty) {
           _resueltos[indice] = r.videoUrl;
+          if (indice < _urls.length) {
+            _urls[indice] = r.videoUrl;
+          }
           if (r.alternativeUrls.isNotEmpty) {
             for (final alt in r.alternativeUrls) {
               if (!_urls.contains(alt)) {

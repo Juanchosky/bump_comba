@@ -1026,7 +1026,10 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     final vistos = <String>{};
     for (final it in origen) {
       final elegido = porNombreSerie[it.seriesName] ?? it;
-      if (elegido.isLive || !vistos.add(elegido.url)) continue;
+      final clave = (elegido.isSeries || elegido.seriesName != null)
+          ? 'series_${(elegido.seriesName ?? elegido.name).toLowerCase().trim()}'
+          : (elegido.url.isNotEmpty ? elegido.url : elegido.name).toLowerCase().trim();
+      if (elegido.isLive || !vistos.add(clave)) continue;
       salida.add(elegido);
       if (tope != null && salida.length >= tope) break;
     }
@@ -1035,19 +1038,19 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
 
   /// Lo que el usuario dejo a medias, del historial mas reciente al mas viejo.
   List<M3UItem> _calcularSeguirViendo(List<dynamic> historial) {
-    final porUrl = <String, M3UItem>{
-      for (final it in _servicio.items) it.url: it,
-    };
     final siguiendo = <M3UItem>[];
     final vistos = <String>{};
     for (final h in historial) {
       if (h.isCompleted) continue; // terminado no es "seguir viendo"
-      final it = porUrl[h.url];
+      final it = _servicio.resolveItemFromProgress(h);
       if (it == null) continue;
       // Sin repetir: el historial guarda una entrada POR CADA URL alternativa
       // del mismo titulo, asi que sin esto la fila salia con la misma pelicula
       // dos y tres veces seguidas.
-      if (!vistos.add(it.seriesName ?? it.name)) continue;
+      final clave = (it.isSeries || it.seriesName != null)
+          ? 'series_${(it.seriesName ?? it.name).toLowerCase().trim()}'
+          : (it.url.isNotEmpty ? it.url : it.name).toLowerCase().trim();
+      if (!vistos.add(clave)) continue;
       siguiendo.add(it);
       if (siguiendo.length >= 12) break;
     }

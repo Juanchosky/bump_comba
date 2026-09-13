@@ -228,11 +228,13 @@ class ExtractedStreamResult {
   final String videoUrl;
   final List<ScrapedSubtitle> subtitles;
   final List<String> alternativeUrls;
+  final Map<String, String> headers;
 
   ExtractedStreamResult({
     required this.videoUrl,
     this.subtitles = const [],
     this.alternativeUrls = const [],
+    this.headers = const {},
   });
 }
 
@@ -1533,6 +1535,21 @@ class DynamicScraperService {
         }
       }
 
+      // Priorizar candidatos con hosts de extracción rápida (VOE, etc.)
+      bool isFastCandidate(String u) {
+        final l = u.toLowerCase();
+        return l.contains('voe') ||
+            l.contains('ibelin') ||
+            l.contains('peliculasrey.me') ||
+            l.contains('/red2.php/');
+      }
+
+      candidateServerUrls.sort((a, b) {
+        final aFast = isFastCandidate(a) ? 0 : 1;
+        final bFast = isFastCandidate(b) ? 0 : 1;
+        return aFast.compareTo(bFast);
+      });
+
       debugPrint(
         'DynamicScraperService (Peelink): ${candidateServerUrls.length} servidores encontrados',
       );
@@ -1554,6 +1571,17 @@ class DynamicScraperService {
               target = dec;
             }
           } catch (_) {}
+        }
+
+        // Si ya tenemos al menos 1 resultado rápido y este target no parece de un host rápido,
+        // no esperamos por hosts lentos para evitar latencia innecesaria en TV.
+        if (extractedResults.isNotEmpty) {
+          final lowTarget = target.toLowerCase();
+          final isLikelyFastHost = lowTarget.contains('voe') ||
+              lowTarget.contains('ibelin') ||
+              lowTarget.contains('streamwish') ||
+              lowTarget.contains('filelions');
+          if (!isLikelyFastHost) continue;
         }
 
         final result = await _extractDirectStreamFromEmbed(target);
