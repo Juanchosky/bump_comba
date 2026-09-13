@@ -151,12 +151,20 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
   /// no la baja casi nunca. Preguntarle a MPV "¿estas cargando?" da una
   /// respuesta que no coincide con lo que se ve.
   ///
-  /// Si la posicion se movio hace menos de un segundo, hay imagen: no hay nada
-  /// que esperar y el spinner sobra, diga lo que diga la bandera.
+  /// Si el vídeo está pausado, o si ya arrancó y la reproducción avanza,
+  /// el spinner no debe mostrarse jamás.
+  /// Solo se muestra:
+  /// 1. Durante la carga inicial antes de arrancar (a menos que ya haya frame y progreso).
+  /// 2. Si MPV reporta `_buffering == true` y la posición lleva más de 1.5s congelada.
   bool get _cargando {
-    if (!_arranco) return true;
-    return DateTime.now().difference(_ultimoAvance) >
-        const Duration(milliseconds: 1000);
+    if (_pausadoAdrede || !_reproduciendo) return false;
+    if (!_arranco) {
+      if (_primerFrameListo && _posicion > Duration.zero) return false;
+      return true;
+    }
+    return _buffering &&
+        DateTime.now().difference(_ultimoAvance) >
+            const Duration(milliseconds: 1500);
   }
 
   /// Lo ultimo que se pinto, para repintar solo cuando cambia.
@@ -334,10 +342,20 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
 
     _subs.addAll([
       _player.stream.playing.listen((v) {
-        if (mounted) setState(() => _reproduciendo = v);
+        if (mounted) {
+          setState(() {
+            _reproduciendo = v;
+            _spinnerVisible = _cargando;
+          });
+        }
       }),
       _player.stream.buffering.listen((v) {
-        if (mounted) setState(() => _buffering = v);
+        if (mounted) {
+          setState(() {
+            _buffering = v;
+            _spinnerVisible = _cargando;
+          });
+        }
         if (v) _anotarCorte();
       }),
       _player.stream.position.listen((v) {
@@ -345,24 +363,29 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         // unico que prueba que el video esta corriendo. Se apunta SIEMPRE,
         // tambien mientras se apunta un salto: el vigilante necesita saber que
         // el video sigue vivo pase lo que pase.
-        if (v != _posicion) _ultimoAvance = DateTime.now();
+        final bool avanzo = v != _posicion;
+        if (avanzo) _ultimoAvance = DateTime.now();
 
         // ── MIENTRAS SE APUNTA UN SALTO, MANDA EL USUARIO ────────────────
-        //
-        // Aqui estaba el tiron de la linea de tiempo. `_saltar` escribe en
-        // `_posicion` el sitio al que vas, pero el salto no se ejecuta hasta
-        // 500 ms despues de soltar. En ese medio segundo MPV sigue
-        // reproduciendo y mandando su posicion REAL, que caia justo aqui y
-        // pisaba la del usuario.
-        //
-        // Resultado: la marca saltaba adelante al pulsar y volvia atras al
-        // instante siguiente, decenas de veces por segundo. Eso es el
-        // "glitch" — no era el dibujo, eran dos sitios distintos escribiendo
-        // la misma variable a la vez.
         if (_preparandoSalto) return;
 
+        bool estadoCambio = false;
+        if (!_arranco &&
+            _reproduciendo &&
+            (v > const Duration(milliseconds: 200) || _primerFrameListo)) {
+          _arranco = true;
+          _primerFrameListo = true;
+          if (_spinnerVisible) {
+            _spinnerVisible = false;
+            estadoCambio = true;
+          }
+        } else if (_cargando != _spinnerVisible) {
+          _spinnerVisible = _cargando;
+          estadoCambio = true;
+        }
+
         _posicion = v;
-        if (mounted && _controlesVisibles) setState(() {});
+        if (mounted && (_controlesVisibles || estadoCambio)) setState(() {});
       }),
       _player.stream.duration.listen((v) {
         if (mounted) setState(() => _duracion = v);
@@ -452,7 +475,13 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     _controlador.rect.addListener(() {
       final r = _controlador.rect.value;
       if (r != null && r.width > 0 && !_primerFrameListo && mounted) {
-        setState(() => _primerFrameListo = true);
+        setState(() {
+          _primerFrameListo = true;
+          if (_posicion > Duration.zero) {
+            _arranco = true;
+            _spinnerVisible = false;
+          }
+        });
       }
     });
 
@@ -619,7 +648,8 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
   /// telefono no mandaba `isLive`.
   Future<void> _ajustarPerfilSegunFuente(String url) async {
     final low = url.toLowerCase();
-    final esHls = low.contains('.m3u8') ||
+    final esHls =
+        low.contains('.m3u8') ||
         low.contains('/hls') ||
         low.contains('output=m3u8') ||
         DynamicScraperService().isSupported(widget.item.url);
@@ -1097,7 +1127,8 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
 
     final lowUrl = url.toLowerCase();
     final lowOrig = original.toLowerCase();
-    final bool esHls = lowUrl.contains('.m3u8') ||
+    final bool esHls =
+        lowUrl.contains('.m3u8') ||
         lowOrig.contains('.m3u8') ||
         lowUrl.contains('/hls') ||
         lowUrl.contains('output=m3u8') ||
@@ -1246,6 +1277,8 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         if (_reproduciendo &&
             _posicion > _posReferencia! + const Duration(milliseconds: 500)) {
           _arranco = true;
+          _primerFrameListo = true;
+          _spinnerVisible = false;
           // Este servidor SI va: la cuenta de fallos seguidos vuelve a cero.
           _fallosSeguidos = 0;
           // Y el veredicto de "no hay caudal" se anula: acaba de demostrarse
@@ -1253,11 +1286,7 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
           // agotaban los servidores por OTRO motivo, la pantalla culpaba a la
           // conexion de algo que no habia hecho.
           _faltaCaudal = false;
-          // Aqui NO se preparan alternativas. Se hacia, y era el segundo
-          // camino por el que el navegador arrancaba encima del video: basta
-          // con detectar medio segundo de avance, que no dice nada de si la
-          // reproduccion aguanta. De eso se ocupa el temporizador de arriba,
-          // que exige 25 segundos sin un solo tiron.
+          if (mounted) setState(() {});
           return;
         }
 
@@ -1296,7 +1325,8 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         // TurboProxy si sabe lo que esta bajando, porque es quien lo baja.
         // Sus bytes son la prueba de que el servidor responde.
         final bytes = TurboProxy.instance.currentBytesDownloaded;
-        final hayDatos = bytes > _bytesVigilados ||
+        final hayDatos =
+            bytes > _bytesVigilados ||
             _kbps > 0 ||
             _bufer > _buferVigilado ||
             _primerFrameListo ||
@@ -2022,7 +2052,7 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
               // recuadro está negro— pero a escala: 54 px dentro de
               // 360 x 203 lo llenan entero.
               child: TvLoadingAnimation(
-                size: grande ? 54 : 30,
+                size: grande ? 58 : 34,
                 strokeWidth: grande ? 4 : 2.5,
               ),
             ),

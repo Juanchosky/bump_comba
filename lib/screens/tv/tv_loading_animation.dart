@@ -1,72 +1,27 @@
-
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
-/// El spinner de la app, compartido por el receptor y el reproductor autonomo
-/// del televisor.
-///
-/// Vive aqui y no dentro de una pantalla porque los dos tienen que enseñar
-/// EXACTAMENTE el mismo: al transmitir salia este y al abrir desde el catalogo
-/// salia el `CircularProgressIndicator` de Material. Dos esperas distintas para
-/// la misma app se notan enseguida y restan.
-class TvLoadingAnimation extends StatefulWidget {
+/// Spinner de estilo iOS (CupertinoActivityIndicator), compartido por el
+/// receptor y el reproductor autónomo del televisor.
+class TvLoadingAnimation extends StatelessWidget {
   final double size;
   final double strokeWidth;
+  final Color? color;
 
-  const TvLoadingAnimation({super.key, this.size = 60, this.strokeWidth = 4});
-
-  @override
-  State<TvLoadingAnimation> createState() => TvLoadingAnimationState();
-}
-
-class TvLoadingAnimationState extends State<TvLoadingAnimation>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1100),
-    )..repeat();
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
+  const TvLoadingAnimation({
+    super.key,
+    this.size = 60,
+    this.strokeWidth = 4,
+    this.color,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return RotationTransition(
-      turns: _controller,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          Container(
-            width: widget.size,
-            height: widget.size,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(
-                color: Colors.red.withValues(alpha: 0.1),
-                width: widget.strokeWidth,
-              ),
-            ),
-          ),
-          SizedBox(
-            width: widget.size,
-            height: widget.size,
-            child: CircularProgressIndicator(
-              value: 0.3,
-              strokeWidth: widget.strokeWidth,
-              color: Colors.red,
-              strokeCap: StrokeCap.round,
-            ),
-          ),
-        ],
-      ),
+    // Escala del radio adaptada para verse nítida y perfectamente legible a distancia de sofá:
+    final radius = (size * 0.44).clamp(14.0, 38.0);
+    return CupertinoActivityIndicator(
+      radius: radius,
+      color: color ?? Colors.white,
     );
   }
 }

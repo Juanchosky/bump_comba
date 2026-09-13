@@ -86,6 +86,32 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
   /// quedaba en negro sin ninguna señal de que estuviera cargando.
   bool _primerFrameListo = false;
 
+  /// Momento del último avance real de posición, para distinguir
+  /// reproducción fluida de congelamiento/buffering real.
+  DateTime _ultimoAvance = DateTime.now();
+
+  /// Determina si de verdad se está cargando/esperando datos.
+  ///
+  /// El síntoma clásico: MPV levanta `buffering=true` mientras descarga
+  /// fragmentos HLS en segundo plano AUNQUE el vídeo esté reproduciendo a 60fps.
+  /// Además, si `_primerFrameListo` no se disparaba, el spinner se quedaba
+  /// clavado encima de la película en reproducción.
+  ///
+  /// Con esta lógica:
+  /// - Si no hay medio: false.
+  /// - Si no ha llegado el primer frame y está reproduciendo o abriendo: true.
+  /// - Si el usuario pausó o no está reproduciendo: false (no tapar la pausa con spinner).
+  /// - Si está reproduciendo: SOLO se considera buffering si la posición
+  ///   se ha quedado estancada por más de 1200ms con `_buffering == true`.
+  bool get _estaCargando {
+    if (!_hasMedia) return false;
+    if (!_primerFrameListo) return true;
+    if (!_playing) return false;
+    return _buffering &&
+        DateTime.now().difference(_ultimoAvance) >
+            const Duration(milliseconds: 1200);
+  }
+
   /// Posicion de la muestra anterior de `_pushStatus`, para detectar avance
   /// real. `null` justo despues de un LOAD: la primera muestra del contenido
   /// nuevo solo sirve de referencia, no se compara con la del anterior.
@@ -136,7 +162,10 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
         '${DateTime.now().difference(_lastLoadAt).inMilliseconds}ms '
         '(${r.width.toInt()}x${r.height.toInt()})',
       );
-      setState(() => _primerFrameListo = true);
+      setState(() {
+        _primerFrameListo = true;
+        _buffering = false;
+      });
     }
   }
 
@@ -354,8 +383,9 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     if (DynamicScraperService().isSupported(url)) {
       debugPrint('TvReceiver: LOAD enlace dinámico detectado: $url');
       try {
-        final streamResult =
-            await DynamicScraperService().extractStreamResult(url);
+        final streamResult = await DynamicScraperService().extractStreamResult(
+          url,
+        );
         if (streamResult != null && streamResult.videoUrl.isNotEmpty) {
           playUrl = streamResult.videoUrl;
           if (streamResult.headers.isNotEmpty) {
@@ -381,6 +411,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     );
 
     _lastLoadAt = DateTime.now();
+    _ultimoAvance = DateTime.now();
     if (mounted) {
       setState(() {
         _hasMedia = true;
@@ -396,7 +427,8 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
       final bool isFromDB = msg['isFromDB'] == true;
       final bool isLive = msg['isLive'] == true;
       final lowUrl = playUrl.toLowerCase();
-      final bool esHls = lowUrl.contains('.m3u8') ||
+      final bool esHls =
+          lowUrl.contains('.m3u8') ||
           lowUrl.contains('/hls') ||
           lowUrl.contains('output=m3u8') ||
           isLive;
@@ -675,8 +707,26 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
             '(buffering=$_buffering)',
           );
         }
+
+        final bool avanzo = p != _position;
+        if (avanzo) {
+          _ultimoAvance = DateTime.now();
+        }
+
+        // Si la posición avanza o ya tiene progreso (>0), hay imagen corriendo.
+        // Se asegura _primerFrameListo = true y _buffering = false de inmediato
+        // para que el spinner desaparezca en el acto.
+        final bool marcoListo =
+            !_primerFrameListo && (p > Duration.zero || avanzo);
+        if (marcoListo) {
+          _primerFrameListo = true;
+          _buffering = false;
+        }
+
         _position = p;
-        if (_controlsVisible && !_previewing && mounted) setState(() {});
+        if (mounted && ((_controlsVisible && !_previewing) || marcoListo)) {
+          setState(() {});
+        }
       }),
     );
     _subs.add(
@@ -792,7 +842,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
             // por segundo reconstruyendo el arbol del reproductor para un texto
             // invisible es de las cosas que se notan en un Chromecast HD.
             _downloadSpeedKbps = kbps;
-            if (_buffering || !_primerFrameListo || _controlsVisible) {
+            if (_estaCargando || _controlsVisible) {
               setState(() {});
             }
           }
@@ -870,7 +920,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
       // con el reproductor reproduciendo y sin buffering, hay imagen en
       // pantalla, se haya disparado el listener o no. Solo puede QUITAR el
       // overlay, nunca mantenerlo mas tiempo.
-      if (_hasMedia && !_primerFrameListo && playing && !buffering) {
+      if (_hasMedia && !_primerFrameListo && playing) {
         final anterior = _posAnterior;
         final r = _videoController.rect.value;
         final desdeLoad = DateTime.now().difference(_lastLoadAt);
@@ -884,19 +934,21 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
         //
         // Sigue siendo una RED: solo puede quitar el overlay, y el camino bueno
         // (el listener de rect) lo quita antes cuando puede.
-        if (anterior != null &&
-            pos > anterior &&
-            desdeLoad >= const Duration(seconds: 2) &&
-            r != null &&
-            r.width > 0 &&
-            r.height > 0 &&
-            mounted) {
+        if ((anterior != null && pos > anterior) ||
+            (desdeLoad >= const Duration(seconds: 2) &&
+                r != null &&
+                r.width > 0 &&
+                r.height > 0)) {
           debugPrint(
-            'TvReceiver: MEDIDA overlay quitado por avance de posicion a los '
-            '${desdeLoad.inMilliseconds}ms (el listener de rect no se disparo: '
-            'misma resolucion que el contenido anterior)',
+            'TvReceiver: MEDIDA overlay quitado por avance de posicion o textura a los '
+            '${desdeLoad.inMilliseconds}ms',
           );
-          setState(() => _primerFrameListo = true);
+          if (mounted) {
+            setState(() {
+              _primerFrameListo = true;
+              _buffering = false;
+            });
+          }
         }
       }
       _posAnterior = pos;
@@ -1242,7 +1294,6 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     }
     _pushStatus();
   }
-
 
   /// Mueve la posición de VISTA PREVIA sin bombardear al player con seeks. El
   /// salto real se aplica tras ~700ms sin pulsar (o con OK).
@@ -1629,12 +1680,12 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
                   ),
 
               // Spinner de carga idéntico al del reproductor del teléfono.
-              // Se mantiene mientras haya buffering O mientras no haya llegado el
+              // Se mantiene mientras haya buffering genuino O mientras no haya llegado el
               // primer frame: sin lo segundo, el arranque de una transmisión era
               // pantalla negra sin ninguna indicación de que estuviera cargando.
-              if (_hasMedia && (_buffering || !_primerFrameListo))
+              if (_estaCargando)
                 const Center(
-                  child: TvLoadingAnimation(size: 54, strokeWidth: 4),
+                  child: TvLoadingAnimation(size: 58, strokeWidth: 4),
                 ),
               // Velocidad de descarga: solo cuando ACOMPAÑA a algo.
               //
@@ -1650,8 +1701,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
               //
               // El resto del tiempo la pantalla se queda limpia, que es de lo
               // que se trata al ver algo en la tele.
-              if (_hasMedia &&
-                  (_buffering || !_primerFrameListo || _controlsVisible))
+              if (_hasMedia && (_estaCargando || _controlsVisible))
                 Positioned(
                   top: 40,
                   left: 48,
