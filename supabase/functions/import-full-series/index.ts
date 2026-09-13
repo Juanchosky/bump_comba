@@ -185,6 +185,11 @@ function extractMetadataFromHtml(html: string): {
     if (nameMatch) title = nameMatch[1].trim()
   }
 
+  if (!title) {
+    const h1Match = html.match(/<h1[^>]*>([^<]+)<\/h1>/i)
+    if (h1Match) title = h1Match[1].trim()
+  }
+
   if (!coverUrl) {
     const coverMatch = html.match(/src=["'](https?:\/\/[^"'\s]*\/cover\/[^"'\s]+)["']/i)
     if (coverMatch) coverUrl = coverMatch[1].trim()
@@ -358,6 +363,92 @@ serve(async (req: Request) => {
     }
 
     const origin = new URL(cleanUrl).origin
+
+    // Especial para GnulaHD (ww3.gnulahd.nu / gnulahd.*):
+    if (cleanUrl.includes("gnulahd")) {
+      const fullCardRegex = /<a[^>]*class=["'][^"']*gnrd-epc[^"']*["'][^>]*>([\s\S]*?)<\/a>/gi
+      const gnulaEpisodes: { season: number; episode: number; title: string; url: string; thumb: string | null }[] = []
+      let match: RegExpExecArray | null
+      while ((match = fullCardRegex.exec(mainHtml)) !== null) {
+        const fullTag = match[0]
+        const cardInner = match[1]
+
+        const sMatch = fullTag.match(/data-s=["'](\d+)["']/)
+        const eMatch = fullTag.match(/data-e=["'](\d+)["']/)
+        const hrefMatch = fullTag.match(/href=["']([^"']+)["']/)
+
+        const sNum = sMatch ? parseInt(sMatch[1]) : 1
+        const eNum = eMatch ? parseInt(eMatch[1]) : 1
+        let epUrl = hrefMatch ? hrefMatch[1] : ""
+        if (epUrl && !epUrl.startsWith("http")) {
+          epUrl = origin + (epUrl.startsWith('/') ? epUrl : '/' + epUrl)
+        }
+
+        const titleMatch = cardInner.match(/class=["'][^"']*gnrd-epc-title[^"']*["'][^>]*>\s*([^<]+)\s*</i)
+        const epTitle = titleMatch ? titleMatch[1].trim() : `Capitulo ${eNum}`
+
+        const thumbMatch = cardInner.match(/url\(['"]?([^'")]+)['"]?\)/i)
+        const epThumb = thumbMatch ? thumbMatch[1] : null
+
+        if (epUrl) {
+          gnulaEpisodes.push({
+            season: sNum,
+            episode: eNum,
+            title: epTitle.startsWith(`${sNum}x`) ? epTitle : `${sNum}x${eNum < 10 ? '0' : ''}${eNum} ${epTitle}`,
+            url: epUrl,
+            thumb: epThumb,
+          })
+        }
+      }
+
+      if (gnulaEpisodes.length > 0) {
+        console.log(`[import] GnulaHD: ${gnulaEpisodes.length} episodios detectados`)
+        gnulaEpisodes.sort((a, b) => a.season === b.season ? a.episode - b.episode : a.season - b.season)
+
+        const { data: existing } = await supabase
+          .from("custom_content")
+          .select("season,episode")
+          .eq("parent_id", seriesId)
+          .eq("type", "episode")
+        const existingSet = new Set((existing ?? []).map((e: any) => `${e.season}-${e.episode}`))
+
+        const toInsert = []
+        for (const ep of gnulaEpisodes) {
+          if (!existingSet.has(`${ep.season}-${ep.episode}`)) {
+            toInsert.push({
+              title: ep.title,
+              type: "episode",
+              category: finalCategory,
+              parent_id: seriesId,
+              season: ep.season,
+              episode: ep.episode,
+              video_url: ep.url,
+              thumbnail_url: ep.thumb ?? finalPoster ?? null,
+              is_active: true,
+            })
+          }
+        }
+
+        let inserted = 0
+        for (let i = 0; i < toInsert.length; i += 50) {
+          const batch = toInsert.slice(i, i + 50)
+          const { error: e } = await supabase.from("custom_content").insert(batch)
+          if (!e) inserted += batch.length
+          else console.error(`[import] Error al insertar episodios GnulaHD: ${e.message}`)
+        }
+
+        return new Response(JSON.stringify({
+          success: true,
+          series_id: seriesId,
+          series_title: seriesTitle,
+          series: { id: seriesId, title: seriesTitle },
+          seasons_processed: 1,
+          total_episodes: inserted,
+          message: `OK Serie GnulaHD importada: ${inserted} capitulos insertados de ${gnulaEpisodes.length} detectados.`,
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } })
+      }
+    }
+
     const seasonMap = new Map<number, string>()
 
     // A. Check explicit seasons array in __NEXT_DATA__

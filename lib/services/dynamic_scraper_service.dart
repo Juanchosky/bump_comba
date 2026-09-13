@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:http/http.dart' as http;
@@ -406,6 +407,13 @@ class DynamicScraperService {
 
     // 11. Uqload variants
     if (lowUrl.contains('uqload')) {
+      return true;
+    }
+
+    // 12. GnulaHD & Vidara variants
+    if (lowUrl.contains('gnulahd') ||
+        lowUrl.contains('vidara') ||
+        lowUrl.contains('vidaraa')) {
       return true;
     }
 
@@ -1337,12 +1345,15 @@ class DynamicScraperService {
     }
   }
 
-  // ── VÍA RÁPIDA NATIVA: PEELINK & VOE ────────────────────────────────────────
+  // ── VÍA RÁPIDA NATIVA: GNULAHD, PEELINK & VOE ──────────────────────────────
 
   Future<ExtractedStreamResult?> _tryFastDirectExtraction(
     String pageUrl,
   ) async {
     final low = pageUrl.toLowerCase();
+    if (low.contains('gnulahd')) {
+      return await _extractGnulaStream(pageUrl);
+    }
     if (low.contains('peelink')) {
       return await _extractPeelinkStream(pageUrl);
     }
@@ -1368,6 +1379,17 @@ class DynamicScraperService {
     String embedUrl,
   ) async {
     final low = embedUrl.toLowerCase();
+    if (low.contains('vidara')) {
+      final m = RegExp(r'https?://([^/]+)/e/([^/?#]+)').firstMatch(embedUrl);
+      if (m != null) {
+        final host = m.group(1)!;
+        final code = m.group(2)!;
+        return ExtractedStreamResult(
+          videoUrl:
+              'https://ww3.gnulahd.nu/panel/vidara-resolve.php?pl=1&code=$code&host=$host&ext=.m3u8',
+        );
+      }
+    }
     if (low.contains('voe.sx') ||
         low.contains('johnfullwonder') ||
         low.contains('voe-network') ||
@@ -1414,6 +1436,217 @@ class DynamicScraperService {
       }
     } catch (_) {}
 
+    return null;
+  }
+
+  Future<ExtractedStreamResult?> _extractGnulaStream(String pageUrl) async {
+    final client = http.Client();
+    try {
+      final res = await client.get(
+        Uri.parse(pageUrl),
+        headers: {
+          'User-Agent': _ua,
+          'Accept':
+              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+        },
+      ).timeout(const Duration(seconds: 8));
+
+      if (res.statusCode != 200) return null;
+      final html = res.body;
+
+      // Si nos pasaron la página de serie (/ver/...) en vez de un episodio,
+      // extraer el primer episodio de los cards .gnrd-epc
+      if (pageUrl.contains('/ver/') && html.contains('gnrd-epc')) {
+        final epCardMatch = RegExp(
+          r'''class=["'][^"']*gnrd-epc[^"']*["'][^>]*href=["']([^"']+)["']''',
+        ).firstMatch(html);
+        if (epCardMatch != null) {
+          final firstEpUrl = epCardMatch.group(1)!;
+          debugPrint(
+            'DynamicScraperService: Redirigiendo GnulaHD de serie a primer episodio -> $firstEpUrl',
+          );
+          return await _extractGnulaStream(firstEpUrl);
+        }
+      }
+
+      final pidMatch = RegExp(r'_gnrdPid\s*=\s*(\d+)').firstMatch(html);
+      final tokMatch = RegExp(
+        r'''_gnrdTok\s*=\s*['"]([^'"]+)['"]''',
+      ).firstMatch(html);
+      final vdAuthMatch = RegExp(
+        r'''VD_AUTH\s*=\s*['"]([^'"]+)['"]''',
+      ).firstMatch(html);
+
+      final pid = pidMatch?.group(1);
+      final tok = tokMatch?.group(1);
+      final vdAuth = vdAuthMatch?.group(1) ?? '';
+
+      if (pid == null || tok == null) {
+        debugPrint(
+          'DynamicScraperService: GnulaHD pid/tok no encontrados en HTML',
+        );
+        return null;
+      }
+
+      final apiUrl =
+          'https://ww3.gnulahd.nu/wp-json/gnrd/v1/player?id=$pid&t=$tok';
+      final apiRes = await client.get(
+        Uri.parse(apiUrl),
+        headers: {
+          'User-Agent': _ua,
+          'Referer': pageUrl,
+        },
+      ).timeout(const Duration(seconds: 8));
+
+      if (apiRes.statusCode != 200) return null;
+      final apiJson = jsonDecode(apiRes.body);
+      final p = apiJson['p'];
+      if (p == null || p is! String) return null;
+
+      final rawBytes = base64.decode(p);
+      const key = [103, 78, 55, 100]; // 'gN7d'
+      final decryptedBytes = List<int>.generate(
+        rawBytes.length,
+        (i) => rawBytes[i] ^ key[i % key.length],
+      );
+      final decStr = utf8.decode(decryptedBytes, allowMalformed: true);
+      final Map<String, dynamic> data = jsonDecode(decStr);
+
+      final langs = (data['langs'] as List?) ?? [];
+      Future<bool> isVidaraStreamHealthy(String testVidUrl) async {
+        try {
+          final testRes = await client.get(
+            Uri.parse(testVidUrl),
+            headers: {
+              'User-Agent': _ua,
+              'Referer': pageUrl,
+            },
+          ).timeout(const Duration(seconds: 5));
+
+          if (testRes.statusCode != 200 ||
+              !testRes.body.startsWith('#EXTM3U')) {
+            return false;
+          }
+
+          // Descarte inmediato de subdominios con caída conocida de DNS
+          if (testRes.body.contains('s25-wyl3')) {
+            debugPrint(
+              'DynamicScraperService: GnulaHD Vidara descartado por nodo caído en DNS -> s25-wyl3',
+            );
+            return false;
+          }
+
+          // Nodos verificados y activos (s8-t25, s11-t): aprobación instantánea
+          if (testRes.body.contains('s8-t25') ||
+              testRes.body.contains('s11-t')) {
+            return true;
+          }
+
+          // Validación DNS para otros posibles nodos desconocidos
+          final mHost = RegExp(
+            r'https?://([a-zA-Z0-9.-]+)/hls/',
+          ).firstMatch(testRes.body);
+          if (mHost != null) {
+            final cdnHost = mHost.group(1)!;
+            try {
+              final ips = await InternetAddress.lookup(cdnHost).timeout(
+                const Duration(seconds: 2),
+              );
+              if (ips.isEmpty) return false;
+            } catch (_) {
+              debugPrint(
+                'DynamicScraperService: GnulaHD Vidara host $cdnHost no resuelve DNS',
+              );
+              return false;
+            }
+          }
+          return true;
+        } catch (e) {
+          debugPrint('DynamicScraperService: Vidara health check fallo: $e');
+          return false;
+        }
+      }
+
+      // Orden de preferencia de idiomas: Latino -> Subtitulado -> Castellano -> Otros
+      int langRank(dynamic l) {
+        final label = (l['label'] ?? '').toString().toLowerCase();
+        if (label.contains('latino')) return 0;
+        if (label.contains('sub')) return 1;
+        if (label.contains('castellano') || label.contains('españa')) return 2;
+        return 3;
+      }
+
+      final sortedLangs = List.from(langs)
+        ..sort((a, b) => langRank(a).compareTo(langRank(b)));
+
+      String? primaryUrl;
+      final List<String> alternativeUrls = [];
+
+      for (final l in sortedLangs) {
+        final servers = (l['servers'] as List? ?? []);
+        for (final s in servers) {
+          final src = s['src']?.toString() ?? '';
+          if (src.isEmpty) continue;
+
+          // 1. Servidor Vidara (HLS 1080p directo ultra-rápido)
+          if (src.contains('vidara')) {
+            final m = RegExp(r'https?://([^/]+)/e/([^/?#]+)').firstMatch(src);
+            if (m != null) {
+              final host = m.group(1)!;
+              final code = m.group(2)!;
+              final vidUrl =
+                  'https://ww3.gnulahd.nu/panel/vidara-resolve.php?pl=1&code=$code&host=$host$vdAuth&ext=.m3u8';
+
+              if (primaryUrl == null) {
+                // El candidato primario se verifica para asegurar que no caiga en un nodo muerto
+                if (await isVidaraStreamHealthy(vidUrl)) {
+                  primaryUrl = vidUrl;
+                } else {
+                  // Reintentar una vez por si el balanceador rota de nodo
+                  await Future.delayed(const Duration(milliseconds: 200));
+                  if (await isVidaraStreamHealthy(vidUrl)) {
+                    primaryUrl = vidUrl;
+                  }
+                }
+              } else {
+                if (!alternativeUrls.contains(vidUrl)) {
+                  alternativeUrls.add(vidUrl);
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (primaryUrl != null) {
+        debugPrint(
+          'DynamicScraperService: GnulaHD resuelto y verificado exitosamente -> $primaryUrl (${alternativeUrls.length} alternativas activas)',
+        );
+        return ExtractedStreamResult(
+          videoUrl: primaryUrl,
+          alternativeUrls: alternativeUrls,
+        );
+      }
+
+      // Si ningún Vidara tuvo nodo saludable en DNS, intentar VOE de respaldo
+      for (final l in sortedLangs) {
+        final servers = (l['servers'] as List? ?? []);
+        for (final s in servers) {
+          final src = s['src']?.toString() ?? '';
+          if (src.contains('voe')) {
+            final voeRes = await _extractVoeStream(src);
+            if (voeRes != null && voeRes.videoUrl.isNotEmpty) {
+              return voeRes;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('DynamicScraperService: error extractGnulaStream: $e');
+    } finally {
+      client.close();
+    }
     return null;
   }
 
