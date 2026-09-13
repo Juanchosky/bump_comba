@@ -41,9 +41,6 @@ bool esEnVivoPorUrl(String url) {
       u.contains('voe') ||
       u.contains('peelink') ||
       u.contains('ibelin') ||
-      u.contains('gnulahd') ||
-      u.contains('vidara') ||
-      u.contains('bysevepoin') ||
       u.contains('cfglobalcdn')) {
     return false;
   }

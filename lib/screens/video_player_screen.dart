@@ -290,31 +290,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   static const int _graciaArranqueSegundos = 30;
 
   int _margenBajoSegundos = 0;
-
-  /// Si el reproductor se quedo sin datos ALGUNA vez durante la racha de
-  /// margen bajo que esta en curso.
-  ///
-  /// POR QUE HACE FALTA
-  /// El umbral de `_margenCritico` (12s) se calibro contra el perfil de VOD
-  /// directo, donde `cache-secs=120` y `readahead=90` hacen que un stream sano
-  /// viva con decenas de segundos de colchon. En HLS ese razonamiento no vale:
-  /// el perfil fija `hls-forward-cache-secs: 45`, o sea que el colchon esta
-  /// TOPADO por diseño, y en un enlace modesto un HLS perfectamente sano se
-  /// asienta entre 7 y 10 segundos y ahi se queda.
-  ///
-  /// El 2026-09-13, con `dang-1x08`, eso salio caro: 40 segundos de decodifi-
-  /// cacion impecable —24-26 fps entrando y saliendo cada segundo, ni un solo
-  /// stall— y el vigilante saltando igual porque el margen rondaba los 9s. El
-  /// salto no arreglo nada que estuviera roto: el servidor 1 no arranco en 25s
-  /// y hubo que volver al 0. Casi un minuto de cortes creado por el vigilante
-  /// para prevenir un corte que no venia.
-  ///
-  /// Un numero bajo no es sintoma; quedarse sin datos si. Asi que el salto
-  /// preventivo exige ademas que haya habido al menos un vaciado real durante
-  /// la racha. Eso conserva el caso para el que se escribio el vigilante —el
-  /// log del 2026-08-25, donde el margen oscilaba entre 4 y 0 CON stalls
-  /// encima— y deja en paz al que solo va justo pero llega.
-  bool _huboStallEnRachaMargen = false;
   DateTime? _ultimoSaltoPorMargen;
   bool _pausaLargaAplicada = false;
 
@@ -1647,9 +1622,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
           scraperRetriesCount--;
           if (scraperRetriesCount > 0 && mounted) {
-            // 400 ms, no 2 s: la via rapida ya reintenta por dentro, asi que
-            // esta espera solo anadia tiempo muerto visible al usuario.
-            await Future.delayed(const Duration(milliseconds: 400));
+            await Future.delayed(const Duration(seconds: 2));
             debugPrint(
               'VideoPlayerScreen: Retrying scraper... ($scraperRetriesCount left)',
             );
@@ -1692,8 +1665,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       if (!mounted) return;
       setState(() => _isScraping = false);
 
-      // Asegura que cualquier recurso del scraper termine de liberarse
+      // SYNC: Ensure Scraper WebView is COMPLETELY GONE before player starts
+      // This is the most important step for Motorola buffer stability.
       await DynamicScraperService().stopCurrentScraping();
+      await Future.delayed(const Duration(milliseconds: 300));
     }
 
     try {
@@ -1741,7 +1716,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         // pelicula anterior no pueden condenar al servidor de esta.
         _episodiosStall.clear();
         _margenBajoSegundos = 0;
-        _huboStallEnRachaMargen = false;
         _ultimoSaltoPorMargen = null;
         _pausaLargaAplicada = false;
         _autoPlayCancelled = false;
@@ -2169,6 +2143,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           }
           _activeDecoder = decoder;
 
+          final bool tieneResumePendiente =
+              startFrom != null && startFrom.inSeconds > 5;
+          final bool activarPrebufferInicial =
+              _usaPrebufferPremium && !tieneResumePendiente;
+
           final lowPlayback = currentUrl.toLowerCase();
           final bool isHlsStream =
               esContenidoScrapeado ||
@@ -2176,14 +2155,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               lowPlayback.contains('/hls') ||
               lowPlayback.contains('hls2') ||
               lowPlayback.contains('output=m3u8');
-
-          final bool tieneResumePendiente =
-              startFrom != null && startFrom.inSeconds > 5;
-          // IMPORTANTE: En HLS (.m3u8), cache-pause-initial=yes CUELGA el demuxer
-          // esperando un flujo continuo de bytes en vez de segmentos, provocando
-          // un stall falso de 21s antes de arrancar. Solo aplica a VOD directo (mp4/mkv).
-          final bool activarPrebufferInicial =
-              _usaPrebufferPremium && !tieneResumePendiente && !isHlsStream;
 
           final futures = <Future<dynamic>>[
             mpv.setProperty('alang', 'es,spa,esp,es-ES,es-MX,es-419'),
@@ -2193,12 +2164,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             mpv.setProperty('hr-seek', 'default'),
             mpv.setProperty('hr-seek-framedrop', 'yes'),
             // Cuanto búfer se junta ANTES de reanudar tras quedarse sin datos.
-            // Para HLS VOD, 2.5s da estabilidad frente a jitter y evita microcortes cada 3s.
+            // Para HLS VOD, 2s da un arranque y adelantado instantáneo (como en web).
             mpv.setProperty(
               'cache-pause-wait',
               _isLiveContent
                   ? '2'
-                  : (isHlsStream ? '2.5' : (lowPerf ? '4' : '5')),
+                  : (isHlsStream ? '1.5' : (lowPerf ? '4' : '5')),
             ),
             // ── PREBUFFER DE ARRANQUE (premium) ──────────────────────
             //
@@ -2275,9 +2246,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               mpv.setProperty('demuxer-readahead-secs', lowPerf ? '45' : '90'),
               mpv.setProperty('hls-bitrate', 'auto'),
               if (isHlsStream) ...[
-                mpv.setProperty('hls-forward-cache-secs', lowPerf ? '60' : '120'),
+                mpv.setProperty('hls-forward-cache-secs', '45'),
                 mpv.setProperty('hls-back-cache-secs', '30'),
-                mpv.setProperty('demuxer-cache-wait', 'yes'),
+                mpv.setProperty('demuxer-cache-wait', 'no'),
               ],
               mpv.setProperty('force-seekable', 'yes'),
               mpv.setProperty(
@@ -3460,15 +3431,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// arranque termine antes de los 10s; con 6 u 8 se corria el riesgo de
   /// provocar un cambio de servidor causado por nuestra propia pausa, que seria
   /// bastante peor que el desajuste que esto viene a arreglar.
-  static const Duration _topeEsperaPrimerFrame = Duration(milliseconds: 1200);
+  static const Duration _topeEsperaPrimerFrame = Duration(seconds: 4);
 
   Future<void> _esperarPrimerFrame() async {
     final inicio = DateTime.now();
     while (mounted && _player != null) {
       final r = _videoControllerNotifier.value?.rect.value;
-      final st = _player?.state;
-      if ((r != null && r.width > 0 && r.height > 0) ||
-          ((st?.width ?? 0) > 0 && (st?.height ?? 0) > 0)) {
+      if (r != null && r.width > 0 && r.height > 0) {
         debugPrint(
           'Primer frame listo en '
           '${DateTime.now().difference(inicio).inMilliseconds}ms',
@@ -3477,12 +3446,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       }
       if (DateTime.now().difference(inicio) >= _topeEsperaPrimerFrame) {
         debugPrint(
-          'Primer frame no llegó en ${_topeEsperaPrimerFrame.inMilliseconds}ms: '
+          'Primer frame no llegó en ${_topeEsperaPrimerFrame.inSeconds}s: '
           'se reanuda igual (audio primero, como antes)',
         );
         return;
       }
-      await Future.delayed(const Duration(milliseconds: 50));
+      await Future.delayed(const Duration(milliseconds: 100));
     }
   }
 
@@ -3697,11 +3666,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // —justo el enfermo— borrara la cuenta cada pocos segundos y no llegara
     // nunca al umbral. Se congela el contador y se sale; lo unico que lo baja
     // a cero es que el margen vuelva a estar sano (rama de abajo).
-    if (bufferandoAhora) {
-      // Quedarse sin datos es la corroboracion que le faltaba al margen bajo.
-      _huboStallEnRachaMargen = true;
-      return false;
-    }
+    if (bufferandoAhora) return false;
 
     // Ventanas donde un margen corto es NORMAL y no significa nada:
     // el arranque, un seek reciente y una reanudacion reciente. En las tres el
@@ -3715,7 +3680,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         enGracia(_lastSeekTime) ||
         enGracia(_lastResumeTime)) {
       _margenBajoSegundos = 0;
-      _huboStallEnRachaMargen = false;
       return false;
     }
 
@@ -3725,7 +3689,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // posicion nueva. No es un margen malo, es que no hay margen medible.
     if (margen < 0) {
       _margenBajoSegundos = 0;
-      _huboStallEnRachaMargen = false;
       return false;
     }
 
@@ -3744,22 +3707,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       }
     } else {
       _margenBajoSegundos = 0;
-      _huboStallEnRachaMargen = false;
     }
 
     if (_margenBajoSegundos < _confirmacionesNecesarias(margen)) return false;
-
-    // Margen bajo PERO sin un solo vaciado: el stream va justo y llega. Saltar
-    // aqui cambia algo que se ve bien por una reconexion que puede no arrancar.
-    if (!_huboStallEnRachaMargen) {
-      if (_margenBajoSegundos % 10 == 0) {
-        debugPrint(
-          'Margen bajo (${margen}s) pero sin cortes reales: no se salta, '
-          'el stream va justo y llega.',
-        );
-      }
-      return false;
-    }
 
     final enReposo =
         _ultimoSaltoPorMargen != null &&
@@ -3797,7 +3747,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       );
       _ultimoSaltoPorMargen = ahora;
       _margenBajoSegundos = 0;
-      _huboStallEnRachaMargen = false;
       _stallSeconds = 0;
       _saltarABDPorCongelamiento = true;
       _reloadVideo();
