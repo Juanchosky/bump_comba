@@ -1692,10 +1692,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       if (!mounted) return;
       setState(() => _isScraping = false);
 
-      // SYNC: Ensure Scraper WebView is COMPLETELY GONE before player starts
-      // This is the most important step for Motorola buffer stability.
+      // Asegura que cualquier recurso del scraper termine de liberarse
       await DynamicScraperService().stopCurrentScraping();
-      await Future.delayed(const Duration(milliseconds: 300));
     }
 
     try {
@@ -2195,12 +2193,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             mpv.setProperty('hr-seek', 'default'),
             mpv.setProperty('hr-seek-framedrop', 'yes'),
             // Cuanto búfer se junta ANTES de reanudar tras quedarse sin datos.
-            // Para HLS VOD, 0.5s da un arranque instantáneo.
+            // Para HLS VOD, 2.5s da estabilidad frente a jitter y evita microcortes cada 3s.
             mpv.setProperty(
               'cache-pause-wait',
               _isLiveContent
                   ? '2'
-                  : (isHlsStream ? '0.5' : (lowPerf ? '4' : '5')),
+                  : (isHlsStream ? '2.5' : (lowPerf ? '4' : '5')),
             ),
             // ── PREBUFFER DE ARRANQUE (premium) ──────────────────────
             //
@@ -2277,9 +2275,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               mpv.setProperty('demuxer-readahead-secs', lowPerf ? '45' : '90'),
               mpv.setProperty('hls-bitrate', 'auto'),
               if (isHlsStream) ...[
-                mpv.setProperty('hls-forward-cache-secs', '45'),
+                mpv.setProperty('hls-forward-cache-secs', lowPerf ? '60' : '120'),
                 mpv.setProperty('hls-back-cache-secs', '30'),
-                mpv.setProperty('demuxer-cache-wait', 'no'),
+                mpv.setProperty('demuxer-cache-wait', 'yes'),
               ],
               mpv.setProperty('force-seekable', 'yes'),
               mpv.setProperty(
@@ -3462,13 +3460,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// arranque termine antes de los 10s; con 6 u 8 se corria el riesgo de
   /// provocar un cambio de servidor causado por nuestra propia pausa, que seria
   /// bastante peor que el desajuste que esto viene a arreglar.
-  static const Duration _topeEsperaPrimerFrame = Duration(seconds: 4);
+  static const Duration _topeEsperaPrimerFrame = Duration(milliseconds: 1200);
 
   Future<void> _esperarPrimerFrame() async {
     final inicio = DateTime.now();
     while (mounted && _player != null) {
       final r = _videoControllerNotifier.value?.rect.value;
-      if (r != null && r.width > 0 && r.height > 0) {
+      final st = _player?.state;
+      if ((r != null && r.width > 0 && r.height > 0) ||
+          ((st?.width ?? 0) > 0 && (st?.height ?? 0) > 0)) {
         debugPrint(
           'Primer frame listo en '
           '${DateTime.now().difference(inicio).inMilliseconds}ms',
@@ -3477,12 +3477,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       }
       if (DateTime.now().difference(inicio) >= _topeEsperaPrimerFrame) {
         debugPrint(
-          'Primer frame no llegó en ${_topeEsperaPrimerFrame.inSeconds}s: '
+          'Primer frame no llegó en ${_topeEsperaPrimerFrame.inMilliseconds}ms: '
           'se reanuda igual (audio primero, como antes)',
         );
         return;
       }
-      await Future.delayed(const Duration(milliseconds: 100));
+      await Future.delayed(const Duration(milliseconds: 50));
     }
   }
 

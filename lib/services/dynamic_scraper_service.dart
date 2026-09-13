@@ -1629,11 +1629,7 @@ class DynamicScraperService {
                 Uri.parse(testVidUrl),
                 headers: {'User-Agent': _ua, 'Referer': pageUrl},
               )
-              // 6 s, no 3: el 2026-09-13 esta comprobacion caduco por timeout
-              // en un enlace de 1.15 Mbps y descarto un nodo que estaba sano.
-              // Como todos los candidatos se prueban en paralelo, el plazo mas
-              // largo no retrasa el arranque salvo cuando no hay respuesta.
-              .timeout(const Duration(seconds: 6));
+              .timeout(const Duration(milliseconds: 3500));
 
           if (testRes.statusCode != 200 ||
               !testRes.body.startsWith('#EXTM3U')) {
@@ -1714,24 +1710,15 @@ class DynamicScraperService {
         return out;
       }
 
-      // EL IDIOMA NO SE MEZCLA ENTRE ALTERNATIVAS
-      //
-      // Antes se metian en una sola lista los candidatos de TODOS los idiomas,
-      // ordenados por preferencia. El primario salia en latino, si — pero cada
-      // alternativa detras de los nodos latinos era el mismo episodio en
-      // subtitulado o castellano. En cuanto el failover saltaba una vez, la
-      // pelicula seguia en ingles con subtitulos, que es exactamente lo que se
-      // reporto el 2026-09-13.
-      //
-      // Un servidor alternativo existe para sobrevivir a un nodo caido, no
-      // para cambiarte el doblaje. Asi que se agota ENTERO el grupo de idioma
-      // preferido —todos sus nodos— antes de mirar el siguiente, y solo se
-      // baja de grupo si ese idioma no tiene ni un candidato.
       final Map<int, List<dynamic>> porIdioma = {};
       for (final l in langs) {
         porIdioma.putIfAbsent(langRank(l), () => []).add(l);
       }
       final rangos = porIdioma.keys.toList()..sort();
+
+      String? primaryUrl;
+      final List<String> allAlternatives = [];
+      String primaryEtiqueta = '';
 
       for (final rango in rangos) {
         final candidatos = candidatosDe(porIdioma[rango]!);
@@ -1740,11 +1727,6 @@ class DynamicScraperService {
         final etiqueta =
             (porIdioma[rango]!.first['label'] ?? 'desconocido').toString();
 
-        // POR QUE EN PARALELO
-        // Antes se probaba el primer candidato y, si fallaba, se esperaba
-        // 200 ms y se repetia EL MISMO: hasta 10 s mirando un nodo muerto
-        // antes de llegar al segundo. Lanzandolas todas a la vez el coste es
-        // el de la mas lenta (6 s como techo) y casi siempre <500 ms.
         final resultados = await Future.wait(candidatos.map(probarVidara));
         final sanos = <String>[
           for (var i = 0; i < candidatos.length; i++)
@@ -1752,20 +1734,29 @@ class DynamicScraperService {
         ];
 
         if (sanos.isNotEmpty) {
-          debugPrint(
-            'DynamicScraperService: GnulaHD resuelto en "$etiqueta" -> ${sanos.first} (${sanos.length - 1} alternativas del mismo idioma)',
-          );
-          return ExtractedStreamResult(
-            videoUrl: sanos.first,
-            alternativeUrls: sanos.skip(1).toList(),
-          );
+          if (primaryUrl == null) {
+            primaryUrl = sanos.first;
+            primaryEtiqueta = etiqueta;
+            allAlternatives.addAll(sanos.skip(1));
+          } else {
+            // Respaldos adicionales en caso de caída del servidor principal
+            for (final alt in sanos) {
+              if (!allAlternatives.contains(alt) && alt != primaryUrl) {
+                allAlternatives.add(alt);
+              }
+            }
+          }
+          if (allAlternatives.isNotEmpty) break;
         }
+      }
 
-        // Ningun nodo de este idioma paso la verificacion. Se prueban los
-        // demas idiomas antes de darlo por perdido; si tampoco hay, mas abajo
-        // se vuelve a este grupo sin verificar.
+      if (primaryUrl != null) {
         debugPrint(
-          'DynamicScraperService: ningun nodo sano en "$etiqueta", probando el siguiente idioma',
+          'DynamicScraperService: GnulaHD resuelto en "$primaryEtiqueta" -> $primaryUrl (${allAlternatives.length} alternativas)',
+        );
+        return ExtractedStreamResult(
+          videoUrl: primaryUrl,
+          alternativeUrls: allAlternatives,
         );
       }
 
