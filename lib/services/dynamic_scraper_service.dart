@@ -1679,39 +1679,72 @@ class DynamicScraperService {
         }
       }
 
-      // Orden de preferencia de idiomas: Latino -> Subtitulado -> Castellano -> Otros
+      // Orden de preferencia de idiomas: Latino -> Castellano -> Subtitulado
+      //
+      // Subtitulado baja al ultimo puesto a proposito: "subtitulado" significa
+      // audio ORIGINAL —ingles, casi siempre— con subtitulos encima. Como
+      // idioma hablado es justo lo que no se quiere.
       int langRank(dynamic l) {
         final label = (l['label'] ?? '').toString().toLowerCase();
-        if (label.contains('latino')) return 0;
-        if (label.contains('sub')) return 1;
-        if (label.contains('castellano') || label.contains('españa')) return 2;
-        return 3;
-      }
-
-      final sortedLangs = List.from(langs)
-        ..sort((a, b) => langRank(a).compareTo(langRank(b)));
-
-      // Todos los candidatos Vidara, ya en orden de preferencia de idioma.
-      final List<String> candidatos = [];
-      for (final l in sortedLangs) {
-        for (final s in (l['servers'] as List? ?? [])) {
-          final src = s['src']?.toString() ?? '';
-          if (src.isEmpty || !src.contains('vidara')) continue;
-          final m = RegExp(r'https?://([^/]+)/e/([^/?#]+)').firstMatch(src);
-          if (m == null) continue;
-          final vidUrl =
-              'https://ww3.gnulahd.nu/panel/vidara-resolve.php?pl=1'
-              '&code=${m.group(2)}&host=${m.group(1)}$vdAuth&ext=.m3u8';
-          if (!candidatos.contains(vidUrl)) candidatos.add(vidUrl);
+        if (label.contains('latino') ||
+            label.contains('lat.') ||
+            label.trim() == 'lat') {
+          return 0;
         }
+        if (label.contains('castellano') || label.contains('españa')) return 1;
+        if (label.contains('sub')) return 3;
+        return 2;
       }
 
-      if (candidatos.isNotEmpty) {
+      /// Candidatos Vidara de UN solo grupo de idioma.
+      List<String> candidatosDe(Iterable<dynamic> grupo) {
+        final out = <String>[];
+        for (final l in grupo) {
+          for (final s in (l['servers'] as List? ?? [])) {
+            final src = s['src']?.toString() ?? '';
+            if (src.isEmpty || !src.contains('vidara')) continue;
+            final m = RegExp(r'https?://([^/]+)/e/([^/?#]+)').firstMatch(src);
+            if (m == null) continue;
+            final vidUrl =
+                'https://ww3.gnulahd.nu/panel/vidara-resolve.php?pl=1'
+                '&code=${m.group(2)}&host=${m.group(1)}$vdAuth&ext=.m3u8';
+            if (!out.contains(vidUrl)) out.add(vidUrl);
+          }
+        }
+        return out;
+      }
+
+      // EL IDIOMA NO SE MEZCLA ENTRE ALTERNATIVAS
+      //
+      // Antes se metian en una sola lista los candidatos de TODOS los idiomas,
+      // ordenados por preferencia. El primario salia en latino, si — pero cada
+      // alternativa detras de los nodos latinos era el mismo episodio en
+      // subtitulado o castellano. En cuanto el failover saltaba una vez, la
+      // pelicula seguia en ingles con subtitulos, que es exactamente lo que se
+      // reporto el 2026-09-13.
+      //
+      // Un servidor alternativo existe para sobrevivir a un nodo caido, no
+      // para cambiarte el doblaje. Asi que se agota ENTERO el grupo de idioma
+      // preferido —todos sus nodos— antes de mirar el siguiente, y solo se
+      // baja de grupo si ese idioma no tiene ni un candidato.
+      final Map<int, List<dynamic>> porIdioma = {};
+      for (final l in langs) {
+        porIdioma.putIfAbsent(langRank(l), () => []).add(l);
+      }
+      final rangos = porIdioma.keys.toList()..sort();
+
+      for (final rango in rangos) {
+        final candidatos = candidatosDe(porIdioma[rango]!);
+        if (candidatos.isEmpty) continue;
+
+        final etiqueta =
+            (porIdioma[rango]!.first['label'] ?? 'desconocido').toString();
+
         // POR QUE EN PARALELO
         // Antes se probaba el primer candidato y, si fallaba, se esperaba
         // 200 ms y se repetia EL MISMO: hasta 10 s mirando un nodo muerto
         // antes de llegar al segundo. Lanzandolas todas a la vez el coste es
-        // el de la mas lenta (3 s como techo) y casi siempre <500 ms.
+        // el de la mas lenta (6 s como techo) y casi siempre <500 ms.
         final resultados = await Future.wait(candidatos.map(probarVidara));
         final sanos = <String>[
           for (var i = 0; i < candidatos.length; i++)
@@ -1720,7 +1753,7 @@ class DynamicScraperService {
 
         if (sanos.isNotEmpty) {
           debugPrint(
-            'DynamicScraperService: GnulaHD resuelto y verificado exitosamente -> ${sanos.first} (${sanos.length - 1} alternativas activas)',
+            'DynamicScraperService: GnulaHD resuelto en "$etiqueta" -> ${sanos.first} (${sanos.length - 1} alternativas del mismo idioma)',
           );
           return ExtractedStreamResult(
             videoUrl: sanos.first,
@@ -1728,11 +1761,23 @@ class DynamicScraperService {
           );
         }
 
-        // Ningun nodo paso la verificacion. Antes de rendirse al WebView
-        // (30 s de anuncios) se devuelve el primero sin verificar: el failover
-        // del reproductor ya cubre ese caso y es mucho mas rapido que el plan B.
+        // Ningun nodo de este idioma paso la verificacion. Se prueban los
+        // demas idiomas antes de darlo por perdido; si tampoco hay, mas abajo
+        // se vuelve a este grupo sin verificar.
         debugPrint(
-          'DynamicScraperService: GnulaHD sin nodo verificado; se usa el primer candidato',
+          'DynamicScraperService: ningun nodo sano en "$etiqueta", probando el siguiente idioma',
+        );
+      }
+
+      // Ningun idioma tuvo un nodo que pasara la verificacion. Antes de
+      // rendirse al WebView (30 s de anuncios) se devuelve el grupo preferido
+      // sin verificar: el failover del reproductor ya cubre ese caso y es
+      // mucho mas rapido que el plan B.
+      for (final rango in rangos) {
+        final candidatos = candidatosDe(porIdioma[rango]!);
+        if (candidatos.isEmpty) continue;
+        debugPrint(
+          'DynamicScraperService: GnulaHD sin nodo verificado; se usa el primer candidato del idioma preferido',
         );
         return ExtractedStreamResult(
           videoUrl: candidatos.first,
@@ -1741,8 +1786,10 @@ class DynamicScraperService {
       }
 
       // Si no habia ningun Vidara, intentar VOE de respaldo
-      for (final l in sortedLangs) {
-        final servers = (l['servers'] as List? ?? []);
+      for (final rango in rangos) {
+        final servers = [
+          for (final l in porIdioma[rango]!) ...(l['servers'] as List? ?? []),
+        ];
         for (final s in servers) {
           final src = s['src']?.toString() ?? '';
           if (src.contains('voe')) {
