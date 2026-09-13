@@ -1393,67 +1393,54 @@ class _BotonMiListaState extends State<_BotonMiLista> {
       },
       child: GestureDetector(
         onTap: widget.onOk,
-        child: AnimatedScale(
-          scale: _foco ? 1.05 : 1.0,
+        child: AnimatedContainer(
           duration: const Duration(milliseconds: 140),
-          curve: Curves.easeOut,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 140),
-            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 9),
-            decoration: BoxDecoration(
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 9),
+          decoration: BoxDecoration(
+            color: _foco
+                ? Colors.white
+                : const Color(0xFF1E1E22),
+            borderRadius: BorderRadius.zero,
+            border: Border.all(
               color: _foco
                   ? Colors.white
-                  : const Color(0xFF1E1E22).withValues(alpha: 0.85),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                color: _foco
-                    ? Colors.white
-                    : fav
-                        ? const Color(0xFFF5A623).withValues(alpha: 0.7)
-                        : Colors.white.withValues(alpha: 0.22),
-                width: 1.5,
-              ),
-              boxShadow: _foco
-                  ? [
-                      BoxShadow(
-                        color: Colors.white.withValues(alpha: 0.25),
-                        blurRadius: 12,
-                        spreadRadius: 1,
-                      ),
-                    ]
-                  : null,
+                  : fav
+                      ? const Color(0xFFF5A623).withValues(alpha: 0.7)
+                      : Colors.white.withValues(alpha: 0.22),
+              width: 1.5,
             ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  fav ? Icons.check_rounded : Icons.add_rounded,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                fav ? Icons.check_rounded : Icons.add_rounded,
+                color: _foco
+                    ? const Color(0xFF0B0B0D)
+                    : fav
+                        ? const Color(0xFFF5A623)
+                        : Colors.white,
+                size: 19,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'Mi lista',
+                style: TextStyle(
                   color: _foco
                       ? const Color(0xFF0B0B0D)
                       : fav
                           ? const Color(0xFFF5A623)
                           : Colors.white,
-                  size: 19,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.2,
                 ),
-                const SizedBox(width: 8),
-                Text(
-                  fav ? 'En mi lista' : 'Agregar a mi lista',
-                  style: TextStyle(
-                    color: _foco
-                        ? const Color(0xFF0B0B0D)
-                        : fav
-                            ? const Color(0xFFF5A623)
-                            : Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0.2,
-                  ),
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),
     );
   }
 }
+

@@ -153,7 +153,7 @@ class _TvFavoritesScreenState extends State<TvFavoritesScreen> {
                               const Padding(
                                 padding: EdgeInsets.symmetric(horizontal: 40),
                                 child: Text(
-                                  'Agrega películas y series usando el botón "Agregar a mi lista"\nen los detalles de cualquier título para verlos aquí.',
+                                  'Agrega películas y series usando el botón "Mi lista"\nen los detalles de cualquier título para verlos aquí.',
                                   textAlign: TextAlign.center,
                                   style: TextStyle(
                                     color: Colors.white54,
