@@ -263,6 +263,21 @@ class DynamicScraperService {
   String? _currentSessionId;
 
   /// Detects if a URL is from a supported dynamic site.
+  /// Devuelve true si la URL pertenece a un servicio de descarga directa
+  /// (file hoster) que no soporta Range requests ni streaming real.
+  /// Estas URLs no deben usarse como fuente de reproducción.
+  static bool _esUrlFileHoster(String url) {
+    final low = url.toLowerCase();
+    return low.contains('multiup.io') ||
+        low.contains('1fichier.com') ||
+        low.contains('rapidgator') ||
+        low.contains('nitroflare') ||
+        low.contains('katfile') ||
+        low.contains('mega.nz') ||
+        low.contains('mediafire.com') ||
+        low.contains('uptobox');
+  }
+
   bool isSupported(String url) {
     if (url.isEmpty) return false;
     final lowUrl = url.toLowerCase();
@@ -409,6 +424,23 @@ class DynamicScraperService {
       return true;
     }
 
+    // 12. Gnula variants
+    if (lowUrl.contains('gnulahd') ||
+        lowUrl.contains('gnula.nu') ||
+        lowUrl.contains('gnula.cc') ||
+        lowUrl.contains('gnula.se') ||
+        lowUrl.contains('gnula.life') ||
+        lowUrl.contains('gnula.club') ||
+        lowUrl.contains('gnula.')) {
+      return true;
+    }
+
+    // 13. OK.ru variants
+    if (lowUrl.contains('ok.ru') ||
+        lowUrl.contains('odnoklassniki')) {
+      return true;
+    }
+
     return false;
   }
 
@@ -504,6 +536,10 @@ class DynamicScraperService {
       'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36';
 
+  static const String _desktopUa =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+
   /// Abre un `.m3u8` y devuelve la altura de la MEJOR variante que declara.
   /// `null` si no es una lista maestra o no se pudo leer.
   ///
@@ -566,6 +602,13 @@ class DynamicScraperService {
 
     if (url.toLowerCase().contains('peelink')) {
       final fastMeta = await _scrapePeelinkMetadata(url);
+      if (fastMeta != null) {
+        return fastMeta;
+      }
+    }
+
+    if (url.toLowerCase().contains('gnula')) {
+      final fastMeta = await _scrapeGnulaMetadata(url);
       if (fastMeta != null) {
         return fastMeta;
       }
@@ -816,7 +859,8 @@ class DynamicScraperService {
 
     final guardada = _resueltas[pageUrl];
     if (guardada != null) {
-      if (DateTime.now().isBefore(guardada.hasta)) {
+      if (DateTime.now().isBefore(guardada.hasta) &&
+          !_esUrlFileHoster(guardada.resultado.videoUrl)) {
         debugPrint('DynamicScraperService: ya resuelta, sin abrir WebView');
         return guardada.resultado;
       }
@@ -1019,12 +1063,19 @@ class DynamicScraperService {
           if (urlStr.contains('.m3u8') ||
               urlStr.contains('.mp4') ||
               urlStr.contains('googlevideo.com')) {
-            final score = _getQualityScore(urlStr);
-            candidateUrls[urlStr] = score;
-            debugPrint(
-              'DynamicScraperService: Intercepted candidate stream (Score: $score P): $urlStr',
-            );
-            resolveBestCandidate();
+            // Saltar file-hosters: no soportan Range requests ni streaming real.
+            if (_esUrlFileHoster(urlStr)) {
+              debugPrint(
+                'DynamicScraperService: Ignorando file-hoster en WebView: $urlStr',
+              );
+            } else {
+              final score = _getQualityScore(urlStr);
+              candidateUrls[urlStr] = score;
+              debugPrint(
+                'DynamicScraperService: Intercepted candidate stream (Score: $score P): $urlStr',
+              );
+              resolveBestCandidate();
+            }
           }
           return null;
         },
@@ -1219,7 +1270,8 @@ class DynamicScraperService {
                         final itemMap = Map<String, dynamic>.from(item);
                         final u = itemMap['url']?.toString();
                         final s = itemMap['score'];
-                        if (u != null && u.isNotEmpty && s is num) {
+                        if (u != null && u.isNotEmpty && s is num &&
+                            !_esUrlFileHoster(u)) {
                           candidateUrls[u] = s.toInt();
                         }
                       }
@@ -1346,6 +1398,12 @@ class DynamicScraperService {
     if (low.contains('peelink')) {
       return await _extractPeelinkStream(pageUrl);
     }
+    if (low.contains('gnula')) {
+      return await _extractGnulaStream(pageUrl);
+    }
+    if (low.contains('ok.ru') || low.contains('odnoklassniki')) {
+      return await _extractOkRuStream(pageUrl);
+    }
     if (low.contains('voe.sx') ||
         low.contains('johnfullwonder') ||
         low.contains('voe-network') ||
@@ -1368,6 +1426,9 @@ class DynamicScraperService {
     String embedUrl,
   ) async {
     final low = embedUrl.toLowerCase();
+    if (low.contains('ok.ru') || low.contains('odnoklassniki')) {
+      return await _extractOkRuStream(embedUrl);
+    }
     if (low.contains('voe.sx') ||
         low.contains('johnfullwonder') ||
         low.contains('voe-network') ||
@@ -1899,6 +1960,477 @@ class DynamicScraperService {
       }
     } catch (e) {
       debugPrint('DynamicScraperService: error _scrapePeelinkMetadata: $e');
+    }
+    return null;
+  }
+
+  Future<ExtractedStreamResult?> _extractOkRuStream(String okUrl) async {
+    try {
+      var embedUrl = okUrl;
+      if (embedUrl.contains('/video/') && !embedUrl.contains('/videoembed/')) {
+        embedUrl = embedUrl.replaceFirst('/video/', '/videoembed/');
+      }
+
+      final client = http.Client();
+      final res = await client.get(
+        Uri.parse(embedUrl),
+        headers: {
+          'User-Agent': _desktopUa,
+          'Referer': 'https://ok.ru/',
+        },
+      ).timeout(const Duration(seconds: 8));
+      client.close();
+
+      if (res.statusCode != 200) return null;
+      final html = res.body;
+
+      String? hlsUrl;
+      final List<String> altUrls = [];
+
+      // 1. Parsear data-options
+      final optMatch = RegExp(r'''data-options=(["'])(.*?)\1''', dotAll: true).firstMatch(html);
+      if (optMatch != null) {
+        try {
+          var rawOpt = optMatch.group(2) ?? '';
+          rawOpt = rawOpt.replaceAll('&quot;', '"').replaceAll('&amp;', '&');
+          final optJson = json.decode(rawOpt) as Map<String, dynamic>;
+          final flashvars = optJson['flashvars'] as Map<String, dynamic>? ?? {};
+          dynamic metadata = flashvars['metadata'];
+          if (metadata is String) {
+            metadata = json.decode(metadata);
+          }
+          if (metadata is Map<String, dynamic>) {
+            final ondHls = metadata['ondemandHls'] as String?;
+            if (ondHls != null && ondHls.isNotEmpty) {
+              hlsUrl = ondHls;
+            }
+            final hlsManifest = metadata['hlsManifestUrl'] as String?;
+            if (hlsManifest != null && hlsManifest.isNotEmpty) {
+              if (hlsUrl == null) {
+                hlsUrl = hlsManifest;
+              } else if (hlsManifest != hlsUrl && !altUrls.contains(hlsManifest)) {
+                altUrls.add(hlsManifest);
+              }
+            }
+            final videos = metadata['videos'] as List? ?? [];
+            for (final v in videos) {
+              if (v is Map && v['url'] != null) {
+                final vUrl = v['url'].toString();
+                if (!altUrls.contains(vUrl)) {
+                  altUrls.add(vUrl);
+                }
+              }
+            }
+          }
+        } catch (_) {}
+      }
+
+      // 2. Fallback regex directo para ondemandHls
+      if (hlsUrl == null) {
+        final regHls = RegExp(r'''ondemandHls[\\"\':\s]+(https:[^\\"\']+\.m3u8[^\s\\"\']*)''').firstMatch(html);
+        if (regHls != null) {
+          hlsUrl = regHls.group(1)!.replaceAll(r'\/', '/').replaceAll(r'\u0026', '&');
+        }
+      }
+
+      final primaryUrl = hlsUrl ?? (altUrls.isNotEmpty ? altUrls.first : null);
+      if (primaryUrl == null) return null;
+
+      final remainingAlts = altUrls.where((u) => u != primaryUrl).toList();
+
+      return ExtractedStreamResult(
+        videoUrl: primaryUrl,
+        alternativeUrls: remainingAlts,
+        headers: {
+          'User-Agent': _desktopUa,
+          'Referer': 'https://ok.ru/',
+        },
+      );
+    } catch (e) {
+      debugPrint('DynamicScraperService: error extractOkRuStream: $e');
+    }
+    return null;
+  }
+
+  Future<ExtractedStreamResult?> _extractGnulaStream(String pageUrl) async {
+    try {
+      // Reutilizar el mismo client para página + API (mismo host) → una sola negociación TLS.
+      final client = http.Client();
+      final res = await client.get(
+        Uri.parse(pageUrl),
+        headers: {
+          'User-Agent': _desktopUa,
+          'Accept':
+              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+        },
+      ).timeout(const Duration(seconds: 12));
+
+      if (res.statusCode != 200) return null;
+      final html = res.body;
+
+      // Si la URL recibida es la ficha de una serie (/ver/) y no tiene reproductor directo,
+      // resolvemos el primer episodio disponible para que reproduzca sin errores.
+      if (!html.contains('_gnrdPid') && html.contains('gnrd-eplist')) {
+        final firstEpMatch = RegExp(
+          r'''<a[^>]+class=['"][^'"]*gnrd-epc[^'"]*['"][^>]+href=['"]([^'"]+)['"]''',
+          caseSensitive: false,
+        ).firstMatch(html);
+        if (firstEpMatch != null) {
+          final firstEpUrl = firstEpMatch.group(1)!;
+          client.close();
+          return await _extractGnulaStream(firstEpUrl);
+        }
+      }
+
+      final pidMatch = RegExp(r'_gnrdPid\s*=\s*(\d+)').firstMatch(html);
+      final tokMatch = RegExp(r'''_gnrdTok\s*=\s*['"]([^'"]+)['"]''').firstMatch(html);
+      final vdAuthMatch = RegExp(r'''VD_AUTH\s*=\s*['"]([^'"]+)['"]''').firstMatch(html);
+      final ttAuthMatch = RegExp(r'''(?:^|[^a-zA-Z0-9_])AUTH\s*=\s*['"]([^'"]+)['"]''').firstMatch(html);
+
+      if (pidMatch != null && tokMatch != null) {
+        final pid = pidMatch.group(1)!;
+        final tok = tokMatch.group(1)!;
+        final vdAuth = vdAuthMatch?.group(1) ?? '&t=69d77fa4e43d2d340a4306574a3af563';
+        final ttAuth = ttAuthMatch?.group(1) ?? '&t=2020e4d463d84d7745ee262348f5b65d';
+
+        final uri = Uri.parse(pageUrl);
+        final apiUrl = '${uri.scheme}://${uri.host}/wp-json/gnrd/v1/player?id=$pid&t=$tok';
+
+        // Reutilizar el mismo client → misma conexión TCP/TLS para página + API.
+        final apiRes = await client.get(
+          Uri.parse(apiUrl),
+          headers: {
+            'User-Agent': _desktopUa,
+            'Referer': pageUrl,
+            'Accept': 'application/json, text/plain, */*',
+          },
+        ).timeout(const Duration(seconds: 12));
+
+        if (apiRes.statusCode == 200) {
+          final apiJson = json.decode(apiRes.body) as Map<String, dynamic>;
+          final p = apiJson['p'] as String?;
+          if (p != null && p.isNotEmpty) {
+            final rawBytes = base64.decode(p);
+            const key = [103, 78, 55, 100];
+            final decBytes = Uint8List(rawBytes.length);
+            for (var i = 0; i < rawBytes.length; i++) {
+              decBytes[i] = rawBytes[i] ^ key[i & 3];
+            }
+            final decStr = utf8.decode(decBytes, allowMalformed: true);
+            final data = json.decode(decStr) as Map<String, dynamic>;
+
+            final langs = data['langs'] as List? ?? [];
+            final List<String> candidateServers = [];
+            final latino = <String>[];
+            final castellano = <String>[];
+            final subtitulado = <String>[];
+            final otros = <String>[];
+
+            for (final l in langs) {
+              if (l is! Map) continue;
+              final label = (l['label'] ?? '').toString().toLowerCase();
+              final srvs = l['servers'] as List? ?? [];
+              for (final s in srvs) {
+                if (s is! Map) continue;
+                final src = s['src'] as String?;
+                if (src == null || src.isEmpty) continue;
+                if (label.contains('latino')) {
+                  latino.add(src);
+                } else if (label.contains('castellano') || label.contains('español')) {
+                  castellano.add(src);
+                } else if (label.contains('sub')) {
+                  subtitulado.add(src);
+                } else {
+                  otros.add(src);
+                }
+              }
+            }
+
+            candidateServers.addAll(latino);
+            candidateServers.addAll(castellano);
+            candidateServers.addAll(subtitulado);
+            candidateServers.addAll(otros);
+
+            // Priorizar por velocidad de resolución:
+            //   0 = vidara/the.tube → URL directa sin HTTP extra
+            //   1 = ok.ru          → requiere 1 HTTP call pero CDN de calidad
+            //   2 = resto          → HTTP call + calidad desconocida
+            int velocidad(String s) {
+              final low = s.toLowerCase();
+              if (low.contains('vidara') || low.contains('the.tube') || low.contains('they.tube')) return 0;
+              if (low.contains('ok.ru') || low.contains('odnoklassniki')) return 1;
+              return 2;
+            }
+
+            candidateServers.sort((a, b) => velocidad(a).compareTo(velocidad(b)));
+
+            final List<ExtractedStreamResult> extractedResults = [];
+
+            for (final src in candidateServers) {
+              // Saltar file-hosters: no soportan Range requests ni streaming real.
+              if (_esUrlFileHoster(src)) continue;
+              // A. Servidor Vidara: resolución directa mediante vidara-resolve.php
+              if (src.contains('vidara.to') || src.contains('vidaraa.cc') || src.contains('vidara')) {
+                final m = RegExp(r'https?://([^/]+)/(?:e/)?([^/?#]+)').firstMatch(src);
+                if (m != null) {
+                  final host = m.group(1)!;
+                  final code = m.group(2)!;
+                  final vidaraM3u8 = '${uri.scheme}://${uri.host}/panel/vidara-resolve.php?pl=1&code=$code&host=$host$vdAuth&ext=.m3u8';
+                  extractedResults.add(
+                    ExtractedStreamResult(
+                      videoUrl: vidaraM3u8,
+                      headers: {
+                        'User-Agent': _ua,
+                        'Referer': pageUrl,
+                      },
+                    ),
+                  );
+                  if (extractedResults.length >= 2) break;
+                  continue;
+                }
+              }
+
+              // B. Servidor ok.ru
+              if (src.contains('ok.ru') || src.contains('odnoklassniki')) {
+                final okRes = await _extractOkRuStream(src);
+                if (okRes != null && okRes.videoUrl.isNotEmpty) {
+                  extractedResults.add(okRes);
+                  if (extractedResults.length >= 2) break;
+                  continue;
+                }
+              }
+
+              // C. Servidor the.tube
+              if (src.contains('the.tube') || src.contains('they.tube')) {
+                final m = RegExp(r'the(?:y)?\.tube/(?:e/)?([A-Za-z0-9_-]+)').firstMatch(src);
+                if (m != null) {
+                  final code = m.group(1)!;
+                  final tubeUrl = '${uri.scheme}://${uri.host}/panel/the-tube-resolve.php?code=$code$ttAuth';
+                  extractedResults.add(
+                    ExtractedStreamResult(
+                      videoUrl: tubeUrl,
+                      headers: {
+                        'User-Agent': _ua,
+                        'Referer': pageUrl,
+                      },
+                    ),
+                  );
+                  if (extractedResults.length >= 2) break;
+                  continue;
+                }
+              }
+
+              // D. Servidor VOE
+              if (src.contains('voe.sx') || src.contains('voe.') || src.contains('voe-network')) {
+                final voeRes = await _extractVoeStream(src);
+                if (voeRes != null && voeRes.videoUrl.isNotEmpty) {
+                  extractedResults.add(voeRes);
+                  if (extractedResults.length >= 2) break;
+                  continue;
+                }
+              }
+
+              // E. Fallback genérico para otros servidores
+              final genRes = await _extractDirectStreamFromEmbed(src);
+              if (genRes != null &&
+                  genRes.videoUrl.isNotEmpty &&
+                  !_esUrlFileHoster(genRes.videoUrl)) {
+                extractedResults.add(genRes);
+                if (extractedResults.length >= 2) break;
+              }
+            }
+
+            if (extractedResults.isNotEmpty) {
+              final primary = extractedResults.first;
+              final altUrls = <String>[];
+              for (final r in extractedResults) {
+                if (r.videoUrl != primary.videoUrl && !altUrls.contains(r.videoUrl)) {
+                  altUrls.add(r.videoUrl);
+                }
+                for (final alt in r.alternativeUrls) {
+                  if (alt != primary.videoUrl && !altUrls.contains(alt)) {
+                    altUrls.add(alt);
+                  }
+                }
+              }
+
+              client.close();
+              return ExtractedStreamResult(
+                videoUrl: primary.videoUrl,
+                subtitles: primary.subtitles,
+                alternativeUrls: altUrls,
+                headers: primary.headers.isNotEmpty ? primary.headers : {
+                  'User-Agent': _ua,
+                  'Referer': pageUrl,
+                },
+              );
+            }
+          }
+        }
+      }
+
+      // Fallback si no hubo _gnrdPid: buscar iframe en el HTML
+      final iframeMatch = RegExp(r'''<iframe[^>]+src=['"]([^'"]+)['"]''', caseSensitive: false).firstMatch(html);
+      if (iframeMatch != null) {
+        final ifrSrc = iframeMatch.group(1)!;
+        if (!ifrSrc.contains('youtube') && !ifrSrc.contains('about:blank')) {
+          client.close();
+          return await _extractDirectStreamFromEmbed(ifrSrc);
+        }
+      }
+      client.close();
+    } catch (e) {
+      debugPrint('DynamicScraperService: error extractGnulaStream: $e');
+    }
+    return null;
+  }
+
+  Future<ScrapedMetadata?> _scrapeGnulaMetadata(String url) async {
+    try {
+      final client = http.Client();
+      final res = await client.get(
+        Uri.parse(url),
+        headers: {
+          'User-Agent': _desktopUa,
+          'Accept':
+              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+        },
+      ).timeout(const Duration(seconds: 10));
+      client.close();
+
+      if (res.statusCode != 200) return null;
+      final html = res.body;
+
+      // 1. Título limpio
+      String title = '';
+      final ogTitle = RegExp(
+        r'''<meta\s+property=['"]og:title['"]\s+content=['"]([^'"]+)['"]''',
+        caseSensitive: false,
+      ).firstMatch(html);
+      if (ogTitle != null) {
+        title = ogTitle.group(1)!
+            .replaceAll(RegExp(r'\s*\(?\d{4}\)?\s*(?:Película Completa|Serie Completa)?\s*(?:Español\s*Latino|Castellano|Subtitulado)?\s*(?:HD)?\s*\|\s*Gnula.*$', caseSensitive: false), '')
+            .replaceAll(' - Gnula', '')
+            .trim();
+      }
+      if (title.isEmpty) {
+        final h1Match = RegExp(r'''<h1[^>]*>(.*?)</h1>''', dotAll: true, caseSensitive: false).firstMatch(html);
+        if (h1Match != null) {
+          title = h1Match.group(1)!.replaceAll(RegExp(r'<[^>]*>'), '').trim();
+        }
+      }
+
+      // 2. Poster
+      String? thumb;
+      final ogImg = RegExp(
+        r'''<meta\s+property=['"]og:image['"]\s+content=['"]([^'"]+)['"]''',
+        caseSensitive: false,
+      ).firstMatch(html);
+      if (ogImg != null) {
+        thumb = ogImg.group(1)!.trim();
+      }
+
+      // 3. Descripción / Sinopsis
+      String? desc;
+      final descMatch = RegExp(
+        r'''<meta\s+(?:property=['"]og:description['"]|name=['"]description['"])\s+content=['"]([^'"]+)['"]''',
+        caseSensitive: false,
+      ).firstMatch(html);
+      if (descMatch != null) {
+        desc = descMatch.group(1)!.trim();
+      }
+      if (desc == null || desc.isEmpty) {
+        final synMatch = RegExp(r'''class=['"][^'"]*gnrd-fi-syn[^'"]*['"][^>]*>(.*?)</div>''', dotAll: true, caseSensitive: false).firstMatch(html);
+        if (synMatch != null) {
+          desc = synMatch.group(1)!.replaceAll(RegExp(r'<[^>]*>'), '').trim();
+        }
+      }
+
+      // 4. Episodios si es serie
+      final List<M3UItem> episodes = [];
+      final fullTagRegex = RegExp(
+        r'''<a([^>]+class=['"][^'"]*gnrd-epc[^'"]*['"][^>]*)>(.*?)</a>''',
+        dotAll: true,
+        caseSensitive: false,
+      );
+
+      final seenUrls = <String>{};
+      for (final m in fullTagRegex.allMatches(html)) {
+        final tagAttrs = m.group(1) ?? '';
+        final inner = m.group(2) ?? '';
+
+        final hrefMatch = RegExp(r'''href=['"]([^'"]+)['"]''', caseSensitive: false).firstMatch(tagAttrs);
+        if (hrefMatch == null) continue;
+        final epUrl = hrefMatch.group(1)!;
+        if (!seenUrls.add(epUrl)) continue;
+
+        final seasonMatch = RegExp(r'''data-s=['"]([^'"]+)['"]''', caseSensitive: false).firstMatch(tagAttrs);
+        final numMatch = RegExp(r'''class=['"][^'"]*gnrd-epc-n[^'"]*['"][^>]*>([^<]+)<''', caseSensitive: false).firstMatch(inner);
+        final titleMatch = RegExp(r'''class=['"][^'"]*gnrd-epc-title[^'"]*['"][^>]*>([^<]+)<''', caseSensitive: false).firstMatch(inner);
+        final durMatch = RegExp(r'''class=['"][^'"]*gnrd-epc-dur[^'"]*['"][^>]*>([^<]+)<''', caseSensitive: false).firstMatch(inner);
+        final imgMatch = RegExp(r'''<img[^>]+(?:src|data-src)=['"]([^'"]+)['"]''', caseSensitive: false).firstMatch(inner);
+
+        final codeStr = numMatch?.group(1)?.trim() ?? ''; // ej: "2x10"
+        final epTitleClean = titleMatch?.group(1)?.trim() ?? ''; // ej: "Donde pertenecemos"
+        final durStr = durMatch?.group(1)?.trim(); // ej: "53 min"
+        final epThumb = imgMatch?.group(1)?.trim() ?? thumb;
+
+        int? sNum;
+        int? epNum;
+        if (codeStr.isNotEmpty) {
+          final parts = RegExp(r'(\d+)x(\d+)', caseSensitive: false).firstMatch(codeStr);
+          if (parts != null) {
+            sNum = int.tryParse(parts.group(1)!);
+            epNum = int.tryParse(parts.group(2)!);
+          }
+        }
+        sNum ??= int.tryParse(seasonMatch?.group(1) ?? '');
+
+        final displayName = [
+          if (codeStr.isNotEmpty) codeStr,
+          if (epTitleClean.isNotEmpty) epTitleClean,
+        ].join(' - ');
+
+        final finalName = displayName.isNotEmpty ? displayName : 'Episodio ${episodes.length + 1}';
+
+        episodes.add(
+          M3UItem(
+            name: finalName,
+            url: epUrl,
+            logo: epThumb,
+            category: 'Episodios',
+            duration: durStr,
+            seriesName: title,
+            seasonNumber: sNum,
+            episodeNumber: epNum,
+            isLive: false,
+            isDynamic: true,
+          ),
+        );
+      }
+
+      // Ordenar episodios ascendentemente
+      episodes.sort((a, b) {
+        final sA = a.seasonNumber ?? 0;
+        final sB = b.seasonNumber ?? 0;
+        if (sA != sB) return sA.compareTo(sB);
+        final eA = a.episodeNumber ?? 0;
+        final eB = b.episodeNumber ?? 0;
+        return eA.compareTo(eB);
+      });
+
+      if (title.isNotEmpty) {
+        return ScrapedMetadata(
+          title: title,
+          thumbnailUrl: thumb,
+          description: desc,
+          episodes: episodes,
+        );
+      }
+    } catch (e) {
+      debugPrint('DynamicScraperService: error _scrapeGnulaMetadata: $e');
     }
     return null;
   }

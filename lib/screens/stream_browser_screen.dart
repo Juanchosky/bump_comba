@@ -761,7 +761,14 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                           );
                         },
                         child:
-                            _isLoading
+                            // Mostrar shimmer si está cargando o si el
+                            // refresco de contenido propio (Supabase) aún
+                            // no terminó y no hay nada que mostrar todavía.
+                            (_isLoading ||
+                                    (!_hasError &&
+                                        _m3uService.isCustomRefreshing &&
+                                        _m3uService.movies.isEmpty &&
+                                        _m3uService.series.isEmpty))
                                 ? KeyedSubtree(
                                   key: const ValueKey('loading'),
                                   child: _buildLoading(),

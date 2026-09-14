@@ -266,6 +266,13 @@ class M3UService extends ChangeNotifier {
   SharedPreferences? _prefs;
   SupabaseClient? _supabase;
   List<M3UItem> _items = [];
+  List<M3UItem> _rawItems = [];
+
+  /// true mientras `_refreshCustomContentInBackground` está corriendo.
+  /// Permite que la UI muestre un indicador de carga mientras llegan los
+  /// ítems propios de Supabase (después de que el caché binario ya abrió).
+  bool _isCustomRefreshing = false;
+  bool get isCustomRefreshing => _isCustomRefreshing;
   List<M3UItem> _movies = [];
   List<M3UItem> _series = [];
   List<M3UItem> _customItems = [];
@@ -307,6 +314,8 @@ class M3UService extends ChangeNotifier {
 
   // ROBUST-1: Completer-based init guard (prevents concurrent double-init)
   Completer<void>? _initCompleter;
+  Future<List<M3UItem>>? _fetchCustomContentFuture;
+  static DateTime? _vpsDownUntil;
 
   // ── Public getters ───────────────────────────────────────────────────────
   List<M3UItem> get items => _items;
@@ -1218,27 +1227,48 @@ class M3UService extends ChangeNotifier {
 
   /// Baja el volcado de la BD desde el VPS en formato de bytes para procesarlo en isolate.
   Future<Uint8List?> _fetchCustomContentBytesDesdeVps() async {
+    if (_vpsDownUntil != null && DateTime.now().isBefore(_vpsDownUntil!)) {
+      return null;
+    }
     try {
       final res = await http
           .get(
             Uri.parse(_urlVolcadoBd),
             headers: const {'Accept-Encoding': 'gzip'},
           )
-          .timeout(const Duration(seconds: 5));
+          .timeout(const Duration(seconds: 3));
 
       if (res.statusCode != 200) {
         debugPrint('custom_content: VPS respondio ${res.statusCode}');
+        _vpsDownUntil = DateTime.now().add(const Duration(minutes: 5));
         return null;
       }
 
       return res.bodyBytes;
     } catch (e) {
       debugPrint('custom_content: fallo el VPS ($e) — se usa Supabase');
+      _vpsDownUntil = DateTime.now().add(const Duration(minutes: 5));
       return null;
     }
   }
 
-  Future<List<M3UItem>> fetchCustomContent({bool forceRefresh = false}) async {
+  Future<List<M3UItem>> fetchCustomContent({bool forceRefresh = false}) {
+    if (_supabase == null) return Future.value([]);
+
+    if (_fetchCustomContentFuture != null && !forceRefresh) {
+      return _fetchCustomContentFuture!;
+    }
+
+    final future = _doFetchCustomContent(forceRefresh: forceRefresh);
+    _fetchCustomContentFuture = future;
+    return future.whenComplete(() {
+      _fetchCustomContentFuture = null;
+    });
+  }
+
+  Future<List<M3UItem>> _doFetchCustomContent({
+    bool forceRefresh = false,
+  }) async {
     if (_supabase == null) return [];
 
     // Local Cache evaluation - Instant Binary Cache via BipbSerializer
@@ -1306,14 +1336,26 @@ class M3UService extends ChangeNotifier {
                   .from('custom_content')
                   .select(columnas)
                   .eq('is_active', true)
-                  .order('id')
+                  .order('id', ascending: true)
                   .range(from, from + batchSize - 1)
-                  .timeout(const Duration(seconds: 15));
+                  .timeout(const Duration(seconds: 25));
               batch = response as List<dynamic>;
               break;
             } catch (e) {
-              if (intento == 2) rethrow;
-              await Future<void>.delayed(Duration(milliseconds: 500 * (intento + 1)));
+              debugPrint('custom_content batch [$from]: intento $intento ($e)');
+              if (intento == 2) {
+                if (list.isNotEmpty) {
+                  debugPrint(
+                    'custom_content: batch falló pero rescatando ${list.length} filas previas',
+                  );
+                  hasMore = false;
+                  break;
+                }
+                rethrow;
+              }
+              await Future<void>.delayed(
+                Duration(milliseconds: 1000 * (intento + 1)),
+              );
             }
           }
 
@@ -1359,14 +1401,96 @@ class M3UService extends ChangeNotifier {
         } catch (e) {
           debugPrint('Error saving custom binary cache: $e');
         }
+      } else if (_customItems.isNotEmpty) {
+        return _customItems;
       }
 
       return finalItems;
     } catch (e, stack) {
       debugPrint('Error fetching custom content: $e\n$stack');
       _lastError = 'Error cargando contenido personal: $e';
+      if (_customItems.isNotEmpty) {
+        return _customItems;
+      }
+      try {
+        final file = await _getCustomCacheFile();
+        if (await file.exists()) {
+          final bytes = await file.readAsBytes();
+          if (bytes.isNotEmpty) {
+            final cached = await compute(
+              _deserializeCustomCacheInBackground,
+              bytes,
+            );
+            if (cached.isNotEmpty) {
+              _customItems = cached;
+              return cached;
+            }
+          }
+        }
+      } catch (_) {}
       return [];
     }
+  }
+
+  /// Lee el contenido propio de Supabase exclusivamente desde memoria o caché local en disco (0-5ms).
+  /// NUNCA hace llamadas de red para no congelar ni retrasar el arranque del catálogo.
+  Future<List<M3UItem>> _getLocalCustomItems() async {
+    if (_customItems.isNotEmpty) return _customItems;
+
+    try {
+      final file = await _getCustomCacheFile();
+      if (await file.exists()) {
+        final bytes = await file.readAsBytes();
+        if (bytes.isNotEmpty) {
+          final cached = await compute(
+            _deserializeCustomCacheInBackground,
+            bytes,
+          );
+          if (cached.isNotEmpty) {
+            _customItems = cached;
+            return cached;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Error reading local custom cache: $e');
+    }
+    return const [];
+  }
+
+  /// Refresca el contenido propio de Supabase en segundo plano sin bloquear el arranque ni la UI.
+  void _refreshCustomContentInBackground({bool forceRefresh = false}) {
+    _isCustomRefreshing = true;
+    notifyListeners();
+    unawaited(() async {
+      try {
+        final fresh = await fetchCustomContent(forceRefresh: forceRefresh);
+        if (fresh.isNotEmpty) {
+          if (_rawItems.isNotEmpty) {
+            debugPrint(
+              'custom_content background refresh: ${fresh.length} items. Updating catalog.',
+            );
+            await _indexItems(
+              _rawItems,
+              customItems: fresh,
+              scheduleRecentCompute: false,
+            );
+          } else {
+            await _indexItems(
+              const [],
+              customItems: fresh,
+              scheduleRecentCompute: false,
+            );
+          }
+          notifyListeners();
+        }
+      } catch (e) {
+        debugPrint('custom_content background refresh error: $e');
+      } finally {
+        _isCustomRefreshing = false;
+        notifyListeners();
+      }
+    }());
   }
 
   /// Re-scrapes metadata for a dynamic item using the DynamicScraperService.
@@ -1428,8 +1552,9 @@ class M3UService extends ChangeNotifier {
     // 1. Try binary cache first (best case)
     final cachedItems = await _loadBinaryCache(ignoreExpiration: true);
     if (cachedItems != null && cachedItems.isNotEmpty) {
-      final custom = await fetchCustomContent(forceRefresh: false);
+      final custom = await _getLocalCustomItems();
       await _indexItems(cachedItems, customItems: custom);
+      _refreshCustomContentInBackground();
       return true;
     }
 
@@ -1439,7 +1564,7 @@ class M3UService extends ChangeNotifier {
       try {
         final cachedBytes = await cacheFile.readAsBytes();
         final sourceName = _activeSourceName();
-        final custom = await fetchCustomContent(forceRefresh: false);
+        final custom = await _getLocalCustomItems();
         final transferable = await compute(
           parseM3UInBackground,
           IsolateInput(
@@ -1454,7 +1579,9 @@ class M3UService extends ChangeNotifier {
           _deserializeBinaryCacheInBackground,
           bytes,
         );
-        return _processOutput(parsedItems, custom);
+        final ok = await _processOutput(parsedItems, custom);
+        _refreshCustomContentInBackground();
+        return ok;
       } catch (e) {
         debugPrint('Error loading raw cache: $e');
       }
@@ -1584,8 +1711,9 @@ class M3UService extends ChangeNotifier {
     if (hasValidUnifiedCache) {
       final cachedItems = await _loadBinaryCache();
       if (cachedItems != null && cachedItems.isNotEmpty) {
-        final custom = await fetchCustomContent(forceRefresh: forceRefresh);
+        final custom = await _getLocalCustomItems();
         await _indexItems(cachedItems, customItems: custom);
+        _refreshCustomContentInBackground(forceRefresh: forceRefresh);
         return true;
       }
     }
@@ -1650,15 +1778,14 @@ class M3UService extends ChangeNotifier {
       DateTime.now().millisecondsSinceEpoch,
     );
 
-    // 1. Fetch custom content and merge
-    final customItems = await fetchCustomContent(forceRefresh: forceRefresh);
-    // 2. Full background indexing (el cruce con el contenido propio ocurre
-    //    dentro del isolate, ver _indexItemsInBackground)
+    // 1. Fetch custom content from local cache first (0-5ms), refresh in background
+    final customItems = await _getLocalCustomItems();
     await _indexItems(allRawItems, customItems: customItems);
 
-    // 3. Save to binary cache for future instant loads
+    // 2. Save to binary cache for future instant loads
     _saveBinaryCache(allRawItems);
 
+    _refreshCustomContentInBackground(forceRefresh: forceRefresh);
     return true;
   }
 
@@ -1676,8 +1803,9 @@ class M3UService extends ChangeNotifier {
       if (!forceRefresh) {
         final cachedItems = await _loadBinaryCache();
         if (cachedItems != null && cachedItems.isNotEmpty) {
-          final custom = await fetchCustomContent(forceRefresh: forceRefresh);
+          final custom = await _getLocalCustomItems();
           await _indexItems(cachedItems, customItems: custom);
+          _refreshCustomContentInBackground(forceRefresh: forceRefresh);
           return true;
         }
       }
@@ -1695,7 +1823,7 @@ class M3UService extends ChangeNotifier {
         debugPrint('Xtream fetch returned empty — falling back to cache');
         final fallback = await _loadBinaryCache(ignoreExpiration: true);
         if (fallback != null && fallback.isNotEmpty) {
-          final custom = await fetchCustomContent(forceRefresh: false);
+          final custom = await _getLocalCustomItems();
           await _indexItems(fallback, customItems: custom);
           return true;
         }
@@ -1738,7 +1866,7 @@ class M3UService extends ChangeNotifier {
             ...(freshSeries.isNotEmpty ? freshSeries : cachedSeries),
           ];
 
-          final custom = await fetchCustomContent(forceRefresh: false);
+          final custom = await _getLocalCustomItems();
           await _indexItems(merged, customItems: custom);
           // NO guardar en caché el merge parcial — mantener el caché completo
           return true;
@@ -1746,11 +1874,12 @@ class M3UService extends ChangeNotifier {
         // Si no hay fallback, usar lo que llegó (mejor que nada)
       }
 
-      final custom = await fetchCustomContent(forceRefresh: forceRefresh);
+      final custom = await _getLocalCustomItems();
       await _indexItems(items, customItems: custom);
 
       // Guardar en cache para la próxima vez
       _saveBinaryCache(items);
+      _refreshCustomContentInBackground(forceRefresh: forceRefresh);
       return true;
     }
 
@@ -1763,8 +1892,9 @@ class M3UService extends ChangeNotifier {
         // Try Binary cache (MUCH faster)
         final cachedItems = await _loadBinaryCache();
         if (cachedItems != null && cachedItems.isNotEmpty) {
-          final custom = await fetchCustomContent(forceRefresh: forceRefresh);
+          final custom = await _getLocalCustomItems();
           await _indexItems(cachedItems, customItems: custom);
+          _refreshCustomContentInBackground(forceRefresh: forceRefresh);
           return true;
         }
 
@@ -1772,7 +1902,7 @@ class M3UService extends ChangeNotifier {
         if (await cacheFile.exists()) {
           final cachedBytes = await cacheFile.readAsBytes();
           final sourceName = _activeSourceName();
-          final custom = await fetchCustomContent(forceRefresh: forceRefresh);
+          final custom = await _getLocalCustomItems();
           final transferable = await compute(
             parseM3UInBackground,
             IsolateInput(
@@ -1787,7 +1917,9 @@ class M3UService extends ChangeNotifier {
             _deserializeBinaryCacheInBackground,
             bytes,
           );
-          return _processOutput(parsedItems, custom);
+          final ok = await _processOutput(parsedItems, custom);
+          _refreshCustomContentInBackground(forceRefresh: forceRefresh);
+          return ok;
         }
       }
     }
@@ -1809,7 +1941,7 @@ class M3UService extends ChangeNotifier {
       DateTime.now().millisecondsSinceEpoch,
     );
 
-    final custom = await fetchCustomContent(forceRefresh: forceRefresh);
+    // Vía rápida: Parsear M3U de inmediato sin esperar a Supabase
     final transferable = await compute(
       parseM3UInBackground,
       IsolateInput(
@@ -1824,7 +1956,10 @@ class M3UService extends ChangeNotifier {
       _deserializeBinaryCacheInBackground,
       bytes,
     );
-    return _processOutput(parsedItems, custom);
+    final custom = await _getLocalCustomItems();
+    final result = await _processOutput(parsedItems, custom);
+    _refreshCustomContentInBackground(forceRefresh: forceRefresh);
+    return result;
   }
 
   Future<List<M3UItem>> _fetchXtreamItems(
@@ -2689,6 +2824,7 @@ class M3UService extends ChangeNotifier {
     bool scheduleRecentCompute = true,
     List<M3UItem> customItems = const [],
   }) async {
+    _rawItems = items;
     final sw = Stopwatch()..start();
     try {
       // PERF: el filtrado 4K, el cálculo de "más recientes", la normalización
@@ -4260,6 +4396,7 @@ class M3UService extends ChangeNotifier {
   Future<void> clearCache() async {
     try {
       _items.clear();
+      _rawItems.clear();
       _searchIndex.clear();
       _searchIndexWords.clear();
       _movies.clear();
@@ -4298,6 +4435,7 @@ class M3UService extends ChangeNotifier {
 
       // Invalidate in-memory caches
       _items = [];
+      _rawItems = [];
       _searchIndex = {};
       _searchIndexWords = {};
       _movies = [];

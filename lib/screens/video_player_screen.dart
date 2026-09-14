@@ -327,6 +327,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   // Detección de "audio sin video" (pantalla negra con audio) en VOD.
   int _noVideoSeconds = 0;
   bool _blackScreenReloadDone = false;
+  // Posición guardada justo antes de que la pantalla se apague.
+  // Cuando MediaCodec pierde la superficie durante el background y el
+  // reproductor se queda en pos=0 sin video, esta variable permite reanudar
+  // desde el punto correcto en lugar de desde el principio.
+  Duration _positionBeforeBackground = Duration.zero;
   double _dragValue = 0.0;
   Timer? _hideControlsTimer;
 
@@ -1282,6 +1287,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       }
       if (!isPiP) {
         _isAppInBackground = true;
+        // Guardar posición antes del fondo: si MediaCodec pierde la superficie
+        // mientras la pantalla está apagada, MPV reportará 0 al volver y esta
+        // variable permite reanudar desde el punto correcto.
+        _positionBeforeBackground = _player?.state.position ?? Duration.zero;
         _player?.pause();
       }
       // Segundo plano: a partir de aqui el sistema puede matar el proceso sin
@@ -2176,7 +2185,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               'cache-pause-wait',
               _isLiveContent
                   ? '2'
-                  : (isHlsStream ? '1.5' : (lowPerf ? '4' : '5')),
+                  : (isHlsStream
+                      ? (esScrapeado ? '3' : '1.5')
+                      : (lowPerf ? '4' : '5')),
             ),
             // ── PREBUFFER DE ARRANQUE (premium) ──────────────────────
             //
@@ -2251,7 +2262,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 isHlsStream ? '67108864' : (lowPerf ? '25165824' : '50331648'),
               ),
               mpv.setProperty('demuxer-readahead-secs', lowPerf ? '45' : '90'),
-              mpv.setProperty('hls-bitrate', 'auto'),
+              // Contenido scrapeado (GnulaHD, ok.ru CDN): limitar a 720p.
+              // Estos streams HLS normalmente ofrecen 480p/720p/1080p; forzar
+              // 'max' en una conexión modesta causa rebuffering constante.
+              // 3 Mbps queda dentro de 720p (2–3 Mbps) y por debajo de 1080p
+              // (5–8 Mbps) en los perfiles típicos de ok.ru.
+              mpv.setProperty('hls-bitrate', esContenidoScrapeado ? '3000000' : 'auto'),
               if (isHlsStream) ...[
                 mpv.setProperty('hls-forward-cache-secs', '45'),
                 mpv.setProperty('hls-back-cache-secs', '30'),
@@ -4171,27 +4187,52 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           !CastService().isCasting.value &&
           controller != null &&
           playerState.playing &&
-          currentPos != _lastPosition && // el audio SÍ avanza
           !firstFrameRendered) {
-        _noVideoSeconds++;
-        // Umbral generoso (12s): el SoC MediaTek puede tardar 8-10s en
-        // renderizar el primer frame a la textura tras open(). Con 4s se
-        // destruía el decoder justo antes de que diera video, provocando un
-        // ciclo innecesario de releaseAsync → CreateByComponentName.
-        if (_noVideoSeconds >= 12) {
-          debugPrint(
-            'Pantalla negra detectada (audio sin textura de video ${_noVideoSeconds}s). Recargando...',
-          );
+        // Dos casos de "video sin textura":
+        //
+        // A) Audio avanza pero no hay textura: MediaCodec decodifica pero no
+        //    renderiza (el caso original). _noVideoSeconds acumula normalmente.
+        //
+        // B) Todo parado en pos=0 sin textura: ocurre cuando MediaCodec pierde
+        //    la superficie durante background (pantalla apagada). Aquí
+        //    currentPos == _lastPosition == 0, por lo que la condición A nunca
+        //    se cumple y _noVideoSeconds nunca llega a 12.
+        //    Se detecta por separado con un umbral más corto (5s) ya que no
+        //    hay ambigüedad con el arranque lento de MediaTek: si hay
+        //    _positionBeforeBackground > 0, sabemos que veníamos de background.
+        final bool audioAvanza = currentPos != _lastPosition;
+        final bool bloqueadoEnCero =
+            currentPos == Duration.zero &&
+            _lastPosition == Duration.zero &&
+            _positionBeforeBackground > Duration.zero;
+
+        if (audioAvanza || bloqueadoEnCero) {
+          _noVideoSeconds++;
+          final umbral = bloqueadoEnCero ? 5 : 12;
+          // Umbral generoso (12s): el SoC MediaTek puede tardar 8-10s en
+          // renderizar el primer frame a la textura tras open(). Con 4s se
+          // destruía el decoder justo antes de que diera video, provocando un
+          // ciclo innecesario de releaseAsync → CreateByComponentName.
+          if (_noVideoSeconds >= umbral) {
+            debugPrint(
+              'Pantalla negra detectada (${bloqueadoEnCero ? "superficie perdida tras background" : "audio sin textura"} ${_noVideoSeconds}s). Recargando...',
+            );
+            _noVideoSeconds = 0;
+            _blackScreenReloadDone = true;
+            if (_retryCount == 0) _retryCount = 1;
+            _reloadVideo();
+          }
+          // No actualizar _lastPosition mientras el watchdog está activo:
+          // si lo hacemos, en el tick siguiente currentPos == _lastPosition == 0
+          // y la condición A falla, reseteando el contador.
+        } else {
           _noVideoSeconds = 0;
-          _blackScreenReloadDone = true;
-          if (_retryCount == 0) _retryCount = 1;
-          _reloadVideo();
+          _lastPosition = currentPos;
         }
       } else {
         _noVideoSeconds = 0;
+        _lastPosition = currentPos;
       }
-
-      _lastPosition = currentPos;
 
       // Actualizar UI solo si cambió el estado del spinner
       if (mounted && _isBuffering != showingSpinner) {
@@ -4353,6 +4394,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     if (currentPos == Duration.zero && _lastPosition > Duration.zero) {
       currentPos = _lastPosition;
     }
+    // Tercer fallback: posición justo antes de que se apagara la pantalla.
+    // Ocurre cuando _lastPosition también se actualizó a 0 (ej: watchdog de
+    // pantalla negra por pérdida de superficie de MediaCodec tras background,
+    // donde pos=0 y _lastPosition se sobrescribe a 0 en el primer tick).
+    if (currentPos == Duration.zero && _positionBeforeBackground > Duration.zero) {
+      currentPos = _positionBeforeBackground;
+    }
+    _positionBeforeBackground = Duration.zero;
 
     // La marca se CONSUME siempre, valga o no para esta recarga.
     //
@@ -4414,6 +4463,32 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             isLocalReload: true,
           );
         } else if (_retryCount < 2) {
+          // Contenido scrapeado que nunca arrancó: la URL resuelta puede tener
+          // un token expirado (vidara.to firma las URLs con &t=...). Re-scrapar
+          // da una URL fresca en vez de reintentar la misma URL caducada.
+          final origUrl = widget.item.url;
+          if (!_hasReScrapedAfterExhaustion &&
+              currentPos == Duration.zero &&
+              DynamicScraperService().isSupported(origUrl)) {
+            _hasReScrapedAfterExhaustion = true;
+            _retryCount = 0;
+            _currentServerIndex = 0;
+            debugPrint(
+              'Scrapeado falló en pos=0 — re-scrapeando para URL fresca',
+            );
+            _stallTimer?.cancel();
+            for (final s in _streamSubscriptions) {
+              s.cancel();
+            }
+            _streamSubscriptions.clear();
+            await _initializePlayer(
+              widget.item,
+              startFrom: null,
+              isLocalReload: true,
+            );
+            return;
+          }
+
           _retryCount++;
           final startFrom = currentPos.inSeconds > 5 ? currentPos : null;
 

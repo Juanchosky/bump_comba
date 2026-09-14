@@ -40,6 +40,13 @@ bool esEnVivoPorUrl(String url) {
       u.contains('/engine/') ||
       u.contains('voe') ||
       u.contains('peelink') ||
+      u.contains('gnula') ||
+      u.contains('gnulahd') ||
+      u.contains('okcdn') ||
+      u.contains('ok.ru') ||
+      u.contains('vidara') ||
+      u.contains('byseve') ||
+      u.contains('vidsonic') ||
       u.contains('ibelin') ||
       u.contains('cfglobalcdn')) {
     return false;

@@ -92,6 +92,7 @@ class CastService {
   bool _tvLastIsFromDB = false;
   List<Map<String, String>>? _tvLastSubtitles;
   bool _tvLastIsLive = false;
+  bool _tvLastIsScrapeado = false;
 
   /// Durante una reconexión: esperamos el primer STATUS para decidir si
   /// readjuntarnos o recargar. Guarda la posición esperada.
@@ -715,6 +716,7 @@ class CastService {
       _tvLastIsFromDB = isFromDB;
       _tvLastSubtitles = subtitles;
       _tvLastIsLive = isLive;
+      _tvLastIsScrapeado = DynamicScraperService().isSupported(url);
       _tvReattaching = false; // es una carga explícita del usuario
       unawaited(_enviarLoadAlTv(startPosition));
       return;
@@ -1275,6 +1277,7 @@ class CastService {
       // subtitulos aunque los tuviera antes de perder la conexion.
       subtitles: _tvLastSubtitles,
       isLive: _tvLastIsLive,
+      isScrapeado: _tvLastIsScrapeado,
     );
   }
 
