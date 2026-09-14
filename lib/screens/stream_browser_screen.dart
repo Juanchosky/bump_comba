@@ -828,7 +828,14 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
               ],
             ),
           ),
-          bottomNavigationBar: _isLoading ? null : _buildBottomNav(),
+          bottomNavigationBar:
+              (_isLoading ||
+                      (!_hasError &&
+                          _m3uService.isCustomRefreshing &&
+                          _m3uService.movies.isEmpty &&
+                          _m3uService.series.isEmpty))
+                  ? null
+                  : _buildBottomNav(),
         ),
       ),
     );
