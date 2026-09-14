@@ -2092,7 +2092,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
           ],
         ),
         const SizedBox(height: 33),
-        if (_isLoadingEpisodes)
+        if (_isLoadingEpisodes || _isPageLoading)
           _buildEpisodePulse()
         else if (_episodesLoadFailed && episodes.isEmpty)
           // FIX: Mostrar botón de reintentar cuando los episodios no cargaron,

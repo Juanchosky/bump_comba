@@ -297,6 +297,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// rotura del pipe del proxy local (reaccionar rapido) en vez de lentitud.
   bool _stallPorRotura = false;
 
+  /// Evita un bucle infinito de re-scrapeos cuando el origen sigue fallando.
+  /// Se pone en true la primera vez que _reloadVideo cae al re-scrapeo de
+  /// emergencia; si el nuevo scrapeo tambien agota todas sus URLs, se da por
+  /// perdido y se muestra el error en vez de volver a scrapar.
+  bool _hasReScrapedAfterExhaustion = false;
+
   /// true SOLO cuando el salto a la BD lo pide el detector de congelamiento.
   ///
   /// Antes esto se deducia de `_retryCount >= 1`, pero _reloadVideo() se llama
@@ -1294,6 +1300,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _noVideoSeconds = 0;
     _blackScreenReloadDone = false;
     _diagTrackCodecs = '?';
+    _hasReScrapedAfterExhaustion = false;
 
     final progress = await _watchProgressService.getProgressForItem(
       _currentItem,
@@ -2785,7 +2792,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
       if (duration.inSeconds > 0) {
         _knownDuration = duration;
-        final altUrls = _serverItems.map((a) => a.url).toList();
+        final altUrls = [
+          ..._serverItems.map((a) => a.url),
+          // Si el item pasó por el scraper, _currentItem.url es la URL CDN
+          // (VOE, etc.) pero widget.item.url sigue siendo la URL de origen
+          // (peelink page). Guardar ambas hace que getProgressForItem encuentre
+          // el progreso al reabrir el contenido aunque la URL CDN haya expirado.
+          if (widget.item.url.isNotEmpty &&
+              widget.item.url != _currentItem.url)
+            widget.item.url,
+        ];
         _watchProgressService.saveProgress(
           _currentItem.url,
           position,
@@ -3139,7 +3155,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         _currentItem.url,
         duration,
         duration,
-        alternativeUrls: _serverItems.map((a) => a.url).toList(),
+        alternativeUrls: [
+          ..._serverItems.map((a) => a.url),
+          if (widget.item.url.isNotEmpty && widget.item.url != _currentItem.url)
+            widget.item.url,
+        ],
         name: _currentItem.name,
         seriesName: _currentItem.seriesName,
         seasonNumber: _currentItem.seasonNumber,
@@ -4469,7 +4489,31 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             isLocalReload: true,
           );
         } else {
-          if (mounted) setState(() => _hasError = true);
+          // Agotamos todos los servidores/reintentos. Ultimo recurso: si el
+          // item original era scrapeado (peelink, VOE, etc.), la URL CDN que
+          // extrajimos puede haber expirado (tras apagar la pantalla un rato,
+          // por ejemplo). Re-scrapar desde el origen da una URL fresca.
+          //
+          // El flag evita el bucle: si el segundo scrapeo tambien falla en todas
+          // sus URLs, se muestra el error en vez de scrapar indefinidamente.
+          final origUrl = widget.item.url;
+          if (!_hasReScrapedAfterExhaustion &&
+              DynamicScraperService().isSupported(origUrl)) {
+            _hasReScrapedAfterExhaustion = true;
+            _retryCount = 0;
+            _currentServerIndex = 0;
+            debugPrint(
+              'Todas las URLs extraídas fallaron — re-scrapeando desde el origen',
+            );
+            await _initializePlayer(
+              widget.item,
+              startFrom: currentPos.inSeconds > 5 ? currentPos : null,
+              isLocalReload: true,
+            );
+          } else {
+            _hasReScrapedAfterExhaustion = false;
+            if (mounted) setState(() => _hasError = true);
+          }
         }
       } else {
         // Live: por ahora dejamos el camino pesado tal cual estaba. Es un
@@ -6568,7 +6612,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 _currentItem.url,
                 position,
                 duration,
-                alternativeUrls: _serverItems.map((a) => a.url).toList(),
+                alternativeUrls: [
+                  ..._serverItems.map((a) => a.url),
+                  if (widget.item.url.isNotEmpty &&
+                      widget.item.url != _currentItem.url)
+                    widget.item.url,
+                ],
                 name: _currentItem.name,
                 seriesName: _currentItem.seriesName,
                 seasonNumber: _currentItem.seasonNumber,
@@ -7317,10 +7366,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                               _currentItem.url,
                                               position,
                                               duration,
-                                              alternativeUrls:
-                                                  _serverItems
-                                                      .map((a) => a.url)
-                                                      .toList(),
+                                              alternativeUrls: [
+                                                ..._serverItems.map(
+                                                  (a) => a.url,
+                                                ),
+                                                if (widget.item.url.isNotEmpty &&
+                                                    widget.item.url !=
+                                                        _currentItem.url)
+                                                  widget.item.url,
+                                              ],
                                               name: _currentItem.name,
                                               seriesName:
                                                   _currentItem.seriesName,
@@ -8299,10 +8353,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                         _currentItem.url,
                                         pos,
                                         dur,
-                                        alternativeUrls:
-                                            _serverItems
-                                                .map((a) => a.url)
-                                                .toList(),
+                                        alternativeUrls: [
+                                          ..._serverItems.map((a) => a.url),
+                                          if (widget.item.url.isNotEmpty &&
+                                              widget.item.url !=
+                                                  _currentItem.url)
+                                            widget.item.url,
+                                        ],
                                         name: _currentItem.name,
                                         seriesName: _currentItem.seriesName,
                                         seasonNumber: _currentItem.seasonNumber,
