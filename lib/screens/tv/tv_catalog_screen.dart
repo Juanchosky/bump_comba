@@ -2016,7 +2016,11 @@ class _FilaState extends State<_Fila> {
                 clipBehavior: Clip.none,
                 // El aire por donde crece la tarjeta enfocada: 12 a cada lado,
                 // que es lo que se ensancha una caratula de 136 al 9%.
-                padding: const EdgeInsets.only(left: 12, right: 32),
+                // En el ranking, 32 + 28: la carátula del puesto 10 empieza en
+                // 90 (no en 62) y sobresale 20 px de su celda, más lo que crece
+                // al enfocarse. Sin ese extra la lista no llegaba a desplazarse
+                // lo suficiente y la última quedaba cortada contra el borde.
+                padding: EdgeInsets.only(left: 12, right: _ranking ? 60 : 32),
                 // Ancho fijo por celda: es lo que deja calcular la posicion de
                 // cada tarjeta sin medir nada, y de paso le ahorra a la lista
                 // el trabajo de ir midiendo hijo por hijo mientras se mueve.
