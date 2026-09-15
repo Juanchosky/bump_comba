@@ -1590,9 +1590,11 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                     );
                   }
 
-                  // 5. Build dynamic categories with Top 10 injected after the first one
+                  // 5. Categorías, con el Top 10 metido después de la segunda
                   final categoriesToLoad =
-                      displayCategories.take(_loadedHomeCategories).toList();
+                      _estrenosAnterioresBajoTop10(
+                        displayCategories,
+                      ).take(_loadedHomeCategories).toList();
                   for (int i = 0; i < categoriesToLoad.length; i++) {
                     final cat = categoriesToLoad[i];
                     homeSections.add(
@@ -4484,6 +4486,31 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         ],
       ),
     );
+  }
+
+  /// Deja los estrenos del año más nuevo en su sitio y baja los del año
+  /// anterior justo debajo del Top 10 (que va tras la segunda categoría).
+  ///
+  /// El servicio ya ordena "Estrenos 2026" antes que "Estrenos 2025"; aquí
+  /// solo se recoloca la del año anterior. Sin año, o con uno solo, no se toca.
+  List<String> _estrenosAnterioresBajoTop10(List<String> categorias) {
+    final reAnio = RegExp(r'\b(19|20)\d{2}\b');
+    int? anioDe(String c) =>
+        c.toLowerCase().contains('estreno')
+            ? int.tryParse(reAnio.firstMatch(c)?.group(0) ?? '')
+            : null;
+
+    final anios =
+        categorias.map(anioDe).whereType<int>().toSet().toList()
+          ..sort((a, b) => b.compareTo(a));
+    if (anios.length < 2) return categorias;
+
+    final anterior = anios[1];
+    final bajar = categorias.where((c) => anioDe(c) == anterior).toList();
+    final resto = categorias.where((c) => anioDe(c) != anterior).toList();
+    // Top 10 va tras el índice 1 → lo que se baja entra en el índice 2.
+    final pos = resto.length < 2 ? resto.length : 2;
+    return [...resto.take(pos), ...bajar, ...resto.skip(pos)];
   }
 
   Widget _buildTop10Section() {
