@@ -1015,6 +1015,11 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     _buferVigilado = Duration.zero;
     _bytesVigilados = TurboProxy.instance.currentBytesDownloaded;
     _arranco = false;
+    // Se repinta ya: sin esto el spinner esperaba al próximo evento de MPV, y
+    // mientras se resuelve la página no llega ninguno.
+    if (mounted && !_spinnerVisible) {
+      setState(() => _spinnerVisible = _cargando);
+    }
     _posReferencia = null;
     // Servidor nuevo, colchon nuevo: lo que no daba el anterior no condena a
     // este, y arrancar rapido vuelve a ser lo primero.

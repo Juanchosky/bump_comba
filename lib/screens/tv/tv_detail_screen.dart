@@ -882,9 +882,12 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
           children: [
             _BotonMiLista(isFavorite: _isFavorite, onOk: _toggleFavorite),
             const SizedBox(width: 12),
+            // Solo el icono; mientras se envía cambia a un reloj y no responde.
             _BotonFicha(
-              icono: Icons.flag_outlined,
-              texto: _reportando ? 'Enviando…' : 'Reportar',
+              icono:
+                  _reportando
+                      ? Icons.hourglass_empty_rounded
+                      : Icons.flag_outlined,
               onOk: _reportando ? null : _elegirMotivoReporte,
             ),
           ],
@@ -1419,15 +1422,14 @@ class _ChipTemporadaState extends State<_ChipTemporada> {
   }
 }
 
-/// Botón de la ficha con el mismo aspecto que "Mi lista" (ahora "Reportar").
+/// Botón de solo icono con el aspecto de "Mi lista" (ahora, "Reportar").
 /// OK se lee directo de la tecla, como en el resto de la tele: `Actions` no
 /// responde con el mando. [onOk] null = deshabilitado mientras se envía.
 class _BotonFicha extends StatefulWidget {
   final IconData icono;
-  final String texto;
   final VoidCallback? onOk;
 
-  const _BotonFicha({required this.icono, required this.texto, this.onOk});
+  const _BotonFicha({required this.icono, this.onOk});
 
   @override
   State<_BotonFicha> createState() => _BotonFichaState();
@@ -1456,7 +1458,9 @@ class _BotonFichaState extends State<_BotonFicha> {
         onTap: widget.onOk,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 140),
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 9),
+          // Solo icono: 9 por lado, así queda cuadrado y del mismo alto que
+          // "Mi lista" (icono 19 + 9 + 9 ≈ la línea de texto con su padding).
+          padding: const EdgeInsets.all(9),
           decoration: BoxDecoration(
             color: _foco ? Colors.white : const Color(0xFF1E1E22),
             border: Border.all(
@@ -1464,22 +1468,7 @@ class _BotonFichaState extends State<_BotonFicha> {
               width: 1.5,
             ),
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(widget.icono, color: color, size: 19),
-              const SizedBox(width: 8),
-              Text(
-                widget.texto,
-                style: TextStyle(
-                  color: color,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 0.2,
-                ),
-              ),
-            ],
-          ),
+          child: Icon(widget.icono, color: color, size: 19),
         ),
       ),
     );
@@ -1645,7 +1634,8 @@ class _BotonMiListaState extends State<_BotonMiLista> {
         onTap: widget.onOk,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 140),
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 9),
+          // 28 de lado (antes 18): un poco más largo que el de reportar.
+          padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 9),
           decoration: BoxDecoration(
             color: _foco
                 ? Colors.white
