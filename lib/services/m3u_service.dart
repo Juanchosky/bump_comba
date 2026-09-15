@@ -5236,16 +5236,10 @@ int _getCategoryPriority(String category) {
 
 List<String> _sortCategoriesByPriority(Set<String> catSet) {
   final cats = catSet.where((c) => c != 'Inicio').toList();
-  final reAnio = RegExp(r'\b(19|20)\d{2}\b');
   cats.sort((a, b) {
     final pa = _getCategoryPriority(a);
     final pb = _getCategoryPriority(b);
     if (pa != pb) return pa.compareTo(pb);
-    // A igual prioridad, el AÑO MÁS NUEVO primero: por orden alfabético
-    // "Estrenos 2025" quedaba por delante de "Estrenos 2026".
-    final ya = reAnio.firstMatch(a)?.group(0);
-    final yb = reAnio.firstMatch(b)?.group(0);
-    if (ya != null && yb != null && ya != yb) return yb.compareTo(ya);
     return a.compareTo(b);
   });
   if (catSet.contains('Inicio')) cats.insert(0, 'Inicio');
