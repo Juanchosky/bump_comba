@@ -3652,6 +3652,92 @@ class M3UService extends ChangeNotifier {
     return scored.take(5).map((e) => e.key).toList();
   }
 
+  /// Memo de [getRecientementeAgregadas], atado a la lista que lo produjo:
+  /// cuando se reindexa, `_items` es otra lista y se recalcula solo.
+  List<M3UItem>? _recienAgregadas;
+  Object? _recienAgregadasDe;
+
+  /// "Recientemente agregadas": lo último que ENTRÓ al catálogo, no lo más
+  /// nuevo por año de estreno (eso ya lo cuentan "Últimamente nuevo" y las
+  /// filas de estrenos).
+  ///
+  /// DOS SEÑALES REALES DE FECHA DE ALTA:
+  ///  · Proveedor Xtream: el número de la URL (`/movie/u/p/12345.mkv`) es el
+  ///    id que asigna el panel y crece con cada alta. En una serie cuenta su
+  ///    episodio de id más alto: si le subieron capítulos, es reciente.
+  ///  · BD propia: `_customItems` ya viene por `created_at`, lo más nuevo
+  ///    primero.
+  ///
+  /// Se intercalan las dos (2 del proveedor por 1 propio) para que ninguna
+  /// tape a la otra, sin repetir título, con carátula, y sin clásicos viejos:
+  /// si el título trae un año de hace más de 5, no entra aunque lo acaben de
+  /// subir — una fila de "recientes" llena de cine de los 90 parece rota.
+  List<M3UItem> getRecientementeAgregadas({int tope = 30}) {
+    if (_recienAgregadas != null && identical(_recienAgregadasDe, _items)) {
+      return _recienAgregadas!;
+    }
+
+    final reId = RegExp(r'/(?:movie|series)/[^/]+/[^/]+/(\d+)');
+    final reAnio = RegExp(r'\b(19\d{2}|20\d{2})\b');
+    final anioMinimo = DateTime.now().year - 5;
+
+    int idDe(M3UItem it) {
+      var maximo = int.tryParse(reId.firstMatch(it.url)?.group(1) ?? '') ?? -1;
+      for (final ep in it.episodes) {
+        final id = int.tryParse(reId.firstMatch(ep.url)?.group(1) ?? '') ?? -1;
+        if (id > maximo) maximo = id;
+      }
+      return maximo;
+    }
+
+    bool valido(M3UItem it) {
+      if (it.isLive || (it.logo ?? '').isEmpty) return false;
+      final anios = reAnio.allMatches(it.name);
+      if (anios.isNotEmpty) {
+        final anio = int.tryParse(anios.last.group(1)!) ?? 0;
+        if (anio < anioMinimo) return false;
+      }
+      return true;
+    }
+
+    // Proveedor: películas y series agrupadas, por id de panel descendente.
+    final proveedor = <(M3UItem, int)>[];
+    for (final it in [..._movies, ..._series]) {
+      if (it.sourceName == 'Supabase' || !valido(it)) continue;
+      final id = idDe(it);
+      if (id > 0) proveedor.add((it, id));
+    }
+    proveedor.sort((a, b) => b.$2.compareTo(a.$2));
+
+    // Propio: el orden de `_customItems` ya es el de alta.
+    final propio = _customItems.where(valido).toList();
+
+    final elegidos = <M3UItem>[];
+    final vistos = <String>{};
+    void agregar(M3UItem it) {
+      if (elegidos.length >= tope) return;
+      final clave = _normalizeTitleForMatching(it.seriesName ?? it.name);
+      if (clave.isEmpty || !vistos.add(clave)) return;
+      elegidos.add(it);
+    }
+
+    var p = 0, c = 0;
+    while (elegidos.length < tope &&
+        (p < proveedor.length || c < propio.length)) {
+      for (var k = 0; k < 2 && p < proveedor.length; k++) {
+        agregar(proveedor[p++].$1);
+      }
+      if (c < propio.length) agregar(propio[c++]);
+    }
+
+    // Vacío no se memoriza: suele ser que el catálogo aún no terminó de cargar.
+    if (elegidos.isNotEmpty) {
+      _recienAgregadas = elegidos;
+      _recienAgregadasDe = _items;
+    }
+    return elegidos;
+  }
+
   List<M3UItem> getRecentItems() {
     // Si no está listo, devolver vacía en vez de calcular síncronamente
     // y congelar la pantalla. En 50ms se reconstruirá el UI (notifyListeners).

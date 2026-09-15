@@ -1590,27 +1590,36 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                     );
                   }
 
-                  // 5. Build dynamic categories with Top 10 injected after the first one
+                  // 5. Recientemente agregadas (algoritmo propio del servicio)
+                  //    y justo debajo el Top 10.
+                  final recienAgregadas =
+                      _m3uService.getRecientementeAgregadas();
+                  if (recienAgregadas.isNotEmpty) {
+                    homeSections.add(
+                      _buildCategoryRow(
+                        'Recientemente agregadas',
+                        recienAgregadas,
+                      ),
+                    );
+                  }
+                  homeSections.add(_buildTop10Section());
+
+                  // 6. Las categorías (estrenos incluidos), en su orden.
+                  //    La "Recientemente agregadas" del proveedor se salta: la
+                  //    de arriba ya la cubre, y con otro criterio saldrían dos
+                  //    filas iguales de nombre y distintas de contenido.
                   final categoriesToLoad =
-                      displayCategories.take(_loadedHomeCategories).toList();
-                  for (int i = 0; i < categoriesToLoad.length; i++) {
-                    final cat = categoriesToLoad[i];
+                      displayCategories
+                          .where((c) => !_esRecienAgregadas(c))
+                          .take(_loadedHomeCategories)
+                          .toList();
+                  for (final cat in categoriesToLoad) {
                     homeSections.add(
                       _buildCategoryRow(
                         cat,
                         _m3uService.getItemsByCategory(cat),
                       ),
                     );
-
-                    // Top 10 después de la PRIMERA categoría
-                    if (i == 0) {
-                      homeSections.add(_buildTop10Section());
-                    }
-                  }
-
-                  // Sin categorías cargadas, el Top 10 va al final
-                  if (categoriesToLoad.isEmpty) {
-                    homeSections.add(_buildTop10Section());
                   }
 
                   if (_isHomeLoadingMore) {
@@ -4484,6 +4493,16 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
         ],
       ),
     );
+  }
+
+  /// Si una categoría del proveedor es su propia "recientemente agregadas".
+  static bool _esRecienAgregadas(String cat) {
+    final c = cat.toLowerCase();
+    return c.contains('recientemente') ||
+        c.contains('recien agreg') ||
+        c.contains('recién agreg') ||
+        c.contains('agregadas recient') ||
+        c.contains('agregados recient');
   }
 
   Widget _buildTop10Section() {
