@@ -220,7 +220,9 @@ class M3UService extends ChangeNotifier {
   static const String _cacheTimestampKey = 'm3u_cache_timestamp';
   static const String _cacheFileName = 'm3u_cache.txt';
   static const String _customCacheTimestampKey = 'm3u_custom_cache_timestamp';
-  static const String _customCacheFileName = 'm3u_custom_cache.bin';
+  // v2: la caché vieja guardaba lo propio en orden de UUID (barajado). El
+  // nombre nuevo obliga a una recarga única, del VPS, ya ordenada por fecha.
+  static const String _customCacheFileName = 'm3u_custom_cache_v2.bin';
   static const String _unifiedCacheTimestampKey = 'm3u_unified_cache_timestamp';
   static const String _unifiedCachePrefix = 'm3u_cache_unified_';
   static const String _m3uUrlKey = 'local_m3u_url';
@@ -1326,7 +1328,7 @@ class M3UService extends ChangeNotifier {
         int from = 0;
         const int batchSize = 1000;
         const String columnas =
-            'id,title,title_aliases,video_url,thumbnail_url,type,parent_id,category,season,episode';
+            'id,title,title_aliases,video_url,thumbnail_url,type,parent_id,category,season,episode,created_at';
 
         while (hasMore) {
           List<dynamic>? batch;
@@ -3770,30 +3772,66 @@ class M3UService extends ChangeNotifier {
       return _cachedTrendingBanner!;
     }
 
-    // Reuse popular TMDB cache if available (same data, already fetched)
-    if (_cachedPopularTMDB != null && _cachedPopularTMDB!.isNotEmpty) {
-      // Filter to items with logos for visual quality in the banner
-      final withLogos =
-          _cachedPopularTMDB!
-              .where((i) => i.logo != null && i.logo!.isNotEmpty)
-              .toList();
-      if (withLogos.isNotEmpty) {
-        _cachedTrendingBanner = withLogos;
-        return _cachedTrendingBanner!;
-      }
-      // If none have logos, use all of them (TMDB fallback will handle posters)
-      _cachedTrendingBanner = _cachedPopularTMDB!;
-      return _cachedTrendingBanner!;
-    }
-
-    // Trigger async fetch if not already in progress
+    // Ya NO se reutiliza la caché de "búsqueda popular": esa cruza TMDB con
+    // todo el catálogo del proveedor, y el banner sale de la BD (ver abajo).
+    //
+    // Se espera a que la BD esté cargada: si se calculara antes, se guardaría
+    // un banner sin contenido propio para toda la sesión.
     if (!_isFetchingTrendingBanner &&
-        !_isFetchingPopularTMDB &&
-        _items.isNotEmpty) {
+        (_customItems.isNotEmpty || (_supabase == null && _items.isNotEmpty))) {
       _fetchTrendingForBanner();
     }
 
     return [];
+  }
+
+  /// El banner principal, sacado del contenido PROPIO (la BD).
+  ///
+  /// Primero lo que TMDB marca como tendencia esta semana y tenemos en la BD
+  /// (comparando también con los alias en otros idiomas), y después se completa
+  /// con lo último que se subió — `_customItems` ya viene de más nuevo a más
+  /// viejo. Así la portada es popular y reciente, nunca catálogo viejo.
+  List<M3UItem> _bannerDesdeBd(List<Map<String, String>> tendencias) {
+    const tope = 15;
+    final candidatos =
+        _customItems
+            .where((i) => !i.isLive && (i.logo ?? '').isNotEmpty)
+            .toList();
+    if (candidatos.isEmpty) return const [];
+
+    final elegidos = <M3UItem>[];
+    final vistos = <String>{};
+    bool agregar(M3UItem it) {
+      if (!vistos.add(_normalizeTitleForMatching(it.name))) return false;
+      elegidos.add(it);
+      return true;
+    }
+
+    for (final t in tendencias) {
+      if (elegidos.length >= tope) break;
+      final titulo = _normalizeTitleForMatching(t['title'] ?? '');
+      if (titulo.length < 3) continue;
+      for (final it in candidatos) {
+        if (_titulosDeMatch(it).any(
+          (n) => _normalizeTitleForMatching(n) == titulo,
+        )) {
+          if (agregar(it)) break;
+        }
+      }
+    }
+    final populares = elegidos.length;
+
+    // Lo más reciente de la BD, sin pasar de 10 nuevos para que la portada no
+    // se llene de golpe con una tanda subida el mismo día.
+    for (final it in candidatos) {
+      if (elegidos.length >= tope || elegidos.length - populares >= 10) break;
+      agregar(it);
+    }
+    debugPrint(
+      'Banner desde la BD: $populares en tendencia + '
+      '${elegidos.length - populares} recientes',
+    );
+    return elegidos;
   }
 
   /// Fetches trending titles from TMDB and cross-matches with local catalog
@@ -3807,7 +3845,10 @@ class M3UService extends ChangeNotifier {
       final List<M3UItem> finalResults = [];
       final trends = await TMDBService().getTrendingTitles();
 
-      if (trends.isNotEmpty) {
+      // Contenido propio primero: si la BD da banner, no se mira el catálogo.
+      finalResults.addAll(_bannerDesdeBd(trends));
+
+      if (finalResults.isEmpty && trends.isNotEmpty) {
         final Set<String> matchedNames = {};
         for (var trend in trends) {
           final trendTitle = trend['title']?.toLowerCase() ?? '';
@@ -4499,6 +4540,23 @@ List<M3UItem> _parseCustomContentInBackground(Map<String, dynamic> args) {
       }
     }
 
+    // LO ULTIMO SUBIDO, PRIMERO.
+    //
+    // Las filas llegan ordenadas por `id`, que es un UUID aleatorio: en las
+    // categorias propias los titulos salian barajados. Se ordena por
+    // `created_at` (mas nuevo arriba) y peliculas y series se intercalan por
+    // fecha. Sin fecha (un volcado viejo del VPS) van al final, en el orden de
+    // siempre. Solo cambia el orden RELATIVO entre lo propio: el reparto entre
+    // el catalogo del proveedor (`_interleaveCustomContent`) no se toca.
+    int porFechaDesc(Map<String, dynamic> a, Map<String, dynamic> b) {
+      final fa = a['created_at']?.toString() ?? '';
+      final fb = b['created_at']?.toString() ?? '';
+      if (fa.isEmpty && fb.isEmpty) return 0;
+      if (fa.isEmpty) return 1;
+      if (fb.isEmpty) return -1;
+      return fb.compareTo(fa); // ISO-8601 con la misma zona: orden de texto = orden de fecha
+    }
+
     final List<M3UItem> finalItems = [];
 
     String? sanitizeLogoUrl(dynamic rawLogo) {
@@ -4513,7 +4571,7 @@ List<M3UItem> _parseCustomContentInBackground(Map<String, dynamic> args) {
     }
 
     // Add Movies
-    for (final row in movieRows) {
+    void agregarPelicula(Map<String, dynamic> row) {
       final name = (row['title'] ?? '').toString();
       final url = (row['video_url'] ?? '').toString();
       final rawCat = (row['category'] ?? 'Recomendados').toString();
@@ -4541,7 +4599,7 @@ List<M3UItem> _parseCustomContentInBackground(Map<String, dynamic> args) {
     }
 
     // Add Series with episodes
-    for (final row in seriesRows) {
+    void agregarSerie(Map<String, dynamic> row) {
       final sId = row['id']?.toString() ?? '';
       final name = (row['title'] ?? '').toString();
       final rawCat = (row['category'] ?? 'Recomendados').toString();
@@ -4603,6 +4661,25 @@ List<M3UItem> _parseCustomContentInBackground(Map<String, dynamic> args) {
           titleAliases: _parseTitleAliases(row['title_aliases']),
         ),
       );
+    }
+
+    // Sort estable (List.sort no lo es): a igual fecha, el orden de siempre
+    // (peliculas antes que series, y dentro, el de llegada).
+    final ordenadas = [...movieRows, ...seriesRows];
+    final posicion = <Map<String, dynamic>, int>{
+      for (var i = 0; i < ordenadas.length; i++) ordenadas[i]: i,
+    };
+    ordenadas.sort((a, b) {
+      final c = porFechaDesc(a, b);
+      return c != 0 ? c : posicion[a]!.compareTo(posicion[b]!);
+    });
+    for (final row in ordenadas) {
+      final type = (row['type'] ?? 'movie').toString().toLowerCase();
+      if (type == 'series') {
+        agregarSerie(row);
+      } else {
+        agregarPelicula(row);
+      }
     }
 
     return finalItems;

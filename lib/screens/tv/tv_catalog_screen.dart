@@ -407,13 +407,19 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     final primera = _filas.isEmpty ? const <M3UItem>[] : _filas.first.items;
 
     var fuente = primera;
+    var yaCurado = false;
     if (_seccion == 0) {
       final tendencia = _servicio.getTrendingBannerItems();
-      if (tendencia.isNotEmpty) fuente = _agrupar(tendencia, tope: null);
+      if (tendencia.isNotEmpty) {
+        fuente = _agrupar(tendencia, tope: null);
+        // Ya viene elegido (tendencia + lo último subido a la BD). El filtro por
+        // año del título tiraría lo reciente que no lleva año en el nombre.
+        yaCurado = true;
+      }
     }
 
     // El pool del telefono: años recientes, con peso triple al ultimo.
-    final pool = _poolPorAnio(fuente);
+    final pool = yaCurado ? fuente : _poolPorAnio(fuente);
     if (pool.isEmpty) return;
 
     final elegidos = <M3UItem>[];

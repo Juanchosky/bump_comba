@@ -81,8 +81,8 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 REST="${SUPABASE_URL%/}/rest/v1/custom_content"
-# Solo las columnas que la app parsea. `created_at` e `is_active` no se piden:
-# la primera no se usa y la segunda ya viene filtrada.
+# Solo las columnas que la app parsea. `is_active` ya viene filtrada, y
+# `created_at` se pide aparte solo para peliculas y series (ver paso 2b).
 COLUMNAS="id,title,title_aliases,video_url,thumbnail_url,type,parent_id,category,season,episode"
 
 api() {
@@ -172,35 +172,71 @@ while [ "$desde" -lt "$filas" ]; do
   desde=$(( hasta + 1 ))
 done
 
+# ── 2b) FECHA DE ALTA, SOLO DE PELICULAS Y SERIES ───────────────────────────
+# La app ordena lo propio por `created_at` (lo último subido, arriba). Pedirla
+# en el volcado principal la bajaria para los ~35.000 episodios, que no la
+# usan; aqui son ~1.200 filas, ~90 KB. `order=id` por la misma razon de arriba.
+fechas="$TMP/fechas.jsonl"
+: > "$fechas"
+desde=0
+while :; do
+  hasta=$(( desde + LOTE - 1 ))
+  pagina="$TMP/fechas_pagina.json"
+  if ! api -o "$pagina" -H "Range: ${desde}-${hasta}" \
+        "${REST}?select=id,created_at&is_active=eq.true&type=neq.episode&order=id"; then
+    log "  ERROR bajando fechas ${desde}-${hasta} — se conserva lo publicado"
+    exit 1
+  fi
+  cat "$pagina" >> "$fechas"
+  echo >> "$fechas"
+  # Pagina incompleta = ultima pagina.
+  n=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$pagina" 2>/dev/null || echo 0)
+  [ "$n" -lt "$LOTE" ] && break
+  desde=$(( hasta + 1 ))
+done
+
 # ── 3) NORMALIZAR A SALIDA DETERMINISTA ─────────────────────────────────────
 NORMALIZADOR="$TMP/normalizar.py"
 cat > "$NORMALIZADOR" <<'FIN_PY'
 import json, sys
 
-entrada, salida = sys.argv[1], sys.argv[2]
+entrada, salida, entrada_fechas = sys.argv[1], sys.argv[2], sys.argv[3]
 
-items = []
-with open(entrada, 'r', encoding='utf-8', errors='replace') as f:
-    contenido = f.read()
+def leer(ruta):
+    items = []
+    with open(ruta, 'r', encoding='utf-8', errors='replace') as f:
+        contenido = f.read()
+    decoder = json.JSONDecoder(strict=False)
+    idx = 0
+    longitud = len(contenido)
+    while idx < longitud:
+        while idx < longitud and contenido[idx].isspace():
+            idx += 1
+        if idx >= longitud:
+            break
+        try:
+            obj, end_idx = decoder.raw_decode(contenido, idx)
+            idx = end_idx
+            if isinstance(obj, list):
+                items.extend(x for x in obj if isinstance(x, dict))
+            elif isinstance(obj, dict):
+                items.append(obj)
+        except Exception as e:
+            sys.stderr.write('ERROR_PARSEO %s at idx %d' % (e, idx))
+            sys.exit(2)
+    return items
 
-decoder = json.JSONDecoder(strict=False)
-idx = 0
-longitud = len(contenido)
-while idx < longitud:
-    while idx < longitud and contenido[idx].isspace():
-        idx += 1
-    if idx >= longitud:
-        break
-    try:
-        obj, end_idx = decoder.raw_decode(contenido, idx)
-        idx = end_idx
-        if isinstance(obj, list):
-            items.extend(x for x in obj if isinstance(x, dict))
-        elif isinstance(obj, dict):
-            items.append(obj)
-    except Exception as e:
-        sys.stderr.write('ERROR_PARSEO %s at idx %d' % (e, idx))
-        sys.exit(2)
+items = leer(entrada)
+
+# Fecha de alta de peliculas y series, pegada a su fila. Es un dato de la fila,
+# no de la corrida: no cambia entre volcados, asi que el ETag sigue estable.
+fecha_por_id = {str(x.get('id')): x.get('created_at')
+                for x in leer(entrada_fechas) if x.get('id') is not None}
+for x in items:
+    if x.get('type') != 'episode':
+        f = fecha_por_id.get(str(x.get('id')))
+        if f:
+            x['created_at'] = f
 
 # Las filas sin id no le sirven a la app y romperian el enlace episodio->serie.
 items = [x for x in items if x.get('id') is not None]
@@ -252,7 +288,7 @@ FIN_PY
 f_out="$TMP/${NOMBRE}.json"
 f_err="$TMP/${NOMBRE}.err"
 
-if ! n_items=$(python3 "$NORMALIZADOR" "$crudo" "$f_out" 2>"$f_err"); then
+if ! n_items=$(python3 "$NORMALIZADOR" "$crudo" "$f_out" "$fechas" 2>"$f_err"); then
   log "  ERROR al normalizar ($(cat "$f_err" 2>/dev/null)) — se conserva lo publicado"
   exit 1
 fi
