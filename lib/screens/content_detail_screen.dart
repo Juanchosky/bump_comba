@@ -864,6 +864,34 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
         _fetchSeasonData(_selectedSeason);
       }
     }
+
+    unawaited(_precargarEpisodioProbable());
+  }
+
+  /// Resuelve de antemano el episodio que "Reproducir" va a abrir, con la
+  /// misma regla que [_handleSeriesPlay]. Uno solo, y solo donde es HTTP puro
+  /// (ver `DynamicScraperService.precargar`).
+  Future<void> _precargarEpisodioProbable() async {
+    final episodios = _allEpisodes;
+    if (episodios.isEmpty) return;
+    if (!episodios.first.url.toLowerCase().contains('pelisflix')) return;
+    try {
+      var objetivo = episodios.first;
+      final ultimo = await WatchProgressService().getLastWatchedFromList(
+        episodios.map((e) => e.url).toList(),
+      );
+      if (ultimo != null) {
+        final i = episodios.indexWhere((e) => e.url == ultimo.url);
+        if (i != -1) {
+          objetivo =
+              ultimo.isCompleted
+                  ? (i < episodios.length - 1 ? episodios[i + 1] : episodios.first)
+                  : episodios[i];
+        }
+      }
+      if (!mounted) return;
+      DynamicScraperService().precargar(objetivo.url);
+    } catch (_) {}
   }
 
   void _findOtherVersions() {

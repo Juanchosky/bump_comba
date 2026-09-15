@@ -877,8 +877,55 @@ class DynamicScraperService {
     }
   }
 
+  /// Precargas HTTP en curso, por página, para que pulsar "Reproducir" a
+  /// mitad de una precarga la espere en vez de repetir el trabajo.
+  final Map<String, Future<ExtractedStreamResult?>> _precargasEnCurso = {};
+
+  /// Resuelve [pageUrl] en segundo plano ANTES de que el usuario pulse
+  /// reproducir (p. ej. el episodio de "Continuar" en la ficha de una serie).
+  ///
+  /// Deliberadamente limitado para no empeorar nada:
+  ///  · solo pelisflix, cuya vía rápida es HTTP puro;
+  ///  · NUNCA abre el WebView: hay uno solo global y una precarga que lo
+  ///    ocupara le tiraría el trabajo al reproductor;
+  ///  · si falla, no deja rastro y el reproductor sigue su camino normal.
+  void precargar(String pageUrl) {
+    if (!pageUrl.toLowerCase().contains('pelisflix')) return;
+    final guardada = _resueltas[pageUrl];
+    if (guardada != null && DateTime.now().isBefore(guardada.hasta)) return;
+    if (_precargasEnCurso.containsKey(pageUrl)) return;
+
+    final futuro = () async {
+      try {
+        final r = await _tryFastDirectExtraction(
+          pageUrl,
+        ).timeout(const Duration(seconds: 20));
+        if (r != null && r.videoUrl.isNotEmpty) {
+          _resueltas[pageUrl] = (hasta: _caducidadDe(r.videoUrl), resultado: r);
+          debugPrint('DynamicScraperService: precargada -> ${r.videoUrl}');
+        }
+        return r;
+      } catch (_) {
+        return null;
+      } finally {
+        _precargasEnCurso.remove(pageUrl);
+      }
+    }();
+    _precargasEnCurso[pageUrl] = futuro;
+  }
+
   Future<ExtractedStreamResult?> extractStreamResult(String pageUrl) async {
     if (!isSupported(pageUrl)) return null;
+
+    final enCurso = _precargasEnCurso[pageUrl];
+    var viaRapidaYaFallo = false;
+    if (enCurso != null) {
+      debugPrint('DynamicScraperService: esperando la precarga en curso');
+      final r = await enCurso;
+      if (r != null && r.videoUrl.isNotEmpty) return r;
+      // Falló justo esa vía rápida: repetirla solo sumaría espera.
+      viaRapidaYaFallo = true;
+    }
 
     final guardada = _resueltas[pageUrl];
     if (guardada != null) {
@@ -893,7 +940,8 @@ class DynamicScraperService {
     // ── VÍA RÁPIDA NATIVA (HTTP directo sin WebView) ───────────────────
     // Para Peelink y servidores directos como VOE. Resuelve en ~500ms y
     // con 0 MB de consumo de RAM (vital para TV Boxes con 1 GB de RAM).
-    final fastResult = await _tryFastDirectExtraction(pageUrl);
+    final fastResult =
+        viaRapidaYaFallo ? null : await _tryFastDirectExtraction(pageUrl);
     if (fastResult != null && fastResult.videoUrl.isNotEmpty) {
       debugPrint(
         'DynamicScraperService: resuelto por vía rápida nativa -> ${fastResult.videoUrl}',
