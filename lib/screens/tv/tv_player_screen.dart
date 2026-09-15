@@ -676,7 +676,11 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
           // permite iniciar de inmediato y saltar sin pausas excesivas.
           await mpv.setProperty('cache-secs', '120');
           await mpv.setProperty('demuxer-readahead-secs', '45');
-          await mpv.setProperty('hls-bitrate', 'auto');
+          final bool esScrapeado = DynamicScraperService().isSupported(widget.item.url) ||
+              low.contains('savefiles') ||
+              low.contains('okcdn') ||
+              low.contains('gnula');
+          await mpv.setProperty('hls-bitrate', esScrapeado ? '3000000' : 'auto');
           await mpv.setProperty('hls-forward-cache-secs', '45');
           await mpv.setProperty('hls-back-cache-secs', '30');
           await mpv.setProperty('cache-pause-initial', 'no');
@@ -1086,7 +1090,14 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     }
     _cerrarTurbo();
 
-    if (!esEnVivoPorUrl(original)) {
+    final lowOrig = original.toLowerCase();
+    final bool esHls =
+        lowOrig.contains('.m3u8') ||
+        lowOrig.contains('/hls') ||
+        lowOrig.contains('output=m3u8') ||
+        DynamicScraperService().isSupported(widget.item.url);
+
+    if (!esEnVivoPorUrl(original) && !esHls) {
       try {
         final local = await TurboProxy()
             .wrap(original, cabeceras)
@@ -1127,15 +1138,6 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     // 300 ms de margen cuestan menos que un arranque a tirones.
     await DynamicScraperService().stopCurrentScraping();
     await Future<void>.delayed(const Duration(milliseconds: 300));
-
-    final lowUrl = url.toLowerCase();
-    final lowOrig = original.toLowerCase();
-    final bool esHls =
-        lowUrl.contains('.m3u8') ||
-        lowOrig.contains('.m3u8') ||
-        lowUrl.contains('/hls') ||
-        lowUrl.contains('output=m3u8') ||
-        DynamicScraperService().isSupported(widget.item.url);
 
     if (_muerto) return;
     await _player.open(

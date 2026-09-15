@@ -116,8 +116,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool _isVideoLoading = true;
   bool _isBuffering = false;
   // True solo durante la carga inicial del contenido (primer play).
-  // Se pone en false al inicio de la primera reproduccion para que
-  // el mensaje de bienvenida no aparezca en re-buffers ni recargas.
   bool _isInitialLoad = true;
   // True cuando la reproducción del video ya arrancó en el teléfono.
   bool _hasPlaybackStarted = false;
@@ -2267,7 +2265,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               // 'max' en una conexión modesta causa rebuffering constante.
               // 3 Mbps queda dentro de 720p (2–3 Mbps) y por debajo de 1080p
               // (5–8 Mbps) en los perfiles típicos de ok.ru.
-              mpv.setProperty('hls-bitrate', esContenidoScrapeado ? '3000000' : 'auto'),
+              mpv.setProperty(
+                'hls-bitrate',
+                esContenidoScrapeado ? '3000000' : 'auto',
+              ),
               if (isHlsStream) ...[
                 mpv.setProperty('hls-forward-cache-secs', '45'),
                 mpv.setProperty('hls-back-cache-secs', '30'),
@@ -2583,6 +2584,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           // Decide si el TV puede ir por TurboProxy: el turbo trocea un archivo
           // de longitud conocida en rangos, y en vivo no hay tal archivo.
           isLive: _isLiveContent,
+          isScrapeado:
+              esContenidoScrapeado ||
+              DynamicScraperService().isSupported(widget.item.url) ||
+              currentUrl.contains('savefiles'),
         );
       }
 
@@ -2814,8 +2819,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           // (VOE, etc.) pero widget.item.url sigue siendo la URL de origen
           // (peelink page). Guardar ambas hace que getProgressForItem encuentre
           // el progreso al reabrir el contenido aunque la URL CDN haya expirado.
-          if (widget.item.url.isNotEmpty &&
-              widget.item.url != _currentItem.url)
+          if (widget.item.url.isNotEmpty && widget.item.url != _currentItem.url)
             widget.item.url,
         ];
         _watchProgressService.saveProgress(
@@ -3121,6 +3125,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           // Decide si el TV puede ir por TurboProxy: el turbo trocea un archivo
           // de longitud conocida en rangos, y en vivo no hay tal archivo.
           isLive: _isLiveContent,
+          isScrapeado:
+              DynamicScraperService().isSupported(widget.item.url) ||
+              currentUrl.contains('savefiles'),
         );
       } else {
         _handleVideoCompletion();
@@ -4398,7 +4405,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // Ocurre cuando _lastPosition también se actualizó a 0 (ej: watchdog de
     // pantalla negra por pérdida de superficie de MediaCodec tras background,
     // donde pos=0 y _lastPosition se sobrescribe a 0 en el primer tick).
-    if (currentPos == Duration.zero && _positionBeforeBackground > Duration.zero) {
+    if (currentPos == Duration.zero &&
+        _positionBeforeBackground > Duration.zero) {
       currentPos = _positionBeforeBackground;
     }
     _positionBeforeBackground = Duration.zero;
@@ -4612,11 +4620,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       _isReloading = false;
     }
   }
-
-  /// Host del VPS propio. Solo a el se le manda la cabecera de tier: al
-  /// proveedor no le importa y no hay por que contarle nada de nuestros
-  /// usuarios.
-  static const String _vpsHost = '217.216.80.212';
 
   /// Las cabeceras viven en `cabecerasParaStream`, compartidas con el
   /// reproductor del televisor: el mismo titulo tiene que pedirse igual desde
@@ -7445,7 +7448,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                 ..._serverItems.map(
                                                   (a) => a.url,
                                                 ),
-                                                if (widget.item.url.isNotEmpty &&
+                                                if (widget
+                                                        .item
+                                                        .url
+                                                        .isNotEmpty &&
                                                     widget.item.url !=
                                                         _currentItem.url)
                                                   widget.item.url,

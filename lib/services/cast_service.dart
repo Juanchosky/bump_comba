@@ -689,6 +689,7 @@ class CastService {
     bool isFromDB = false,
     List<Map<String, String>>? subtitles,
     bool isLive = false,
+    bool? isScrapeado,
   }) async {
     if (startPosition > 0) {
       lastKnownPosition = Duration(
@@ -716,7 +717,10 @@ class CastService {
       _tvLastIsFromDB = isFromDB;
       _tvLastSubtitles = subtitles;
       _tvLastIsLive = isLive;
-      _tvLastIsScrapeado = DynamicScraperService().isSupported(url);
+      _tvLastIsScrapeado = isScrapeado ??
+          (DynamicScraperService().isSupported(url) ||
+              url.contains('savefiles') ||
+              url.contains('okcdn'));
       _tvReattaching = false; // es una carga explícita del usuario
       unawaited(_enviarLoadAlTv(startPosition));
       return;

@@ -40,6 +40,13 @@ Map<String, String> cabecerasParaStream(String url, {String? userAgent}) {
     final uri = Uri.parse(url);
     host = uri.host;
     referer = '${uri.scheme}://${uri.host}/';
+    if (host.contains('savefiles.com')) {
+      referer = 'https://savefiles.com/';
+    } else if (host.endsWith('ibra.lat')) {
+      // Stream de nupload.top: sin este Referer, `?s=` redirige a una lista
+      // falsa ("File deleted by DMCA request").
+      referer = 'https://nupload.top/';
+    }
   } catch (_) {}
 
   return <String, String>{

@@ -441,6 +441,17 @@ class DynamicScraperService {
       return true;
     }
 
+    // 15. Pelisflix variants
+    if (lowUrl.contains('pelisflix1.tv') ||
+        lowUrl.contains('pelisflix2.tv') ||
+        lowUrl.contains('pelisflix.tv') ||
+        lowUrl.contains('pelisflix.me') ||
+        lowUrl.contains('pelisflix.cc') ||
+        lowUrl.contains('pelisflix.lat') ||
+        lowUrl.contains('pelisflix')) {
+      return true;
+    }
+
     // 14. SaveFiles variants
     if (lowUrl.contains('savefiles')) {
       return true;
@@ -605,6 +616,13 @@ class DynamicScraperService {
   Future<ScrapedMetadata?> scrapeMetadata(String url) async {
     if (!isSupported(url)) return null;
 
+    if (url.toLowerCase().contains('pelisflix')) {
+      final fastMeta = await _scrapePelisflixMetadata(url);
+      if (fastMeta != null) {
+        return fastMeta;
+      }
+    }
+
     if (url.toLowerCase().contains('peelink')) {
       final fastMeta = await _scrapePeelinkMetadata(url);
       if (fastMeta != null) {
@@ -727,7 +745,7 @@ class DynamicScraperService {
                   const desc = document.querySelector('.description, .synopsis, .detail-overview')?.innerText || '';
                   
                   const episodes = [];
-                  const epElements = document.querySelectorAll('a[href*="/episode/"], .episode-item, .list-episodes a, [class*="episode"] a');
+                  const epElements = document.querySelectorAll('a[href*="/episode/"], a[href*="/capitulo"], a[href*="/episodio"], a[href*="/ep-"], .episode-item, .list-episodes a, [class*="episode"] a, [class*="capitulo"] a');
                   
                   epElements.forEach((el, index) => {
                     const epTitle = el.innerText.trim() || ("Episodio " + (index + 1));
@@ -982,6 +1000,7 @@ class DynamicScraperService {
               'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36',
           javaScriptEnabled: true,
           useShouldInterceptRequest: true,
+          useShouldOverrideUrlLoading: true,
           mediaPlaybackRequiresUserGesture: false,
           offscreenPreRaster: false,
           transparentBackground: true,
@@ -990,6 +1009,22 @@ class DynamicScraperService {
           hardwareAcceleration:
               false, // CRITICAL: Release Surface buffers for the Video Player
         ),
+        shouldOverrideUrlLoading: (controller, navigationAction) async {
+          final navUrl = navigationAction.request.url?.toString() ?? '';
+          // Cancelar el redirect anti-bot de pelisflix a su homepage.
+          // shouldInterceptRequest no puede cancelar navegación principal;
+          // solo shouldOverrideUrlLoading con CANCEL puede hacerlo.
+          if (navigationAction.isForMainFrame == true &&
+              pageUrl.contains('pelisflix1') &&
+              (navUrl == 'https://pelisflix1.tv/' ||
+                  navUrl == 'http://pelisflix1.tv/') &&
+              pageUrl != 'https://pelisflix1.tv/' &&
+              pageUrl != 'http://pelisflix1.tv/') {
+            debugPrint('DynamicScraperService: CANCEL navegación anti-bot pelisflix -> $navUrl');
+            return NavigationActionPolicy.CANCEL;
+          }
+          return NavigationActionPolicy.ALLOW;
+        },
         shouldInterceptRequest: (controller, request) async {
           if (_currentSessionId != sessionId || _headlessWebView == null) {
             return null;
@@ -999,6 +1034,55 @@ class DynamicScraperService {
 
           // CLOUDFLARE BYPASS: Never block cdn-cgi or cloudflare scripts
           if (urlStr.contains('cdn-cgi') || urlStr.contains('cloudflare')) {
+            return null;
+          }
+
+          // JWPLAYER PATCH: r2cr6BE6.js define window.jwplayer como un loader
+          // que encola llamadas setup(). nupload.top llama getState/getDuration
+          // etc. *antes* de que el player esté listo, lo que lanza TypeError y
+          // mata la ejecución, impidiendo que setup() sea llamado. Descargamos
+          // r2cr6BE6.js, le añadimos stubs para esos métodos y lo devolvemos
+          // parcheado. Así getState() no crashea y setup() llega al loader.
+          if (urlStr.contains('content.jwplatform.com/libraries/') &&
+              urlStr.endsWith('.js')) {
+            try {
+              final jwResp = await http.get(
+                Uri.parse(urlStr),
+                headers: {
+                  'User-Agent': _ua,
+                  'Referer': 'https://nupload.top/',
+                },
+              ).timeout(const Duration(seconds: 6));
+              if (jwResp.statusCode == 200) {
+                const patch = r"""
+;(function(){
+  var _jw=window.jwplayer;
+  if(typeof _jw!='function')return;
+  window.jwplayer=function(id){
+    var inst=_jw.apply(this,arguments);
+    if(inst){
+      function s(n,v){if(typeof inst[n]!='function')inst[n]=function(){return v;};}
+      s('getState','idle');s('getDuration',0);s('getPosition',0);
+      s('getVolume',100);s('getMute',false);s('getFullscreen',false);
+      s('getPlaylistIndex',0);s('getPlaylist',[]);
+      s('on',inst);s('off',inst);s('once',inst);
+    }
+    return inst;
+  };
+  try{for(var k in _jw){if(Object.prototype.hasOwnProperty.call(_jw,k))window.jwplayer[k]=_jw[k];}}catch(e){}
+  try{Object.setPrototypeOf(window.jwplayer,Object.getPrototypeOf(_jw));}catch(e){}
+})();
+""";
+                debugPrint('DynamicScraperService: Parcheando JWPlayer loader -> $urlStr');
+                return WebResourceResponse(
+                  contentType: 'application/javascript',
+                  statusCode: 200,
+                  data: Uint8List.fromList(
+                    utf8.encode(jwResp.body + patch),
+                  ),
+                );
+              }
+            } catch (_) {}
             return null;
           }
 
@@ -1062,6 +1146,105 @@ class DynamicScraperService {
             debugPrint(
               'DynamicScraperService: Intercepted subtitle track: $urlStr',
             );
+          }
+
+          // Detectar iframes de hosts embed conocidos y extraer el stream de ellos.
+          // pelisflix1.tv (y sitios similares) muestran el video en un iframe de
+          // un host de tercero ANTES de que el anti-bot redirija al homepage; si
+          // no pescamos esa URL aqui, el JS de onLoadStop corre en la pagina
+          // equivocada y no encuentra nada.
+          if (request.isForMainFrame != true) {
+            final embedHosts = [
+              'nupload.top', 'streamwish', 'filelions', 'wishfast',
+              'streamvid', 'moviesapi', 'voe.sx', 'ibelin', 'doodstream',
+              'mixdrop', 'supervideo', 'vudeo', 'waaw', 'vidmoly',
+              'streamlare', 'streamtape', 'vidoza', 'uqload', 'upstream',
+              'ok.ru', 'odnoklassniki',
+            ];
+            // Comparar solo contra el host (no los query params) para evitar
+            // falsos positivos como ?domain=nupload.top en URLs de anuncios.
+            final embedHost = Uri.tryParse(urlStr)?.host ?? '';
+            if (embedHosts.any((h) => embedHost.contains(h)) &&
+                !urlStr.contains('.js') && !urlStr.contains('.css') &&
+                !urlStr.contains('.png') && !urlStr.contains('.jpg') &&
+                !urlStr.contains('.gif') && !urlStr.contains('.webp')) {
+              debugPrint('DynamicScraperService: Detectado iframe embed -> $urlStr');
+              unawaited(() async {
+                try {
+                  final embedResult = await _extractDirectStreamFromEmbed(urlStr)
+                      .timeout(const Duration(seconds: 10));
+                  if (embedResult != null && embedResult.videoUrl.isNotEmpty &&
+                      _currentSessionId == sessionId) {
+                    final score = _getQualityScore(embedResult.videoUrl);
+                    candidateUrls[embedResult.videoUrl] = score;
+                    debugPrint('DynamicScraperService: Stream via iframe embed (Score: ${score}P): ${embedResult.videoUrl}');
+                    resolveBestCandidate();
+                  }
+                } catch (_) {}
+              }());
+            }
+          }
+
+          // Interceptar sv3.ibra.lat/?s= (JWPlayer de nupload.top pide este URL
+          // para obtener el m3u8; la URL redirige al .m3u8 real).
+          if (urlStr.contains('sv3.ibra.lat') && urlStr.contains('?s=')) {
+            debugPrint('DynamicScraperService: Interceptando sv3.ibra.lat -> $urlStr');
+            unawaited(() async {
+              try {
+                final svRes = await http.get(
+                  Uri.parse(urlStr),
+                  headers: {
+                    'User-Agent': _ua,
+                    'Referer': 'https://nupload.top/',
+                    'Accept': '*/*',
+                  },
+                ).timeout(const Duration(seconds: 8));
+                if (svRes.statusCode == 200 && _currentSessionId == sessionId) {
+                  final body = svRes.body;
+                  if (body.startsWith('#EXTM3U') || body.contains('#EXT-X-')) {
+                    // La URL ?s= misma sirve como stream (el player sigue el redirect)
+                    candidateUrls[urlStr] = 1080;
+                    debugPrint('DynamicScraperService: Stream via sv3.ibra.lat (Score: 1080P): $urlStr');
+                    resolveBestCandidate();
+                  }
+                }
+              } catch (_) {}
+            }());
+          }
+
+          // Interceptar respuesta de api.kindor.io (API de JWPlayer usada por nupload.top)
+          if (urlStr.contains('api.kindor.io') ||
+              urlStr.contains('cdn.jwplayer.com/v2/media/')) {
+            debugPrint('DynamicScraperService: Interceptando JWPlayer API -> $urlStr');
+            unawaited(() async {
+              try {
+                final kindorRes = await http.get(
+                  Uri.parse(urlStr),
+                  headers: {
+                    'User-Agent': _ua,
+                    'Referer': 'https://nupload.top/',
+                    'Accept': 'application/json,*/*',
+                  },
+                ).timeout(const Duration(seconds: 6));
+                if (kindorRes.statusCode == 200 &&
+                    _currentSessionId == sessionId) {
+                  final kindorBody = kindorRes.body;
+                  final m3u8Match = RegExp(
+                    r'''["\']file["\']\s*:\s*["\'](https?://[^\s"'<>]+\.m3u8[^\s"'<>]*)["\'']''',
+                    caseSensitive: false,
+                  ).firstMatch(kindorBody);
+                  if (m3u8Match != null) {
+                    final streamUrl = m3u8Match.group(1)!;
+                    final score = _getQualityScore(streamUrl);
+                    candidateUrls[streamUrl] = score;
+                    debugPrint(
+                      'DynamicScraperService: Stream via JWPlayer API (Score: ${score}P): $streamUrl',
+                    );
+                    resolveBestCandidate();
+                  }
+                }
+              } catch (_) {}
+            }());
           }
 
           // Intercept m3u8/mp4 streams and score them
@@ -1157,9 +1340,14 @@ class DynamicScraperService {
                     elements.forEach(el => {
                       const videoUrl = el.getAttribute('data-url') || el.getAttribute('data-src') || el.getAttribute('href') || el.dataset?.url || '';
                       const text = el.innerText || el.textContent || '';
-                      if (videoUrl && (videoUrl.includes('.m3u8') || videoUrl.includes('.mp4') || videoUrl.startsWith('http'))) {
-                        // Exclude subtitle files from stream results
-                        if (!videoUrl.includes('.srt') && !videoUrl.includes('.vtt') && !videoUrl.includes('.ass') && !videoUrl.includes('/subtitle') && !videoUrl.includes('/subtitles')) {
+                      if (videoUrl && (videoUrl.includes('.m3u8') || videoUrl.includes('.mp4'))) {
+                        // Exclude subtitle and image files from stream results
+                        const lv = videoUrl.toLowerCase();
+                        if (!lv.includes('.srt') && !lv.includes('.vtt') && !lv.includes('.ass') &&
+                            !lv.includes('/subtitle') && !lv.includes('/subtitles') &&
+                            !lv.includes('.jpg') && !lv.includes('.jpeg') && !lv.includes('.png') &&
+                            !lv.includes('.gif') && !lv.includes('.webp') && !lv.includes('.avif') &&
+                            !lv.includes('/poster') && !lv.includes('/thumb') && !lv.includes('/image')) {
                           const score = getQualityScore(text, videoUrl);
                           results.push({ url: videoUrl, score: score });
                         }
@@ -1324,8 +1512,15 @@ class DynamicScraperService {
 
       await _headlessWebView?.run();
 
+      // nupload.top necesita ~20s: JWPlayer tarda ~8s en cargar librerías
+      // antes de hacer el request a sv3.ibra.lat que queremos interceptar.
+      final scraperTimeoutSecs = pageUrl.contains('pelisflix') ||
+              pageUrl.contains('nupload') ||
+              pageUrl.contains('sv3.ibra')
+          ? 30
+          : 15;
       final result = await completer.future.timeout(
-        const Duration(seconds: 15),
+        Duration(seconds: scraperTimeoutSecs),
         onTimeout: () {
           resolveBestCandidate(force: true);
           if (_currentSessionId == sessionId) _disposeHeadless();
@@ -1403,6 +1598,9 @@ class DynamicScraperService {
     if (low.contains('peelink')) {
       return await _extractPeelinkStream(pageUrl);
     }
+    if (low.contains('pelisflix')) {
+      return await _extractPelisflixStream(pageUrl);
+    }
     if (low.contains('gnula')) {
       return await _extractGnulaStream(pageUrl);
     }
@@ -1434,6 +1632,9 @@ class DynamicScraperService {
     String embedUrl,
   ) async {
     final low = embedUrl.toLowerCase();
+    if (low.contains('nupload.top') || low.contains('nupload.')) {
+      return await _extractNuploadStream(embedUrl);
+    }
     if (low.contains('ok.ru') || low.contains('odnoklassniki')) {
       return await _extractOkRuStream(embedUrl);
     }
@@ -1878,6 +2079,160 @@ class DynamicScraperService {
     }
   }
 
+  // ── PELISFLIX ────────────────────────────────────────────────────────────────
+
+  Future<ScrapedMetadata?> _scrapePelisflixMetadata(String url) async {
+    try {
+      final client = http.Client();
+      final res = await client.get(
+        Uri.parse(url),
+        headers: {
+          'User-Agent': _desktopUa,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+          'Referer': 'https://pelisflix1.tv/',
+        },
+      ).timeout(const Duration(seconds: 10));
+      client.close();
+
+      if (res.statusCode != 200) return null;
+      final html = res.body;
+
+      // Título desde og:title o <h1>
+      String title = '';
+      final ogTitle = RegExp(
+        r'''<meta\s+property=['"]og:title['"]\s+content=['"]([^'"]+)['"]''',
+      ).firstMatch(html);
+      if (ogTitle != null) {
+        title = ogTitle.group(1)!.trim();
+      } else {
+        final h1 = RegExp(r'<h1[^>]*>(.*?)</h1>', dotAll: true).firstMatch(html);
+        if (h1 != null) {
+          title = h1.group(1)!.replaceAll(RegExp(r'<[^>]*>'), '').trim();
+        }
+      }
+
+      // Poster
+      String? thumb;
+      final ogImg = RegExp(
+        r'''<meta\s+property=['"]og:image['"]\s+content=['"]([^'"]+)['"]''',
+      ).firstMatch(html);
+      if (ogImg != null) thumb = ogImg.group(1)!.trim();
+
+      // Descripción
+      String? desc;
+      final ogDesc = RegExp(
+        r'''<meta\s+(?:property=['"]og:description['"]|name=['"]description['"])\s+content=['"]([^'"]+)['"]''',
+      ).firstMatch(html);
+      if (ogDesc != null) desc = ogDesc.group(1)!.trim();
+
+      // Episodios: busca enlaces que contengan /capitulo/, /episodio/, /ep-
+      final List<M3UItem> episodes = [];
+      final seenUrls = <String>{};
+      final epRegex = RegExp(
+        r'''<a[^>]+href=['"](https?://[^'"]*(?:/capitulo[^'"]*|/episodio[^'"]*|/ep-\d+[^'"]*|/temporada[^'"]*capitulo[^'"]*))['"]\s*[^>]*>(.*?)</a>''',
+        caseSensitive: false,
+        dotAll: true,
+      );
+      for (final m in epRegex.allMatches(html)) {
+        final epUrl = m.group(1)!;
+        if (!seenUrls.add(epUrl)) continue;
+        final epTitle = m.group(2)!.replaceAll(RegExp(r'<[^>]*>'), '').trim();
+        episodes.add(M3UItem(
+          name: epTitle.isNotEmpty ? epTitle : 'Episodio ${episodes.length + 1}',
+          url: epUrl,
+          logo: thumb,
+          category: 'Episodios',
+          isLive: false,
+          isDynamic: true,
+        ));
+      }
+
+      if (title.isNotEmpty) {
+        return ScrapedMetadata(
+          title: title,
+          thumbnailUrl: thumb,
+          description: desc,
+          episodes: episodes,
+        );
+      }
+    } catch (e) {
+      debugPrint('DynamicScraperService: error _scrapePelisflixMetadata: $e');
+    }
+    return null;
+  }
+
+  Future<ExtractedStreamResult?> _extractPelisflixStream(String pageUrl) async {
+    try {
+      final client = http.Client();
+      final res = await client.get(
+        Uri.parse(pageUrl),
+        headers: {
+          'User-Agent': _desktopUa,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+          'Referer': '${Uri.parse(pageUrl).origin}/',
+        },
+      ).timeout(const Duration(seconds: 10));
+      client.close();
+
+      if (res.statusCode != 200) return null;
+      final html = res.body;
+
+      // 1. Buscar iframe con src de servidor conocido
+      final iframeRegex = RegExp(
+        r'''<iframe[^>]+src=['"](https?://[^'"]+)['"]''',
+        caseSensitive: false,
+      );
+      final iframes = iframeRegex.allMatches(html).map((m) => m.group(1)!).toList();
+
+      // Ordenar: primero los hosts con extractor rápido
+      iframes.sort((a, b) {
+        int score(String u) {
+          final l = u.toLowerCase();
+          if (l.contains('voe') || l.contains('ibelin') || l.contains('savefiles')) return 0;
+          return 1;
+        }
+        return score(a).compareTo(score(b));
+      });
+
+      for (final iframeSrc in iframes) {
+        final low = iframeSrc.toLowerCase();
+        if (low.contains('doubleclick') || low.contains('google-analytics') ||
+            low.contains('googlesyndication') || low.contains('ads')) {
+          continue;
+        }
+
+        final result = await _extractDirectStreamFromEmbed(iframeSrc);
+        if (result != null && result.videoUrl.isNotEmpty) {
+          debugPrint('DynamicScraperService (Pelisflix): stream via iframe -> ${result.videoUrl}');
+          return result;
+        }
+      }
+
+      // 2. Buscar m3u8/mp4 directo en el HTML
+      final m3u8Match = RegExp(
+        r'''['"](https?://[^\s"'<>]+\.m3u8[^\s"'<>]*)['"]''',
+        caseSensitive: false,
+      ).firstMatch(html);
+      if (m3u8Match != null) {
+        return ExtractedStreamResult(videoUrl: m3u8Match.group(1)!);
+      }
+
+      final mp4Match = RegExp(
+        r'''['"](https?://[^\s"'<>]+\.mp4[^\s"'<>]*)['"]''',
+        caseSensitive: false,
+      ).firstMatch(html);
+      if (mp4Match != null) {
+        return ExtractedStreamResult(videoUrl: mp4Match.group(1)!);
+      }
+    } catch (e) {
+      debugPrint('DynamicScraperService: error _extractPelisflixStream: $e');
+    }
+    // Si la extracción HTTP falla, el WebView lo reintentará
+    return null;
+  }
+
   Future<ScrapedMetadata?> _scrapePeelinkMetadata(String url) async {
     try {
       final client = http.Client();
@@ -1968,6 +2323,131 @@ class DynamicScraperService {
       }
     } catch (e) {
       debugPrint('DynamicScraperService: error _scrapePeelinkMetadata: $e');
+    }
+    return null;
+  }
+
+  /// Extrae el stream de nupload.top/watch/HASH
+  /// nupload usa JWPlayer; el setup está en el HTML como jwplayer().setup({...})
+  /// o se obtiene de la API de JWPlayer cdn.jwplayer.com/v2/media/ID
+  /// Decodifica el array base64 de nupload.top para obtener la URL base del stream.
+  /// El HTML tiene: var arr = ["base64_1","base64_2",...];
+  /// Cada elemento: atob(value) tiene dígitos incrustados; extraerlos, restar 1323034, convertir a char.
+  String? _decodeNuploadArray(String arrayName, String body, int offset) {
+    final arrRegex = RegExp(
+      'var\\s+$arrayName\\s*=\\s*(\\[[^\\]]+\\])',
+      caseSensitive: false,
+    );
+    final arrMatch = arrRegex.firstMatch(body);
+    if (arrMatch == null) return null;
+    final arrStr = arrMatch.group(1)!;
+    final items = RegExp(r'"([^"]+)"').allMatches(arrStr).map((m) => m.group(1)!).toList();
+    if (items.isEmpty) return null;
+    final result = StringBuffer();
+    for (final item in items) {
+      try {
+        final decoded = String.fromCharCodes(base64.decode(item));
+        final digits = decoded.replaceAll(RegExp(r'\D'), '');
+        if (digits.isEmpty) continue;
+        final code = int.parse(digits) - offset;
+        if (code > 0 && code < 0x10FFFF) result.writeCharCode(code);
+      } catch (_) {}
+    }
+    final s = result.toString();
+    return s.isEmpty ? null : s;
+  }
+
+  Future<ExtractedStreamResult?> _extractNuploadStream(
+    String embedUrl,
+  ) async {
+    try {
+      final res = await http.get(
+        Uri.parse(embedUrl),
+        headers: {
+          'User-Agent': _ua,
+          'Referer': 'https://pelisflix1.tv/',
+          'Accept':
+              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+        },
+      ).timeout(const Duration(seconds: 8));
+
+      if (res.statusCode != 200) return null;
+      final body = res.body;
+
+      // Técnica principal: el HTML tiene un array de strings base64 que codifican
+      // la URL base del stream, y una variable sesz con el token de sesión.
+      // file = decodeArray() + "?s=" + sesz
+      // Ese URL al cargarlo devuelve el .m3u8 real (sigue redirect).
+      //
+      // Buscar el nombre del array (puede variar): "var <nombre> = ["..." ]"
+      final arrayNameMatch = RegExp(
+        r'var\s+([A-Za-z_]\w*)\s*=\s*\["[A-Za-z0-9+/=]+",',
+      ).firstMatch(body);
+
+      final seszMatch = RegExp(r'''sesz\s*=\s*"([^"]{20,})"''').firstMatch(body);
+
+      if (arrayNameMatch != null && seszMatch != null) {
+        final arrName = arrayNameMatch.group(1)!;
+        final sesz = seszMatch.group(1)!;
+
+        // Buscar el offset numérico usado en la resta: "parseInt(atob(value).replace(...)) - OFFSET"
+        // El replace(/\D/g,'') mete paréntesis extra, así que se toma lo que
+        // haya hasta el primer "- NUM" tras parseInt(atob(.
+        final offsetMatch = RegExp(r'parseInt\(atob\(.{0,80}?\)\s*-\s*(\d+)').firstMatch(body);
+        final decodedOffset = offsetMatch != null ? int.tryParse(offsetMatch.group(1)!) ?? 1323034 : 1323034;
+
+        final baseUrl = _decodeNuploadArray(arrName, body, decodedOffset);
+        if (baseUrl != null && baseUrl.startsWith('http')) {
+          final streamApiUrl = '$baseUrl?s=$sesz';
+          debugPrint('NuploadExtractor: GET $streamApiUrl');
+          try {
+            final client = http.Client();
+            final streamRes = await client.get(
+              Uri.parse(streamApiUrl),
+              headers: {
+                'User-Agent': _ua,
+                'Referer': 'https://nupload.top/',
+                'Accept': '*/*',
+              },
+            ).timeout(const Duration(seconds: 6));
+            client.close();
+            // La respuesta es el .m3u8 directo O redirige a él
+            final finalUrl = streamRes.request?.url.toString() ?? streamApiUrl;
+            if (streamRes.statusCode == 200) {
+              final bodyM = streamRes.body;
+              if (bodyM.contains('#EXTM3U') || finalUrl.contains('.m3u8')) {
+                final m3u8url = finalUrl.contains('.m3u8') ? finalUrl : streamApiUrl;
+                debugPrint('NuploadExtractor: stream -> $m3u8url');
+                return ExtractedStreamResult(videoUrl: m3u8url);
+              }
+              // A veces la respuesta es JSON con "file"
+              final jsonFileMatch = RegExp(
+                r'"file"\s*:\s*"(https?://[^"]+\.m3u8[^"]*)"',
+              ).firstMatch(bodyM);
+              if (jsonFileMatch != null) {
+                return ExtractedStreamResult(videoUrl: jsonFileMatch.group(1)!);
+              }
+            }
+          } catch (e) {
+            debugPrint('NuploadExtractor stream fetch error: $e');
+          }
+        }
+      }
+
+      // Fallback: buscar file directo en jwplayer().setup({file:"..."})
+      final fileMatch = RegExp(
+        r'''file["\']\s*:\s*["\'](https?://[^\s"'<>]+\.m3u8[^"']*)["\'"]''',
+        caseSensitive: false,
+      ).firstMatch(body);
+      if (fileMatch != null) {
+        debugPrint('NuploadExtractor: stream directo -> ${fileMatch.group(1)}');
+        return ExtractedStreamResult(videoUrl: fileMatch.group(1)!);
+      }
+
+      debugPrint('NuploadExtractor: no se encontró stream en $embedUrl');
+    } catch (e) {
+      debugPrint('NuploadExtractor error: $e');
     }
     return null;
   }

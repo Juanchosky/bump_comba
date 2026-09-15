@@ -16,6 +16,7 @@ import 'tv_catalog_screen.dart';
 import 'tv_pairing_screen.dart';
 import '../../services/tv/tv_receiver_service.dart';
 import '../../services/dynamic_scraper_service.dart';
+import '../../utils/cabeceras_stream.dart';
 
 /// Pantalla receptora que corre en el TV. Es dueña del [Player] de media_kit
 /// (el MISMO motor MPV que el teléfono) y ejecuta los comandos que llegan por
@@ -405,6 +406,18 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
       }
     }
 
+    // Asegurar cabeceras por defecto para proveedores que las exigen (SaveFiles, etc.)
+    final defaultHeaders = cabecerasParaStream(playUrl);
+    for (final e in defaultHeaders.entries) {
+      playHeaders.putIfAbsent(e.key, () => e.value);
+    }
+
+    final bool esScrapeadoReal = isScrapeado ||
+        playUrl.contains('savefiles') ||
+        playUrl.contains('okcdn') ||
+        playUrl.contains('vidara') ||
+        playUrl.contains('gnula');
+
     // Que URL llega EXACTAMENTE al televisor. Es el dato que separa las dos
     // hipotesis del corte prematuro: si es un .m3u8 el problema es la lista de
     // segmentos agotandose, y si es un archivo directo es el proveedor.
@@ -471,13 +484,15 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
               // demuxer-cache-wait: 'no' evita que MPV se congele esperando 50MB de buffer antes de emitir frames.
               await mpv.setProperty('cache-secs', '120');
               await mpv.setProperty('demuxer-readahead-secs', '45');
-              // Contenido scrapeado (GnulaHD/okcdn): cap 720p para evitar rebuffering.
-              await mpv.setProperty('hls-bitrate', isScrapeado ? '3000000' : 'auto');
+              // Contenido scrapeado (GnulaHD / SaveFiles / okcdn): cap 720p para evitar rebuffering.
+              await mpv.setProperty('hls-bitrate', esScrapeadoReal ? '3000000' : 'auto');
               await mpv.setProperty('hls-forward-cache-secs', '45');
               await mpv.setProperty('hls-back-cache-secs', '30');
               await mpv.setProperty('cache-pause-initial', 'no');
-              await mpv.setProperty('cache-pause-wait', '4');
+              await mpv.setProperty('cache-pause-wait', '2');
               await mpv.setProperty('demuxer-cache-wait', 'no');
+              await mpv.setProperty('hr-seek', 'default');
+              await mpv.setProperty('hr-seek-framedrop', 'yes');
             }
           } else {
             // VOD: se restauran los valores del perfil de arranque, por si el
@@ -489,7 +504,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
           }
 
           if (isFromDB) {
-            await mpv.setProperty('hls-bitrate', isScrapeado ? '3000000' : 'auto');
+            await mpv.setProperty('hls-bitrate', esScrapeadoReal ? '3000000' : 'auto');
             await mpv.setProperty('scale', 'bilinear');
             await mpv.setProperty('cscale', 'bilinear');
             await mpv.setProperty('linear-upscaling', 'no');
@@ -500,7 +515,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
             await mpv.setProperty('vd-lavc-skiploopfilter', 'nonref');
           } else {
             // Canales IPTV normales: optimizado para evitar cortes en TV
-            await mpv.setProperty('hls-bitrate', isScrapeado ? '3000000' : 'auto');
+            await mpv.setProperty('hls-bitrate', esScrapeadoReal ? '3000000' : 'auto');
             await mpv.setProperty('scale', 'bilinear');
             await mpv.setProperty('cscale', 'bilinear');
             await mpv.setProperty('deband', 'no');
