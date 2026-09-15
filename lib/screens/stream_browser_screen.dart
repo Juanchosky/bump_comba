@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
 import 'dart:ui';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
@@ -27,6 +26,7 @@ import '../services/video_prewarm_service.dart';
 import '../services/premium_service.dart';
 import '../services/ad_service.dart';
 import '../utils/content_filters.dart';
+import '../utils/top10.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -4506,52 +4506,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   }
 
   Widget _buildTop10Section() {
-    // 1. Get a larger pool to find recent years (first 500 items)
-    final initialPool = _m3uService.movies.take(500).toList();
-    if (initialPool.isEmpty) return const SizedBox.shrink();
-
-    // 2. Extract years and find the maximum year present
-    final itemsWithYear =
-        initialPool
-            .map((item) => {'item': item, 'year': _extractYear(item.name)})
-            .where((e) => e['year'] != null)
-            .toList();
-
-    int maxYear = 0;
-    if (itemsWithYear.isNotEmpty) {
-      maxYear = itemsWithYear
-          .map((e) => e['year'] as int)
-          .reduce((curr, next) => curr > next ? curr : next);
-    }
-
-    // 3. Filter by max year (and maxYear-1 if pool is small)
-    var filteredPool =
-        itemsWithYear
-            .where((e) => e['year'] == maxYear)
-            .map((e) => e['item'] as M3UItem)
-            .toList();
-
-    if (filteredPool.length < 15 && maxYear > 1900) {
-      final prevYearItems =
-          itemsWithYear
-              .where((e) => e['year'] == maxYear - 1)
-              .map((e) => e['item'] as M3UItem)
-              .toList();
-      filteredPool.addAll(prevYearItems);
-    }
-
-    // Fallback if year detection didn't yield enough results
-    if (filteredPool.isEmpty) {
-      filteredPool = initialPool.take(100).toList();
-    }
-
-    // 4. Deterministic random based on current date
-    final now = DateTime.now();
-    final seed = now.year * 10000 + now.month * 100 + now.day;
-    final random = Random(seed);
-
-    final shuffledPool = List<M3UItem>.from(filteredPool)..shuffle(random);
-    final topItems = shuffledPool.take(10).toList();
+    // El algoritmo vive en utils/top10.dart, compartido con el televisor.
+    final topItems = top10Peliculas(_m3uService.movies);
     if (topItems.isEmpty) return const SizedBox.shrink();
 
     return Padding(
@@ -4979,60 +4935,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     final countryCode =
         _detectedCountryCode ??
         View.of(context).platformDispatcher.locale.countryCode;
-    if (countryCode == null || countryCode.isEmpty) {
-      return 'Top 10 películas hoy';
-    }
-
-    final countryName = _getCountryName(countryCode);
-    if (countryName.isEmpty) {
-      return 'Top 10 películas hoy';
-    }
-
-    return 'Top 10 películas en $countryName hoy';
-  }
-
-  int? _extractYear(String name) {
-    // Matches (2024), [2024], or just 2024 at the end or in middle
-    final match = RegExp(r'(?:[\[\(]?)(\d{4})(?:[\]\)]?)').allMatches(name);
-    if (match.isNotEmpty) {
-      // Take the last 4-digit match which is usually the year
-      final yearStr = match.last.group(1);
-      if (yearStr != null) {
-        final year = int.tryParse(yearStr);
-        if (year != null && year >= 1900 && year <= 2100) {
-          return year;
-        }
-      }
-    }
-    return null;
-  }
-
-  String _getCountryName(String code) {
-    final Map<String, String> countries = {
-      'AR': 'Argentina',
-      'BO': 'Bolivia',
-      'BR': 'Brasil',
-      'CL': 'Chile',
-      'CO': 'Colombia',
-      'CR': 'Costa Rica',
-      'CU': 'Cuba',
-      'EC': 'Ecuador',
-      'ES': 'España',
-      'GT': 'Guatemala',
-      'HN': 'Honduras',
-      'MX': 'México',
-      'NI': 'Nicaragua',
-      'PA': 'Panamá',
-      'PY': 'Paraguay',
-      'PE': 'Perú',
-      'PR': 'Puerto Rico',
-      'DO': 'República Dominicana',
-      'SV': 'El Salvador',
-      'UY': 'Uruguay',
-      'VE': 'Venezuela',
-      'US': 'Estados Unidos',
-    };
-    return countries[code.toUpperCase()] ?? '';
+    return tituloTop10(countryCode);
   }
 }
 

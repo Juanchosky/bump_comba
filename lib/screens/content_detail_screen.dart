@@ -12,6 +12,7 @@ import 'package:media_kit/media_kit.dart';
 
 import '../utils/transitions.dart';
 import '../utils/snack_bar_utils.dart';
+import '../utils/motivos_reporte.dart';
 import 'package:share_plus/share_plus.dart';
 import '../services/tmdb_service.dart';
 import '../services/performance_service.dart';
@@ -566,29 +567,11 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   }
 
   void _showReportOptions() {
-    final catLower = widget.item.category.toLowerCase();
-    final bool esSerie =
-        widget.item.isSeries ||
-        _allEpisodes.isNotEmpty ||
-        catLower.contains('serie') ||
-        catLower.contains('anime') ||
-        catLower.contains('dorama') ||
-        catLower.contains('novela') ||
-        catLower.contains('show');
-
-    final reasons = [
-      'No carga el video',
-      'Se traba / Mucho buffering',
-      if (esSerie)
-        'Serie desactualizada (faltan capítulos / temporadas)'
-      else
-        'Contenido desactualizado / Nueva versión',
-      'Audio desincronizado / Sin audio',
-      'Subtítulos faltantes o mal sincronizados',
-      'El contenido no corresponde al título',
-      'Mala calidad de imagen',
-      'Otro problema',
-    ];
+    // Compartidos con la ficha del televisor (utils/motivos_reporte.dart).
+    final reasons = motivosReporte(
+      widget.item,
+      tieneEpisodios: _allEpisodes.isNotEmpty,
+    );
 
     showModalBottomSheet(
       context: context,

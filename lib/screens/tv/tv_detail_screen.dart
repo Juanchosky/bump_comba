@@ -12,6 +12,7 @@ import '../../services/tv/tv_vista_previa.dart';
 import '../../services/dynamic_scraper_service.dart';
 import '../../utils/colors.dart';
 import '../../utils/titulo_tmdb.dart';
+import '../../utils/motivos_reporte.dart';
 import 'tv_player_screen.dart';
 
 /// Ficha de un título en el televisor.
@@ -107,6 +108,57 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
       unawaited(DynamicScraperService().extractStreamResult(widget.item.url));
     }
     _prepararFicha();
+  }
+
+  bool _reportando = false;
+
+  /// Reportar un problema: la MISMA lógica que la ficha del teléfono — mismos
+  /// motivos (utils/motivos_reporte.dart) y el mismo
+  /// `M3UService.reportContent`, que lo guarda en `content_reports`.
+  Future<void> _elegirMotivoReporte() async {
+    final motivos = motivosReporte(
+      widget.item,
+      tieneEpisodios: _episodiosCargados.isNotEmpty,
+    );
+    final motivo = await showDialog<String>(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (context) => _DialogoReporte(motivos: motivos),
+    );
+    if (motivo == null || !mounted) return;
+
+    setState(() => _reportando = true);
+    bool ok = false;
+    try {
+      ok = await M3UService().reportContent(
+        name: widget.item.name,
+        category: widget.item.category,
+        url: widget.item.url,
+        reason: motivo,
+      );
+    } catch (_) {}
+    if (!mounted) return;
+    setState(() => _reportando = false);
+    _aviso(
+      ok
+          ? 'Reporte enviado con éxito. ¡Gracias!'
+          : 'Error al enviar el reporte. Inténtalo de nuevo.',
+      error: !ok,
+    );
+  }
+
+  void _aviso(String texto, {bool error = false}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          texto,
+          style: const TextStyle(color: Colors.white, fontSize: 16),
+        ),
+        backgroundColor:
+            error ? const Color(0xFFE53935) : const Color(0xFF2E7D32),
+        duration: const Duration(seconds: 3),
+      ),
+    );
   }
 
   Future<void> _toggleFavorite() async {
@@ -822,10 +874,20 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
 
         const SizedBox(height: 14),
 
-        // ── Botón Mi lista ────────────────────────────────────────────────
-        _BotonMiLista(
-          isFavorite: _isFavorite,
-          onOk: _toggleFavorite,
+        // ── Botones Mi lista y Reportar ───────────────────────────────────
+        //
+        // En fila: izquierda/derecha pasa de uno a otro con el mando.
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _BotonMiLista(isFavorite: _isFavorite, onOk: _toggleFavorite),
+            const SizedBox(width: 12),
+            _BotonFicha(
+              icono: Icons.flag_outlined,
+              texto: _reportando ? 'Enviando…' : 'Reportar',
+              onOk: _reportando ? null : _elegirMotivoReporte,
+            ),
+          ],
         ),
       ],
     );
@@ -1350,6 +1412,194 @@ class _ChipTemporadaState extends State<_ChipTemporada> {
             color: color,
             fontSize: 15,
             fontWeight: widget.elegida ? FontWeight.w600 : FontWeight.w400,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Botón de la ficha con el mismo aspecto que "Mi lista" (ahora "Reportar").
+/// OK se lee directo de la tecla, como en el resto de la tele: `Actions` no
+/// responde con el mando. [onOk] null = deshabilitado mientras se envía.
+class _BotonFicha extends StatefulWidget {
+  final IconData icono;
+  final String texto;
+  final VoidCallback? onOk;
+
+  const _BotonFicha({required this.icono, required this.texto, this.onOk});
+
+  @override
+  State<_BotonFicha> createState() => _BotonFichaState();
+}
+
+class _BotonFichaState extends State<_BotonFicha> {
+  bool _foco = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = _foco ? const Color(0xFF0B0B0D) : Colors.white;
+    return Focus(
+      onFocusChange: (v) => setState(() => _foco = v),
+      onKeyEvent: (node, event) {
+        if (event is! KeyDownEvent) return KeyEventResult.ignored;
+        final k = event.logicalKey;
+        if (k == LogicalKeyboardKey.select ||
+            k == LogicalKeyboardKey.enter ||
+            k == LogicalKeyboardKey.gameButtonA) {
+          widget.onOk?.call();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: GestureDetector(
+        onTap: widget.onOk,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 140),
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 9),
+          decoration: BoxDecoration(
+            color: _foco ? Colors.white : const Color(0xFF1E1E22),
+            border: Border.all(
+              color: _foco ? Colors.white : Colors.white.withValues(alpha: 0.22),
+              width: 1.5,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(widget.icono, color: color, size: 19),
+              const SizedBox(width: 8),
+              Text(
+                widget.texto,
+                style: TextStyle(
+                  color: color,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.2,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// "¿Qué problema encontraste?" para el mando: una lista vertical, arriba y
+/// abajo para moverse, OK para enviar, atrás para cancelar.
+class _DialogoReporte extends StatelessWidget {
+  final List<String> motivos;
+  const _DialogoReporte({required this.motivos});
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 520),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(24, 0, 24, 14),
+                child: Text(
+                  '¿Qué problema encontraste?',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              const Divider(color: Colors.white12, height: 1),
+              Flexible(
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      for (var i = 0; i < motivos.length; i++)
+                        _OpcionReporte(
+                          texto: motivos[i],
+                          autofoco: i == 0,
+                          onOk: () => Navigator.of(context).pop(motivos[i]),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _OpcionReporte extends StatefulWidget {
+  final String texto;
+  final bool autofoco;
+  final VoidCallback onOk;
+
+  const _OpcionReporte({
+    required this.texto,
+    required this.autofoco,
+    required this.onOk,
+  });
+
+  @override
+  State<_OpcionReporte> createState() => _OpcionReporteState();
+}
+
+class _OpcionReporteState extends State<_OpcionReporte> {
+  bool _foco = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Focus(
+      autofocus: widget.autofoco,
+      onFocusChange: (v) {
+        setState(() => _foco = v);
+        // Con listas largas en pantallas bajas, la opción enfocada a la vista.
+        if (v) Scrollable.ensureVisible(context, alignment: 0.5);
+      },
+      onKeyEvent: (node, event) {
+        if (event is! KeyDownEvent) return KeyEventResult.ignored;
+        final k = event.logicalKey;
+        if (k == LogicalKeyboardKey.select ||
+            k == LogicalKeyboardKey.enter ||
+            k == LogicalKeyboardKey.gameButtonA) {
+          widget.onOk();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: GestureDetector(
+        onTap: widget.onOk,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 120),
+          color: _foco ? Colors.white : Colors.transparent,
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  widget.texto,
+                  style: TextStyle(
+                    color: _foco ? const Color(0xFF0B0B0D) : Colors.white,
+                    fontSize: 16,
+                  ),
+                ),
+              ),
+              Icon(
+                Icons.chevron_right,
+                color: _foco ? const Color(0xFF0B0B0D) : Colors.white54,
+              ),
+            ],
           ),
         ),
       ),

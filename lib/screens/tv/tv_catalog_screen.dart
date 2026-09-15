@@ -9,6 +9,7 @@ import '../../services/m3u_service.dart';
 import '../../services/tmdb_service.dart';
 import '../../utils/colors.dart';
 import '../../utils/titulo_tmdb.dart';
+import '../../utils/top10.dart';
 import '../../services/watch_progress_service.dart';
 import 'tv_category_screen.dart';
 import 'tv_loading_animation.dart';
@@ -126,6 +127,9 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   /// que se ven.
   static const int _maxFilas = 80;
 
+  /// Código de país para el título del Top 10; null hasta que se detecta.
+  String? _paisTop10;
+
   /// El color del fondo del catalogo.
   ///
   /// ── POR QUE ES UNA CONSTANTE ──────────────────────────────────────────
@@ -233,8 +237,12 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   /// muevan.
   final Map<String, GlobalKey<_FilaState>> _llavesFila = {};
 
-  GlobalKey<_FilaState> _llaveDe(String titulo) =>
-      _llavesFila.putIfAbsent(titulo, () => GlobalKey<_FilaState>());
+  GlobalKey<_FilaState> _llaveDe(String titulo) => _llavesFila.putIfAbsent(
+    // El título del Top 10 cambia al detectar el país ("hoy" → "en Colombia
+    // hoy"): con la misma llave la fila no se recrea ni pierde el foco.
+    titulo.startsWith('Top 10') ? 'Top 10' : titulo,
+    () => GlobalKey<_FilaState>(),
+  );
 
   final ScrollController _scrollVertical = ScrollController();
 
@@ -873,6 +881,16 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     // "Seguir viendo" al dia sin tener que reiniciar la app.
     WatchProgressService().addListener(_alCambiarProgreso);
     _cargar();
+
+    // País para el título del Top 10 ("... en Colombia hoy"). Llega tarde y es
+    // un extra: al llegar solo se rehacen las filas para cambiar el título.
+    detectarPais().then((pais) {
+      if (!mounted || pais == null) return;
+      setState(() {
+        _paisTop10 = pais;
+        _filas = _armarFilas();
+      });
+    });
   }
 
   @override
@@ -899,7 +917,13 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
         ahora.difference(_ultimoDato) < const Duration(seconds: 6);
     final dentroDelTope =
         ahora.difference(_inicioCarga) < const Duration(seconds: 45);
-    if (_filas.isEmpty && sigueLlegando && dentroDelTope) {
+    // La BD bajando cuenta como "sigue llegando" aunque no haya avisos: sin VPS
+    // son tandas de Supabase de varios segundos cada una. Con tope propio para
+    // que una red caída no deje el logo para siempre.
+    final bdEnCamino =
+        _servicio.cargandoContenidoPropio &&
+        ahora.difference(_inicioCarga) < const Duration(seconds: 120);
+    if (_filas.isEmpty && ((sigueLlegando && dentroDelTope) || bdEnCamino)) {
       _plazoCarga = Timer(const Duration(seconds: 5), _revisarPlazoCarga);
       return;
     }
@@ -914,7 +938,15 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     final hayPreliminares = _servicio.itemsPreliminares.isNotEmpty;
     final hayIndexado =
         _servicio.movies.isNotEmpty || _servicio.series.isNotEmpty;
-    if (!hayPreliminares && !hayIndexado) return;
+    if (!hayPreliminares && !hayIndexado) {
+      // Nada que pintar, pero puede que la BD acabe de terminar (con o sin
+      // contenido): se repinta para que el mensaje pase de "Cargando…" a lo
+      // que corresponda, en vez de quedarse girando.
+      if (_filas.isEmpty && !_servicio.cargandoContenidoPropio) {
+        setState(() {});
+      }
+      return;
+    }
     _ultimoDato = DateTime.now();
     setState(() {
       _filas = _armarFilas();
@@ -1163,6 +1195,20 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       filas.add((titulo: 'Mi lista', items: favoritos));
     }
 
+    // Recientemente agregadas y el Top 10, en el mismo sitio que en el
+    // teléfono y con los MISMOS métodos: el algoritmo de recientes es del
+    // servicio y el del Top 10 está en utils/top10.dart.
+    final recienAgregadas = _servicio.getRecientementeAgregadas();
+    if (recienAgregadas.isNotEmpty) {
+      filas.add((titulo: 'Recientemente agregadas', items: recienAgregadas));
+    }
+    final top10 = top10Peliculas(_servicio.movies);
+    if (top10.isNotEmpty) {
+      // El título empieza por "Top 10": es lo que hace que `_Fila` la pinte
+      // como ranking (ver `_Fila._ranking`).
+      filas.add((titulo: tituloTop10(_paisTop10), items: top10));
+    }
+
     // Y las categorias del proveedor, en el orden que manda el servicio y ya
     // sin las de deportes, religion, canales en directo ni las de cada pais:
     // ese filtro es el que le faltaba al televisor y por el que aparecian de
@@ -1226,8 +1272,12 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
         // Sin fuentes el mensaje del servicio habla de "URL M3U", que al
         // usuario de un televisor no le dice nada: el nunca configuro ninguna
         // URL, la trajo la vinculacion.
+        // Si la BD sigue bajando, NO es un error: se queda en "Cargando…" y
+        // las filas aparecen solas al llegar (`_alLlegarDatos`). Antes salía
+        // la pantalla de error con "Reintentar" encima de una carga que iba
+        // bien, y parecía que la app había fallado.
         _error =
-            _filas.isEmpty
+            _filas.isEmpty && !_servicio.cargandoContenidoPropio
                 ? (_servicio.sources.isEmpty
                     ? 'No se pudo traer tu contenido. Vuelve a vincular el '
                         'televisor desde el teléfono.'
@@ -1393,7 +1443,8 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                               final vacioReal =
                                   _plazoCargaVencido &&
                                   !_cargando &&
-                                  !hayContenido;
+                                  !hayContenido &&
+                                  !_servicio.cargandoContenidoPropio;
                               return Center(
                                 child: Column(
                                   mainAxisSize: MainAxisSize.min,
@@ -1726,15 +1777,27 @@ class _FilaState extends State<_Fila> {
   /// Antes 150 dejaba 24 px de hueco; con 134 las carátulas quedan a 8 px entre sí.
   static const double _paso = 132;
 
+  /// En el Top 10 cada celda lleva delante su número grande: 62 de número
+  /// (la carátula lo pisa un poco, como en el teléfono) + 126 + 8 de hueco.
+  static const double _pasoRanking = 196;
+
+  /// La fila del Top 10 se pinta como ranking: números, 10 como mucho y sin
+  /// tarjeta "Más" (un ranking no tiene "ver todo").
+  bool get _ranking => widget.titulo.startsWith('Top 10');
+
+  double get _pasoActual => _ranking ? _pasoRanking : _paso;
+
   final ScrollController _scroll = ScrollController();
   final List<FocusNode> _nodos = [];
 
-  List<M3UItem> get _visibles =>
-      widget.items.length > _maxEnFila
-          ? widget.items.take(_maxEnFila).toList()
-          : widget.items;
+  List<M3UItem> get _visibles {
+    final tope = _ranking ? 10 : _maxEnFila;
+    return widget.items.length > tope
+        ? widget.items.take(tope).toList()
+        : widget.items;
+  }
 
-  bool get _hayMas => widget.items.length > _visibles.length;
+  bool get _hayMas => !_ranking && widget.items.length > _visibles.length;
 
   int get _celdas => _visibles.length + (_hayMas ? 1 : 0);
 
@@ -1815,9 +1878,9 @@ class _FilaState extends State<_Fila> {
     final ancho = _scroll.position.viewportDimension;
     // Un hueco de cortesia a cada lado: deja ver que hay algo mas alla y evita
     // que la tarjeta enfocada quede pegada al filo.
-    const margen = _paso;
-    final izquierda = i * _paso;
-    final derecha = izquierda + _paso;
+    final margen = _pasoActual;
+    final izquierda = i * _pasoActual;
+    final derecha = izquierda + _pasoActual;
     double destino = _scroll.offset;
     if (izquierda - margen < destino) {
       destino = izquierda - margen;
@@ -1957,7 +2020,7 @@ class _FilaState extends State<_Fila> {
                 // Ancho fijo por celda: es lo que deja calcular la posicion de
                 // cada tarjeta sin medir nada, y de paso le ahorra a la lista
                 // el trabajo de ir midiendo hijo por hijo mientras se mueve.
-                itemExtent: _paso,
+                itemExtent: _pasoActual,
                 // Dos pantallas de margen construidas por delante y por
                 // detras: al llegar al borde la siguiente tarjeta ya existe y
                 // el foco entra sin esperar a que se arme.
@@ -1983,11 +2046,32 @@ class _FilaState extends State<_Fila> {
                       },
                     );
                   }
-                  return _Tarjeta(
+                  final tarjeta = _Tarjeta(
                     item: visibles[i],
                     nodo: _nodos[i],
                     onTecla: (e) => _tecla(i, e),
                     onVolver: () => enfocar(i),
+                  );
+                  if (!_ranking) return tarjeta;
+                  // Ranking: el número detrás, a la izquierda y apoyado abajo
+                  // de la carátula; la carátula encima, pisándolo un poco.
+                  return Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Positioned(
+                        left: 0,
+                        top: 70,
+                        child: _NumeroRanking(i + 1),
+                      ),
+                      // El "10" es más ancho: la carátula se aparta más, como
+                      // en el teléfono. Es la última celda, así que no pisa a
+                      // ninguna vecina.
+                      Positioned(
+                        left: i + 1 >= 10 ? 90 : 62,
+                        top: 0,
+                        child: tarjeta,
+                      ),
+                    ],
                   );
                 },
               ),
@@ -2106,6 +2190,31 @@ class _TarjetaMasState extends State<_TarjetaMas> {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// El número grande del Top 10: solo contorno gris, igual que en el teléfono,
+/// para que se lea sin competir con la carátula.
+class _NumeroRanking extends StatelessWidget {
+  final int puesto;
+  const _NumeroRanking(this.puesto);
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      '$puesto',
+      style: TextStyle(
+        fontSize: 120,
+        fontWeight: FontWeight.w900,
+        height: 0.85,
+        letterSpacing: puesto >= 10 ? -20 : 0,
+        foreground:
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 3
+              ..color = const Color(0xFF4A4A4A),
       ),
     );
   }

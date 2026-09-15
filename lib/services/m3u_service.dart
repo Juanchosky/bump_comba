@@ -275,6 +275,12 @@ class M3UService extends ChangeNotifier {
   /// ítems propios de Supabase (después de que el caché binario ya abrió).
   bool _isCustomRefreshing = false;
   bool get isCustomRefreshing => _isCustomRefreshing;
+
+  /// Si el contenido propio (la BD) sigue en camino, por cualquiera de sus dos
+  /// vías. Sin VPS se baja de Supabase en tandas y puede tardar bastante: en
+  /// ese rato "no hay filas" NO significa "no hay contenido".
+  bool get cargandoContenidoPropio =>
+      _isCustomRefreshing || _fetchCustomContentFuture != null;
   List<M3UItem> _movies = [];
   List<M3UItem> _series = [];
   List<M3UItem> _customItems = [];
@@ -1265,6 +1271,9 @@ class M3UService extends ChangeNotifier {
     _fetchCustomContentFuture = future;
     return future.whenComplete(() {
       _fetchCustomContentFuture = null;
+      // Avisa de que ya terminó: las pantallas que esperaban para decidir si
+      // hay contenido tienen que volver a mirar.
+      notifyListeners();
     });
   }
 
