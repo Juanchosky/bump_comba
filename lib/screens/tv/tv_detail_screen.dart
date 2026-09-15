@@ -858,37 +858,39 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
         // abrirlo con el mando cuesta un foco más para algo que casi nadie
         // hace.
         //
-        // Sin sinopsis (ni en es-ES, es-MX ni inglés) la línea no se enseña:
-        // "Sinopsis  Sin datos" ocupaba sitio y parecía un fallo de carga. Es
-        // la misma regla que la clasificación de arriba.
-        if (_sinopsis.isNotEmpty) ...[
-          RichText(
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            text: TextSpan(
-              children: [
-                const TextSpan(
-                  text: 'Sinopsis  ',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700,
-                    height: 1.5,
-                  ),
+        // Sin sinopsis (ni en es-ES, es-MX ni inglés) va un texto de cortesía,
+        // el mismo que usa la ficha del teléfono: "Sin datos" parecía un fallo
+        // de carga, y quitar la línea dejaba la ficha coja.
+        RichText(
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          text: TextSpan(
+            children: [
+              const TextSpan(
+                text: 'Sinopsis  ',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  height: 1.5,
                 ),
-                TextSpan(
-                  text: _sinopsis,
-                  style: const TextStyle(
-                    color: Colors.white70,
-                    fontSize: 14,
-                    height: 1.5,
-                  ),
+              ),
+              TextSpan(
+                text:
+                    _sinopsis.isNotEmpty
+                        ? _sinopsis
+                        : 'Disfruta de este contenido en alta calidad. '
+                            'Selecciona el reproductor para comenzar.',
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 14,
+                  height: 1.5,
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
-          const SizedBox(height: 14),
-        ],
+        ),
+        const SizedBox(height: 14),
 
         // Aire extra antes de los botones: con solo los 14 de las líneas de
         // texto quedaban pegados a la sinopsis. 14 + 12 = 26.
@@ -1500,10 +1502,10 @@ class _BotonFichaState extends State<_BotonFicha> {
         onTap: widget.onOk,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 140),
-          height: 44,
+          height: 38,
           // Con texto, ancho fijo: "Mi lista" y "En mi lista" miden lo mismo y
           // el botón de al lado no salta al cambiar. Sin texto, cuadrado.
-          width: texto == null ? 44 : 164,
+          width: texto == null ? 38 : 142,
           decoration: BoxDecoration(
             color: fondo,
             borderRadius: BorderRadius.circular(8),
@@ -1511,17 +1513,17 @@ class _BotonFichaState extends State<_BotonFicha> {
           alignment: Alignment.center,
           child:
               texto == null
-                  ? Icon(widget.icono, color: color, size: 21)
+                  ? Icon(widget.icono, color: color, size: 19)
                   : Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(widget.icono, color: color, size: 21),
-                      const SizedBox(width: 8),
+                      Icon(widget.icono, color: color, size: 19),
+                      const SizedBox(width: 7),
                       Text(
                         texto,
                         style: TextStyle(
                           color: color,
-                          fontSize: 15,
+                          fontSize: 14,
                           fontWeight: FontWeight.w600,
                         ),
                       ),

@@ -33,7 +33,7 @@
         android:usesCleartextTraffic="true"
         android:extractNativeLibs="false"
         android:largeHeap="true"
-        android:banner="@mipmap/ic_launcher"
+        android:banner="@drawable/tv_banner"
         android:enableOnBackInvokedCallback="true">
 
         <!-- Impeller/Vulkan salta cientos de frames en GPUs Mali de TVs de
