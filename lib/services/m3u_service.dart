@@ -1472,18 +1472,16 @@ class M3UService extends ChangeNotifier {
             debugPrint(
               'custom_content background refresh: ${fresh.length} items. Updating catalog.',
             );
-            await _indexItems(
-              _rawItems,
-              customItems: fresh,
-              scheduleRecentCompute: false,
-            );
+            // scheduleRecentCompute: true — `_indexItems` borra los recientes
+            // al reindexar; sin recalcularlos, "Últimamente nuevo" (y
+            // "Recomendados para ti") desaparecían del inicio tras refrescar
+            // la BD en segundo plano.
+            await _indexItems(_rawItems, customItems: fresh);
           } else {
-            await _indexItems(
-              const [],
-              customItems: fresh,
-              scheduleRecentCompute: false,
-            );
+            await _indexItems(const [], customItems: fresh);
           }
+          // El banner se armó con la BD anterior (o sin ella): que se rehaga.
+          _cachedTrendingBanner = null;
           notifyListeners();
         }
       } catch (e) {
