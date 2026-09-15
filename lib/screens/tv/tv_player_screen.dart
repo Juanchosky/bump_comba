@@ -157,11 +157,18 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
   /// 1. Durante la carga inicial antes de arrancar (a menos que ya haya frame y progreso).
   /// 2. Si MPV reporta `_buffering == true` y la posición lleva más de 1.5s congelada.
   bool get _cargando {
-    if (_pausadoAdrede || !_reproduciendo) return false;
+    if (_pausadoAdrede) return false;
+    // ANTES DE ARRANCAR, "no reproduciendo" NO es una pausa: es que MPV aún no
+    // empezó (se está resolviendo la página del servidor, abriendo el video o
+    // llenando el búfer). Comprobar `_reproduciendo` aquí ocultaba el spinner
+    // justo en el tramo más largo de espera, y la pantalla negra parecía un
+    // fallo hasta que el video salía solo.
     if (!_arranco) {
       if (_primerFrameListo && _posicion > Duration.zero) return false;
       return true;
     }
+    // Ya arrancado, no reproducir sí es una pausa: sin spinner.
+    if (!_reproduciendo) return false;
     return _buffering &&
         DateTime.now().difference(_ultimoAvance) >
             const Duration(milliseconds: 1500);
