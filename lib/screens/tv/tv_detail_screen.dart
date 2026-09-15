@@ -684,7 +684,10 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
                               if (esSerie) _bloqueEpisodios(episodios),
 
                               if (_sugerencias.isNotEmpty) ...[
-                                const SizedBox(height: 26),
+                                // 12 y no 26: sumado a los 22 de arriba
+                                // quedaba un hueco que separaba la fila del
+                                // resto de la ficha.
+                                const SizedBox(height: 12),
                                 const Text(
                                   'Quizás te guste',
                                   style: TextStyle(
@@ -886,6 +889,10 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
           ),
           const SizedBox(height: 14),
         ],
+
+        // Aire extra antes de los botones: con solo los 14 de las líneas de
+        // texto quedaban pegados a la sinopsis. 14 + 12 = 26.
+        const SizedBox(height: 12),
 
         // ── Botones Mi lista y Reportar ───────────────────────────────────
         //
