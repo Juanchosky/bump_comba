@@ -13,6 +13,7 @@ import 'package:media_kit/media_kit.dart';
 import '../utils/transitions.dart';
 import '../utils/snack_bar_utils.dart';
 import '../utils/motivos_reporte.dart';
+import 'package:shimmer/shimmer.dart';
 import 'package:share_plus/share_plus.dart';
 import '../services/tmdb_service.dart';
 import '../services/performance_service.dart';
@@ -167,15 +168,25 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
     });
   }
 
+  /// Si TMDB ya respondió (con o sin datos). Mientras no, la sinopsis se
+  /// muestra como shimmer en vez de un texto de relleno que luego salta.
+  bool _metadataLista = false;
+
   Future<void> _fetchMetadata() async {
     final currentSession = _loadingSession;
-    final data = await _tmdbService.searchAndGetDetails(
-      widget.item.name,
-      isSeries: widget.item.isSeries,
-    );
+    Map<String, dynamic>? data;
+    try {
+      data = await _tmdbService.searchAndGetDetails(
+        widget.item.name,
+        isSeries: widget.item.isSeries,
+      );
+    } catch (_) {
+      // Sin TMDB la ficha sigue: el shimmer da paso al texto por defecto.
+    }
     if (mounted && currentSession == _loadingSession) {
       setState(() {
         _metadata = data;
+        _metadataLista = true;
       });
       if (widget.item.isSeries) {
         _fetchSeasonData(_selectedSeason);
@@ -1924,6 +1935,30 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   Widget _buildDescription() {
     final overview = _metadata?['overview'] ?? '';
     final hasMetadata = overview.isNotEmpty;
+
+    // TMDB aún en camino: dos líneas de shimmer del mismo alto que la
+    // sinopsis (14 px × 1.5), para que al llegar el texto no se mueva nada.
+    if (!_metadataLista && !hasMetadata) {
+      Widget linea(double factor) => FractionallySizedBox(
+        widthFactor: factor,
+        child: Container(
+          height: 12,
+          margin: const EdgeInsets.symmetric(vertical: 4.5),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(4),
+          ),
+        ),
+      );
+      return Shimmer.fromColors(
+        baseColor: const Color(0xFF2A2A2A),
+        highlightColor: const Color(0xFF3D3D3D),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [linea(1), linea(0.7)],
+        ),
+      );
+    }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,

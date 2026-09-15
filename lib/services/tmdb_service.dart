@@ -70,6 +70,24 @@ class TMDBService {
     }
   }
 
+  Future<String?> _sinopsisEnOtroIdioma(int id, String searchType) async {
+    for (final idioma in const ['es-MX', 'en-US']) {
+      try {
+        final r = await http
+            .get(
+              Uri.parse(
+                '$_baseUrl/$searchType/$id?api_key=$_apiKey&language=$idioma',
+              ),
+            )
+            .timeout(const Duration(seconds: 5));
+        if (r.statusCode != 200) continue;
+        final texto = (json.decode(r.body)['overview'] ?? '').toString().trim();
+        if (texto.isNotEmpty) return texto;
+      } catch (_) {}
+    }
+    return null;
+  }
+
   Future<Map<String, dynamic>> _getDetails(int id, String searchType) async {
     final append =
         searchType == 'tv'
@@ -85,7 +103,14 @@ class TMDBService {
 
     final details = json.decode(detailsResponse.body);
 
-    String overview = details['overview'] ?? '';
+    String overview = (details['overview'] ?? '').toString().trim();
+    // Muchos títulos (anime, producciones latinas, estrenos recientes) no
+    // tienen sinopsis en es-ES y la ficha salía vacía. Se prueba español de
+    // México y, si tampoco, inglés. Solo cuando falta: el caso normal no hace
+    // ninguna llamada de más.
+    if (overview.isEmpty) {
+      overview = await _sinopsisEnOtroIdioma(id, searchType) ?? '';
+    }
     String? trailerUrl;
 
     // Find trailer in videos

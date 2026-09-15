@@ -846,33 +846,38 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
         // un bloque más largo no se lee, se saltea. Y no hay "ver más" porque
         // abrirlo con el mando cuesta un foco más para algo que casi nadie
         // hace.
-        RichText(
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-          text: TextSpan(
-            children: [
-              const TextSpan(
-                text: 'Sinopsis  ',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  height: 1.5,
+        //
+        // Sin sinopsis (ni en es-ES, es-MX ni inglés) la línea no se enseña:
+        // "Sinopsis  Sin datos" ocupaba sitio y parecía un fallo de carga. Es
+        // la misma regla que la clasificación de arriba.
+        if (_sinopsis.isNotEmpty) ...[
+          RichText(
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            text: TextSpan(
+              children: [
+                const TextSpan(
+                  text: 'Sinopsis  ',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    height: 1.5,
+                  ),
                 ),
-              ),
-              TextSpan(
-                text: _sinopsis.isNotEmpty ? _sinopsis : 'Sin datos',
-                style: const TextStyle(
-                  color: Colors.white70,
-                  fontSize: 14,
-                  height: 1.5,
+                TextSpan(
+                  text: _sinopsis,
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 14,
+                    height: 1.5,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
-
-        const SizedBox(height: 14),
+          const SizedBox(height: 14),
+        ],
 
         // ── Botones Mi lista y Reportar ───────────────────────────────────
         //
@@ -880,8 +885,13 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
         Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _BotonMiLista(isFavorite: _isFavorite, onOk: _toggleFavorite),
-            const SizedBox(width: 12),
+            _BotonFicha(
+              icono: _isFavorite ? Icons.check_rounded : Icons.add_rounded,
+              texto: _isFavorite ? 'En mi lista' : 'Mi lista',
+              onOk: _toggleFavorite,
+            ),
+            // 10: la misma separación que hay entre celdas de episodio.
+            const SizedBox(width: 10),
             // Solo el icono; mientras se envía cambia a un reloj y no responde.
             _BotonFicha(
               icono:
@@ -1422,14 +1432,26 @@ class _ChipTemporadaState extends State<_ChipTemporada> {
   }
 }
 
-/// Botón de solo icono con el aspecto de "Mi lista" (ahora, "Reportar").
-/// OK se lee directo de la tecla, como en el resto de la tele: `Actions` no
-/// responde con el mando. [onOk] null = deshabilitado mientras se envía.
+/// Botón de acción de la ficha ("Mi lista", "Reportar").
+///
+/// CON EL MISMO LENGUAJE QUE LAS CELDAS DE EPISODIO: el estado se dice con el
+/// RELLENO, no con bordes. Eran rectángulos de esquina recta con contorno, el
+/// aspecto de campo de formulario que ya se había quitado de los episodios, y
+/// por eso no casaban con nada de la ficha.
+///
+///  · ENFOCADO — blanco sólido, contenido oscuro (en la tele, blanco = mando).
+///  · NORMAL   — gris oscuro, contenido blanco. "Ya en Mi lista" se dice con
+///    el ✓ y el texto, sin teñir el botón.
+///
+/// Mismo alto (44) y esquinas (8) para los dos. Sin [texto] es un cuadrado con
+/// solo el icono. OK se lee directo de la tecla: `Actions` no responde con el
+/// mando. [onOk] null = no responde (mientras se envía un reporte).
 class _BotonFicha extends StatefulWidget {
   final IconData icono;
+  final String? texto;
   final VoidCallback? onOk;
 
-  const _BotonFicha({required this.icono, this.onOk});
+  const _BotonFicha({required this.icono, this.texto, this.onOk});
 
   @override
   State<_BotonFicha> createState() => _BotonFichaState();
@@ -1440,7 +1462,12 @@ class _BotonFichaState extends State<_BotonFicha> {
 
   @override
   Widget build(BuildContext context) {
+    // Sin color para "activo": ya en la lista se dice con el ✓ y el texto, no
+    // tiñendo el botón.
     final color = _foco ? const Color(0xFF0B0B0D) : Colors.white;
+    final fondo = _foco ? Colors.white : const Color(0xFF1E1E22);
+    final texto = widget.texto;
+
     return Focus(
       onFocusChange: (v) => setState(() => _foco = v),
       onKeyEvent: (node, event) {
@@ -1458,17 +1485,33 @@ class _BotonFichaState extends State<_BotonFicha> {
         onTap: widget.onOk,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 140),
-          // Solo icono: 9 por lado, así queda cuadrado y del mismo alto que
-          // "Mi lista" (icono 19 + 9 + 9 ≈ la línea de texto con su padding).
-          padding: const EdgeInsets.all(9),
+          height: 44,
+          // Con texto, ancho fijo: "Mi lista" y "En mi lista" miden lo mismo y
+          // el botón de al lado no salta al cambiar. Sin texto, cuadrado.
+          width: texto == null ? 44 : 164,
           decoration: BoxDecoration(
-            color: _foco ? Colors.white : const Color(0xFF1E1E22),
-            border: Border.all(
-              color: _foco ? Colors.white : Colors.white.withValues(alpha: 0.22),
-              width: 1.5,
-            ),
+            color: fondo,
+            borderRadius: BorderRadius.circular(8),
           ),
-          child: Icon(widget.icono, color: color, size: 19),
+          alignment: Alignment.center,
+          child:
+              texto == null
+                  ? Icon(widget.icono, color: color, size: 21)
+                  : Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(widget.icono, color: color, size: 21),
+                      const SizedBox(width: 8),
+                      Text(
+                        texto,
+                        style: TextStyle(
+                          color: color,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
         ),
       ),
     );
@@ -1596,91 +1639,4 @@ class _OpcionReporteState extends State<_OpcionReporte> {
   }
 }
 
-/// Botón "Mi lista" / "En lista" debajo de la sinopsis en el televisor.
-class _BotonMiLista extends StatefulWidget {
-  final bool isFavorite;
-  final VoidCallback onOk;
-
-  const _BotonMiLista({
-    required this.isFavorite,
-    required this.onOk,
-  });
-
-  @override
-  State<_BotonMiLista> createState() => _BotonMiListaState();
-}
-
-class _BotonMiListaState extends State<_BotonMiLista> {
-  bool _foco = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final bool fav = widget.isFavorite;
-
-    return Focus(
-      onFocusChange: (v) => setState(() => _foco = v),
-      onKeyEvent: (node, event) {
-        if (event is! KeyDownEvent) return KeyEventResult.ignored;
-        final k = event.logicalKey;
-        if (k == LogicalKeyboardKey.select ||
-            k == LogicalKeyboardKey.enter ||
-            k == LogicalKeyboardKey.gameButtonA) {
-          widget.onOk();
-          return KeyEventResult.handled;
-        }
-        return KeyEventResult.ignored;
-      },
-      child: GestureDetector(
-        onTap: widget.onOk,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 140),
-          // 28 de lado (antes 18): un poco más largo que el de reportar.
-          padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 9),
-          decoration: BoxDecoration(
-            color: _foco
-                ? Colors.white
-                : const Color(0xFF1E1E22),
-            borderRadius: BorderRadius.zero,
-            border: Border.all(
-              color: _foco
-                  ? Colors.white
-                  : fav
-                      ? const Color(0xFFF5A623).withValues(alpha: 0.7)
-                      : Colors.white.withValues(alpha: 0.22),
-              width: 1.5,
-            ),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                fav ? Icons.check_rounded : Icons.add_rounded,
-                color: _foco
-                    ? const Color(0xFF0B0B0D)
-                    : fav
-                        ? const Color(0xFFF5A623)
-                        : Colors.white,
-                size: 19,
-              ),
-              const SizedBox(width: 8),
-              Text(
-                'Mi lista',
-                style: TextStyle(
-                  color: _foco
-                      ? const Color(0xFF0B0B0D)
-                      : fav
-                          ? const Color(0xFFF5A623)
-                          : Colors.white,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 0.2,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
 
