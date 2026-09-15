@@ -122,7 +122,11 @@ void main() {
     final result =
         await scraper.extractStreamResult('https://ww3.gnulahd.nu/dang-1x01/');
     expect(result, isNotNull);
-    expect(result!.videoUrl, contains('vidara-resolve.php'));
+    expect(
+      result!.videoUrl.contains('savefiles.com') ||
+          result.videoUrl.contains('vidara-resolve.php'),
+      isTrue,
+    );
     expect(result.videoUrl, contains('.m3u8'));
 
     // Verificar que el stream obtenido responda HTTP 200 y sea una lista HLS válida
@@ -149,5 +153,63 @@ void main() {
         esEnVivoPorUrl(
             'https://ww3.gnulahd.nu/panel/vidara-resolve.php?pl=1&code=abc&ext=.m3u8'),
         isFalse);
+    expect(
+        esEnVivoPorUrl('https://savefiles.com/e/kpvnwq69xo9t'),
+        isFalse);
+    expect(
+        esEnVivoPorUrl(
+            'https://s3.savefiles.com/hls2/01/00435/,kpvnwq69xo9t_n,.urlset/master.m3u8'),
+        isFalse);
+  });
+
+  test(
+      'DynamicScraperService prioritizes Servidor 4 (SaveFiles) for Snoopy 1x01',
+      () async {
+    final scraper = DynamicScraperService();
+    const epUrl =
+        'https://ww3.gnulahd.nu/de-campamento-con-snoopy-1x01/';
+    expect(scraper.isSupported(epUrl), isTrue);
+
+    final sw = Stopwatch()..start();
+    final result = await scraper.extractStreamResult(epUrl);
+    sw.stop();
+
+    expect(result, isNotNull);
+    expect(result!.videoUrl.isNotEmpty, isTrue);
+    expect(result.videoUrl.contains('savefiles.com'), isTrue);
+    expect(result.videoUrl.contains('.m3u8'), isTrue);
+    expect(sw.elapsedMilliseconds, lessThan(6000));
+
+    // Verificar que el stream HLS obtenido de SaveFiles responda HTTP 200 y comience con #EXTM3U
+    final ioClient = IOClient(
+      HttpClient()..badCertificateCallback = (cert, host, port) => true,
+    );
+    final streamRes = await ioClient.get(
+      Uri.parse(result.videoUrl),
+      headers: result.headers,
+    );
+    ioClient.close();
+
+    expect(streamRes.statusCode, 200);
+    expect(streamRes.body.startsWith('#EXTM3U'), isTrue);
+  });
+
+  test(
+      'DynamicScraperService resolves Season 1 Episode 1 for series URL /ver/de-campamento-con-snoopy/',
+      () async {
+    final scraper = DynamicScraperService();
+    const seriesUrl =
+        'https://ww3.gnulahd.nu/ver/de-campamento-con-snoopy/';
+    expect(scraper.isSupported(seriesUrl), isTrue);
+
+    final sw = Stopwatch()..start();
+    final result = await scraper.extractStreamResult(seriesUrl);
+    sw.stop();
+
+    expect(result, isNotNull);
+    expect(result!.videoUrl.isNotEmpty, isTrue);
+    expect(result.videoUrl.contains('savefiles.com'), isTrue);
+    expect(result.videoUrl.contains('.m3u8'), isTrue);
+    expect(sw.elapsedMilliseconds, lessThan(6000));
   });
 }

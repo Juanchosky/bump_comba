@@ -441,6 +441,11 @@ class DynamicScraperService {
       return true;
     }
 
+    // 14. SaveFiles variants
+    if (lowUrl.contains('savefiles')) {
+      return true;
+    }
+
     return false;
   }
 
@@ -1412,6 +1417,9 @@ class DynamicScraperService {
         low.contains('auroravid')) {
       return await _extractVoeStream(pageUrl);
     }
+    if (low.contains('savefiles')) {
+      return await _extractSaveFilesStream(pageUrl);
+    }
     if (low.contains('ibelin') ||
         low.contains('divxplayer') ||
         low.contains('metaverseid') ||
@@ -2052,6 +2060,80 @@ class DynamicScraperService {
     return null;
   }
 
+  Future<ExtractedStreamResult?> _extractSaveFilesStream(String embedUrl) async {
+    try {
+      final codeMatch = RegExp(r'savefiles\.com/(?:e/)?([A-Za-z0-9_-]+)', caseSensitive: false)
+          .firstMatch(embedUrl);
+      if (codeMatch == null) return null;
+      final fileCode = codeMatch.group(1)!;
+
+      final client = http.Client();
+      final res = await client.post(
+        Uri.parse('https://savefiles.com/dl'),
+        headers: {
+          'User-Agent': _desktopUa,
+          'Referer': embedUrl,
+          'Origin': 'https://savefiles.com',
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+        body: {
+          'op': 'embed',
+          'file_code': fileCode,
+          'auto': '1',
+          'referer': 'https://ww3.gnulahd.nu/',
+        },
+      ).timeout(const Duration(seconds: 8));
+      client.close();
+
+      if (res.statusCode != 200) return null;
+
+      final body = res.body;
+
+      // Buscar el archivo m3u8 en la configuración del reproductor SaveFiles
+      final m3u8Match = RegExp(
+        r'''sources\s*:\s*\[\s*\{\s*file\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]''',
+        caseSensitive: false,
+      ).firstMatch(body) ??
+      RegExp(
+        r'''['"](https?://[^'"\s]+\.m3u8[^'"\s]*)['"]''',
+        caseSensitive: false,
+      ).firstMatch(body);
+
+      if (m3u8Match != null) {
+        final streamUrl = m3u8Match.group(1)!;
+
+        // Subtítulos si existen
+        final List<ScrapedSubtitle> subs = [];
+        final captionMatches = RegExp(
+          r'''\{\s*file\s*:\s*['"]([^'"]+\.vtt[^'"]*)['"]\s*,\s*label\s*:\s*['"]([^'"]*)['"]''',
+          caseSensitive: false,
+        ).allMatches(body);
+        for (final cm in captionMatches) {
+          subs.add(
+            ScrapedSubtitle(
+              url: cm.group(1)!,
+              label: cm.group(2)!.isNotEmpty ? cm.group(2)! : 'Subtítulo',
+            ),
+          );
+        }
+
+        return ExtractedStreamResult(
+          videoUrl: streamUrl,
+          subtitles: subs,
+          headers: {
+            'User-Agent': _desktopUa,
+            'Referer': 'https://savefiles.com/',
+            'Origin': 'https://savefiles.com',
+          },
+        );
+      }
+    } catch (e) {
+      debugPrint('DynamicScraperService: error extractSaveFilesStream: $e');
+    }
+    return null;
+  }
+
   Future<ExtractedStreamResult?> _extractGnulaStream(String pageUrl) async {
     try {
       // Reutilizar el mismo client para página + API (mismo host) → una sola negociación TLS.
@@ -2070,16 +2152,36 @@ class DynamicScraperService {
       final html = res.body;
 
       // Si la URL recibida es la ficha de una serie (/ver/) y no tiene reproductor directo,
-      // resolvemos el primer episodio disponible para que reproduzca sin errores.
+      // resolvemos el primer episodio cronológico (S1E1) para que reproduzca desde el inicio.
       if (!html.contains('_gnrdPid') && html.contains('gnrd-eplist')) {
-        final firstEpMatch = RegExp(
-          r'''<a[^>]+class=['"][^'"]*gnrd-epc[^'"]*['"][^>]+href=['"]([^'"]+)['"]''',
+        final allCards = RegExp(
+          r'''<a[^>]+class=['"][^'"]*gnrd-epc[^'"]*['"][^>]*>''',
           caseSensitive: false,
-        ).firstMatch(html);
-        if (firstEpMatch != null) {
-          final firstEpUrl = firstEpMatch.group(1)!;
+        ).allMatches(html);
+
+        String? bestHref;
+        int minSeason = 999999;
+        int minEpisode = 999999;
+
+        for (final m in allCards) {
+          final cardTag = m.group(0)!;
+          final href = RegExp(r'''href=['"]([^'"]+)['"]''', caseSensitive: false).firstMatch(cardTag)?.group(1);
+          final sStr = RegExp(r'''data-s=['"](\d+)['"]''', caseSensitive: false).firstMatch(cardTag)?.group(1);
+          final eStr = RegExp(r'''data-e=['"](\d+)['"]''', caseSensitive: false).firstMatch(cardTag)?.group(1);
+
+          final s = int.tryParse(sStr ?? '') ?? 1;
+          final e = int.tryParse(eStr ?? '') ?? 1;
+
+          if (href != null && (s < minSeason || (s == minSeason && e < minEpisode))) {
+            minSeason = s;
+            minEpisode = e;
+            bestHref = href;
+          }
+        }
+
+        if (bestHref != null) {
           client.close();
-          return await _extractGnulaStream(firstEpUrl);
+          return await _extractGnulaStream(bestHref);
         }
       }
 
@@ -2152,15 +2254,19 @@ class DynamicScraperService {
             candidateServers.addAll(subtitulado);
             candidateServers.addAll(otros);
 
-            // Priorizar por velocidad de resolución:
-            //   0 = vidara/the.tube → URL directa sin HTTP extra
-            //   1 = ok.ru          → requiere 1 HTTP call pero CDN de calidad
-            //   2 = resto          → HTTP call + calidad desconocida
+            // Priorizar por estabilidad, calidad y velocidad de resolución:
+            //   0 = SaveFiles (Servidor 4) → ultra rápido, multi-CDN sin cortes
+            //   1 = ok.ru                 → CDN de alta velocidad
+            //   2 = vidara/the.tube       → resolución directa
+            //   3 = voe                   → decodificación json/hls
+            //   4 = resto                 → HTTP call + calidad desconocida
             int velocidad(String s) {
               final low = s.toLowerCase();
-              if (low.contains('vidara') || low.contains('the.tube') || low.contains('they.tube')) return 0;
+              if (low.contains('savefiles') || low.contains('savefile')) return 0;
               if (low.contains('ok.ru') || low.contains('odnoklassniki')) return 1;
-              return 2;
+              if (low.contains('vidara') || low.contains('the.tube') || low.contains('they.tube')) return 2;
+              if (low.contains('voe')) return 3;
+              return 4;
             }
 
             candidateServers.sort((a, b) => velocidad(a).compareTo(velocidad(b)));
@@ -2170,7 +2276,18 @@ class DynamicScraperService {
             for (final src in candidateServers) {
               // Saltar file-hosters: no soportan Range requests ni streaming real.
               if (_esUrlFileHoster(src)) continue;
-              // A. Servidor Vidara: resolución directa mediante vidara-resolve.php
+
+              // 1. Servidor SaveFiles (Servidor 4 en GnulaHD): ultra rápido y sin cortes
+              if (src.contains('savefiles.com') || src.contains('savefile')) {
+                final sfRes = await _extractSaveFilesStream(src);
+                if (sfRes != null && sfRes.videoUrl.isNotEmpty) {
+                  extractedResults.add(sfRes);
+                  if (extractedResults.length >= 2) break;
+                  continue;
+                }
+              }
+
+              // 2. Servidor Vidara: resolución directa mediante vidara-resolve.php
               if (src.contains('vidara.to') || src.contains('vidaraa.cc') || src.contains('vidara')) {
                 final m = RegExp(r'https?://([^/]+)/(?:e/)?([^/?#]+)').firstMatch(src);
                 if (m != null) {
