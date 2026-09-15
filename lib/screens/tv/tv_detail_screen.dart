@@ -120,11 +120,19 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
       widget.item,
       tieneEpisodios: _episodiosCargados.isNotEmpty,
     );
-    final motivo = await showDialog<String>(
-      context: context,
-      barrierColor: Colors.black87,
-      builder: (context) => _DialogoReporte(motivos: motivos),
-    );
+    // La vista previa vive en el `Overlay` raíz y taparía el diálogo: se
+    // oculta (sin pararla) mientras está abierto.
+    TvVistaPrevia.instancia.oculta = true;
+    final String? motivo;
+    try {
+      motivo = await showDialog<String>(
+        context: context,
+        barrierColor: Colors.black87,
+        builder: (context) => _DialogoReporte(motivos: motivos),
+      );
+    } finally {
+      TvVistaPrevia.instancia.oculta = false;
+    }
     if (motivo == null || !mounted) return;
 
     setState(() => _reportando = true);
