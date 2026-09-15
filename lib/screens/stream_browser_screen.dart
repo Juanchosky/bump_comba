@@ -1602,14 +1602,14 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                       ),
                     );
 
-                    // Inject Top 10 after the first category
-                    if (i == 0) {
+                    // Top 10 después de la SEGUNDA categoría
+                    if (i == 1) {
                       homeSections.add(_buildTop10Section());
                     }
                   }
 
-                  // If no categories, still add Top 10 at the end if it wasn't added
-                  if (displayCategories.isEmpty) {
+                  // Con menos de dos categorías cargadas, el Top 10 va al final
+                  if (categoriesToLoad.length < 2) {
                     homeSections.add(_buildTop10Section());
                   }
 

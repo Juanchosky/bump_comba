@@ -292,6 +292,10 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   /// esos cinco se decide al entrar en la app.
   final Map<int, List<M3UItem>> _destacadosPorSeccion = {};
 
+  /// Si los destacados de INICIO ya salen del banner de la BD, o todavía son
+  /// el respaldo (primera fila) mientras ese banner llega.
+  bool _inicioConBanner = false;
+
   /// ¿Están ya TODAS las imágenes del mosaico?
   ///
   /// Las fichas de TMDB se piden en cadena, así que las piezas se iban
@@ -383,8 +387,16 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     final guardados = _destacadosPorSeccion[_seccion];
     // Si se guardaron cuando la cabecera pedia otra cantidad, no valen: la
     // portada enseñaba ocho rayitas porque la cache era del mosaico anterior.
+    // En INICIO, lo elegido de respaldo (sin el banner de la BD, que aún no
+    // había llegado) no se congela: en cuanto llega el bueno, se rehace. Si
+    // no, la tele se quedaba toda la sesión con la primera fila del proveedor.
+    final llegoElBanner =
+        _seccion == 0 &&
+        !_inicioConBanner &&
+        _servicio.getTrendingBannerItems().isNotEmpty;
     final yaElegidos =
-        (guardados != null && guardados.length > _cuantosDestacados)
+        (guardados != null && guardados.length > _cuantosDestacados) ||
+                llegoElBanner
             ? null
             : guardados;
     if (yaElegidos != null && yaElegidos.isNotEmpty) {
@@ -421,6 +433,8 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     // El pool del telefono: años recientes, con peso triple al ultimo.
     final pool = yaCurado ? fuente : _poolPorAnio(fuente);
     if (pool.isEmpty) return;
+
+    if (_seccion == 0) _inicioConBanner = yaCurado;
 
     final elegidos = <M3UItem>[];
     final vistos = <String>{};
