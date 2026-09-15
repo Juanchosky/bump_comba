@@ -2184,16 +2184,35 @@ class DynamicScraperService {
         r'''<iframe[^>]+src=['"](https?://[^'"]+)['"]''',
         caseSensitive: false,
       );
-      final iframes = iframeRegex.allMatches(html).map((m) => m.group(1)!).toList();
+      final iframes = <String>[];
+
+      // pelisflix ya no pone <iframe> en el HTML: cada servidor va en
+      // data-url="<base64>" y el JS lo monta al hacer clic. Vienen en orden
+      // LATINO, CASTELLANO, SUBTITULADO, así que el orden del documento ya
+      // prioriza Latino. Leerlos aquí evita el WebView (anuncios + redirect).
+      for (final m in RegExp(r'data-url="([A-Za-z0-9+/=]{16,})"').allMatches(html)) {
+        try {
+          final u = utf8.decode(base64.decode(m.group(1)!));
+          if (u.startsWith('http') && !iframes.contains(u)) iframes.add(u);
+        } catch (_) {}
+      }
+      iframes.addAll(iframeRegex.allMatches(html).map((m) => m.group(1)!));
 
       // Ordenar: primero los hosts con extractor rápido
+      // (List.sort no es estable: se desempata por posición para no mezclar
+      // idiomas).
+      final pos = {for (var i = 0; i < iframes.length; i++) iframes[i]: i};
       iframes.sort((a, b) {
         int score(String u) {
           final l = u.toLowerCase();
-          if (l.contains('voe') || l.contains('ibelin') || l.contains('savefiles')) return 0;
+          if (l.contains('nupload') || l.contains('voe') ||
+              l.contains('ibelin') || l.contains('savefiles')) {
+            return 0;
+          }
           return 1;
         }
-        return score(a).compareTo(score(b));
+        final c = score(a).compareTo(score(b));
+        return c != 0 ? c : pos[a]!.compareTo(pos[b]!);
       });
 
       for (final iframeSrc in iframes) {
