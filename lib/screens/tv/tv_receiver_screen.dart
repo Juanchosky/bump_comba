@@ -17,6 +17,7 @@ import 'tv_pairing_screen.dart';
 import '../../services/tv/tv_receiver_service.dart';
 import '../../services/dynamic_scraper_service.dart';
 import '../../utils/cabeceras_stream.dart';
+import '../../utils/clasificacion_stream.dart';
 
 /// Pantalla receptora que corre en el TV. Es dueña del [Player] de media_kit
 /// (el MISMO motor MPV que el teléfono) y ejecuta los comandos que llegan por
@@ -411,6 +412,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     for (final e in defaultHeaders.entries) {
       playHeaders.putIfAbsent(e.key, () => e.value);
     }
+    playHeaders.addAll(cabecerasObligatorias(playUrl));
 
     final bool esScrapeadoReal = isScrapeado ||
         playUrl.contains('savefiles') ||
@@ -443,12 +445,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
       final bool isFromDB = msg['isFromDB'] == true;
       final bool isLive = msg['isLive'] == true;
       // isScrapeado ya fue determinado arriba (antes del scraping propio del TV).
-      final lowUrl = playUrl.toLowerCase();
-      final bool esHls =
-          lowUrl.contains('.m3u8') ||
-          lowUrl.contains('/hls') ||
-          lowUrl.contains('output=m3u8') ||
-          isLive;
+      final bool esHls = esHlsPorUrl(playUrl) || isLive;
       try {
         final mpv = _player.platform as dynamic;
         if (mpv != null) {

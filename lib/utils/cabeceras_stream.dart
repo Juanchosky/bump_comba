@@ -29,6 +29,22 @@ const String kUserAgentPorDefecto =
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
     '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
+/// Cabeceras que el servidor de [url] EXIGE, y que por eso deben pisar a
+/// cualquier otra que ya traiga la petición (p. ej. las que manda el teléfono
+/// al TV). Vacío para el resto.
+Map<String, String> cabecerasObligatorias(String url) {
+  final host = Uri.tryParse(url)?.host ?? '';
+  if (host.endsWith('ibra.lat')) {
+    // Stream de nupload.top: sin este Referer, `?s=` redirige a una lista
+    // falsa ("File deleted by DMCA request").
+    return const {
+      'Referer': 'https://nupload.top/',
+      'Origin': 'https://nupload.top',
+    };
+  }
+  return const {};
+}
+
 /// Cabeceras para pedir [url].
 ///
 /// [userAgent] permite al teléfono seguir rotando el suyo, que es como sortea a
@@ -43,9 +59,7 @@ Map<String, String> cabecerasParaStream(String url, {String? userAgent}) {
     if (host.contains('savefiles.com')) {
       referer = 'https://savefiles.com/';
     } else if (host.endsWith('ibra.lat')) {
-      // Stream de nupload.top: sin este Referer, `?s=` redirige a una lista
-      // falsa ("File deleted by DMCA request").
-      referer = 'https://nupload.top/';
+      referer = cabecerasObligatorias(url)['Referer']!;
     }
   } catch (_) {}
 

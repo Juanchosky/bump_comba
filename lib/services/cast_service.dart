@@ -9,6 +9,8 @@ import '../services/tv/tv_sender.dart';
 import '../services/tv/tv_platform.dart';
 import 'turbo_proxy.dart';
 import 'dynamic_scraper_service.dart';
+import '../utils/cabeceras_stream.dart';
+import '../utils/clasificacion_stream.dart';
 
 /// Servicio singleton para descubrir y controlar dispositivos Chromecast.
 ///
@@ -1241,11 +1243,10 @@ class CastService {
       }
     }
 
-    final lowUrl = url.toLowerCase();
-    final bool esHls = lowUrl.contains('.m3u8') ||
-        lowUrl.contains('/hls') ||
-        lowUrl.contains('output=m3u8') ||
-        _tvLastIsLive;
+    final bool esHls = esHlsPorUrl(url) || _tvLastIsLive;
+    // Cabeceras que el servidor exige sí o sí (p. ej. Referer de nupload): mandan
+    // sobre las que traiga el teléfono, o el TV recibe una lista falsa.
+    headers = {...?headers, ...cabecerasObligatorias(url)};
 
     if (!_tvLastIsLive && !esHls) {
       try {

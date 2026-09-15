@@ -652,9 +652,7 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
   Future<void> _ajustarPerfilSegunFuente(String url) async {
     final low = url.toLowerCase();
     final esHls =
-        low.contains('.m3u8') ||
-        low.contains('/hls') ||
-        low.contains('output=m3u8') ||
+        esHlsPorUrl(url) ||
         DynamicScraperService().isSupported(widget.item.url);
     try {
       final mpv = _player.platform as dynamic;
@@ -1090,11 +1088,8 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     }
     _cerrarTurbo();
 
-    final lowOrig = original.toLowerCase();
     final bool esHls =
-        lowOrig.contains('.m3u8') ||
-        lowOrig.contains('/hls') ||
-        lowOrig.contains('output=m3u8') ||
+        esHlsPorUrl(original) ||
         DynamicScraperService().isSupported(widget.item.url);
 
     if (!esEnVivoPorUrl(original) && !esHls) {

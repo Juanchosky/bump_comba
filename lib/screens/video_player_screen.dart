@@ -1013,6 +1013,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// 3. Obtenemos la última posición conocida donde iba el TV
   /// 4. Si el player local tiene media: aplicamos seek a la posición del TV y reanudamos.
   /// 5. Si no tiene media: recargamos el contenido arrancando en la posición del TV.
+  /// Página web (gnula, pelisflix…) de la que salió la URL que suena ahora.
+  ///
+  /// Al resolverla, `_currentItem.url` pasa a ser el stream firmado, y esos
+  /// tokens caducan (nupload en minutos). Tras un rato transmitiendo, volver a
+  /// abrir esa URL daba 404/403 y el teléfono se quedaba cargando para siempre
+  /// al dejar de transmitir. Con la página se pide un enlace fresco.
+  String? _paginaScrapeada;
+
   Future<void> _restoreLocalPlayback() async {
     if (!mounted || _player == null || CastService().isCasting.value) return;
     if (_isRestoringLocalPlayback) return;
@@ -1065,7 +1073,22 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           _player!.state.duration > Duration.zero ||
           _player!.state.playlist.medias.isNotEmpty;
 
-      if (!hasMedia) {
+      final pagina = _paginaScrapeada;
+      if (pagina != null && !_isLiveContent) {
+        // Enlace scrapeado: el medio cargado (o su token) puede estar muerto
+        // tras el rato en el TV. Se recarga desde la página; la caché del
+        // scraper ya descarta lo caducado, así que si sigue vigente es
+        // inmediato.
+        debugPrint(
+          'CastService: recargando desde la página tras el cast '
+          '(${resume.inSeconds}s) -> $pagina',
+        );
+        await _initializePlayer(
+          _currentItem.copyWith(url: pagina),
+          startFrom: resume > Duration.zero ? resume : null,
+          isLocalReload: true,
+        );
+      } else if (!hasMedia) {
         debugPrint(
           'CastService: Local player was stopped/empty — reloading at '
           '${resume.inSeconds}s after cast drop',
@@ -1098,6 +1121,33 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             _isVideoLoading = false;
           });
         }
+
+        // El medio llevaba todo el cast en pausa: su conexión puede haber
+        // muerto y el seek quedarse colgado sin error. Si en 12 s la posición
+        // no avanza, se reabre de cero en el mismo punto.
+        final punto = _player?.state.position ?? Duration.zero;
+        final itemAlSoltar = _currentItem;
+        unawaited(() async {
+          await Future.delayed(const Duration(seconds: 12));
+          if (!mounted || _player == null || CastService().isCasting.value) {
+            return;
+          }
+          if (!identical(_currentItem, itemAlSoltar)) return;
+          final st = _player!.state;
+          if (st.playing && st.position > punto + const Duration(seconds: 1)) {
+            return;
+          }
+          if (!st.playing && !st.buffering) return; // pausado por el usuario
+          debugPrint(
+            'CastService: el reproductor local no arrancó tras el cast — '
+            'recargando en ${resume.inSeconds}s',
+          );
+          await _initializePlayer(
+            _currentItem,
+            startFrom: resume > Duration.zero ? resume : null,
+            isLocalReload: true,
+          );
+        }());
       }
     } catch (e) {
       debugPrint('CastService: Error in _restoreLocalPlayback: $e');
@@ -1616,6 +1666,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     final bool esContenidoScrapeado = DynamicScraperService().isSupported(
       item.url,
     );
+    if (esContenidoScrapeado) {
+      _paginaScrapeada = item.url;
+    } else if (!isLocalReload) {
+      _paginaScrapeada = null;
+    }
     if (esContenidoScrapeado) {
       setState(() {
         _isScraping = true;

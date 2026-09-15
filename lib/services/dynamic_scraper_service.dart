@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:http/http.dart' as http;
 import 'm3u_service.dart';
+import '../utils/cabeceras_stream.dart';
 
 class ScrapedSubtitle {
   final String url;
@@ -865,6 +866,10 @@ class DynamicScraperService {
           seg * 1000,
         ).subtract(const Duration(minutes: 1));
       }
+    }
+    // El token `?s=` de nupload caduca en minutos (a los ~30 ya daba 404).
+    if (url.contains('ibra.lat')) {
+      return DateTime.now().add(const Duration(minutes: 3));
     }
     return DateTime.now().add(const Duration(minutes: 10));
   }
@@ -2483,11 +2488,18 @@ class DynamicScraperService {
             final finalUrl = streamRes.request?.url.toString() ?? streamApiUrl;
             if (streamRes.statusCode == 200) {
               final bodyM = streamRes.body;
-              if (bodyM.contains('#EXTM3U') || finalUrl.contains('.m3u8')) {
+              // Si el servidor no se fía, redirige a una lista-cebo que sí
+              // termina en .m3u8 pero dice "File deleted by DMCA request".
+              // Solo vale un #EXTM3U de verdad.
+              if (bodyM.contains('#EXTM3U')) {
                 final m3u8url = finalUrl.contains('.m3u8') ? finalUrl : streamApiUrl;
                 debugPrint('NuploadExtractor: stream -> $m3u8url');
-                return ExtractedStreamResult(videoUrl: m3u8url);
+                return ExtractedStreamResult(
+                  videoUrl: m3u8url,
+                  headers: cabecerasObligatorias(m3u8url),
+                );
               }
+              debugPrint('NuploadExtractor: el servidor devolvió una lista cebo');
               // A veces la respuesta es JSON con "file"
               final jsonFileMatch = RegExp(
                 r'"file"\s*:\s*"(https?://[^"]+\.m3u8[^"]*)"',

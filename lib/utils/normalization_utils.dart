@@ -126,9 +126,20 @@ class NormalizationUtils {
         innerUri.queryParameters,
       );
       const timeParams = ['t', 'time', 'start', 'at', 'position'];
+      // Solo si el valor PARECE un tiempo ("120", "90.5", "1h2m3s"). En
+      // savefiles `t=` es el token de firma (`t=cSuGak7w...`): quitarlo daba
+      // 403 en el TV, que recibía la URL ya "limpia".
+      final pareceTiempo = RegExp(r'^(\d+(\.\d+)?s?|(\d+h)?(\d+m)?(\d+s)?)$');
+      var quitado = false;
       for (final p in timeParams) {
-        newParams.remove(p);
+        final v = newParams[p];
+        if (v != null && v.isNotEmpty && pareceTiempo.hasMatch(v)) {
+          newParams.remove(p);
+          quitado = true;
+        }
       }
+      // Nada que quitar: la URL sale intacta (sin re-codificar la query).
+      if (!quitado) return cleaned;
 
       if (newParams.isEmpty) {
         return innerUri.replace(query: '').toString().replaceAll('?', '');

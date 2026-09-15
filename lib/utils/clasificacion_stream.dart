@@ -49,6 +49,7 @@ bool esEnVivoPorUrl(String url) {
       u.contains('vidsonic') ||
       u.contains('savefiles') ||
       u.contains('ibelin') ||
+      u.contains('ibra.lat') ||
       u.contains('cfglobalcdn')) {
     return false;
   }
@@ -60,4 +61,18 @@ bool esEnVivoPorUrl(String url) {
   //    prudente para un canal, y aquí ya sabemos que no hay ruta de catálogo
   //    que la contradiga.
   return u.contains('.m3u8');
+}
+
+/// Si [url] es una lista HLS (y no un archivo que se pueda trocear por rangos).
+///
+/// Hay listas cuya URL no lo delata: la de nupload es `sv3.ibra.lat/?s=TOKEN`
+/// y devuelve `#EXTM3U` sin `.m3u8` a la vista. Tratada como archivo, el TV la
+/// metía por TurboProxy (que trocea archivos, no listas) y con el perfil VOD
+/// de 90 s de readahead: arranque lento y cortes.
+bool esHlsPorUrl(String url) {
+  final u = url.toLowerCase();
+  return u.contains('.m3u8') ||
+      u.contains('/hls') ||
+      u.contains('output=m3u8') ||
+      u.contains('ibra.lat/?s=');
 }
