@@ -556,7 +556,7 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
 
     // Espaciados adaptativos para que se vea armonioso tanto en teles pequeñas
     // (p. ej. 540p / 32") como en teles grandes (1080p / 4K).
-    final espacioCabecera = _espacioAdaptativo(context, 22);
+    final espacioCabecera = _espacioAdaptativo(context, 15);
     // 34 y no 26: la fila de "Quizás te guste" quedaba muy pegada a lo de
     // arriba. Va por `_espacioAdaptativo`, así que sigue creciendo o
     // encogiéndose con el tamaño del televisor.
@@ -907,7 +907,7 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
         ),
         // Espaciado con la sinopsis: 16 px para mantener los botones
         // elevados y visualmente integrados.
-        const SizedBox(height: 5),
+        const SizedBox(height: 7.6),
 
         // ── Mi lista · Me gusta · No me gusta · Reportar ───────────────────
         //

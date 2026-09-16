@@ -13,7 +13,7 @@ import 'package:media_kit/media_kit.dart';
 import '../utils/transitions.dart';
 import '../utils/snack_bar_utils.dart';
 import '../utils/motivos_reporte.dart';
-import 'package:shimmer/shimmer.dart';
+
 import 'package:share_plus/share_plus.dart';
 import '../services/tmdb_service.dart';
 import '../services/performance_service.dart';
@@ -1936,29 +1936,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
     final overview = _metadata?['overview'] ?? '';
     final hasMetadata = overview.isNotEmpty;
 
-    // TMDB aún en camino: dos líneas de shimmer del mismo alto que la
-    // sinopsis (14 px × 1.5), para que al llegar el texto no se mueva nada.
-    if (!_metadataLista && !hasMetadata) {
-      Widget linea(double factor) => FractionallySizedBox(
-        widthFactor: factor,
-        child: Container(
-          height: 12,
-          margin: const EdgeInsets.symmetric(vertical: 4.5),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(4),
-          ),
-        ),
-      );
-      return Shimmer.fromColors(
-        baseColor: const Color(0xFF2A2A2A),
-        highlightColor: const Color(0xFF3D3D3D),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [linea(1), linea(0.7)],
-        ),
-      );
-    }
+    // Sin metadata aún: mostrar texto por defecto sin shimmer.
+    // (El texto se reemplaza cuando llegue la sinopsis de TMDB.)
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
