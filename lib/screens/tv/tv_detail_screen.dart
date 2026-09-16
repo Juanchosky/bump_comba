@@ -815,26 +815,6 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
             ),
           ),
         ),
-
-        // ── Episodio marcado ────────────────────────────────────────────
-        //
-        // En naranja porque es el unico dato de la cabecera que CAMBIA con lo
-        // que uno hace abajo: al pulsar un numero, esta linea es la que
-        // confirma cual quedo puesto.
-        if (marcado != null) ...[
-          const SizedBox(height: 10),
-          Text(
-            _nombreEpisodio(marcado),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: Color(0xFFF5A623),
-              fontSize: 15,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ],
-
         // AQUI IBAN LA MARCA DE SERVIDOR Y LA CLASIFICACION.
         //
         // "V1+" y "BD" decian de donde sale el video —si hay servidor
@@ -985,15 +965,6 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
         ),
       ],
     );
-  }
-
-  String _nombreEpisodio(M3UItem ep) {
-    final n = ep.episodeNumber;
-    if (n == null) return ep.name;
-    final t = ep.seasonNumber;
-    return (t != null && _temporadas.length > 1)
-        ? 'Temporada $t · Episodio $n'
-        : 'Episodio $n';
   }
 
   // ── Bloque de episodios ─────────────────────────────────────────────────
