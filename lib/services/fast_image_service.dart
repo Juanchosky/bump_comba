@@ -1065,10 +1065,26 @@ class _FastThumbnailState extends State<FastThumbnail>
     // que antes.
     if (!FastImageService.modoTelevisor) return null;
     if (widget.pantallaCompleta) return 1920;
-    // Y en el televisor sí se respeta la medida que pida quien lo usa: la
-    // copia desenfocada del resplandor pide 400 y va a 30 de desenfoque, así
-    // que descodificarla entera era pagar memoria por un detalle que no se ve.
-    return widget.cacheWidth;
+    // En el televisor sí se respeta la medida que pida quien lo usa: la copia
+    // desenfocada del resplandor pide 400 y va a 30 de desenfoque, así que
+    // descodificarla entera era pagar memoria por un detalle que no se ve.
+    if (widget.cacheWidth != null) return widget.cacheWidth;
+
+    // ── Y SI NO PIDE NADA, SE DESCODIFICA AL TAMAÑO EN QUE SE VE ──────────
+    //
+    // Devolver `null` aquí significaba "al tamaño original": un póster de
+    // 500x750 son ~1,5 MB de mapa de bits para pintar una carátula de 126 px,
+    // cuando al tamaño real son ~95 KB. Ninguna pantalla del televisor pasaba
+    // `cacheWidth`, así que TODAS las filas pagaban ese precio: con unas
+    // decenas de tarjetas construidas son cientos de MB moviéndose, el
+    // recolector de basura entra en bucle y la navegación da tirones.
+    //
+    // El doble del ancho, no el ancho justo: la tarjeta enfocada crece y la
+    // pantalla puede tener más de un píxel físico por punto. Con tope, que un
+    // póster gigante no se cuele por aquí.
+    final ancho = widget.width;
+    if (!ancho.isFinite || ancho <= 0) return null;
+    return (ancho * 2).round().clamp(160, 1280);
   }
 
   @override

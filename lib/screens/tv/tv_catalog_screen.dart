@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import '../../services/fast_image_service.dart';
+import '../../services/performance_service.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../../services/m3u_service.dart';
 import '../../services/tmdb_service.dart';
@@ -2028,10 +2029,20 @@ class _FilaState extends State<_Fila> {
                 // cada tarjeta sin medir nada, y de paso le ahorra a la lista
                 // el trabajo de ir midiendo hijo por hijo mientras se mueve.
                 itemExtent: _pasoActual,
-                // Dos pantallas de margen construidas por delante y por
-                // detras: al llegar al borde la siguiente tarjeta ya existe y
-                // el foco entra sin esperar a que se arme.
-                scrollCacheExtent: const ScrollCacheExtent.pixels(900),
+                // Margen construido por delante y por detras: al llegar al
+                // borde la siguiente tarjeta ya existe y el foco entra sin
+                // esperar a que se arme.
+                //
+                // EN GAMA BAJA, MENOS. 900 px son ~7 tarjetas de mas a cada
+                // lado POR FILA, y cada tarjeta trae su animacion y sus
+                // temporizadores. Con varias filas en pantalla eso es un
+                // centenar de widgets vivos que nadie esta mirando, y en una
+                // caja de TV se nota como tirones al mover el mando. 320 sigue
+                // dejando dos tarjetas listas a cada lado: suficiente para que
+                // el foco no espere.
+                scrollCacheExtent: ScrollCacheExtent.pixels(
+                  PerformanceService().isLowPerformance ? 320 : 900,
+                ),
                 itemCount: _celdas,
                 itemBuilder: (context, i) {
                   if (i == visibles.length) {
