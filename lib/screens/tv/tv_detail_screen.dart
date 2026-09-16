@@ -557,7 +557,10 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
     // Espaciados adaptativos para que se vea armonioso tanto en teles pequeñas
     // (p. ej. 540p / 32") como en teles grandes (1080p / 4K).
     final espacioCabecera = _espacioAdaptativo(context, 22);
-    final espacioEntreSecciones = _espacioAdaptativo(context, 26);
+    // 34 y no 26: la fila de "Quizás te guste" quedaba muy pegada a lo de
+    // arriba. Va por `_espacioAdaptativo`, así que sigue creciendo o
+    // encogiéndose con el tamaño del televisor.
+    final espacioEntreSecciones = _espacioAdaptativo(context, 34);
     final espacioTituloACards = _espacioAdaptativo(context, 14);
 
     return Scaffold(
