@@ -1767,6 +1767,29 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
   }
 
   // ── Mando ────────────────────────────────────────────────────────────────
+
+  /// Si ya se pidio cerrar esta pantalla.
+  bool _cerrando = false;
+
+  /// Cierra el reproductor UNA SOLA VEZ, venga el "atras" por donde venga.
+  ///
+  /// ── POR QUE HACE FALTA UN CERROJO ──────────────────────────────────────
+  ///
+  /// El "atras" llega por DOS caminos: la tecla `goBack` que recoge `_tecla`, y
+  /// el "atras" del sistema que recoge el `PopScope`. En el Chromecast llega
+  /// solo uno; el mando de un Xiaomi manda LOS DOS con una sola pulsacion, y
+  /// entonces se hacian dos `pop`: se cerraba el reproductor Y la ficha de
+  /// detras, apareciendo el catalogo. Se veia como "en este televisor el atras
+  /// se salta la ficha", que no apunta a ningun sitio.
+  ///
+  /// Con el cerrojo, la segunda llamada no hace nada. No hay que reponerlo: la
+  /// pantalla se esta yendo.
+  void _cerrarUnaVez() {
+    if (_cerrando || !mounted) return;
+    _cerrando = true;
+    Navigator.of(context).pop();
+  }
+
   bool _manejarAtras() {
     if (_menuAbierto) {
       setState(() => _menuAbierto = false);
@@ -1820,7 +1843,7 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
 
     if (k == LogicalKeyboardKey.goBack || k == LogicalKeyboardKey.escape) {
       if (_manejarAtras()) return KeyEventResult.handled;
-      Navigator.of(context).pop();
+      _cerrarUnaVez();
       return KeyEventResult.handled;
     }
 
@@ -1991,7 +2014,7 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
       canPop: false,
       onPopInvokedWithResult: (hecho, _) {
         if (hecho) return;
-        if (!_manejarAtras()) Navigator.of(context).pop();
+        if (!_manejarAtras()) _cerrarUnaVez();
       },
       child: FocusScope(
         autofocus: true,

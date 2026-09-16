@@ -1779,11 +1779,11 @@ class _FilaState extends State<_Fila> {
   /// Ancho de tarjeta (126) más separación (8). Con esto el desplazamiento
   /// se calcula en vez de buscarse: la tarjeta `i` está en `i * _paso`, siempre.
   /// Antes 150 dejaba 24 px de hueco; con 134 las carátulas quedan a 8 px entre sí.
-  static const double _paso = 132;
+  static const double _paso = 134;
 
   /// En el Top 10 cada celda lleva delante su número grande: 62 de número
   /// (la carátula lo pisa un poco, como en el teléfono) + 126 + 8 de hueco.
-  static const double _pasoRanking = 196;
+  static const double _pasoRanking = 198;
 
   /// La fila del Top 10 se pinta como ranking: números, 10 como mucho y sin
   /// tarjeta "Más" (un ranking no tiene "ver todo").

@@ -113,6 +113,10 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
 
   bool _reportando = false;
 
+  /// Me gusta / No me gusta. Solo para la vista: ver los botones de la ficha.
+  bool _meGusta = false;
+  bool _noMeGusta = false;
+
   /// Reportar un problema: la MISMA lógica que la ficha del teléfono — mismos
   /// motivos (utils/motivos_reporte.dart) y el mismo
   /// `M3UService.reportContent`, que lo guarda en `content_reports`.
@@ -923,18 +927,47 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
         // texto quedaban pegados a la sinopsis. 14 + 12 = 26.
         const SizedBox(height: 12),
 
-        // ── Botones Mi lista y Reportar ───────────────────────────────────
+        // ── Me gusta · No me gusta · Mi lista · Reportar ───────────────────
         //
         // En fila: izquierda/derecha pasa de uno a otro con el mando.
         Row(
           mainAxisSize: MainAxisSize.min,
           children: [
+            // ── Me gusta / No me gusta ────────────────────────────────────
+            //
+            // DE ADORNO, A PROPOSITO: no se manda nada a la base de datos ni se
+            // guarda en el aparato. Vive solo mientras la ficha esta abierta y
+            // al salir se olvida. Si algun dia tiene que contar de verdad, el
+            // sitio es `M3UService.likeContent`, como en el telefono.
+            _BotonFicha(
+              icono:
+                  _meGusta ? Icons.thumb_up_rounded : Icons.thumb_up_outlined,
+              onOk:
+                  () => setState(() {
+                    _meGusta = !_meGusta;
+                    // Una cosa o la otra, nunca las dos.
+                    if (_meGusta) _noMeGusta = false;
+                  }),
+            ),
+            const SizedBox(width: 10),
+            _BotonFicha(
+              icono:
+                  _noMeGusta
+                      ? Icons.thumb_down_rounded
+                      : Icons.thumb_down_outlined,
+              onOk:
+                  () => setState(() {
+                    _noMeGusta = !_noMeGusta;
+                    if (_noMeGusta) _meGusta = false;
+                  }),
+            ),
+            // 10: la misma separación que hay entre celdas de episodio.
+            const SizedBox(width: 10),
             _BotonFicha(
               icono: _isFavorite ? Icons.check_rounded : Icons.add_rounded,
               texto: _isFavorite ? 'En mi lista' : 'Mi lista',
               onOk: _toggleFavorite,
             ),
-            // 10: la misma separación que hay entre celdas de episodio.
             const SizedBox(width: 10),
             // Solo el icono; mientras se envía cambia a un reloj y no responde.
             _BotonFicha(
