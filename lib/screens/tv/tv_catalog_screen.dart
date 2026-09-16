@@ -109,23 +109,25 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   // Techos deliberados. Un proveedor puede traer cientos de categorías y miles
   // de títulos; pintarlos todos en un aparato de 1 GB de RAM es cómo se cuelga
   // un televisor. Nadie baja de la fila veinte con un mando, tampoco.
-  /// Tope de filas por sección.
+  /// SIN TOPE DE FILAS: SE ENSEÑAN TODAS LAS CATEGORIAS.
   ///
-  /// ── ERA 20, Y ESO ESCONDIA CATEGORIAS ──────────────────────────────────
+  /// ── EL TOPE ESCONDIA CATEGORIAS, Y NO SE NOTABA ────────────────────────
   ///
-  /// El teléfono no tiene tope: enseña TODAS las de `categoriasParaMostrar()`,
-  /// cargándolas de a poco según bajas. El televisor cortaba en veinte, así
-  /// que de la veintiuna en adelante no existían — no había forma de llegar a
-  /// ellas ni sabiendo que estaban.
+  /// Fue 20, luego 80, y las dos veces corto. El orden lo manda la prioridad
+  /// del servicio, donde 'dorama' es la 85 de 90 —detras de generos,
+  /// plataformas y "series"—, asi que "Doramas" caia por debajo del corte y en
+  /// el televisor NO EXISTIA: no habia forma de llegar a ella ni sabiendo que
+  /// estaba. En el telefono si salia, porque alli no hay tope y las
+  /// categorias se cargan de a poco segun bajas.
   ///
-  /// 80 es un tope de seguridad, no un recorte: está por encima de lo que
-  /// devuelve el proveedor, así que en la práctica no corta nada. Se deja
-  /// porque una lista sin límite ninguno depende de que el proveedor se porte
-  /// bien, y ya sabemos que a veces no.
+  /// Un tope "de seguridad" que depende de cuantas categorias traiga el
+  /// proveedor es una bomba de relojeria: el dia que trae mas, desaparecen
+  /// las ultimas y el sintoma es "falta ESTA categoria", que no apunta a
+  /// ningun sitio. Asi que no hay tope.
   ///
-  /// El coste está acotado: la lista es perezosa y solo construye las filas
-  /// que se ven.
-  static const int _maxFilas = 80;
+  /// El coste esta acotado por otro lado: la lista es perezosa y solo
+  /// construye las filas que se ven, y cada fila corta a `_maxPorFila`
+  /// caratulas con su boton de "Mas".
 
   /// Código de país para el título del Top 10; null hasta que se detecta.
   String? _paisTop10;
@@ -1015,7 +1017,6 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     }
 
     for (final cat in _servicio.ordenarCategorias(porCategoria.keys)) {
-      if (filas.length >= _maxFilas) break;
       final items = porCategoria[cat]!;
       if (items.length < 3) continue;
       filas.add((titulo: cat, items: items));
@@ -1047,7 +1048,6 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     // misma prioridad aplicada aqui, lo que llega despues encaja donde ya
     // estaba en vez de mover todo de sitio.
     for (final cat in _servicio.ordenarCategorias(porCategoria.keys)) {
-      if (filas.length >= _maxFilas) break;
       final items = porCategoria[cat]!;
       if (items.length < 3) continue;
       filas.add((titulo: cat, items: items));
@@ -1218,7 +1218,6 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     // ese filtro es el que le faltaba al televisor y por el que aparecian de
     // primeras categorias que en el telefono no salen.
     for (final cat in _servicio.categoriasParaMostrar()) {
-      if (filas.length >= _maxFilas) break;
       // "Recientemente agregadas" del proveedor no se enseña: es lo mismo que
       // ya cuenta "Últimamente nuevo" ahi arriba, con otro nombre y en otro
       // orden. Dos filas que dicen lo mismo hacen dudar de cual es la buena.
