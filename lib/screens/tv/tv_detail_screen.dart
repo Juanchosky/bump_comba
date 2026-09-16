@@ -925,11 +925,9 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
             ],
           ),
         ),
-        const SizedBox(height: 14),
-
-        // Aire extra antes de los botones: con solo los 14 de las líneas de
-        // texto quedaban pegados a la sinopsis. 14 + 12 = 26.
-        const SizedBox(height: 12),
+        // Espaciado con la sinopsis: 16 px para mantener los botones
+        // elevados y visualmente integrados.
+        const SizedBox(height: 5),
 
         // ── Mi lista · Me gusta · No me gusta · Reportar ───────────────────
         //
