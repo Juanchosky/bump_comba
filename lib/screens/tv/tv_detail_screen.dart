@@ -942,8 +942,8 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
               texto: _isFavorite ? 'En mi lista' : 'Mi lista',
               onOk: _toggleFavorite,
             ),
-            // 10: la misma separación que hay entre celdas de episodio.
-            const SizedBox(width: 10),
+            // 6: juntos, que son cuatro acciones de la misma ficha.
+            const SizedBox(width: 6),
             // ── Me gusta / No me gusta ────────────────────────────────────
             //
             // DE ADORNO, A PROPOSITO: no se manda nada a la base de datos ni se
@@ -962,7 +962,7 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
                     if (_meGusta) _noMeGusta = false;
                   }),
             ),
-            const SizedBox(width: 10),
+            const SizedBox(width: 6),
             _BotonPulgar(
               icono: Icons.thumb_down_outlined,
               iconoActivo: Icons.thumb_down_rounded,
@@ -974,7 +974,7 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
                     if (_noMeGusta) _meGusta = false;
                   }),
             ),
-            const SizedBox(width: 10),
+            const SizedBox(width: 6),
             // Solo el icono; mientras se envía cambia a un reloj y no responde.
             _BotonFicha(
               icono:
@@ -1616,16 +1616,24 @@ class _BotonPulgarState extends State<_BotonPulgar>
       alignment: Alignment.center,
       clipBehavior: Clip.none,
       children: [
+        // `Positioned` y no un hijo suelto: un hijo normal de 60x60 MIDE, y
+        // el Stack se quedaba con su tamaño — el boton pasaba de 38 a 60 de
+        // ancho y metia ~11 px de aire a cada lado. Se veia como "los botones
+        // estan muy separados", y no lo estaban: el de me gusta era mas ancho.
+        // Colocado, pinta por encima sin ocupar sitio (es lo que hace el
+        // telefono con su confeti).
         if (widget.conConfeti)
-          AnimatedBuilder(
-            animation: _confeti,
-            builder:
-                (context, _) => IgnorePointer(
-                  child: CustomPaint(
-                    size: const Size(60, 60),
-                    painter: _ConfetiPulgar(avance: _confeti.value),
+          Positioned(
+            child: AnimatedBuilder(
+              animation: _confeti,
+              builder:
+                  (context, _) => IgnorePointer(
+                    child: CustomPaint(
+                      size: const Size(60, 60),
+                      painter: _ConfetiPulgar(avance: _confeti.value),
+                    ),
                   ),
-                ),
+            ),
           ),
         AnimatedBuilder(
           animation: _control,

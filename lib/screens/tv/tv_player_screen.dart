@@ -529,7 +529,7 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
       try {
         final mpv = _player.platform as dynamic;
         if (mpv != null) {
-          await mpv.setProperty('hls-bitrate', 'auto');
+          await mpv.setProperty('hls-bitrate', TvMpvConfig.hlsBitrate());
           await mpv.setProperty('scale', 'bilinear');
           await mpv.setProperty('cscale', 'bilinear');
           await mpv.setProperty('linear-upscaling', 'no');
@@ -668,7 +668,9 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         if (widget.item.isLive) {
           await mpv.setProperty('cache-secs', '60');
           await mpv.setProperty('demuxer-readahead-secs', '20');
-          await mpv.setProperty('hls-bitrate', 'max');
+          // Tambien el directo: 'max' fijo le pedia la copia mas gorda a un
+          // aparato flojo o a una linea justa, que es donde peor sienta.
+          await mpv.setProperty('hls-bitrate', TvMpvConfig.hlsBitrate());
           await mpv.setProperty('hls-forward-cache-secs', '30');
           await mpv.setProperty('hls-back-cache-secs', '10');
           await mpv.setProperty('cache-pause-initial', 'no');
@@ -685,7 +687,10 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
               low.contains('savefiles') ||
               low.contains('okcdn') ||
               low.contains('gnula');
-          await mpv.setProperty('hls-bitrate', esScrapeado ? '3000000' : 'auto');
+          await mpv.setProperty(
+            'hls-bitrate',
+            TvMpvConfig.hlsBitrate(esScrapeado: esScrapeado),
+          );
           await mpv.setProperty('hls-forward-cache-secs', '45');
           await mpv.setProperty('hls-back-cache-secs', '30');
           await mpv.setProperty('cache-pause-initial', 'no');

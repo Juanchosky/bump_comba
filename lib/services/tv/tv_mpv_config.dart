@@ -1,6 +1,8 @@
 import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart';
 import '../../utils/cabeceras_stream.dart';
+import '../performance_service.dart';
+import '../network_quality_service.dart';
 
 /// Configuracion de MPV para televisores, COMPARTIDA.
 ///
@@ -17,6 +19,62 @@ import '../../utils/cabeceras_stream.dart';
 
 class TvMpvConfig {
   TvMpvConfig._();
+
+  /// Que calidad se le pide a una lista HLS, segun el APARATO y la RED.
+  ///
+  /// ── POR QUE NO ES UN NUMERO FIJO ───────────────────────────────────────
+  ///
+  /// Estaba a `3000000` (3 Mbps) para el contenido scrapeado y a `auto` para
+  /// el resto. Dos problemas:
+  ///
+  ///  1. `auto` NO EXISTE. MPV solo acepta `no`, `min`, `max` o un numero, y
+  ///     lo dice en el log del televisor: "Invalid value for option
+  ///     hls-bitrate: auto". O sea que donde ponia `auto` no se aplicaba nada.
+  ///  2. El tope de 3 Mbps protegia a los aparatos flojos y las redes malas
+  ///     —que era la intencion— pero se lo comia TODO el mundo: en un
+  ///     televisor decente con fibra tambien se descartaba la copia 1080p de
+  ///     6 Mbps y se veia peor de lo que se podia.
+  ///
+  /// Asi que se decide en el momento, con lo que la app ya sabe:
+  ///
+  ///  · GAMA BAJA (Chromecast HD, cajas de ~1 GB): nunca `max`. Pedir 8 Mbps
+  ///    a un aparato que no da abasto decodificando no se ve mejor, se ve a
+  ///    tirones.
+  ///  · RED FLOJA O CAIDA: se baja el tope aunque el aparato sea bueno. Una
+  ///    copia que la linea no sostiene es una copia que se corta cada poco.
+  ///  · SCRAPEADO: un escalon por debajo. Ese proveedor trunca las respuestas
+  ///    y reconecta constantemente, asi que aguanta menos caudal que un origen
+  ///    normal con la misma red.
+  ///  · APARATO BUENO + RED BUENA: `max`, la mejor copia de la lista.
+  ///
+  /// Se consulta al abrir cada video, asi que si la red cambia entre un
+  /// titulo y el siguiente, el siguiente ya se pide distinto.
+  static String hlsBitrate({bool esScrapeado = false}) {
+    final gamaBaja = PerformanceService().isLowPerformance;
+    final red = NetworkQualityService().quality.value;
+
+    // Techo por red. En vivo o no, una linea que no da es lo que manda.
+    final int porRed = switch (red) {
+      NetworkQuality.offline || NetworkQuality.poor => 1200000,
+      NetworkQuality.fair => 2500000,
+      NetworkQuality.good => 5000000,
+      NetworkQuality.excellent => 0, // 0 = sin techo por este lado
+    };
+
+    // Techo por aparato: la gama baja no pasa de 3 Mbps.
+    final int porAparato = gamaBaja ? 3000000 : 0;
+
+    // Y el scrapeado, un escalon por debajo del resto.
+    final int porOrigen = esScrapeado ? 6000000 : 0;
+
+    final topes = [
+      porRed,
+      porAparato,
+      porOrigen,
+    ].where((t) => t > 0).toList();
+    if (topes.isEmpty) return 'max';
+    return topes.reduce((a, b) => a < b ? a : b).toString();
+  }
 
   /// Aplica el perfil base. Pensado para VOD: lectura adelantada larga y cache
   /// generoso. Para directos hay que bajar ambos despues (ver el receptor).
@@ -105,7 +163,7 @@ class TvMpvConfig {
         'user-agent': kUserAgentPorDefecto,
         'http-header-fields': 'Connection: keep-alive',
         'demuxer-cache-wait': 'no',
-        'hls-bitrate': 'auto',
+        'hls-bitrate': hlsBitrate(),
         'stream-buffer-size': '8388608',
         'network-timeout': '35',
         'http-reconnect': 'yes',
