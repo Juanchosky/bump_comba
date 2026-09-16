@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/cupertino.dart';
@@ -946,9 +947,11 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
             // guarda en el aparato. Vive solo mientras la ficha esta abierta y
             // al salir se olvida. Si algun dia tiene que contar de verdad, el
             // sitio es `M3UService.likeContent`, como en el telefono.
-            _BotonFicha(
-              icono:
-                  _meGusta ? Icons.thumb_up_rounded : Icons.thumb_up_outlined,
+            _BotonPulgar(
+              icono: Icons.thumb_up_outlined,
+              iconoActivo: Icons.thumb_up_rounded,
+              activo: _meGusta,
+              conConfeti: true,
               onOk:
                   () => setState(() {
                     _meGusta = !_meGusta;
@@ -957,11 +960,11 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
                   }),
             ),
             const SizedBox(width: 10),
-            _BotonFicha(
-              icono:
-                  _noMeGusta
-                      ? Icons.thumb_down_rounded
-                      : Icons.thumb_down_outlined,
+            _BotonPulgar(
+              icono: Icons.thumb_down_outlined,
+              iconoActivo: Icons.thumb_down_rounded,
+              activo: _noMeGusta,
+              saltaAbajo: true,
               onOk:
                   () => setState(() {
                     _noMeGusta = !_noMeGusta;
@@ -1507,6 +1510,161 @@ class _ChipTemporadaState extends State<_ChipTemporada> {
       ),
     );
   }
+}
+
+/// "Me gusta" / "No me gusta" con LAS MISMAS ANIMACIONES QUE EL TELEFONO.
+///
+/// Son las tres de `_PremiumSocialButton` de la ficha del móvil, con sus
+/// tiempos y curvas: el rebote de escala (1 → 1,25 → 1, `bounceOut`), el salto
+/// de 10 px —arriba en "me gusta", abajo en "no me gusta"— y el estallido de
+/// ocho partículas, que allí solo lleva "me gusta".
+///
+/// Solo animan al MARCAR, nunca al desmarcar ni al pasar el foco por encima:
+/// si saltaran al mover el mando, recorrer la fila de botones parecería que
+/// estás pulsando todo lo que tocas.
+///
+/// Por dentro es el mismo [_BotonFicha] que los demás, así que el foco, las
+/// teclas y el aspecto no se separan del resto de la ficha.
+class _BotonPulgar extends StatefulWidget {
+  final IconData icono;
+  final IconData iconoActivo;
+  final bool activo;
+  final bool saltaAbajo;
+  final bool conConfeti;
+  final VoidCallback onOk;
+
+  const _BotonPulgar({
+    required this.icono,
+    required this.iconoActivo,
+    required this.activo,
+    required this.onOk,
+    this.saltaAbajo = false,
+    this.conConfeti = false,
+  });
+
+  @override
+  State<_BotonPulgar> createState() => _BotonPulgarState();
+}
+
+class _BotonPulgarState extends State<_BotonPulgar>
+    with TickerProviderStateMixin {
+  late final AnimationController _control = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 500),
+  );
+  late final AnimationController _confeti = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 800),
+  );
+
+  late final Animation<double> _escala = TweenSequence<double>([
+    TweenSequenceItem(
+      tween: Tween<double>(
+        begin: 1.0,
+        end: 1.25,
+      ).chain(CurveTween(curve: Curves.easeOut)),
+      weight: 40,
+    ),
+    TweenSequenceItem(
+      tween: Tween<double>(
+        begin: 1.25,
+        end: 1.0,
+      ).chain(CurveTween(curve: Curves.bounceOut)),
+      weight: 60,
+    ),
+  ]).animate(_control);
+
+  late final Animation<double> _salto = TweenSequence<double>([
+    TweenSequenceItem(
+      tween: Tween<double>(
+        begin: 0.0,
+        end: widget.saltaAbajo ? 10.0 : -10.0,
+      ).chain(CurveTween(curve: Curves.easeOut)),
+      weight: 40,
+    ),
+    TweenSequenceItem(
+      tween: Tween<double>(
+        begin: widget.saltaAbajo ? 10.0 : -10.0,
+        end: 0.0,
+      ).chain(CurveTween(curve: Curves.bounceOut)),
+      weight: 60,
+    ),
+  ]).animate(_control);
+
+  @override
+  void didUpdateWidget(covariant _BotonPulgar viejo) {
+    super.didUpdateWidget(viejo);
+    if (widget.activo && !viejo.activo) {
+      _control.forward(from: 0);
+      if (widget.conConfeti) _confeti.forward(from: 0);
+    }
+  }
+
+  @override
+  void dispose() {
+    _control.dispose();
+    _confeti.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      alignment: Alignment.center,
+      clipBehavior: Clip.none,
+      children: [
+        if (widget.conConfeti)
+          AnimatedBuilder(
+            animation: _confeti,
+            builder:
+                (context, _) => IgnorePointer(
+                  child: CustomPaint(
+                    size: const Size(60, 60),
+                    painter: _ConfetiPulgar(avance: _confeti.value),
+                  ),
+                ),
+          ),
+        AnimatedBuilder(
+          animation: _control,
+          builder:
+              (context, hijo) => Transform.translate(
+                offset: Offset(0, _salto.value),
+                child: Transform.scale(scale: _escala.value, child: hijo),
+              ),
+          child: _BotonFicha(
+            icono: widget.activo ? widget.iconoActivo : widget.icono,
+            onOk: widget.onOk,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Las ocho partículas que salen al marcar "me gusta".
+class _ConfetiPulgar extends CustomPainter {
+  final double avance;
+  _ConfetiPulgar({required this.avance});
+
+  @override
+  void paint(Canvas lienzo, Size medida) {
+    if (avance == 0 || avance == 1) return;
+    final centro = Offset(medida.width / 2, medida.height / 2);
+    final pincel = Paint()..style = PaintingStyle.fill;
+    for (var i = 0; i < 8; i++) {
+      final angulo = i * 45 * math.pi / 180;
+      final radio = 12 + avance * 28;
+      pincel.color = Colors.white.withValues(alpha: (1 - avance) * 0.8);
+      lienzo.drawCircle(
+        centro + Offset(radio * math.cos(angulo), radio * math.sin(angulo)),
+        2.0 * (1 - avance),
+        pincel,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ConfetiPulgar otro) => otro.avance != avance;
 }
 
 /// Botón de acción de la ficha ("Mi lista", "Reportar").
