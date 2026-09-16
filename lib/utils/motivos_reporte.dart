@@ -29,6 +29,7 @@ List<String> motivosReporte(M3UItem item, {bool tieneEpisodios = false}) {
     'Subtítulos faltantes o mal sincronizados',
     'El contenido no corresponde al título',
     'Mala calidad de imagen',
+    'Carátula en mala calidad',
     'Otro problema',
   ];
 }

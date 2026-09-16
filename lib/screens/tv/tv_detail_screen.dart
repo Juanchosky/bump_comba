@@ -97,7 +97,8 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
   @override
   void initState() {
     super.initState();
-    _isFavorite = widget.item.isFavorite ||
+    _isFavorite =
+        widget.item.isFavorite ||
         M3UService().getFavorites().any(
           (f) =>
               (f.url.isNotEmpty && f.url == widget.item.url) ||
@@ -546,6 +547,13 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
 
     final episodios = _episodiosVisibles;
     final esSerie = _episodios.isNotEmpty;
+    final hayEpisodios = esSerie && episodios.isNotEmpty;
+
+    // Espaciados adaptativos para que se vea armonioso tanto en teles pequeñas
+    // (p. ej. 540p / 32") como en teles grandes (1080p / 4K).
+    final espacioCabecera = _espacioAdaptativo(context, 22);
+    final espacioEntreSecciones = _espacioAdaptativo(context, 26);
+    final espacioTituloACards = _espacioAdaptativo(context, 14);
 
     return Scaffold(
       backgroundColor: AppColors.fondoTv,
@@ -679,15 +687,19 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
                                 ],
                               ),
 
-                              const SizedBox(height: 22),
-
-                              if (esSerie) _bloqueEpisodios(episodios),
+                              // ── Separaciones adaptativas según pantalla del TV ────
+                              //
+                              // Evita que en series quede muy pegado (antes solo 12 px)
+                              // y que en películas se duplique el hueco sumando dos SizedBox.
+                              // Además escala de forma armónica entre teles pequeñas (540p)
+                              // y teles grandes (1080p / 4K).
+                              if (hayEpisodios) ...[
+                                SizedBox(height: espacioCabecera),
+                                _bloqueEpisodios(episodios),
+                              ],
 
                               if (_sugerencias.isNotEmpty) ...[
-                                // 12 y no 26: sumado a los 22 de arriba
-                                // quedaba un hueco que separaba la fila del
-                                // resto de la ficha.
-                                const SizedBox(height: 12),
+                                SizedBox(height: espacioEntreSecciones),
                                 const Text(
                                   'Quizás te guste',
                                   style: TextStyle(
@@ -696,7 +708,7 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
                                     fontWeight: FontWeight.w600,
                                   ),
                                 ),
-                                const SizedBox(height: 10),
+                                SizedBox(height: espacioTituloACards),
                                 SizedBox(
                                   height: 176,
                                   child: ListView.builder(
@@ -722,6 +734,21 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
         ],
       ),
     );
+  }
+
+  /// Calcula una separación vertical proporcional a la resolución y tamaño del televisor.
+  ///
+  /// En pantallas de TV más pequeñas (p. ej. 540p lógico en teles compactas de 32"):
+  ///   factor ~0.85, manteniendo la pantalla limpia sin empujar contenido innecesariamente.
+  /// En pantallas medianas estándar (720p lógico):
+  ///   factor 1.0 (tamaño base).
+  /// En pantallas grandes (1080p lógico / 4K):
+  ///   factor ~1.30 - 1.35, asegurando que a distancia de sofá los bloques no se vean
+  ///   apelmazados ni pegados.
+  double _espacioAdaptativo(BuildContext context, double base) {
+    final alto = MediaQuery.sizeOf(context).height;
+    final factor = (alto / 720.0).clamp(0.85, 1.35);
+    return (base * factor).roundToDouble();
   }
 
   /// Lo que se pone al pulsar la imagen: el episodio marcado, o la pelicula.
@@ -1655,5 +1682,3 @@ class _OpcionReporteState extends State<_OpcionReporte> {
     );
   }
 }
-
-

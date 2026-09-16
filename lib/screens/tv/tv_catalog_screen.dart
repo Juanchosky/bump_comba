@@ -1083,9 +1083,12 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     final vistos = <String>{};
     for (final it in origen) {
       final elegido = porNombreSerie[it.seriesName] ?? it;
-      final clave = (elegido.isSeries || elegido.seriesName != null)
-          ? 'series_${(elegido.seriesName ?? elegido.name).toLowerCase().trim()}'
-          : (elegido.url.isNotEmpty ? elegido.url : elegido.name).toLowerCase().trim();
+      final clave =
+          (elegido.isSeries || elegido.seriesName != null)
+              ? 'series_${(elegido.seriesName ?? elegido.name).toLowerCase().trim()}'
+              : (elegido.url.isNotEmpty ? elegido.url : elegido.name)
+                  .toLowerCase()
+                  .trim();
       if (elegido.isLive || !vistos.add(clave)) continue;
       salida.add(elegido);
       if (tope != null && salida.length >= tope) break;
@@ -1104,9 +1107,10 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       // Sin repetir: el historial guarda una entrada POR CADA URL alternativa
       // del mismo titulo, asi que sin esto la fila salia con la misma pelicula
       // dos y tres veces seguidas.
-      final clave = (it.isSeries || it.seriesName != null)
-          ? 'series_${(it.seriesName ?? it.name).toLowerCase().trim()}'
-          : (it.url.isNotEmpty ? it.url : it.name).toLowerCase().trim();
+      final clave =
+          (it.isSeries || it.seriesName != null)
+              ? 'series_${(it.seriesName ?? it.name).toLowerCase().trim()}'
+              : (it.url.isNotEmpty ? it.url : it.name).toLowerCase().trim();
       if (!vistos.add(clave)) continue;
       siguiendo.add(it);
       if (siguiendo.length >= 12) break;

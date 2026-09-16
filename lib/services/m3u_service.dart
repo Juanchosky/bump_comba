@@ -3905,9 +3905,9 @@ class M3UService extends ChangeNotifier {
       final titulo = _normalizeTitleForMatching(t['title'] ?? '');
       if (titulo.length < 3) continue;
       for (final it in candidatos) {
-        if (_titulosDeMatch(it).any(
-          (n) => _normalizeTitleForMatching(n) == titulo,
-        )) {
+        if (_titulosDeMatch(
+          it,
+        ).any((n) => _normalizeTitleForMatching(n) == titulo)) {
           if (agregar(it)) break;
         }
       }
@@ -4647,7 +4647,9 @@ List<M3UItem> _parseCustomContentInBackground(Map<String, dynamic> args) {
       if (fa.isEmpty && fb.isEmpty) return 0;
       if (fa.isEmpty) return 1;
       if (fb.isEmpty) return -1;
-      return fb.compareTo(fa); // ISO-8601 con la misma zona: orden de texto = orden de fecha
+      return fb.compareTo(
+        fa,
+      ); // ISO-8601 con la misma zona: orden de texto = orden de fecha
     }
 
     final List<M3UItem> finalItems = [];
