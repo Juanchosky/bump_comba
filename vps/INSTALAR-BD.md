@@ -92,10 +92,10 @@ ETAG=$(curl -sI -H "Accept-Encoding: gzip" http://127.0.0.1/catalogo/bd.json | g
 Tiene que decir `304 0 bytes`. **Ese 304 es el objetivo de todo esto**: los
 usuarios que ya tienen el archivo no vuelven a bajarlo.
 
-## 6. Programarlo cada 15 minutos
+## 6. Programarlo cada 5 minutos
 
 ```bash
-( crontab -l 2>/dev/null | grep -v '/usr/local/bin/bd.sh'; echo '*/15 * * * * /usr/local/bin/bd.sh' ) | crontab -
+( crontab -l 2>/dev/null | grep -v '/usr/local/bin/bd.sh'; echo '*/5 * * * * /usr/local/bin/bd.sh' ) | crontab -
 ```
 
 Verificá:
@@ -108,7 +108,7 @@ crontab -l
 
 ## Cómo se comporta
 
-**Cada 15 minutos** hace un sondeo que pesa bytes: cuántas filas activas hay y
+**Cada 5 minutos** hace un sondeo que pesa bytes: cuántas filas activas hay y
 cuál es el `created_at` más reciente. Si los dos coinciden con la corrida
 anterior, termina sin bajar nada y sin escribir en el log.
 
@@ -133,7 +133,7 @@ Coste total contra Supabase: unos **180 MB/mes** en el peor caso.
 
 ## Si subís contenido y querés verlo ya
 
-El cron tarda hasta 15 minutos. Para forzarlo:
+El cron tarda hasta 5 minutos. Para forzarlo:
 
 ```bash
 /usr/local/bin/bd.sh

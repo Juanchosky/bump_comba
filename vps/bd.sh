@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 #  Volcado de la BD (custom_content de Supabase) — bump_comba
-#  Instalar en: /usr/local/bin/bd.sh   (cron cada 15 min)
+#  Instalar en: /usr/local/bin/bd.sh   (cron cada 5 min)
 # ============================================================================
 #
 #  QUE HACE
@@ -23,19 +23,27 @@
 #
 #  LA CLAVE ESTA EN NO BAJAR NADA SI NADA CAMBIO
 #  ---------------------------------------------
-#  Si este script se bajara la tabla completa cada 15 minutos, serian 4,3 MB x
-#  96 corridas = 413 MB/dia de egress: PEOR que el problema que viene a
+#  Si este script se bajara la tabla completa en cada corrida, serian 4,3 MB
+#  x 288 corridas = 1,2 GB/dia de egress: PEOR que el problema que viene a
 #  resolver. Por eso cada corrida empieza con un SONDEO que pesa bytes:
 #
 #    - cuantas filas activas hay  (Content-Range, con `Prefer: count=exact`)
-#    - cual es el `created_at` mas reciente
+#    - cual es el `created_at` mas reciente   (altas)
+#    - cual es el `updated_at` mas reciente   (ediciones)
 #
-#  Si los dos coinciden con la corrida anterior, no se baja nada y se termina.
-#  El volcado completo solo ocurre cuando entra o sale contenido.
+#  Si los tres coinciden con la corrida anterior, no se baja nada y se termina.
+#  El volcado completo solo ocurre cuando el catalogo cambia de verdad.
 #
-#  El sondeo NO detecta ediciones sobre filas que ya existian (cambiarle el
-#  titulo o la URL a algo ya subido). Para eso esta FORZAR_HORA: una vez al
-#  dia se baja todo igual, cambie o no. Coste: ~4,3 MB/dia = 130 MB/mes.
+#  LAS EDICIONES TAMBIEN CUENTAN
+#  -----------------------------
+#  El sondeo miraba solo el alta, asi que cambiarle el titulo, la URL o la
+#  caratula a algo ya subido no movia ningun numero: la correccion no llegaba a
+#  la app hasta el volcado diario, hasta un DIA despues. `updated_at` lo pone al
+#  dia un disparador de la propia tabla, asi que una edicion viaja igual de
+#  rapido que un alta.
+#
+#  FORZAR_HORA se queda como red de seguridad: una vez al dia se baja todo
+#  igual, cambie o no. Coste: ~4,3 MB/dia = 130 MB/mes.
 #
 #  LA OTRA CLAVE ESTA EN EL ETAG
 #  -----------------------------
@@ -85,6 +93,21 @@ REST="${SUPABASE_URL%/}/rest/v1/custom_content"
 # `created_at` se pide aparte solo para peliculas y series (ver paso 2b).
 COLUMNAS="id,title,title_aliases,video_url,thumbnail_url,type,parent_id,category,season,episode"
 
+# ── LA HUELLA, PARA QUE LA APP PREGUNTE EN VEZ DE DESCARGAR ────────────────
+#
+# Un archivo de ~70 bytes con el hash del volcado publicado. La app lo pide al
+# abrirse: si es el mismo que la ultima vez, se queda con lo que ya tiene y no
+# descarga nada; si cambio, se baja el bd.json entero.
+#
+# Antes la app esperaba a que su cache de 48 h caducara, asi que el contenido
+# recien subido podia tardar DOS DIAS en aparecer en el telefono y en la tele.
+# Preguntando, aparece en cuanto el usuario vuelve a abrir la app.
+publicar_version() {
+  printf '%s\n' "$1" > "$SALIDA/bd-version.txt.tmp" &&
+    mv -f "$SALIDA/bd-version.txt.tmp" "$SALIDA/bd-version.txt" &&
+    chmod 644 "$SALIDA/bd-version.txt"
+}
+
 api() {
   curl -s -m "$TIMEOUT" --compressed \
     -H "apikey: ${SUPABASE_KEY}" \
@@ -112,7 +135,15 @@ ultimo=$(api "${REST}?select=created_at&is_active=eq.true&order=created_at.desc&
          | tr -d '[]"{}' | sed 's/created_at://')
 [ -n "${ultimo:-}" ] || ultimo="sin_fecha"
 
-huella="${filas}|${ultimo}"
+# La ultima EDICION. Una fila, unos bytes. Si la columna no existiera
+# todavia (BD sin migrar), PostgREST devuelve un error y aqui queda
+# "sin_edicion": la huella sigue siendo valida y todo funciona como antes.
+edicion=$(api "${REST}?select=updated_at&is_active=eq.true&order=updated_at.desc&limit=1" | tr -d '[]"{}' | sed 's/updated_at://')
+case "${edicion:-}" in
+  ''|*message*|*error*) edicion="sin_edicion" ;;
+esac
+
+huella="${filas}|${ultimo}|${edicion}"
 huella_previa=""
 [ -f "$ESTADO" ] && huella_previa=$(cat "$ESTADO" 2>/dev/null)
 
@@ -137,7 +168,7 @@ if [ "$hora_actual" = "$FORZAR_HORA" ] && [ "$forzado_previo" != "$hoy" ]; then
 fi
 
 if [ "$huella" = "$huella_previa" ] && [ "$forzar" -eq 0 ] && [ -f "$SALIDA/${NOMBRE}.json" ]; then
-  # Silencioso a proposito: esto corre cada 15 min y llenaria el log de ruido.
+  # Silencioso a proposito: esto corre cada pocos minutos y llenaria el log.
   exit 0
 fi
 
@@ -326,6 +357,7 @@ hash_viejo=""
 
 if [ "$hash_nuevo" = "$hash_viejo" ]; then
   echo "$huella" > "$ESTADO"
+  publicar_version "$hash_nuevo"
   [ "$forzar" -eq 1 ] && echo "$hoy" > "$FORZADO"
   log "  sin cambios ($n_items filas) — no se toca, ETag intacto"
   exit 0
@@ -346,6 +378,7 @@ chmod 644 "$SALIDA/${NOMBRE}.json" "$SALIDA/${NOMBRE}.json.gz"
 # El estado se guarda AL FINAL, solo si todo salio bien. Si algo fallo antes,
 # la huella vieja sobrevive y la proxima corrida vuelve a intentarlo.
 echo "$huella" > "$ESTADO"
+publicar_version "$hash_nuevo"
 [ "$forzar" -eq 1 ] && echo "$hoy" > "$FORZADO"
 
 gz=$(stat -c %s "$SALIDA/${NOMBRE}.json.gz" 2>/dev/null || echo 0)

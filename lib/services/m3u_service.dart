@@ -1233,6 +1233,47 @@ class M3UService extends ChangeNotifier {
   /// `/catalogo/vod.json`, asi que no hizo falta tocar la config de nginx.
   static const String _urlVolcadoBd = 'http://217.216.80.212/catalogo/bd.json';
 
+  /// La huella del volcado publicado (~50 bytes). La escribe `vps/bd.sh`.
+  static const String _urlVersionBd =
+      'http://217.216.80.212/catalogo/bd-version.txt';
+
+  /// La ultima huella que se descargo, para saber si hay que volver a bajar.
+  static const String _customVersionKey = 'm3u_custom_version';
+
+  /// Pregunta al VPS que version del catalogo propio hay publicada.
+  ///
+  /// ── POR QUE PREGUNTAR EN VEZ DE ESPERAR ────────────────────────────────
+  ///
+  /// La cache dura 48 h, asi que un titulo recien subido podia tardar DOS DIAS
+  /// en salir en el telefono y en la tele. Y el usuario que lo pidio lo esta
+  /// esperando: ese plazo no le sirve a nadie.
+  ///
+  /// Bajar la tabla entera cada vez tampoco: son ~5 MB por usuario y por
+  /// arranque. Preguntar cuesta ~50 bytes, asi que se puede hacer SIEMPRE que
+  /// se abre la app: si la huella es la misma, no se descarga nada; si cambio,
+  /// se baja el volcado nuevo.
+  ///
+  /// Si el VPS no contesta se devuelve null y manda la regla vieja del plazo:
+  /// sin VPS, cada descarga sale de Supabase y ahi el ahorro sigue importando.
+  Future<String?> _versionBdVps() async {
+    if (_vpsDownUntil != null && DateTime.now().isBefore(_vpsDownUntil!)) {
+      return null;
+    }
+    try {
+      final res = await http
+          .get(Uri.parse(_urlVersionBd))
+          .timeout(const Duration(seconds: 2));
+      if (res.statusCode != 200) return null;
+      final version = res.body.trim();
+      // Un cuerpo raro (una pagina de error de nginx, por ejemplo) no vale
+      // como huella: mejor caer en la regla del plazo que guardar basura.
+      if (version.isEmpty || version.length > 128) return null;
+      return version;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Baja el volcado de la BD desde el VPS en formato de bytes para procesarlo en isolate.
   Future<Uint8List?> _fetchCustomContentBytesDesdeVps() async {
     if (_vpsDownUntil != null && DateTime.now().isBefore(_vpsDownUntil!)) {
@@ -1291,6 +1332,17 @@ class M3UService extends ChangeNotifier {
           DateTime.now().millisecondsSinceEpoch - cacheTimestamp <
               _customCacheDuration.inMilliseconds;
 
+      // MANDA LA HUELLA, NO EL RELOJ.
+      //
+      // Con el VPS delante, lo que decide si lo guardado sirve es si el
+      // catalogo cambio, no cuanto tiempo paso. Asi lo recien subido aparece
+      // en el siguiente arranque en vez de esperar hasta 48 h, y a la vez no
+      // se descarga nada mientras no haya novedades.
+      final versionRemota = await _versionBdVps();
+      final versionGuardada = _prefs?.getString(_customVersionKey);
+      final bool cacheVale =
+          versionRemota != null ? versionRemota == versionGuardada : isFresh;
+
       try {
         final file = await _getCustomCacheFile();
         if (await file.exists()) {
@@ -1305,8 +1357,14 @@ class M3UService extends ChangeNotifier {
               debugPrint(
                 'Loaded ${cachedItems.length} custom items from local binary cache',
               );
-              // Stale-while-revalidate: si expiró, devolver de inmediato y refrescar en segundo plano
-              if (!isFresh) {
+              // Stale-while-revalidate: se devuelve lo guardado de inmediato
+              // —la pantalla no espera— y, si hay algo nuevo, se baja por
+              // detras y las filas se rehacen solas al llegar.
+              if (!cacheVale) {
+                debugPrint(
+                  'custom_content: hay version nueva en el VPS '
+                  '($versionGuardada -> $versionRemota) — refrescando',
+                );
                 unawaited(fetchCustomContent(forceRefresh: true));
               }
               return cachedItems;
@@ -1409,6 +1467,12 @@ class M3UService extends ChangeNotifier {
             _customCacheTimestampKey,
             DateTime.now().millisecondsSinceEpoch,
           );
+          // La huella de LO QUE SE ACABA DE GUARDAR. Si el VPS no contesta no
+          // se guarda nada: en el proximo arranque se vuelve a preguntar.
+          final version = await _versionBdVps();
+          if (version != null) {
+            await _prefs?.setString(_customVersionKey, version);
+          }
         } catch (e) {
           debugPrint('Error saving custom binary cache: $e');
         }
@@ -5333,10 +5397,20 @@ int _getCategoryPriority(String category) {
 
 List<String> _sortCategoriesByPriority(Set<String> catSet) {
   final cats = catSet.where((c) => c != 'Inicio').toList();
+  final reAnio = RegExp(r'(19|20)\d{2}');
   cats.sort((a, b) {
     final pa = _getCategoryPriority(a);
     final pb = _getCategoryPriority(b);
     if (pa != pb) return pa.compareTo(pb);
+    // ── A IGUAL PRIORIDAD, EL AÑO MAS NUEVO PRIMERO ──────────────────────
+    //
+    // El desempate era alfabetico, y "Estrenos 2025" va antes que "Estrenos
+    // 2026" en el alfabeto: lo del año pasado salia por encima de lo de este.
+    // Ordena a las dos pantallas a la vez, telefono y televisor, porque las
+    // dos piden las categorias por aqui.
+    final ya = reAnio.firstMatch(a)?.group(0);
+    final yb = reAnio.firstMatch(b)?.group(0);
+    if (ya != null && yb != null && ya != yb) return yb.compareTo(ya);
     return a.compareTo(b);
   });
   if (catSet.contains('Inicio')) cats.insert(0, 'Inicio');
