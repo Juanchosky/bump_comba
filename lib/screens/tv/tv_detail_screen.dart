@@ -927,12 +927,19 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
         // texto quedaban pegados a la sinopsis. 14 + 12 = 26.
         const SizedBox(height: 12),
 
-        // ── Me gusta · No me gusta · Mi lista · Reportar ───────────────────
+        // ── Mi lista · Me gusta · No me gusta · Reportar ───────────────────
         //
         // En fila: izquierda/derecha pasa de uno a otro con el mando.
         Row(
           mainAxisSize: MainAxisSize.min,
           children: [
+            _BotonFicha(
+              icono: _isFavorite ? Icons.check_rounded : Icons.add_rounded,
+              texto: _isFavorite ? 'En mi lista' : 'Mi lista',
+              onOk: _toggleFavorite,
+            ),
+            // 10: la misma separación que hay entre celdas de episodio.
+            const SizedBox(width: 10),
             // ── Me gusta / No me gusta ────────────────────────────────────
             //
             // DE ADORNO, A PROPOSITO: no se manda nada a la base de datos ni se
@@ -960,13 +967,6 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
                     _noMeGusta = !_noMeGusta;
                     if (_noMeGusta) _meGusta = false;
                   }),
-            ),
-            // 10: la misma separación que hay entre celdas de episodio.
-            const SizedBox(width: 10),
-            _BotonFicha(
-              icono: _isFavorite ? Icons.check_rounded : Icons.add_rounded,
-              texto: _isFavorite ? 'En mi lista' : 'Mi lista',
-              onOk: _toggleFavorite,
             ),
             const SizedBox(width: 10),
             // Solo el icono; mientras se envía cambia a un reloj y no responde.
