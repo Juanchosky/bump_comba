@@ -921,7 +921,7 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
               onOk: _toggleFavorite,
             ),
             // 6: juntos, que son cuatro acciones de la misma ficha.
-            const SizedBox(width: 6),
+            const SizedBox(width: 1),
             // ── Me gusta / No me gusta ────────────────────────────────────
             //
             // DE ADORNO, A PROPOSITO: no se manda nada a la base de datos ni se
@@ -940,7 +940,7 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
                     if (_meGusta) _noMeGusta = false;
                   }),
             ),
-            const SizedBox(width: 6),
+            const SizedBox(width: 1),
             _BotonPulgar(
               icono: Icons.thumb_down_outlined,
               iconoActivo: Icons.thumb_down_rounded,
@@ -952,7 +952,7 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
                     if (_noMeGusta) _meGusta = false;
                   }),
             ),
-            const SizedBox(width: 6),
+            const SizedBox(width: 6.5),
             // Solo el icono; mientras se envía cambia a un reloj y no responde.
             _BotonFicha(
               icono:
