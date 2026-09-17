@@ -10,6 +10,7 @@ import '../../services/m3u_service.dart';
 import '../../services/tmdb_service.dart';
 import '../../services/tv/tv_vista_previa.dart';
 import '../../services/dynamic_scraper_service.dart';
+import '../../utils/atras_tv.dart';
 import '../../utils/colors.dart';
 import '../../utils/titulo_tmdb.dart';
 import 'tv_player_screen.dart';
@@ -464,8 +465,22 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
     final espacioEntreSecciones = _espacioAdaptativo(context, 34);
     final espacioTituloACards = _espacioAdaptativo(context, 14);
 
-    return Scaffold(
-      backgroundColor: AppColors.fondoTv,
+    // ── EL "ATRAS" QUE NO ES TUYO ─────────────────────────────────────────
+    //
+    // Saliendo del reproductor, el mando de un Xiaomi manda DOS avisos de
+    // "atras" con una sola pulsacion. El primero cierra el reproductor; el
+    // segundo llegaba aqui y cerraba tambien la ficha, asi que salir del video
+    // te plantaba en el catalogo. `AtrasTv` reconoce ese eco —dos avisos en
+    // medio segundo son el mismo gesto— y aqui se descarta.
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (hecho, _) {
+        if (hecho) return;
+        if (AtrasTv.esEco()) return;
+        Navigator.of(context).pop();
+      },
+      child: Scaffold(
+        backgroundColor: AppColors.fondoTv,
       body: Stack(
         fit: StackFit.expand,
         children: [
@@ -641,6 +656,7 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
             ),
           ),
         ],
+      ),
       ),
     );
   }

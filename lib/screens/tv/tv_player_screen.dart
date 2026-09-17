@@ -9,6 +9,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import '../../services/dynamic_scraper_service.dart';
 import '../../services/turbo_proxy.dart';
 import '../../services/tv/tv_mpv_config.dart';
+import '../../utils/atras_tv.dart';
 import '../../utils/cabeceras_stream.dart';
 import '../../utils/motivos_reporte.dart';
 import '../../utils/clasificacion_stream.dart';
@@ -1889,6 +1890,9 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
   void _cerrarUnaVez() {
     if (_cerrando || !mounted) return;
     _cerrando = true;
+    // Queda anotado en el filtro compartido: el aviso gemelo que llegue
+    // despues —ya con esta pantalla cerrada— lo descarta la ficha de debajo.
+    AtrasTv.esEco();
     Navigator.of(context).pop();
   }
 
