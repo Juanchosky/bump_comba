@@ -54,17 +54,6 @@ class TvVistaPrevia {
 
   set foco(bool v) => _conFoco.value = v;
 
-  /// Oculta el recuadro SIN desmontarlo.
-  ///
-  /// La vista previa vive en el `Overlay` raíz, por encima de todas las rutas,
-  /// así que un diálogo de la ficha (el de "Reportar") quedaba DETRÁS del
-  /// vídeo. Cerrarla y volver a montarla reiniciaría la resolución del enlace y
-  /// MPV; con `Offstage` el reproductor sigue vivo y al quitar el diálogo
-  /// reaparece donde estaba.
-  final ValueNotifier<bool> _oculta = ValueNotifier<bool>(false);
-
-  set oculta(bool v) => _oculta.value = v;
-
   /// Para hablarle al reproductor ya montado: pasarle teclas, o el "atrás".
   final GlobalKey<TvPlayerScreenState> _clave =
       GlobalKey<TvPlayerScreenState>();
@@ -144,11 +133,9 @@ class TvVistaPrevia {
     _expandido.value = false;
     _conFoco.value = false;
 
-    _oculta.value = false;
-
     _entrada = OverlayEntry(
       builder: (_) {
-        final contenido = ValueListenableBuilder<bool>(
+        return ValueListenableBuilder<bool>(
           valueListenable: _expandido,
           builder: (context, grande, hijo) {
             return ValueListenableBuilder<Rect?>(
@@ -208,15 +195,6 @@ class TvVistaPrevia {
           },
           // La instancia guardada, no una nueva: ver `_reproductor`.
           child: _reproductor,
-        );
-        // `Offstage` dentro de un `Stack` a pantalla completa: el
-        // `AnimatedPositioned` necesita un `Stack` de padre, y el `Overlay` lo
-        // era hasta ahora; con este envoltorio se le da uno propio.
-        return ValueListenableBuilder<bool>(
-          valueListenable: _oculta,
-          builder:
-              (context, oculta, hijo) => Offstage(offstage: oculta, child: hijo),
-          child: Stack(children: [contenido]),
         );
       },
     );
@@ -312,7 +290,6 @@ class TvVistaPrevia {
       _expandido.value = false;
       _conFoco.value = false;
       _hueco.value = null;
-      _oculta.value = false;
     });
   }
 }

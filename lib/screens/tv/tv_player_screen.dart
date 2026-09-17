@@ -10,6 +10,7 @@ import '../../services/dynamic_scraper_service.dart';
 import '../../services/turbo_proxy.dart';
 import '../../services/tv/tv_mpv_config.dart';
 import '../../utils/cabeceras_stream.dart';
+import '../../utils/motivos_reporte.dart';
 import '../../utils/clasificacion_stream.dart';
 import 'tv_loading_animation.dart';
 import '../../services/m3u_service.dart';
@@ -215,6 +216,32 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
   bool _preparandoSalto = false;
   Duration _saltoPrevisto = Duration.zero;
   Timer? _confirmarSalto;
+
+  // ── Acciones del titulo, DENTRO DEL REPRODUCTOR ──────────────────────────
+  //
+  // Estaban en la ficha, debajo de la sinopsis. Aqui tienen mas sentido: es
+  // donde estas viendo el contenido, que es cuando decides si lo guardas, si te
+  // gusta o si algo va mal y quieres reportarlo.
+  //
+  // El estilo es el del reproductor —icono plano y texto, blanco si el mando
+  // esta encima y gris si no—, no el de la ficha: aqui no hay recuadros.
+  bool _esFavorito = false;
+
+  /// De adorno, como estaban en la ficha: no se manda nada a la BD ni se
+  /// guarda. Viven mientras el reproductor esta abierto.
+  bool _meGusta = false;
+  bool _noMeGusta = false;
+
+  bool _reportando = false;
+
+  /// El menu del engranaje.
+  bool _ajustesAbierto = false;
+  int _ajustesIdx = 0;
+
+  /// El menu de motivos de reporte, hermano del de pistas.
+  bool _reporteAbierto = false;
+  int _reporteIdx = 0;
+  List<String> _motivos = const [];
 
   bool _menuAbierto = false;
   int _menuTab = 0;
@@ -491,6 +518,15 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         });
       }
     });
+
+    _esFavorito =
+        widget.item.isFavorite ||
+        M3UService().getFavorites().any(
+          (f) =>
+              (f.url.isNotEmpty && f.url == widget.item.url) ||
+              (f.name == widget.item.name &&
+                  f.seriesName == widget.item.seriesName),
+        );
 
     _arrancarSondeoVelocidad();
     _arrancar();
@@ -1728,6 +1764,67 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     }
   }
 
+  Future<void> _alternarFavorito() async {
+    try {
+      await M3UService().toggleFavorite(widget.item);
+      if (mounted) setState(() => _esFavorito = widget.item.isFavorite);
+    } catch (e) {
+      _aviso(e.toString().replaceAll('Exception: ', ''), error: true);
+    }
+  }
+
+  void _abrirReporte() {
+    setState(() {
+      _motivos = motivosReporte(
+        widget.item,
+        tieneEpisodios: widget.item.episodes.isNotEmpty,
+      );
+      _reporteIdx = 0;
+      _reporteAbierto = true;
+    });
+  }
+
+  /// Envia el reporte elegido. La MISMA llamada que la ficha del telefono, asi
+  /// que llega a la misma tabla (`content_reports`).
+  Future<void> _enviarReporte(String motivo) async {
+    setState(() {
+      _reporteAbierto = false;
+      _reportando = true;
+    });
+    var ok = false;
+    try {
+      ok = await M3UService().reportContent(
+        name: widget.item.name,
+        category: widget.item.category,
+        url: widget.item.url,
+        reason: motivo,
+      );
+    } catch (_) {}
+    if (!mounted) return;
+    setState(() => _reportando = false);
+    _aviso(
+      ok
+          ? 'Reporte enviado. ¡Gracias!'
+          : 'No se pudo enviar el reporte. Inténtalo de nuevo.',
+      error: !ok,
+    );
+  }
+
+  void _aviso(String texto, {bool error = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          texto,
+          style: const TextStyle(color: Colors.white, fontSize: 16),
+        ),
+        backgroundColor:
+            error ? const Color(0xFFE53935) : const Color(0xFF2E7D32),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
   void _abrirMenu(int pestana) {
     _ocultar?.cancel();
     setState(() {
@@ -1796,6 +1893,21 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
   }
 
   bool _manejarAtras() {
+    if (_reporteAbierto) {
+      // Al volver de los motivos se vuelve a los ajustes, que es de donde se
+      // entro: salir del todo obligaria a rehacer el camino.
+      setState(() {
+        _reporteAbierto = false;
+        _ajustesAbierto = true;
+      });
+      _mostrarControles();
+      return true;
+    }
+    if (_ajustesAbierto) {
+      setState(() => _ajustesAbierto = false);
+      _mostrarControles();
+      return true;
+    }
     if (_menuAbierto) {
       setState(() => _menuAbierto = false);
       _mostrarControles();
@@ -1849,6 +1961,61 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     if (k == LogicalKeyboardKey.goBack || k == LogicalKeyboardKey.escape) {
       if (_manejarAtras()) return KeyEventResult.handled;
       _cerrarUnaVez();
+      return KeyEventResult.handled;
+    }
+
+    // ── Ajustes del titulo ────────────────────────────────────────────────
+    //
+    // Se queda ABIERTO al marcar: guardar en la lista o dar un pulgar son
+    // cosas que se ven en el sitio, y cerrarlo obligaria a volver a entrar
+    // para corregirse. Solo "Reportar" lo cierra, porque lleva a otra lista.
+    if (_ajustesAbierto) {
+      if (k == LogicalKeyboardKey.arrowUp) {
+        setState(() => _ajustesIdx = (_ajustesIdx - 1).clamp(0, 3));
+        return KeyEventResult.handled;
+      }
+      if (k == LogicalKeyboardKey.arrowDown) {
+        setState(() => _ajustesIdx = (_ajustesIdx + 1).clamp(0, 3));
+        return KeyEventResult.handled;
+      }
+      if (ok) {
+        switch (_ajustesIdx) {
+          case 0:
+            unawaited(_alternarFavorito());
+          case 1:
+            setState(() {
+              _meGusta = !_meGusta;
+              // Una cosa o la otra, nunca las dos.
+              if (_meGusta) _noMeGusta = false;
+            });
+          case 2:
+            setState(() {
+              _noMeGusta = !_noMeGusta;
+              if (_noMeGusta) _meGusta = false;
+            });
+          case 3:
+            setState(() => _ajustesAbierto = false);
+            if (!_reportando) _abrirReporte();
+        }
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.handled;
+    }
+
+    // ── Motivos del reporte ───────────────────────────────────────────────
+    if (_reporteAbierto) {
+      if (k == LogicalKeyboardKey.arrowUp) {
+        setState(() => _reporteIdx = (_reporteIdx - 1).clamp(0, _motivos.length - 1));
+        return KeyEventResult.handled;
+      }
+      if (k == LogicalKeyboardKey.arrowDown) {
+        setState(() => _reporteIdx = (_reporteIdx + 1).clamp(0, _motivos.length - 1));
+        return KeyEventResult.handled;
+      }
+      if (ok) {
+        unawaited(_enviarReporte(_motivos[_reporteIdx]));
+        return KeyEventResult.handled;
+      }
       return KeyEventResult.handled;
     }
 
@@ -1921,11 +2088,18 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
       return KeyEventResult.handled;
     }
 
-    // ── Iconos de pistas ──────────────────────────────────────────────────
-    if (_foco == 2 || _foco == 3) {
-      if (k == LogicalKeyboardKey.arrowLeft ||
-          k == LogicalKeyboardKey.arrowRight) {
-        setState(() => _foco = _foco == 2 ? 3 : 2);
+    // ── La fila de iconos ─────────────────────────────────────────────────
+    //
+    // 2 subtitulos · 3 audio · 4 ajustes. Izquierda y derecha la recorren sin
+    // dar la vuelta: al llegar al filo no pasa nada, que es lo que uno espera
+    // de una fila.
+    if (_foco >= 2 && _foco <= 4) {
+      if (k == LogicalKeyboardKey.arrowLeft) {
+        if (_foco > 2) setState(() => _foco--);
+        return KeyEventResult.handled;
+      }
+      if (k == LogicalKeyboardKey.arrowRight) {
+        if (_foco < 4) setState(() => _foco++);
         return KeyEventResult.handled;
       }
       if (k == LogicalKeyboardKey.arrowUp) {
@@ -1939,7 +2113,17 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         return KeyEventResult.handled;
       }
       if (ok) {
-        _abrirMenu(_foco == 2 ? 1 : 0);
+        switch (_foco) {
+          case 2:
+            _abrirMenu(1);
+          case 3:
+            _abrirMenu(0);
+          case 4:
+            setState(() {
+              _ajustesIdx = 0;
+              _ajustesAbierto = true;
+            });
+        }
         return KeyEventResult.handled;
       }
       return KeyEventResult.handled;
@@ -2199,7 +2383,19 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
               reproduciendo: _reproduciendo,
               foco: _foco,
               fmt: _fmt,
+              reportando: _reportando,
             ),
+
+          if (grande && _ajustesAbierto)
+            _MenuAjustes(
+              indice: _ajustesIdx,
+              esFavorito: _esFavorito,
+              meGusta: _meGusta,
+              noMeGusta: _noMeGusta,
+            ),
+
+          if (grande && _reporteAbierto)
+            _MenuReporte(motivos: _motivos, indice: _reporteIdx),
 
           if (grande && _menuAbierto)
             _MenuPistas(
@@ -2298,6 +2494,7 @@ class _Controles extends StatelessWidget {
   final bool reproduciendo;
   final int foco;
   final String Function(Duration) fmt;
+  final bool reportando;
 
   const _Controles({
     required this.titulo,
@@ -2309,6 +2506,7 @@ class _Controles extends StatelessWidget {
     required this.reproduciendo,
     required this.foco,
     required this.fmt,
+    required this.reportando,
   });
 
   @override
@@ -2560,6 +2758,26 @@ class _Controles extends StatelessWidget {
                           etiqueta: 'Audio',
                           focused: foco == 3,
                         ),
+                        const SizedBox(width: 26),
+                        // ── Ajustes del titulo ─────────────────────────────
+                        //
+                        // UN SOLO ICONO, NO CUATRO. Mi lista, los pulgares y
+                        // reportar eran cuatro iconos seguidos en la barra:
+                        // cuatro paradas del mando entre la pelicula y lo que
+                        // de verdad se usa aqui, y una barra que no se lee de
+                        // un vistazo. Detras del engranaje se entiende solo y
+                        // deja sitio para lo que venga despues.
+                        //
+                        // Mismo trato que Subtitulos y Audio: icono plano con
+                        // su palabra, y el foco solo cambia el color.
+                        _IconoPista(
+                          icon:
+                              reportando
+                                  ? Icons.hourglass_empty_rounded
+                                  : Icons.settings_outlined,
+                          etiqueta: 'Ajustes',
+                          focused: foco == 4,
+                        ),
                       ],
                     ),
                   ],
@@ -2576,12 +2794,14 @@ class _Controles extends StatelessWidget {
 /// Mismo criterio que en el receptor: el foco es solo color, nunca tamaño.
 class _IconoPista extends StatelessWidget {
   final IconData icon;
-  final String etiqueta;
+
+  /// Sin etiqueta, solo el icono: lo usan las acciones del titulo.
+  final String? etiqueta;
   final bool focused;
 
   const _IconoPista({
     required this.icon,
-    required this.etiqueta,
+    this.etiqueta,
     required this.focused,
   });
 
@@ -2592,17 +2812,158 @@ class _IconoPista extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         Icon(icon, size: 18, color: color),
-        const SizedBox(width: 7),
-        AnimatedDefaultTextStyle(
-          duration: const Duration(milliseconds: 130),
-          style: TextStyle(
-            color: color,
-            fontSize: 15,
-            fontWeight: FontWeight.w500,
+        if (etiqueta != null) ...[
+          const SizedBox(width: 7),
+          AnimatedDefaultTextStyle(
+            duration: const Duration(milliseconds: 130),
+            style: TextStyle(
+              color: color,
+              fontSize: 15,
+              fontWeight: FontWeight.w500,
+            ),
+            child: Text(etiqueta!),
           ),
-          child: Text(etiqueta),
-        ),
+        ],
       ],
+    );
+  }
+}
+
+/// Lo que hay detrás del engranaje: la lista, los pulgares y el reporte.
+///
+/// Mismo trato que el menú de pistas —fondo oscuro a pantalla completa, sin
+/// caja, lo enfocado en blanco— para que las dos listas del reproductor se
+/// lean como hermanas. Lo que está PUESTO se dice con un icono a la izquierda,
+/// no con color: el color ya significa "aquí está el mando".
+class _MenuAjustes extends StatelessWidget {
+  final int indice;
+  final bool esFavorito;
+  final bool meGusta;
+  final bool noMeGusta;
+
+  const _MenuAjustes({
+    required this.indice,
+    required this.esFavorito,
+    required this.meGusta,
+    required this.noMeGusta,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final filas = <({IconData icono, String texto})>[
+      (
+        icono: esFavorito ? Icons.check_rounded : Icons.add_rounded,
+        texto: esFavorito ? 'Quitar de Mi lista' : 'Añadir a Mi lista',
+      ),
+      (
+        icono: meGusta ? Icons.thumb_up_rounded : Icons.thumb_up_outlined,
+        texto: 'Me gusta',
+      ),
+      (
+        icono: noMeGusta ? Icons.thumb_down_rounded : Icons.thumb_down_outlined,
+        texto: 'No me gusta',
+      ),
+      (icono: Icons.flag_outlined, texto: 'Reportar un problema'),
+    ];
+
+    return Container(
+      color: Colors.black.withValues(alpha: 0.88),
+      alignment: Alignment.center,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 580),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Padding(
+              padding: EdgeInsets.only(left: 2, bottom: 14),
+              child: Text(
+                'AJUSTES',
+                style: TextStyle(
+                  color: Colors.white38,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.2,
+                ),
+              ),
+            ),
+            for (var i = 0; i < filas.length; i++)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Row(
+                  children: [
+                    Icon(
+                      filas[i].icono,
+                      size: 19,
+                      color: i == indice ? Colors.white : Colors.white54,
+                    ),
+                    const SizedBox(width: 12),
+                    Text(
+                      filas[i].texto,
+                      style: TextStyle(
+                        color: i == indice ? Colors.white : Colors.white54,
+                        fontSize: 16,
+                        fontWeight:
+                            i == indice ? FontWeight.w600 : FontWeight.w400,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// "¿Qué problema encontraste?", con el mismo trato que el menú de pistas:
+/// fondo oscuro a pantalla completa, sin caja, y el elegido en blanco.
+class _MenuReporte extends StatelessWidget {
+  final List<String> motivos;
+  final int indice;
+
+  const _MenuReporte({required this.motivos, required this.indice});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: Colors.black.withValues(alpha: 0.88),
+      alignment: Alignment.center,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 580),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Padding(
+              padding: EdgeInsets.only(left: 2, bottom: 14),
+              child: Text(
+                '¿QUÉ PROBLEMA ENCONTRASTE?',
+                style: TextStyle(
+                  color: Colors.white38,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.2,
+                ),
+              ),
+            ),
+            for (var i = 0; i < motivos.length; i++)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 7),
+                child: Text(
+                  motivos[i],
+                  style: TextStyle(
+                    color: i == indice ? Colors.white : Colors.white54,
+                    fontSize: 16,
+                    fontWeight:
+                        i == indice ? FontWeight.w600 : FontWeight.w400,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
     );
   }
 }
