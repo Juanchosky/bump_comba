@@ -26,6 +26,7 @@ import '../services/video_prewarm_service.dart';
 import '../services/premium_service.dart';
 import '../services/ad_service.dart';
 import '../utils/content_filters.dart';
+import '../utils/hero_pool.dart';
 import '../utils/top10.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -150,6 +151,17 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
   // State
   M3UItem? _heroItem;
+
+  /// Si el hero de arriba es todavia el RESPALDO (el pool por año del titulo)
+  /// y no el banner de tendencias de TMDB.
+  ///
+  /// `getTrendingBannerItems()` sale de una llamada de red: la primera vez
+  /// devuelve vacio y se dispara en segundo plano. El hero se elegia una sola
+  /// vez por sesion, asi que se quedaba clavado en ese respaldo —catalogo
+  /// viejo— y el banner bueno no entraba nunca, aunque llegara dos segundos
+  /// despues. Con esta marca el respaldo se deja reemplazar; el banner de
+  /// TMDB, una vez puesto, ya no.
+  bool _heroProvisional = false;
   // Hero destacado por sección (persistencia por sesión, igual que _heroItem).
   final Map<String, M3UItem> _sectionHeroItems = {};
   // Índice de la pestaña del último hero mostrado. Sirve para animar el banner
@@ -404,7 +416,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
     // â”€â”€ TMDB TRENDING HERO: Si el hero no se ha establecido aún,
     // intentar usar trending TMDB cuando los datos llegan async â”€â”€
-    if (_heroItem == null) {
+    if (_heroItem == null || _heroProvisional) {
       final trendingItems = _m3uService.getTrendingBannerItems();
       if (trendingItems.isNotEmpty) {
         _setHeroRandomly(trendingItems);
@@ -1064,8 +1076,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   void _pickHeroItem(List<M3UItem> items) {
     if (items.isEmpty) return;
 
-    // Solo elegir un nuevo ítem si no está establecido (persistencia por sesión).
-    if (_heroItem != null) return;
+    // Persistencia por sesion, salvo que lo puesto sea el respaldo: ese si se
+    // cambia en cuanto el banner de TMDB llega.
+    if (_heroItem != null && !_heroProvisional) return;
 
     // â”€â”€ PRIORIDAD TMDB: Intentar usar contenido trending de TMDB â”€â”€
     final trendingItems = _m3uService.getTrendingBannerItems();
@@ -1085,81 +1098,23 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             ? combinedPool
             : items.where((i) => !i.isLive).toList();
 
-    // 2. Filtrado inicial de validez.
-    final validPool =
-        _m3uService.filterValidItems(rawPool).where((item) {
-          if (item.isLive) return false;
-          final n = item.name.toLowerCase();
-          if (n.contains('canal ') ||
-              n.contains('tv ') ||
-              n.contains('en vivo')) {
-            return false;
-          }
-          return true;
-        }).toList();
-
-    if (validPool.isEmpty) return;
-
-    // 3. Agrupar películas por año detectado.
-    final Map<int, List<M3UItem>> moviesByYear = {};
-    // Regex más flexible para capturar años incluso pegados a paréntesis o corchetes.
-    final yearRegex = RegExp(r'(\d{4})');
-
-    for (var item in validPool) {
-      final matches = yearRegex.allMatches(item.name);
-      if (matches.isNotEmpty) {
-        // Tomamos el último año mencionado en el nombre para evitar falsos positivos
-        // (ej: "48 Horas (1982) [Resampled 2024]") -> Selecciona 2024.
-        final yearStr = matches.last.group(1) ?? '';
-        final year = int.tryParse(yearStr);
-        if (year != null && year >= 1950 && year <= 2100) {
-          moviesByYear.putIfAbsent(year, () => []).add(item);
-        }
-      }
-    }
-
-    if (moviesByYear.isEmpty) {
-      // Fallback si no detectamos años: usar pool válido tal cual.
-      _setHeroRandomly(validPool);
-      return;
-    }
-
-    // 4. ALGORITMO ADAPTATIVO CON PESOS: Priorizar año más reciente (3x de probabilidad).
-    final sortedYears =
-        moviesByYear.keys.toList()..sort((a, b) => b.compareTo(a));
-    final List<M3UItem> finalPool = [];
-    int uniqueCount = 0;
-
-    for (int i = 0; i < sortedYears.length; i++) {
-      final year = sortedYears[i];
-      final itemsForYear = moviesByYear[year]!;
-      uniqueCount += itemsForYear.length;
-
-      if (i == 0) {
-        // CAPA 1 (ESTRENOS): Les damos peso triple (3x) para que dominen el banner.
-        for (var item in itemsForYear) {
-          finalPool.add(item);
-          finalPool.add(item);
-          finalPool.add(item);
-        }
-      } else {
-        // CAPAS DE VARIEDAD: Probabilidad normal (1x).
-        finalPool.addAll(itemsForYear);
-      }
-
-      // Si ya tenemos al menos 10 títulos únicos, paramos para mantener la relevancia.
-      if (uniqueCount >= 10) break;
-    }
+    // 2-4. El pool por año, compartido con el televisor: años recientes, con
+    // peso triple al ultimo. Ver utils/hero_pool.dart.
+    final finalPool = heroPoolPorAnio(_m3uService.filterValidItems(rawPool));
 
     // 5. Selección final.
-    _setHeroRandomly(finalPool.isNotEmpty ? finalPool : validPool);
+    if (finalPool.isEmpty) return;
+    _setHeroRandomly(finalPool, provisional: true);
   }
 
-  void _setHeroRandomly(List<M3UItem> pool) {
+  /// `provisional` marca que el pool NO es el banner de TMDB, sino el respaldo
+  /// por año del titulo: se podra reemplazar cuando llegue el bueno.
+  void _setHeroRandomly(List<M3UItem> pool, {bool provisional = false}) {
     if (pool.isEmpty) return;
     final randomIndex = DateTime.now().microsecond % pool.length;
     setState(() {
       _heroItem = pool[randomIndex];
+      _heroProvisional = provisional;
     });
   }
 
@@ -1670,19 +1625,13 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           final novelaCategories =
               _m3uService.categories.where((cat) {
                 if (cat == 'Inicio') return false;
-                final c = cat.toLowerCase();
-                final isNovela =
-                    c.contains('novela') ||
-                    c.contains('soap') ||
-                    c.contains('item') ||
-                    c.contains('turca') ||
-                    c.contains('turco') ||
-                    c.contains('dorama') ||
-                    c.contains('telemundo') ||
-                    c.contains('televisa') ||
-                    c.contains('biblica') ||
-                    c.contains('pasion');
-                if (!isNovela) return false;
+                // El MISMO criterio que el televisor (ver ContentFilters).
+                // Antes esta lista vivia aqui suelta e incluia 'dorama', asi
+                // que el drama asiatico contaba como telenovela; en la tele no,
+                // y el mismo titulo caia en sitios distintos. Tambien se va
+                // 'item', que no dice nada y colaba cualquier categoria que lo
+                // llevara dentro de otra palabra.
+                if (!ContentFilters.esCategoriaNovela(cat)) return false;
                 final items = _m3uService.getItemsByCategory(cat);
                 final filtered = _m3uService.filterValidItems(items);
                 return filtered.length > 2;
@@ -2067,24 +2016,11 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     final animationCategories =
         _m3uService.categories.where((cat) {
           if (cat == 'Inicio') return false;
-          final c = cat.toLowerCase();
-          final isAnimation =
-              c.contains('anim') ||
-              c.contains('anime') ||
-              c.contains('cartoon') ||
-              c.contains('caricatura') ||
-              c.contains('dibujo') ||
-              c.contains('disney') ||
-              c.contains('pixar') ||
-              c.contains('manga') ||
-              c.contains('kids') ||
-              c.contains('infantil') ||
-              c.contains('nickelodeon') ||
-              c.contains('nick') ||
-              c.contains('toonami') ||
-              c.contains('crunchyroll') ||
-              c.contains('funimation');
-          if (!isAnimation) return false;
+          // El MISMO criterio que el televisor (ver ContentFilters). De paso
+          // salen 'disney', 'nick' y 'nickelodeon': son catalogos MIXTOS y
+          // metian la plataforma entera —series y peliculas que no tienen nada
+          // de animadas— en esta pestaña.
+          if (!ContentFilters.esCategoriaAnimacion(cat)) return false;
           final items = _m3uService.getItemsByCategory(cat);
           final filtered = _m3uService.filterValidItems(items);
           return filtered.length > 2;
@@ -3325,69 +3261,36 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
   Widget _buildHeroRandomLatest(List<M3UItem> items) {
     if (items.isEmpty) return const SizedBox.shrink();
-    if (_heroItem != null) return _buildHeroBanner(_heroItem!);
+    if (_heroItem != null && !_heroProvisional) {
+      return _buildHeroBanner(_heroItem!);
+    }
 
     // â”€â”€ PRIORIDAD TMDB: Intentar usar contenido trending de TMDB â”€â”€
+    //
+    // Si ya hay tendencia, se pinta ESTA aunque hubiese un respaldo puesto, y
+    // se fija para el resto de la sesion tras el frame (en pleno build no se
+    // puede llamar a setState).
     final trendingItems = _m3uService.getTrendingBannerItems();
     if (trendingItems.isNotEmpty) {
       final random =
           trendingItems[DateTime.now().microsecond % trendingItems.length];
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !(_heroItem == null || _heroProvisional)) return;
+        setState(() {
+          _heroItem = random;
+          _heroProvisional = false;
+        });
+      });
       return _buildHeroBanner(random);
     }
+    if (_heroItem != null) return _buildHeroBanner(_heroItem!);
 
-    // Fallback logic filtrando películas y series
-    final validContent =
-        items.where((i) => !i.isLive && i.sourceName != 'Supabase').where((i) {
-          final n = i.name.toLowerCase();
-          return !n.contains('canal ') &&
-              !n.contains('tv ') &&
-              !n.contains('en vivo');
-        }).toList();
-
-    if (validContent.isEmpty) {
+    // Respaldo: el pool por año compartido con el televisor.
+    final pool = heroPoolPorAnio(
+      items.where((i) => i.sourceName != 'Supabase').toList(),
+    );
+    if (pool.isEmpty) {
       return const _HiddenMoviesShimmer();
-    }
-
-    // Algoritmo adaptativo también en el fallback
-    final Map<int, List<M3UItem>> itemsByYear = {};
-    final yearRegex = RegExp(r'(\d{4})');
-
-    for (var item in validContent) {
-      final matches = yearRegex.allMatches(item.name);
-      if (matches.isNotEmpty) {
-        final yearStr = matches.last.group(1) ?? '';
-        final year = int.tryParse(yearStr);
-        if (year != null && year >= 1950 && year <= 2100) {
-          itemsByYear.putIfAbsent(year, () => []).add(item);
-        }
-      }
-    }
-
-    List<M3UItem> pool = validContent;
-    if (itemsByYear.isNotEmpty) {
-      final sortedYears =
-          itemsByYear.keys.toList()..sort((a, b) => b.compareTo(a));
-      final List<M3UItem> adaptivePool = [];
-      int uniqueCount = 0;
-
-      for (int i = 0; i < sortedYears.length; i++) {
-        final year = sortedYears[i];
-        final itemsForYear = itemsByYear[year]!;
-        uniqueCount += itemsForYear.length;
-
-        if (i == 0) {
-          // Peso 3x para el año más reciente incluso en el fallback
-          for (var item in itemsForYear) {
-            adaptivePool.add(item);
-            adaptivePool.add(item);
-            adaptivePool.add(item);
-          }
-        } else {
-          adaptivePool.addAll(itemsForYear);
-        }
-        if (uniqueCount >= 10) break;
-      }
-      pool = adaptivePool.isNotEmpty ? adaptivePool : validContent;
     }
 
     final random = pool[DateTime.now().microsecond % pool.length];

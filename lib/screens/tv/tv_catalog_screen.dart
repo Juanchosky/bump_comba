@@ -9,11 +9,13 @@ import 'package:cached_network_image/cached_network_image.dart';
 import '../../services/m3u_service.dart';
 import '../../services/tmdb_service.dart';
 import '../../utils/colors.dart';
+import '../../utils/content_filters.dart';
 import '../../utils/titulo_tmdb.dart';
 import '../../utils/top10.dart';
 import '../../services/watch_progress_service.dart';
 import 'tv_category_screen.dart';
 import 'tv_loading_animation.dart';
+import '../../utils/hero_pool.dart';
 import 'tv_destacado.dart';
 import 'tv_detail_screen.dart';
 import 'tv_player_screen.dart';
@@ -320,62 +322,6 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
   /// dejar el hueco limpio en vez de enseñar la caratula del proveedor.
   final Set<String> _fichasEnCamino = {};
 
-  /// De donde sale el destacado, con el algoritmo del telefono.
-  ///
-  /// Copiado de `_buildHeroRandomLatest` del movil, que es donde ya esta
-  /// probado. Hace tres cosas:
-  ///
-  ///  1. QUITA lo que no es pelicula ni serie. Un canal en la portada de la
-  ///     app no es un descuido menor.
-  ///
-  ///  2. AGRUPA POR AÑO, leido del titulo: el catalogo no trae el año en un
-  ///     campo aparte, asi que se saca de ahi — como en el telefono.
-  ///
-  ///  3. PESA TRIPLE EL AÑO MAS RECIENTE y suma años hacia atras hasta juntar
-  ///     diez titulos. Asi la portada son estrenos sin quedarse en cuatro
-  ///     titulos cuando el año va empezando.
-  List<M3UItem> _poolPorAnio(List<M3UItem> origen) {
-    final validos =
-        origen.where((i) => !i.isLive).where((i) {
-          final n = i.name.toLowerCase();
-          return !n.contains('canal ') &&
-              !n.contains('tv ') &&
-              !n.contains('en vivo');
-        }).toList();
-    if (validos.isEmpty) return const [];
-
-    final porAnio = <int, List<M3UItem>>{};
-    final reAnio = RegExp(r'(\d{4})');
-    for (final item in validos) {
-      final coincidencias = reAnio.allMatches(item.name);
-      if (coincidencias.isEmpty) continue;
-      final anio = int.tryParse(coincidencias.last.group(1) ?? '');
-      if (anio == null || anio < 1950 || anio > 2100) continue;
-      porAnio.putIfAbsent(anio, () => []).add(item);
-    }
-    if (porAnio.isEmpty) return validos;
-
-    final anios = porAnio.keys.toList()..sort((a, b) => b.compareTo(a));
-    final pool = <M3UItem>[];
-    var unicos = 0;
-    for (var i = 0; i < anios.length; i++) {
-      final delAnio = porAnio[anios[i]]!;
-      unicos += delAnio.length;
-      if (i == 0) {
-        for (final item in delAnio) {
-          pool
-            ..add(item)
-            ..add(item)
-            ..add(item);
-        }
-      } else {
-        pool.addAll(delAnio);
-      }
-      if (unicos >= 10) break;
-    }
-    return pool.isEmpty ? validos : pool;
-  }
-
   /// Recalcula los destacados.
   ///
   /// EN INICIO MANDA EL MISMO BANNER QUE EL TELEFONO.
@@ -442,7 +388,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     }
 
     // El pool del telefono: años recientes, con peso triple al ultimo.
-    final pool = yaCurado ? fuente : _poolPorAnio(fuente);
+    final pool = yaCurado ? fuente : heroPoolPorAnio(fuente);
     if (pool.isEmpty) return;
 
     if (_seccion == 0) _inicioConBanner = yaCurado;
@@ -849,21 +795,10 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     return KeyEventResult.handled;
   }
 
-  static const Set<String> _clavesNovela = {'novela', 'telenovela', 'turca'};
-  static const Set<String> _clavesAnimacion = {
-    'anime',
-    'animad',
-    'animacion',
-    'animación',
-    'infantil',
-    'kids',
-    'dibujos',
-  };
-
-  bool _encaja(String categoria, Set<String> claves) {
-    final c = categoria.toLowerCase();
-    return claves.any(c.contains);
-  }
+  // Las listas de palabras vivian aqui, y eran DISTINTAS de las del telefono:
+  // tres para las novelas frente a diez. Ahora las dos pantallas preguntan a
+  // `ContentFilters`, asi que un titulo cae en el mismo sitio se mire donde se
+  // mire (ver la nota larga de ese archivo).
 
   @override
   void initState() {
@@ -1000,11 +935,11 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
         break;
       case 3: // TELENOVELAS
         fuente = [..._servicio.movies, ..._servicio.series];
-        filtro = (c) => _encaja(c, _clavesNovela);
+        filtro = ContentFilters.esCategoriaNovela;
         break;
       default: // ANIMACIÓN
         fuente = [..._servicio.movies, ..._servicio.series];
-        filtro = (c) => _encaja(c, _clavesAnimacion);
+        filtro = ContentFilters.esCategoriaAnimacion;
     }
 
     for (final it in fuente) {
@@ -1020,6 +955,33 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     for (final cat in _servicio.ordenarCategorias(porCategoria.keys)) {
       final items = porCategoria[cat]!;
       if (items.length < 3) continue;
+      // ── CADA CATEGORIA EN UN SOLO SITIO ──────────────────────────────────
+      //
+      // PELICULAS recorre `movies` y SERIES recorre `series`, asi que una
+      // categoria mixta —"Estrenos 2026" son 99 peliculas y 8 series— salia en
+      // las DOS secciones. Cada una enseñaba lo suyo, pero desde el sofa se lee
+      // como la misma fila repetida en dos sitios y hace dudar de cual es la
+      // buena.
+      //
+      // Se manda a donde PESA: si de esa categoria hay mas series que
+      // peliculas, es una categoria de series y en PELICULAS no sale (y al
+      // reves). Las secciones por nombre —TELENOVELAS y ANIMACION— no entran
+      // aqui: ahi mezclar los dos tipos es justo lo que se busca.
+      if (_seccion == 1 || _seccion == 2) {
+        final deLaCategoria = _servicio.getItemsByCategory(cat);
+        var pelis = 0, series = 0;
+        for (final it in deLaCategoria) {
+          if (it.isLive) continue;
+          if (it.isSeries || it.seriesName != null) {
+            series++;
+          } else {
+            pelis++;
+          }
+        }
+        final mandanLasSeries = series > pelis;
+        if (_seccion == 1 && mandanLasSeries) continue;
+        if (_seccion == 2 && !mandanLasSeries) continue;
+      }
       filas.add((titulo: cat, items: items));
     }
     return filas;

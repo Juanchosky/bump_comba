@@ -3824,9 +3824,11 @@ class M3UService extends ChangeNotifier {
     }
 
     // Trigger async fetch from TMDB if not already in progress
+    // Tambien con el catalogo del proveedor vacio: ahora el contenido puede
+    // venir solo de la BD, y con la condicion vieja la lista no se pedia nunca.
     if (_cachedPopularTMDB == null &&
         !_isFetchingPopularTMDB &&
-        _items.isNotEmpty) {
+        (_items.isNotEmpty || _customItems.isNotEmpty)) {
       _fetchPopularFromTMDB();
     }
 
@@ -3835,78 +3837,34 @@ class M3UService extends ChangeNotifier {
     return [];
   }
 
+  /// Cuantos titulos se enseñan en "Busqueda popular".
+  static const int _topePopulares = 7;
+
+  /// Lo popular del buscador: tendencia de TMDB cruzada con lo que hay.
+  ///
+  /// SE PARECE AL BANNER A PROPOSITO. Antes cada uno cruzaba TMDB con el
+  /// catalogo a su manera, y este lo hacia con `contains` en los dos sentidos
+  /// sobre el nombre crudo: `trendTitle.contains(itemName)` hace que un titulo
+  /// corto del catalogo —"It", "Up"— entre dentro de casi cualquier tendencia,
+  /// y salia cine de 2014 en una lista que dice "popular". Ahora el match es
+  /// por titulo normalizado y EXACTO, con los alias en otros idiomas, igual
+  /// que en `_bannerDesdeBd`.
+  ///
+  /// Y se descartan las tendencias viejas: TMDB devuelve la serie por su
+  /// primera emision, asi que una que empezo en 2014 y vuelve a sonar esta
+  /// semana llegaba aqui con ese año. Se piden estrenos, no reestrenos.
   Future<void> _fetchPopularFromTMDB() async {
     if (_isFetchingPopularTMDB) return;
     _isFetchingPopularTMDB = true;
 
     try {
-      final List<M3UItem> finalResults = [];
       final trends = await TMDBService().getTrendingTitles();
+      final finalResults = _popularesDesdeTendencias(trends);
 
-      if (trends.isNotEmpty) {
-        final Set<String> matchedNames = {};
-        for (var trend in trends) {
-          final trendTitle = trend['title']?.toLowerCase() ?? '';
-          final trendYear = trend['year'] ?? '';
-          if (trendTitle.isEmpty) continue;
-
-          // Fast search in local library
-          for (var item in _items) {
-            if (item.isLive) continue;
-            if (matchedNames.contains(item.name)) continue;
-
-            final itemName = item.name.toLowerCase();
-
-            // Basic title match
-            if (itemName.contains(trendTitle) ||
-                trendTitle.contains(itemName)) {
-              // Year verification for accuracy
-              if (trendYear.isNotEmpty && item.name.contains(trendYear)) {
-                finalResults.add(item);
-                matchedNames.add(item.name);
-                break;
-              } else if (trendYear.isEmpty) {
-                finalResults.add(item);
-                matchedNames.add(item.name);
-                break;
-              }
-            }
-          }
-          if (finalResults.length >= 9) break;
-        }
-      }
-
-      // SMART FALLBACK: If no trends matched or matched nothing, pick recent/random items
-      if (finalResults.isEmpty && _items.isNotEmpty) {
-        final vods = _items.where((i) => !i.isLive).toList();
-
-        if (vods.isNotEmpty) {
-          final regexYear = RegExp(r'\b(202[0-9]|19[0-9]{2})\b');
-          int maxYear = 0;
-          final Map<int, List<M3UItem>> yearGroups = {};
-
-          for (var v in vods) {
-            final match = regexYear.firstMatch(v.name);
-            if (match != null) {
-              final y = int.tryParse(match.group(1) ?? '0') ?? 0;
-              if (y > 1900 && y < 2100) {
-                if (y > maxYear) maxYear = y;
-                yearGroups.putIfAbsent(y, () => []).add(v);
-              }
-            }
-          }
-
-          if (maxYear > 0) {
-            // Content from the most recent year found
-            final bestYearItems = yearGroups[maxYear]!;
-            bestYearItems.shuffle();
-            finalResults.addAll(bestYearItems.take(9));
-          } else {
-            // No years found, just random VODs (shuffled)
-            vods.shuffle();
-            finalResults.addAll(vods.take(9));
-          }
-        }
+      // RESPALDO: si no cruzo nada, lo mas nuevo del catalogo. Sin esto la
+      // seccion se queda vacia, que es peor que no ser exactamente lo popular.
+      if (finalResults.isEmpty) {
+        finalResults.addAll(_popularesDeRespaldo());
       }
 
       _cachedPopularTMDB = finalResults;
@@ -3918,6 +3876,86 @@ class M3UService extends ChangeNotifier {
     } finally {
       _isFetchingPopularTMDB = false;
     }
+  }
+
+  /// Cruza las tendencias con el catalogo, lo propio (la BD) primero.
+  List<M3UItem> _popularesDesdeTendencias(List<Map<String, String>> trends) {
+    final recientes = _tendenciasRecientes(trends);
+    if (recientes.isEmpty) return [];
+
+    // La BD antes que el proveedor: es el contenido que se esta subiendo y el
+    // que tiene caratula y alias. Si el mismo titulo esta en los dos, gana la
+    // BD y no se repite.
+    final candidatos = [
+      ..._customItems.where((i) => !i.isLive),
+      ..._items.where((i) => !i.isLive),
+    ];
+    if (candidatos.isEmpty) return [];
+
+    final elegidos = <M3UItem>[];
+    final vistos = <String>{};
+    for (final t in recientes) {
+      if (elegidos.length >= _topePopulares) break;
+      final titulo = _normalizeTitleForMatching(t['title'] ?? '');
+      if (titulo.length < 3) continue;
+      for (final it in candidatos) {
+        if (!_titulosDeMatch(
+          it,
+        ).any((n) => _normalizeTitleForMatching(n) == titulo)) {
+          continue;
+        }
+        if (!vistos.add(_normalizeTitleForMatching(it.name))) break;
+        elegidos.add(it);
+        break;
+      }
+    }
+    return elegidos;
+  }
+
+  /// Las tendencias de este año y el pasado. Si quedan menos de tres se abre
+  /// un año mas, porque una lista de dos se ve rota.
+  List<Map<String, String>> _tendenciasRecientes(
+    List<Map<String, String>> trends,
+  ) {
+    final anioActual = DateTime.now().year;
+    List<Map<String, String>> conSuelo(int suelo) =>
+        trends.where((t) {
+          final anio = int.tryParse(t['year'] ?? '');
+          return anio != null && anio >= suelo;
+        }).toList();
+
+    var suelo = anioActual - 1;
+    var recientes = conSuelo(suelo);
+    while (recientes.length < 3 && suelo > anioActual - 4) {
+      suelo--;
+      recientes = conSuelo(suelo);
+    }
+    return recientes;
+  }
+
+  /// Lo mas nuevo del catalogo, leyendo el año del titulo. Solo se usa cuando
+  /// la tendencia no cruza con nada.
+  List<M3UItem> _popularesDeRespaldo() {
+    // La BD tambien cuenta: puede ser el unico contenido cargado.
+    final vods =
+        [..._customItems, ..._items].where((i) => !i.isLive).toList();
+    if (vods.isEmpty) return const [];
+
+    final regexYear = RegExp(r'\b(202[0-9]|19[0-9]{2})\b');
+    var maxYear = 0;
+    final yearGroups = <int, List<M3UItem>>{};
+    for (final v in vods) {
+      final match = regexYear.firstMatch(v.name);
+      if (match == null) continue;
+      final y = int.tryParse(match.group(1) ?? '0') ?? 0;
+      if (y <= 1900 || y >= 2100) continue;
+      if (y > maxYear) maxYear = y;
+      yearGroups.putIfAbsent(y, () => []).add(v);
+    }
+
+    final pool = maxYear > 0 ? List<M3UItem>.from(yearGroups[maxYear]!) : vods;
+    pool.shuffle();
+    return pool.take(_topePopulares).toList();
   }
 
   /// Returns cached trending items for the hero banner.
@@ -5414,7 +5452,26 @@ List<String> _sortCategoriesByPriority(Set<String> catSet) {
     return a.compareTo(b);
   });
   if (catSet.contains('Inicio')) cats.insert(0, 'Inicio');
-  return cats;
+  return _intercambiarEstrenos(cats);
+}
+
+/// Intercambia de sitio "Estrenos 2026" y "Estrenos 2025": cada una queda en
+/// la posicion que ocupaba la otra.
+///
+/// Va aqui, en el orden compartido, para que valga igual en el telefono y en
+/// el televisor: las dos pantallas piden las categorias por esta funcion.
+List<String> _intercambiarEstrenos(List<String> cats) {
+  int idx(String anio) => cats.indexWhere((c) {
+    final l = c.toLowerCase();
+    return l.contains('estrenos') && l.contains(anio);
+  });
+  final i2026 = idx('2026');
+  final i2025 = idx('2025');
+  if (i2026 < 0 || i2025 < 0) return cats;
+  final out = List<String>.from(cats);
+  out[i2026] = cats[i2025];
+  out[i2025] = cats[i2026];
+  return out;
 }
 
 List<M3UItem> _calculateLatestItems(List<M3UItem> items) {

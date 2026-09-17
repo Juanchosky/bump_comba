@@ -1,4 +1,89 @@
 class ContentFilters {
+  // ── A QUE GENERO PERTENECE UNA CATEGORIA ──────────────────────────────────
+  //
+  // UNA SOLA REGLA PARA EL TELEFONO Y PARA EL TELEVISOR.
+  //
+  // Cada pantalla tenia la suya escrita a mano y no coincidian: el telefono
+  // miraba diez palabras para las novelas y el televisor tres, asi que el mismo
+  // titulo caia en sitios distintos segun donde lo miraras. Y no se notaba,
+  // porque el telefono junta todo en "Todas las Telenovelas" mientras el
+  // televisor enseña una fila POR CATEGORIA, con su nombre a la vista.
+  //
+  // El proveedor no marca el genero de ninguna forma: lo unico que hay es el
+  // nombre de la categoria. Por eso esto es una lista de palabras y no algo
+  // mas fino — pero al menos es UNA lista.
+
+  /// Doramas y demas drama asiatico.
+  ///
+  /// Van APARTE de las telenovelas a proposito. El telefono los contaba como
+  /// novela (`dorama` estaba en su lista) y el televisor no, y ninguna de las
+  /// dos cosas se sostiene: son generos distintos y el publico no es el mismo.
+  /// Al no ser novelas, se ven donde les toca por tipo — las series, en SERIES.
+  static const List<String> clavesDorama = [
+    'dorama',
+    'k-drama',
+    'kdrama',
+    'dorama',
+    'coreana',
+    'coreano',
+  ];
+
+  static const List<String> _clavesNovela = [
+    'novela',
+    'soap',
+    'turca',
+    'turco',
+    'telemundo',
+    'televisa',
+    'biblica',
+    'bíblica',
+    'pasion',
+    'pasión',
+  ];
+
+  /// Ojo con lo que NO esta aqui: `disney`, `nick` y `nickelodeon`. Son
+  /// catalogos MIXTOS —Disney+ son 43 series y 2 peliculas, y casi nada de eso
+  /// es animacion—, y metian la plataforma entera en ANIMACION. Se quedan
+  /// `pixar`, `crunchyroll`, `funimation` y `toonami`, que si son animacion de
+  /// principio a fin.
+  ///
+  /// Tampoco esta `anim` a secas: cogia "Animales" y cualquier cosa que
+  /// empezara igual.
+  static const List<String> _clavesAnimacion = [
+    'anime',
+    'animad',
+    'animacion',
+    'animación',
+    'cartoon',
+    'caricatura',
+    'dibujo',
+    'manga',
+    'kids',
+    'infantil',
+    'toonami',
+    'crunchyroll',
+    'funimation',
+    'pixar',
+  ];
+
+  static bool _encaja(String categoria, List<String> claves) {
+    final c = categoria.toLowerCase();
+    return claves.any(c.contains);
+  }
+
+  /// Drama asiatico: ni telenovela ni animacion.
+  static bool esCategoriaDorama(String categoria) =>
+      _encaja(categoria, clavesDorama);
+
+  /// Telenovela. Un nombre que hable de doramas NO cuenta, aunque lleve la
+  /// palabra "novela" al lado ("Novelas y Doramas").
+  static bool esCategoriaNovela(String categoria) =>
+      !esCategoriaDorama(categoria) && _encaja(categoria, _clavesNovela);
+
+  /// Animacion, anime y contenido infantil.
+  static bool esCategoriaAnimacion(String categoria) =>
+      _encaja(categoria, _clavesAnimacion);
+
   static const List<String> excludedCountries = [
     'arabia',
     'argentina',
