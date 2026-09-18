@@ -1111,14 +1111,17 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   /// por año del titulo: se podra reemplazar cuando llegue el bueno.
   void _setHeroRandomly(List<M3UItem> pool, {bool provisional = false}) {
     if (pool.isEmpty) return;
-    // El banner de tendencias viene ORDENADO: primero lo que suena esta
-    // semana, despues lo mas nuevo por año de estreno. Un random plano sobre
-    // los quince acababa enseñando la cola de la lista, que es lo mas viejo
-    // que entro. Se sortea solo entre los seis primeros.
-    if (!provisional && pool.length > 6) pool = pool.take(6).toList();
-    final randomIndex = DateTime.now().microsecond % pool.length;
+    // El banner de tendencias se elige con `destacadoDeTendencia`: la cabeza
+    // de la lista y la SEMILLA DEL DIA. Ver hero_pool.dart — con el sorteo por
+    // microsegundos, este camino y el del build sacaban titulos distintos del
+    // mismo pool y la portada se cambiaba sola al segundo.
+    final elegido =
+        provisional
+            ? pool[DateTime.now().microsecond % pool.length]
+            : destacadoDeTendencia(pool);
+    if (elegido == null) return;
     setState(() {
-      _heroItem = pool[randomIndex];
+      _heroItem = elegido;
       _heroProvisional = provisional;
     });
   }
@@ -3276,17 +3279,16 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
     // se fija para el resto de la sesion tras el frame (en pleno build no se
     // puede llamar a setState).
     final trendingItems = _m3uService.getTrendingBannerItems();
-    if (trendingItems.isNotEmpty) {
-      final random =
-          trendingItems[DateTime.now().microsecond % trendingItems.length];
+    final destacado = destacadoDeTendencia(trendingItems);
+    if (destacado != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || !(_heroItem == null || _heroProvisional)) return;
         setState(() {
-          _heroItem = random;
+          _heroItem = destacado;
           _heroProvisional = false;
         });
       });
-      return _buildHeroBanner(random);
+      return _buildHeroBanner(destacado);
     }
     if (_heroItem != null) return _buildHeroBanner(_heroItem!);
 
@@ -6573,62 +6575,67 @@ class _SearchPageState extends State<_SearchPage> {
               ],
             ),
           ),
-          ListView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            itemCount: 5,
-            itemBuilder: (context, index) {
-              return Shimmer.fromColors(
-                baseColor: const Color(0xFF0F0F0F),
-                highlightColor: const Color(
-                  0xFF1E1E1E,
-                ), // Subtle dark grey highlight
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 8,
-                  ),
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 45,
-                        height: 65,
-                        decoration: BoxDecoration(
-                          color: Colors.black,
-                          borderRadius: BorderRadius.circular(4),
+          // Expanded y NO shrinkWrap: los ocho huecos no caben en el alto que
+          // queda bajo el buscador y la columna se desbordaba 123px. La lista
+          // real (abajo) ya usa Expanded por lo mismo.
+          Expanded(
+            child: ListView.builder(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              // Tantos huecos como titulos va a haber: con menos, la lista daba
+              // un salto al llegar los datos.
+              itemCount: 8,
+              itemBuilder: (context, index) {
+                return Shimmer.fromColors(
+                  baseColor: const Color(0xFF0F0F0F),
+                  highlightColor: const Color(
+                    0xFF1E1E1E,
+                  ), // Subtle dark grey highlight
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 45,
+                          height: 65,
+                          decoration: BoxDecoration(
+                            color: Colors.black,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 16),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Container(
-                              width: double.infinity,
-                              height: 14,
-                              decoration: BoxDecoration(
-                                color: Colors.black,
-                                borderRadius: BorderRadius.circular(4),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Container(
+                                width: double.infinity,
+                                height: 14,
+                                decoration: BoxDecoration(
+                                  color: Colors.black,
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
                               ),
-                            ),
-                            const SizedBox(height: 8),
-                            Container(
-                              width: 100,
-                              height: 10,
-                              decoration: BoxDecoration(
-                                color: Colors.black,
-                                borderRadius: BorderRadius.circular(3),
+                              const SizedBox(height: 8),
+                              Container(
+                                width: 100,
+                                height: 10,
+                                decoration: BoxDecoration(
+                                  color: Colors.black,
+                                  borderRadius: BorderRadius.circular(3),
+                                ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
-              );
-            },
+                );
+              },
+            ),
           ),
         ],
       );

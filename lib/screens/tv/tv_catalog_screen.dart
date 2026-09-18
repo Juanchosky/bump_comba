@@ -393,17 +393,12 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
 
     if (_seccion == 0) _inicioConBanner = yaCurado;
 
-    final elegidos = <M3UItem>[];
-    final vistos = <String>{};
-    var semilla = DateTime.now().microsecond;
-    for (var intento = 0; intento < pool.length * 3; intento++) {
-      if (elegidos.length >= _cuantosDestacados) break;
-      final item = pool[semilla % pool.length];
-      semilla = semilla * 31 + 17;
-      if ((item.logo ?? '').isEmpty) continue;
-      if (!vistos.add(item.seriesName ?? item.name)) continue;
-      elegidos.add(item);
-    }
+    // MISMO CRITERIO QUE EL TELEFONO. `destacadosDeTendencia` sortea sobre la
+    // cabeza del banner con la semilla del dia: con el sorteo por microsegundos
+    // que habia aqui, la tele destacaba titulos distintos a los del movil y
+    // ademas se le cambiaban solos en cuanto llegaba TMDB. Ver hero_pool.dart.
+    final elegidos = destacadosDeTendencia(pool, _cuantosDestacados);
+    final vistos = elegidos.map((e) => e.seriesName ?? e.name).toSet();
     // ── SI EL SORTEO NO LLENA EL MOSAICO, SE COMPLETA ────────────────────
     //
     // El sorteo tira del pool por años, y ese pool sale de leer el año en el

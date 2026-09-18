@@ -250,6 +250,48 @@ class TMDBService {
     return null;
   }
 
+  /// Lo POPULAR de TMDB del año que se le pida, peliculas y series juntas.
+  ///
+  /// Existe porque la tendencia de la semana (`getTrendingTitles`) son 20
+  /// titulos globales y de esos suelen estar en el catalogo tres o cuatro: la
+  /// fila "Busqueda popular" se quedaba corta y habia que rellenarla con
+  /// contenido local, que ya no es "popular". Esto da mucho mas material
+  /// popular Y del año pedido, asi que el relleno local pasa a ser el ultimo
+  /// recurso de verdad.
+  ///
+  /// `discover` ordenado por popularidad y acotado por año de estreno: es la
+  /// unica forma de pedirle a TMDB "lo mas popular DE 2026" — `movie/popular`
+  /// mezcla años sin control.
+  Future<List<Map<String, String>>> getPopularTitlesForYear(int year) async {
+    final urls = [
+      '$_baseUrl/discover/movie?api_key=$_apiKey&language=es-ES'
+          '&sort_by=popularity.desc&include_adult=false'
+          '&primary_release_year=$year',
+      '$_baseUrl/discover/tv?api_key=$_apiKey&language=es-ES'
+          '&sort_by=popularity.desc&include_adult=false'
+          '&first_air_date_year=$year',
+    ];
+
+    final salida = <Map<String, String>>[];
+    for (final url in urls) {
+      try {
+        final response = await http.get(Uri.parse(url));
+        if (response.statusCode != 200) continue;
+        final data = json.decode(response.body);
+        final results = data['results'];
+        if (results is! List) continue;
+        for (final item in results) {
+          final title = (item['title'] ?? item['name'] ?? '').toString();
+          if (title.isEmpty) continue;
+          salida.add({'title': title, 'year': '$year'});
+        }
+      } catch (e) {
+        print('Error fetching TMDB popular for $year: $e');
+      }
+    }
+    return salida;
+  }
+
   Future<List<Map<String, String>>> getTrendingTitles() async {
     try {
       final response = await http.get(

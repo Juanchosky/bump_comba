@@ -25,6 +25,7 @@ import '../services/watch_progress_service.dart';
 import 'tmdb_service.dart';
 import '../utils/dns_bypass_utils.dart';
 import '../utils/top10.dart' show anioDelTitulo;
+import '../utils/hero_pool.dart' show semillaDeSesion;
 
 export '../models/m3u_item.dart';
 export '../models/download_progress.dart';
@@ -3734,8 +3735,23 @@ class M3UService extends ChangeNotifier {
       scored.add(_ScoredItem(item, score));
     }
 
-    // Sort by score descending and return top 100 best matches
-    scored.sort((a, b) => b.score.compareTo(a.score));
+    // Por puntuacion, y a IGUAL puntuacion por el orden del catalogo.
+    //
+    // POR QUE EL DESEMPATE: `List.sort` de Dart NO es estable (usa introsort
+    // en cuanto hay mas de 32 elementos). La mayoria de resultados de una
+    // busqueda empatan en 80 puntos —"contiene el texto"—, asi que el orden
+    // entre ellos quedaba a merced del algoritmo: el catalogo salia barajado y
+    // lo que el proveedor acababa de subir, que viene primero en la lista, ya
+    // no aparecia arriba. `scored` se construye recorriendo `_items` en orden,
+    // asi que su indice ES el orden del catalogo: desempatar por el devuelve
+    // exactamente lo de antes.
+    final posicion = {
+      for (var i = 0; i < scored.length; i++) scored[i].item.url: i,
+    };
+    scored.sort((a, b) {
+      if (a.score != b.score) return b.score.compareTo(a.score);
+      return (posicion[a.item.url] ?? 0).compareTo(posicion[b.item.url] ?? 0);
+    });
     return scored.take(100).map((s) => s.item).toList();
   }
 
@@ -3888,7 +3904,7 @@ class M3UService extends ChangeNotifier {
     // venir solo de la BD, y con la condicion vieja la lista no se pedia nunca.
     if (_cachedPopularTMDB == null &&
         !_isFetchingPopularTMDB &&
-        (_items.isNotEmpty || _customItems.isNotEmpty)) {
+        (_customItems.isNotEmpty || (_supabase == null && _items.isNotEmpty))) {
       _fetchPopularFromTMDB();
     }
 
@@ -3898,7 +3914,7 @@ class M3UService extends ChangeNotifier {
   }
 
   /// Cuantos titulos se enseñan en "Busqueda popular".
-  static const int _topePopulares = 7;
+  static const int _topePopulares = 8;
 
   /// Lo popular del buscador: tendencia de TMDB cruzada con lo que hay.
   ///
@@ -3915,17 +3931,58 @@ class M3UService extends ChangeNotifier {
   /// semana llegaba aqui con ese año. Se piden estrenos, no reestrenos.
   Future<void> _fetchPopularFromTMDB() async {
     if (_isFetchingPopularTMDB) return;
+
+    // SE ESPERA A LA BD, igual que el banner.
+    //
+    // Esto se pre-calienta justo despues de parsear el catalogo del proveedor,
+    // y ahi `_customItems` normalmente todavia esta vacio: la lista se armaba
+    // solo con el proveedor y quedaba cacheada para TODA la sesion, asi que el
+    // contenido propio —que es el que tiene caratula, alias y es el que se
+    // acaba de subir— no entraba nunca. Sin cache, `getPopularSearchItems`
+    // vuelve a pedirlo en el siguiente `notifyListeners`.
+    if (_supabase != null && _customItems.isEmpty) return;
+
     _isFetchingPopularTMDB = true;
 
     try {
       final trends = await TMDBService().getTrendingTitles();
       final finalResults = _popularesDesdeTendencias(trends);
+      final deTendencia = finalResults.length;
 
-      // RESPALDO: si no cruzo nada, lo mas nuevo del catalogo. Sin esto la
-      // seccion se queda vacia, que es peor que no ser exactamente lo popular.
-      if (finalResults.isEmpty) {
-        finalResults.addAll(_popularesDeRespaldo());
+      // SE COMPLETA HASTA EL TOPE, y SIEMPRE PREFIRIENDO TMDB.
+      //
+      // De las 20 tendencias de la semana solo suelen estar en el catalogo
+      // tres o cuatro, asi que la fila se quedaba corta. En vez de tapar el
+      // hueco con contenido local —que ya no es "popular"— se le pide a TMDB
+      // LO MAS POPULAR DEL AÑO MAS RECIENTE QUE HAY EN LA BD: si lo mas nuevo
+      // que tienes es 2028, se pide lo popular de 2028, y si no llega, 2027.
+      // Solo cuando ni asi se llena entra el relleno local.
+      final anioTope = _anioMasRecienteDelCatalogo();
+      for (var anio = anioTope; anio > anioTope - 2; anio--) {
+        if (finalResults.length >= _topePopulares) break;
+        final populares = await TMDBService().getPopularTitlesForYear(anio);
+        if (populares.isEmpty) continue;
+        _completarConTendencias(finalResults, populares);
       }
+      final deTmdb = finalResults.length;
+
+      // ULTIMO RECURSO: lo mas nuevo del propio catalogo.
+      if (finalResults.length < _topePopulares) {
+        final vistos =
+            finalResults.map((i) => _normalizeTitleForMatching(i.name)).toSet();
+        for (final it in _popularesDeRespaldo()) {
+          if (finalResults.length >= _topePopulares) break;
+          if (!vistos.add(_normalizeTitleForMatching(it.name))) continue;
+          finalResults.add(it);
+        }
+      }
+      // Traza para poder comprobarlo desde el log, igual que el banner: si
+      // dice "0 en tendencia" es que TMDB no cruzo con nada del catalogo.
+      debugPrint(
+        'Busqueda popular: $deTendencia en tendencia de TMDB '
+        '(${trends.length} tendencias) + ${deTmdb - deTendencia} populares de '
+        'TMDB $anioTope + ${finalResults.length - deTmdb} de respaldo local',
+      );
 
       _cachedPopularTMDB = finalResults;
       if (finalResults.isNotEmpty) {
@@ -3936,6 +3993,63 @@ class M3UService extends ChangeNotifier {
     } finally {
       _isFetchingPopularTMDB = false;
     }
+  }
+
+  /// Añade a `destino` los titulos de `tendencias` que esten en el catalogo,
+  /// sin repetir y sin pasar del tope. Mismo match exacto por titulo
+  /// normalizado (con alias) que el resto.
+  void _completarConTendencias(
+    List<M3UItem> destino,
+    List<Map<String, String>> tendencias,
+  ) {
+    final candidatos = [
+      ..._customItems.where((i) => !i.isLive),
+      ..._items.where((i) => !i.isLive),
+    ];
+    if (candidatos.isEmpty) return;
+
+    final vistos =
+        destino.map((i) => _normalizeTitleForMatching(i.name)).toSet();
+    for (final t in tendencias) {
+      if (destino.length >= _topePopulares) return;
+      final titulo = _normalizeTitleForMatching(t['title'] ?? '');
+      if (titulo.length < 3) continue;
+      for (final it in candidatos) {
+        if (!_titulosDeMatch(
+          it,
+        ).any((n) => _normalizeTitleForMatching(n) == titulo)) {
+          continue;
+        }
+        if (vistos.add(_normalizeTitleForMatching(it.name))) destino.add(it);
+        break;
+      }
+    }
+  }
+
+  /// El año MAS RECIENTE que hay en el catalogo, leido del titulo.
+  ///
+  /// Manda la BD: es el contenido propio y el que se esta subiendo. Si la BD
+  /// no tiene ningun año legible se mira el proveedor, y si tampoco, el año en
+  /// curso. Se descartan los años imposibles —un "2099" mal escrito en un
+  /// titulo mandaria sobre todo lo demas—, aceptando como mucho el que viene:
+  /// un estreno puede estar catalogado con el año siguiente.
+  int _anioMasRecienteDelCatalogo() {
+    final limite = DateTime.now().year + 1;
+    int maximoDe(List<M3UItem> lista) {
+      var maximo = 0;
+      for (final it in lista) {
+        if (it.isLive) continue;
+        final anio = anioDelTitulo(it.name);
+        if (anio == null || anio > limite) continue;
+        if (anio > maximo) maximo = anio;
+      }
+      return maximo;
+    }
+
+    final deLaBd = maximoDe(_customItems);
+    if (deLaBd > 0) return deLaBd;
+    final delProveedor = maximoDe(_items);
+    return delProveedor > 0 ? delProveedor : DateTime.now().year;
   }
 
   /// Cruza las tendencias con el catalogo, lo propio (la BD) primero.
@@ -3993,29 +4107,46 @@ class M3UService extends ChangeNotifier {
     return recientes;
   }
 
-  /// Lo mas nuevo del catalogo, leyendo el año del titulo. Solo se usa cuando
-  /// la tendencia no cruza con nada.
+  /// ULTIMO RECURSO: lo mas nuevo del catalogo, leyendo el año del titulo.
+  ///
+  /// Se parte del AÑO MAS RECIENTE QUE HAY (el de la BD si la BD tiene años):
+  /// si lo mas nuevo es 2028, salen los de 2028, y solo si no hay suficientes
+  /// se abre al año anterior, y asi hasta tres años. Nunca se cae al catalogo
+  /// entero, que es lo que metia cine viejo en una fila que dice "popular".
+  ///
+  /// La BD va primero dentro de cada año: es el contenido propio, con caratula
+  /// y alias. Devuelve MAS del tope a proposito, porque quien llama descarta
+  /// lo que ya eligio por TMDB.
+  ///
+  /// El orden se baraja con la SEMILLA DE LA SESION: la fila no se reordena
+  /// cada vez que abres el buscador, pero cambia al reabrir la app.
   List<M3UItem> _popularesDeRespaldo() {
-    // La BD tambien cuenta: puede ser el unico contenido cargado.
-    final vods =
-        [..._customItems, ..._items].where((i) => !i.isLive).toList();
-    if (vods.isEmpty) return const [];
+    final propio = _customItems.where((i) => !i.isLive).toList();
+    final ajeno = _items.where((i) => !i.isLive).toList();
+    if (propio.isEmpty && ajeno.isEmpty) return const [];
 
-    final regexYear = RegExp(r'\b(202[0-9]|19[0-9]{2})\b');
-    var maxYear = 0;
-    final yearGroups = <int, List<M3UItem>>{};
-    for (final v in vods) {
-      final match = regexYear.firstMatch(v.name);
-      if (match == null) continue;
-      final y = int.tryParse(match.group(1) ?? '0') ?? 0;
-      if (y <= 1900 || y >= 2100) continue;
-      if (y > maxYear) maxYear = y;
-      yearGroups.putIfAbsent(y, () => []).add(v);
+    final anioTope = _anioMasRecienteDelCatalogo();
+    final semilla = Random(semillaDeSesion());
+
+    List<M3UItem> delAnio(List<M3UItem> lista, int anio) {
+      final out = lista.where((i) => anioDelTitulo(i.name) == anio).toList();
+      out.shuffle(semilla);
+      return out;
     }
 
-    final pool = maxYear > 0 ? List<M3UItem>.from(yearGroups[maxYear]!) : vods;
-    pool.shuffle();
-    return pool.take(_topePopulares).toList();
+    final salida = <M3UItem>[];
+    final tope = _topePopulares * 3;
+    for (var anio = anioTope; anio > anioTope - 3; anio--) {
+      // Dentro del año, lo propio delante de lo del proveedor.
+      salida.addAll(delAnio(propio, anio));
+      salida.addAll(delAnio(ajeno, anio));
+      if (salida.length >= tope) break;
+    }
+
+    // Si NINGUN titulo lleva año en el nombre no hay de donde elegir por año:
+    // se devuelve lo propio, que al menos es lo mas nuevo por fecha de alta.
+    if (salida.isEmpty) salida.addAll(propio.isNotEmpty ? propio : ajeno);
+    return salida.take(tope).toList();
   }
 
   /// Returns cached trending items for the hero banner.
@@ -5581,8 +5712,18 @@ List<M3UItem> _calculateLatestItems(List<M3UItem> items) {
     itemScores[item] = score;
   }
 
-  return items.toList()
-    ..sort((a, b) => itemScores[b]!.compareTo(itemScores[a]!));
+  // A IGUAL PUNTUACION, EL ORDEN DEL CATALOGO. Todo lo del mismo año puntua
+  // exactamente igual, y `List.sort` no es estable: el desempate lo decidia el
+  // algoritmo y la fila salia barajada, con lo recien subido por el proveedor
+  // en cualquier sitio. El indice de entrada conserva el orden en que llego.
+  final lista = items.toList();
+  final posicion = {for (var i = 0; i < lista.length; i++) lista[i]: i};
+  lista.sort((a, b) {
+    final cmp = itemScores[b]!.compareTo(itemScores[a]!);
+    if (cmp != 0) return cmp;
+    return (posicion[a] ?? 0).compareTo(posicion[b] ?? 0);
+  });
+  return lista;
 }
 
 // ===========================================================================

@@ -86,3 +86,77 @@ List<M3UItem> heroPoolPorAnio(List<M3UItem> origen, {DateTime? ahora}) {
   if (pool.isEmpty) pool = construir(anios.length);
   return pool.isEmpty ? validos : pool;
 }
+
+/// Cuantos titulos de la CABEZA del banner entran en el sorteo.
+///
+/// `getTrendingBannerItems()` devuelve la lista ya ordenada: primero lo que
+/// TMDB marca como tendencia esta semana, y detras el relleno por año de
+/// estreno. Sortear sobre los quince acababa sacando la cola, que es lo mas
+/// viejo que entro.
+const int cabezaDelBanner = 6;
+
+/// La semilla de la SESION: se sortea una vez al arrancar la app y no cambia
+/// mientras la app vive.
+///
+/// No es por dia a proposito. Con la semilla del dia el destacado era siempre
+/// el mismo titulo durante 24 horas —abrias y cerrabas y ahi seguia South
+/// Park—, y eso se ve peor que el problema que venia a arreglar. Y no es
+/// aleatoria en cada llamada porque entonces vuelve el fallo de origen: cada
+/// sitio que elige el destacado sacaria un titulo distinto del mismo pool y la
+/// portada se cambiaria sola al segundo.
+///
+/// Por sesion: cada vez que abres la app hay otro destacado, pero MIENTRAS la
+/// usas no se mueve y el telefono y el televisor coinciden.
+final int _semillaDeSesion = DateTime.now().microsecondsSinceEpoch & 0x7fffffff;
+
+int semillaDeSesion() => _semillaDeSesion;
+
+/// El destacado del banner de tendencias.
+///
+/// DETERMINISTA A PROPOSITO. Antes cada sitio que lo elegia hacia su propio
+/// `DateTime.now().microsecond % pool.length`, y habia TRES: el que pinta el
+/// banner durante el build, el que responde a `notifyListeners()` cuando llega
+/// TMDB, y el del televisor. Con el mismo pool daban titulos DISTINTOS, asi que
+/// la portada enseñaba un titulo y al segundo se cambiaba sola por otro. Con la
+/// semilla del dia, el mismo pool da siempre el mismo titulo: el cambio que
+/// queda es uno solo —el respaldo dando paso a la tendencia— y el telefono y el
+/// televisor coinciden.
+M3UItem? destacadoDeTendencia(List<M3UItem> pool) {
+  final lista = destacadosDeTendencia(pool, 1);
+  return lista.isEmpty ? null : lista.first;
+}
+
+/// Los `cuantos` destacados del mosaico del televisor, con el mismo criterio
+/// y la misma semilla que el banner del telefono.
+///
+/// Sin caratula no entra —un hueco gris en la portada se ve roto— y no se
+/// repite el mismo titulo (una serie cuenta por su nombre de serie).
+List<M3UItem> destacadosDeTendencia(List<M3UItem> pool, int cuantos) {
+  if (pool.isEmpty || cuantos <= 0) return const [];
+
+  // Se sortea entre la cabeza, pero si ahi no hay bastante con caratula se
+  // sigue por el resto en ORDEN: lo de mas arriba es lo mas relevante.
+  final cabeza =
+      pool.length > cabezaDelBanner ? pool.take(cabezaDelBanner).toList() : pool;
+
+  final elegidos = <M3UItem>[];
+  final vistos = <String>{};
+  void agregar(M3UItem item) {
+    if (elegidos.length >= cuantos) return;
+    if (item.isLive || (item.logo ?? '').isEmpty) return;
+    if (!vistos.add(item.seriesName ?? item.name)) return;
+    elegidos.add(item);
+  }
+
+  var semilla = semillaDeSesion();
+  for (var intento = 0; intento < cabeza.length * 3; intento++) {
+    if (elegidos.length >= cuantos) break;
+    agregar(cabeza[semilla.abs() % cabeza.length]);
+    semilla = semilla * 31 + 17;
+  }
+  for (final item in pool) {
+    if (elegidos.length >= cuantos) break;
+    agregar(item);
+  }
+  return elegidos;
+}
