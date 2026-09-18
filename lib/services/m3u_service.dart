@@ -24,6 +24,7 @@ import '../utils/normalization_utils.dart';
 import '../services/watch_progress_service.dart';
 import 'tmdb_service.dart';
 import '../utils/dns_bypass_utils.dart';
+import '../utils/top10.dart' show anioDelTitulo;
 
 export '../models/m3u_item.dart';
 export '../models/download_progress.dart';
@@ -1609,8 +1610,11 @@ class M3UService extends ChangeNotifier {
           } else {
             await _indexItems(const [], customItems: fresh);
           }
-          // El banner se armó con la BD anterior (o sin ella): que se rehaga.
+          // El banner y la busqueda popular se armaron con la BD anterior (o
+          // sin ella): que se rehagan. Sin invalidar tambien los populares, el
+          // contenido recien subido no entraba en esa lista en toda la sesion.
           _cachedTrendingBanner = null;
+          _cachedPopularTMDB = null;
           notifyListeners();
         }
       } catch (e) {
@@ -4072,9 +4076,23 @@ class M3UService extends ChangeNotifier {
     }
     final populares = elegidos.length;
 
-    // Lo más reciente de la BD, sin pasar de 10 nuevos para que la portada no
-    // se llene de golpe con una tanda subida el mismo día.
-    for (final it in candidatos) {
+    // Relleno: lo NUEVO, no lo ultimo subido. `_customItems` viene por fecha
+    // de alta, y una tanda recien subida puede ser cine de 2020: eso es
+    // exactamente lo que salia en la portada. Se ordena por año de estreno
+    // (leido del titulo) y, a igualdad de año, gana lo subido antes. Sin año
+    // en el titulo va al final. Maximo 10 para que una sola tanda no llene la
+    // portada.
+    final porEstreno = List<M3UItem>.from(candidatos);
+    final ordenAlta = {
+      for (var i = 0; i < candidatos.length; i++) candidatos[i].url: i,
+    };
+    porEstreno.sort((a, b) {
+      final aa = anioDelTitulo(a.name) ?? 0;
+      final ab = anioDelTitulo(b.name) ?? 0;
+      if (aa != ab) return ab.compareTo(aa);
+      return (ordenAlta[a.url] ?? 0).compareTo(ordenAlta[b.url] ?? 0);
+    });
+    for (final it in porEstreno) {
       if (elegidos.length >= tope || elegidos.length - populares >= 10) break;
       agregar(it);
     }
@@ -4082,6 +4100,56 @@ class M3UService extends ChangeNotifier {
       'Banner desde la BD: $populares en tendencia + '
       '${elegidos.length - populares} recientes',
     );
+    return elegidos;
+  }
+
+  /// Banner de respaldo con el catalogo del proveedor: tendencias recientes
+  /// primero (match EXACTO por titulo normalizado, igual que en la BD) y
+  /// despues lo mas nuevo por año de estreno. Nunca contenido viejo.
+  List<M3UItem> _bannerDeRespaldo(List<Map<String, String>> tendencias) {
+    const tope = 15;
+    final candidatos =
+        _items.where((i) => !i.isLive && (i.logo ?? '').isNotEmpty).toList();
+    if (candidatos.isEmpty) return const [];
+
+    final elegidos = <M3UItem>[];
+    final vistos = <String>{};
+    bool agregar(M3UItem it) {
+      if (!vistos.add(_normalizeTitleForMatching(it.name))) return false;
+      elegidos.add(it);
+      return true;
+    }
+
+    for (final t in _tendenciasRecientes(tendencias)) {
+      if (elegidos.length >= tope) break;
+      final titulo = _normalizeTitleForMatching(t['title'] ?? '');
+      if (titulo.length < 3) continue;
+      for (final it in candidatos) {
+        if (_titulosDeMatch(
+          it,
+        ).any((n) => _normalizeTitleForMatching(n) == titulo)) {
+          if (agregar(it)) break;
+        }
+      }
+    }
+
+    // Relleno por año de estreno, del mas nuevo hacia atras, y solo de los
+    // ultimos tres años: un banner con cine de 2014 es el fallo que se estaba
+    // arreglando.
+    if (elegidos.length < tope) {
+      final anioActual = DateTime.now().year;
+      final recientes = <(M3UItem, int)>[];
+      for (final it in candidatos) {
+        final anio = anioDelTitulo(it.name);
+        if (anio == null || anio < anioActual - 2) continue;
+        recientes.add((it, anio));
+      }
+      recientes.sort((a, b) => b.$2.compareTo(a.$2));
+      for (final e in recientes) {
+        if (elegidos.length >= tope) break;
+        agregar(e.$1);
+      }
+    }
     return elegidos;
   }
 
@@ -4099,80 +4167,23 @@ class M3UService extends ChangeNotifier {
       // Contenido propio primero: si la BD da banner, no se mira el catálogo.
       finalResults.addAll(_bannerDesdeBd(trends));
 
-      if (finalResults.isEmpty && trends.isNotEmpty) {
-        final Set<String> matchedNames = {};
-        for (var trend in trends) {
-          final trendTitle = trend['title']?.toLowerCase() ?? '';
-          final trendYear = trend['year'] ?? '';
-          if (trendTitle.isEmpty) continue;
-
-          // Fast search in local library — prefer items with logos for the banner
-          M3UItem? bestMatch;
-          for (var item in _items) {
-            if (item.isLive) continue;
-            if (matchedNames.contains(item.name)) continue;
-
-            final itemName = item.name.toLowerCase();
-
-            // Basic title match
-            if (itemName.contains(trendTitle) ||
-                trendTitle.contains(itemName)) {
-              // Year verification for accuracy
-              if (trendYear.isNotEmpty && item.name.contains(trendYear)) {
-                bestMatch = item;
-                break;
-              } else if (trendYear.isEmpty) {
-                bestMatch = item;
-                break;
-              }
-            }
-          }
-
-          if (bestMatch != null) {
-            finalResults.add(bestMatch);
-            matchedNames.add(bestMatch.name);
-          }
-          if (finalResults.length >= 15) break;
-        }
-      }
-
-      // SMART FALLBACK: If no trends matched, pick recent/random items with logos
-      if (finalResults.isEmpty && _items.isNotEmpty) {
-        final vods = _items.where((i) => !i.isLive).toList();
-
-        if (vods.isNotEmpty) {
-          final regexYear = RegExp(r'\b(202[0-9]|19[0-9]{2})\b');
-          int maxYear = 0;
-          final Map<int, List<M3UItem>> yearGroups = {};
-
-          for (var v in vods) {
-            final match = regexYear.firstMatch(v.name);
-            if (match != null) {
-              final y = int.tryParse(match.group(1) ?? '0') ?? 0;
-              if (y > 1900 && y < 2100) {
-                if (y > maxYear) maxYear = y;
-                yearGroups.putIfAbsent(y, () => []).add(v);
-              }
-            }
-          }
-
-          if (maxYear > 0) {
-            final bestYearItems = yearGroups[maxYear]!;
-            bestYearItems.shuffle();
-            finalResults.addAll(bestYearItems.take(15));
-          } else {
-            vods.shuffle();
-            finalResults.addAll(vods.take(15));
-          }
-        }
+      // RESPALDO: el catálogo del proveedor, pero SOLO de los años recientes.
+      // Antes habia dos vias y las dos acababan poniendo cine viejo en la
+      // portada: un cruce con `contains` en los dos sentidos (un titulo corto
+      // del catalogo entra dentro de casi cualquier tendencia) y, si eso
+      // fallaba, el grupo del año mas alto BARAJADO. Ahora el match es exacto
+      // por titulo normalizado y el relleno va por año de estreno, del mas
+      // nuevo hacia atras, sin barajar.
+      if (finalResults.isEmpty) {
+        finalResults.addAll(_bannerDeRespaldo(trends));
       }
 
       _cachedTrendingBanner = finalResults;
-      // Also populate popular cache if it's empty (avoid double fetch)
-      if ((_cachedPopularTMDB == null || _cachedPopularTMDB!.isEmpty) &&
-          finalResults.isNotEmpty) {
-        _cachedPopularTMDB = finalResults.take(9).toList();
-      }
+      // La "busqueda popular" NO se rellena desde aqui. Lo hacia, y por eso
+      // enseñaba contenido viejo: heredaba el respaldo del banner (relleno por
+      // fecha de alta o grupo de año barajado) y, al quedar la cache llena,
+      // `_fetchPopularFromTMDB` no se llegaba a ejecutar NUNCA — es decir, la
+      // lista que dice "popular" no consultaba las tendencias de TMDB.
       if (finalResults.isNotEmpty) {
         notifyListeners();
       }

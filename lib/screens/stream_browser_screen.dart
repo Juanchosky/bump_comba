@@ -1111,6 +1111,11 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
   /// por año del titulo: se podra reemplazar cuando llegue el bueno.
   void _setHeroRandomly(List<M3UItem> pool, {bool provisional = false}) {
     if (pool.isEmpty) return;
+    // El banner de tendencias viene ORDENADO: primero lo que suena esta
+    // semana, despues lo mas nuevo por año de estreno. Un random plano sobre
+    // los quince acababa enseñando la cola de la lista, que es lo mas viejo
+    // que entro. Se sortea solo entre los seis primeros.
+    if (!provisional && pool.length > 6) pool = pool.take(6).toList();
     final randomIndex = DateTime.now().microsecond % pool.length;
     setState(() {
       _heroItem = pool[randomIndex];

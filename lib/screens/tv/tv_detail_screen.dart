@@ -481,182 +481,181 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
       },
       child: Scaffold(
         backgroundColor: AppColors.fondoTv,
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          // ── Fondo ────────────────────────────────────────────────────────
-          //
-          // El mismo fondo fijo del catalogo, para que pasar de una pantalla a
-          // otra no cambie de escenario. Antes aqui iba el backdrop del titulo
-          // y tenia un problema: cada ficha se veia de un color distinto, y
-          // con un backdrop claro el texto blanco de encima se perdia. La
-          // imagen del titulo sigue estando, pero donde se mira — en el
-          // recuadro grande de la derecha.
-          //
-          // ── EL FONDO ES EL MISMO QUE EL DEL CATALOGO ────────────────
-          //
-          // Habia una imagen de fondo —`detallestv.png`— con un velo oscuro
-          // encima para que la sinopsis se leyera sobre su dibujo central.
-          //
-          // Dos pantallas que se abren una desde la otra con fondos distintos
-          // se leen como dos apps. Con el mismo color, entrar en la ficha es
-          // entrar en una capa de la misma pantalla, no viajar a otro sitio.
-          //
-          // De paso se van la imagen y su velo: una textura menos que
-          // decodificar y una capa menos que componer en cada fotograma.
-          const DecoratedBox(
-            decoration: BoxDecoration(color: AppColors.fondoTv),
-            child: SizedBox.expand(),
-          ),
+        body: Stack(
+          fit: StackFit.expand,
+          children: [
+            // ── Fondo ────────────────────────────────────────────────────────
+            //
+            // El mismo fondo fijo del catalogo, para que pasar de una pantalla a
+            // otra no cambie de escenario. Antes aqui iba el backdrop del titulo
+            // y tenia un problema: cada ficha se veia de un color distinto, y
+            // con un backdrop claro el texto blanco de encima se perdia. La
+            // imagen del titulo sigue estando, pero donde se mira — en el
+            // recuadro grande de la derecha.
+            //
+            // ── EL FONDO ES EL MISMO QUE EL DEL CATALOGO ────────────────
+            //
+            // Habia una imagen de fondo —`detallestv.png`— con un velo oscuro
+            // encima para que la sinopsis se leyera sobre su dibujo central.
+            //
+            // Dos pantallas que se abren una desde la otra con fondos distintos
+            // se leen como dos apps. Con el mismo color, entrar en la ficha es
+            // entrar en una capa de la misma pantalla, no viajar a otro sitio.
+            //
+            // De paso se van la imagen y su velo: una textura menos que
+            // decodificar y una capa menos que componer en cada fotograma.
+            const DecoratedBox(
+              decoration: BoxDecoration(color: AppColors.fondoTv),
+              child: SizedBox.expand(),
+            ),
 
-          // ── Señal de que se esta cargando ────────────────────────────
-          //
-          // La espera puede llegar a dos segundos y medio, y dos segundos de
-          // fondo quieto no se leen como "cargando", se leen como "se colgo".
-          // El spinner es lo unico que separa una cosa de la otra.
-          //
-          // Se va con su propio fundido, mas rapido que el de la ficha, para
-          // que los dos no se crucen a media opacidad.
-          IgnorePointer(
-            child: AnimatedOpacity(
-              opacity: _listo ? 0 : 1,
-              duration: const Duration(milliseconds: 180),
-              child: const Center(
-                child: CupertinoActivityIndicator(
-                  // 22 y no 16: a distancia de sofá, las aspas de este spinner
-                  // son finas y a 16 apenas se distinguen del fondo.
-                  radius: 22,
-                  color: Colors.white,
+            // ── Señal de que se esta cargando ────────────────────────────
+            //
+            // La espera puede llegar a dos segundos y medio, y dos segundos de
+            // fondo quieto no se leen como "cargando", se leen como "se colgo".
+            // El spinner es lo unico que separa una cosa de la otra.
+            //
+            // Se va con su propio fundido, mas rapido que el de la ficha, para
+            // que los dos no se crucen a media opacidad.
+            IgnorePointer(
+              child: AnimatedOpacity(
+                opacity: _listo ? 0 : 1,
+                duration: const Duration(milliseconds: 180),
+                child: const Center(
+                  child: CupertinoActivityIndicator(
+                    // 22 y no 16: a distancia de sofá, las aspas de este spinner
+                    // son finas y a 16 apenas se distinguen del fondo.
+                    radius: 22,
+                    color: Colors.white,
+                  ),
                 ),
               ),
             ),
-          ),
 
-          // ── Todo de golpe ────────────────────────────────────────────
-          //
-          // Un fundido corto de 260 ms y un empujoncito hacia arriba. Corto a
-          // proposito: esto no es una entrada, es tapar el momento en que la
-          // ficha aparece armada. Cualquier cosa mas larga o mas vistosa se
-          // interpone entre el usuario y el boton de reproducir, que es a lo
-          // que venia.
-          AnimatedOpacity(
-            opacity: _listo ? 1 : 0,
-            duration: const Duration(milliseconds: 260),
-            curve: Curves.easeOut,
-            child: AnimatedSlide(
-              offset: _listo ? Offset.zero : const Offset(0, 0.02),
+            // ── Todo de golpe ────────────────────────────────────────────
+            //
+            // Un fundido corto de 260 ms y un empujoncito hacia arriba. Corto a
+            // proposito: esto no es una entrada, es tapar el momento en que la
+            // ficha aparece armada. Cualquier cosa mas larga o mas vistosa se
+            // interpone entre el usuario y el boton de reproducir, que es a lo
+            // que venia.
+            AnimatedOpacity(
+              opacity: _listo ? 1 : 0,
               duration: const Duration(milliseconds: 260),
               curve: Curves.easeOut,
-              // Hasta que no esta lista no se construye: asi el foco inicial
-              // cae en la imagen justo cuando aparece, y no antes, sobre una
-              // pantalla que el usuario todavia no ve.
-              child:
-                  !_listo
-                      ? const SizedBox.expand()
-                      // EL HUECO SE MUEVE AL HACER SCROLL.
-                      //
-                      // El vídeo vive en el `Overlay`, en coordenadas de
-                      // pantalla: no baja con el contenido. Sin esto, bajar a
-                      // "Quizás te guste" dejaba el vídeo flotando sobre el
-                      // sitio donde ANTES estaba el recuadro.
-                      : NotificationListener<ScrollNotification>(
-                        onNotification: (_) {
-                          _reubicarVistaPrevia();
-                          return false;
-                        },
-                        child: SingleChildScrollView(
-                          // 50 arriba y no 26: el título quedaba pegado al
-                          // borde de la pantalla.
-                          //
-                          // Se toca aquí, en el relleno del scroll, y no en el
-                          // título: así bajan con él la clasificación y los
-                          // datos que lo rodean, la imagen que va al lado y todo
-                          // lo de debajo, conservando la separación que ya
-                          // tienen entre sí.
-                          padding: const EdgeInsets.fromLTRB(48, 50, 48, 30),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              // ── Cabecera: texto a la izquierda, imagen a la derecha ────
-                              Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Expanded(
-                                    child: _cabeceraTexto(esSerie, episodios),
-                                  ),
-                                  const SizedBox(width: 36),
+              child: AnimatedSlide(
+                offset: _listo ? Offset.zero : const Offset(0, 0.02),
+                duration: const Duration(milliseconds: 260),
+                curve: Curves.easeOut,
+                // Hasta que no esta lista no se construye: asi el foco inicial
+                // cae en la imagen justo cuando aparece, y no antes, sobre una
+                // pantalla que el usuario todavia no ve.
+                child:
+                    !_listo
+                        ? const SizedBox.expand()
+                        // EL HUECO SE MUEVE AL HACER SCROLL.
+                        //
+                        // El vídeo vive en el `Overlay`, en coordenadas de
+                        // pantalla: no baja con el contenido. Sin esto, bajar a
+                        // "Quizás te guste" dejaba el vídeo flotando sobre el
+                        // sitio donde ANTES estaba el recuadro.
+                        : NotificationListener<ScrollNotification>(
+                          onNotification: (_) {
+                            _reubicarVistaPrevia();
+                            return false;
+                          },
+                          child: SingleChildScrollView(
+                            // 50 arriba y no 26: el título quedaba pegado al
+                            // borde de la pantalla.
+                            //
+                            // Se toca aquí, en el relleno del scroll, y no en el
+                            // título: así bajan con él la clasificación y los
+                            // datos que lo rodean, la imagen que va al lado y todo
+                            // lo de debajo, conservando la separación que ya
+                            // tienen entre sí.
+                            padding: const EdgeInsets.fromLTRB(48, 50, 48, 30),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                // ── Cabecera: texto a la izquierda, imagen a la derecha ────
+                                Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Expanded(
+                                      child: _cabeceraTexto(esSerie, episodios),
+                                    ),
+                                    const SizedBox(width: 36),
 
-                                  // La imagen ES el boton de reproducir.
-                                  //
-                                  // Antes habia un "Reproducir" aparte debajo, y sobraba: en
-                                  // la ficha ya hay una imagen grande justo donde mira el
-                                  // ojo, asi que darle el foco a ella quita un control de la
-                                  // pantalla sin quitar nada de lo que se puede hacer. Es
-                                  // ademas el primer foco, asi que entrar y pulsar OK
-                                  // reproduce, sin mover el mando.
-                                  _ImagenFicha(
-                                    clave: _huecoVistaPrevia,
-                                    autofocus: true,
-                                    // YA NO EMPUJA UNA PANTALLA NUEVA.
+                                    // La imagen ES el boton de reproducir.
                                     //
-                                    // La vista previa que se está viendo aquí y
-                                    // el reproductor grande son el mismo, y ya
-                                    // está reproduciendo: solo se agranda. Por
-                                    // eso continúa por donde iba y no recarga.
-                                    onOk:
-                                        () => TvVistaPrevia.instancia.expandir(
-                                          context,
-                                        ),
+                                    // Antes habia un "Reproducir" aparte debajo, y sobraba: en
+                                    // la ficha ya hay una imagen grande justo donde mira el
+                                    // ojo, asi que darle el foco a ella quita un control de la
+                                    // pantalla sin quitar nada de lo que se puede hacer. Es
+                                    // ademas el primer foco, asi que entrar y pulsar OK
+                                    // reproduce, sin mover el mando.
+                                    _ImagenFicha(
+                                      clave: _huecoVistaPrevia,
+                                      autofocus: true,
+                                      // YA NO EMPUJA UNA PANTALLA NUEVA.
+                                      //
+                                      // La vista previa que se está viendo aquí y
+                                      // el reproductor grande son el mismo, y ya
+                                      // está reproduciendo: solo se agranda. Por
+                                      // eso continúa por donde iba y no recarga.
+                                      onOk:
+                                          () => TvVistaPrevia.instancia
+                                              .expandir(context),
+                                    ),
+                                  ],
+                                ),
+
+                                // ── Separaciones adaptativas según pantalla del TV ────
+                                //
+                                // Evita que en series quede muy pegado (antes solo 12 px)
+                                // y que en películas se duplique el hueco sumando dos SizedBox.
+                                // Además escala de forma armónica entre teles pequeñas (540p)
+                                // y teles grandes (1080p / 4K).
+                                if (hayEpisodios) ...[
+                                  SizedBox(height: espacioCabecera),
+                                  _bloqueEpisodios(episodios),
+                                ],
+
+                                if (_sugerencias.isNotEmpty) ...[
+                                  SizedBox(height: espacioEntreSecciones),
+                                  const Text(
+                                    'Quizás te guste',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 17,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  SizedBox(height: espacioTituloACards),
+                                  SizedBox(
+                                    height: 176,
+                                    child: ListView.builder(
+                                      scrollDirection: Axis.horizontal,
+                                      // Sin recorte, para que el 5% que crece la
+                                      // enfocada no se corte arriba y abajo.
+                                      clipBehavior: Clip.none,
+                                      itemCount: _sugerencias.length,
+                                      itemBuilder:
+                                          (context, i) => _CardSugerencia(
+                                            item: _sugerencias[i],
+                                            onOk: () => _abrir(_sugerencias[i]),
+                                          ),
+                                    ),
                                   ),
                                 ],
-                              ),
-
-                              // ── Separaciones adaptativas según pantalla del TV ────
-                              //
-                              // Evita que en series quede muy pegado (antes solo 12 px)
-                              // y que en películas se duplique el hueco sumando dos SizedBox.
-                              // Además escala de forma armónica entre teles pequeñas (540p)
-                              // y teles grandes (1080p / 4K).
-                              if (hayEpisodios) ...[
-                                SizedBox(height: espacioCabecera),
-                                _bloqueEpisodios(episodios),
                               ],
-
-                              if (_sugerencias.isNotEmpty) ...[
-                                SizedBox(height: espacioEntreSecciones),
-                                const Text(
-                                  'Quizás te guste',
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 17,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                                SizedBox(height: espacioTituloACards),
-                                SizedBox(
-                                  height: 176,
-                                  child: ListView.builder(
-                                    scrollDirection: Axis.horizontal,
-                                    // Sin recorte, para que el 5% que crece la
-                                    // enfocada no se corte arriba y abajo.
-                                    clipBehavior: Clip.none,
-                                    itemCount: _sugerencias.length,
-                                    itemBuilder:
-                                        (context, i) => _CardSugerencia(
-                                          item: _sugerencias[i],
-                                          onOk: () => _abrir(_sugerencias[i]),
-                                        ),
-                                  ),
-                                ),
-                              ],
-                            ],
+                            ),
                           ),
                         ),
-                      ),
+              ),
             ),
-          ),
-        ],
-      ),
+          ],
+        ),
       ),
     );
   }
