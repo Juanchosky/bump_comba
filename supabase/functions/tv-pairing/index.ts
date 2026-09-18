@@ -78,12 +78,30 @@ async function verificarPremium(
   // RevenueCat es la fuente de verdad de las suscripciones.
   // `userKind` se conserva en la firma y en la tabla por si algun dia hay
   // otra via, pero hoy solo existe esta.
-  const clave =
-    Deno.env.get("REVENUECAT_SECRET_KEY") ??
-    "goog_choPIwxbmFDjcTSaglVwWRsEGYR";
+  // SIN RESPALDO ESCRITO EN EL CODIGO.
+  //
+  // Aqui habia un `?? "goog_..."`: la clave PUBLICA del SDK, la misma que va
+  // dentro del APK. No es un secreto filtrado —ya viajaba en la app— pero si
+  // dejaba la puerta mal cerrada:
+  //
+  //  1. El `if (!clave)` de debajo NO SE CUMPLIA NUNCA, asi que la proteccion
+  //     que este mismo archivo dice tener ("un fallo de despliegue no puede
+  //     convertirse en premium para todo el mundo") era letra muerta.
+  //  2. Con la clave publica, `GET /subscribers/:id` responde igual, asi que
+  //     un despliegue SIN el secreto parecia funcionar. El dia que se rote la
+  //     clave publica o RevenueCat deje de aceptarla ahi, todo empieza a
+  //     fallar sin que nadie sepa por que.
+  //
+  // Ahora, sin secreto, se falla CERRADO: `servidor_sin_configurar`. Ese
+  // motivo no esta en la lista de "definitivos" del televisor, asi que los que
+  // ya estan vinculados conservan el acceso; lo que no se puede es vincular
+  // aparatos nuevos hasta arreglar el despliegue.
+  const clave = Deno.env.get("REVENUECAT_SECRET_KEY");
   if (!clave) {
-    // Sin clave configurada NO se abre la puerta. Un fallo de despliegue no
-    // puede convertirse en "premium para todo el mundo".
+    console.error(
+      "tv-pairing: falta el secreto REVENUECAT_SECRET_KEY; " +
+        "no se puede comprobar la suscripcion",
+    );
     return { ok: false, hasta: null, motivo: "servidor_sin_configurar" };
   }
 
@@ -360,6 +378,20 @@ serve(async (req) => {
       if (error) throw error;
 
       return json({ ok: true });
+    }
+
+    // DIAGNOSTICO: esta el servidor bien configurado?
+    //
+    // Devuelve si el secreto existe, nunca su valor. Sirve para comprobar un
+    // despliegue sin tener que gastar una vinculacion de verdad.
+    if (accion === "config") {
+      const clave = Deno.env.get("REVENUECAT_SECRET_KEY");
+      return json({
+        revenuecat: clave ? "configurado" : "falta",
+        // Los primeros caracteres dicen si es la clave correcta (las secretas
+        // empiezan por `sk_`) sin revelar nada util.
+        tipo: clave ? clave.slice(0, 3) : null,
+      });
     }
 
     return json({ error: "accion desconocida" }, 400);

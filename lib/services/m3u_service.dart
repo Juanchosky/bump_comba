@@ -1240,6 +1240,42 @@ class M3UService extends ChangeNotifier {
   /// La ultima huella que se descargo, para saber si hay que volver a bajar.
   static const String _customVersionKey = 'm3u_custom_version';
 
+  /// Hasta cuando se da a Supabase por restringido.
+  ///
+  /// ── EL 402 NO SE REINTENTA ─────────────────────────────────────────────
+  ///
+  /// La cuota gratuita de egress se pasa de largo (6,8 GB sobre 5), y pasado
+  /// el periodo de gracia Supabase responde `402` a TODO. Insistir no arregla
+  /// nada: ni el contenido llega, ni la cuota baja, y cada arranque gastaba
+  /// dos intentos con sus esperas.
+  ///
+  /// Se anota y se deja en paz una hora. Mientras tanto el catalogo propio
+  /// sale del VPS, que es lo que de verdad lo sirve desde que existe el
+  /// volcado.
+  DateTime? _supabaseSinCuotaHasta;
+
+  /// Si Supabase esta devolviendo `402` ahora mismo. Lo miran las pantallas
+  /// para decir lo que pasa en vez de enseñar un hueco vacio.
+  bool get supabaseSinCuota =>
+      _supabaseSinCuotaHasta != null &&
+      DateTime.now().isBefore(_supabaseSinCuotaHasta!);
+
+  /// `true` si el error es el de cuota agotada.
+  bool _esSinCuota(Object e) {
+    final t = e.toString();
+    return t.contains('402') ||
+        t.toLowerCase().contains('quota') ||
+        t.toLowerCase().contains('payment required');
+  }
+
+  void _anotarSinCuota(Object e) {
+    _supabaseSinCuotaHasta = DateTime.now().add(const Duration(hours: 1));
+    debugPrint(
+      'M3UService: Supabase sin cuota (402) — se deja de insistir durante '
+      'una hora; el catalogo propio sale del VPS. ($e)',
+    );
+  }
+
   /// Pregunta al VPS que version del catalogo propio hay publicada.
   ///
   /// ── POR QUE PREGUNTAR EN VEZ DE ESPERAR ────────────────────────────────
@@ -1388,8 +1424,14 @@ class M3UService extends ChangeNotifier {
         });
       }
 
-      // 2. Si el VPS falló o devolvió vacío, respaldo a Supabase
-      if (finalItems.isEmpty) {
+      // 2. Si el VPS falló o devolvió vacío, respaldo a Supabase.
+      //    Salvo que Supabase este devolviendo 402: ahi no hay nada que
+      //    rascar y pedirlo solo alarga el arranque.
+      if (finalItems.isEmpty && supabaseSinCuota) {
+        debugPrint(
+          'custom_content: Supabase sin cuota — no se pide; se usa lo guardado',
+        );
+      } else if (finalItems.isEmpty) {
         final list = <dynamic>[];
         bool hasMore = true;
         int from = 0;
@@ -1412,6 +1454,13 @@ class M3UService extends ChangeNotifier {
               break;
             } catch (e) {
               debugPrint('custom_content batch [$from]: intento $intento ($e)');
+              // Cuota agotada: no es un fallo pasajero. Se anota y se sale sin
+              // gastar los reintentos ni sus esperas.
+              if (_esSinCuota(e)) {
+                _anotarSinCuota(e);
+                hasMore = false;
+                break;
+              }
               if (intento == 2) {
                 if (list.isNotEmpty) {
                   debugPrint(
@@ -1483,7 +1532,14 @@ class M3UService extends ChangeNotifier {
       return finalItems;
     } catch (e, stack) {
       debugPrint('Error fetching custom content: $e\n$stack');
-      _lastError = 'Error cargando contenido personal: $e';
+      if (_esSinCuota(e)) _anotarSinCuota(e);
+      _lastError =
+          _esSinCuota(e)
+              // Lo que acaba viendo el usuario: sin jerga y sin dar a entender
+              // que el hizo algo mal.
+              ? 'Tu contenido no está disponible ahora mismo. '
+                  'Se reintentará solo en un rato.'
+              : 'Error cargando contenido personal: $e';
       if (_customItems.isNotEmpty) {
         return _customItems;
       }

@@ -924,14 +924,21 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     final porCategoria = <String, List<M3UItem>>{};
 
     Iterable<M3UItem> fuente;
-    bool Function(String)? filtro;
+    final bool Function(String) filtro;
 
     switch (_seccion) {
+      // PELICULAS y SERIES dejan fuera lo que ya tiene seccion propia. Sin
+      // esto, "Novelas Turcas" salia en SERIES y otra vez en TELENOVELAS, y
+      // el anime en SERIES y otra vez en ANIMACION: la misma fila dos veces
+      // en el lateral. En el telefono no se notaba porque alli las novelas y
+      // la animacion se juntan en una sola lista.
       case 1: // PELÍCULAS
         fuente = _servicio.movies;
+        filtro = (c) => !ContentFilters.tieneSeccionPropia(c);
         break;
       case 2: // SERIES
         fuente = _servicio.series;
+        filtro = (c) => !ContentFilters.tieneSeccionPropia(c);
         break;
       case 3: // TELENOVELAS
         fuente = [..._servicio.movies, ..._servicio.series];
@@ -948,7 +955,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       // religion, canales en directo y las categorias de cada pais.
       if (!_servicio.categoriaVisible(it.category)) continue;
       if (_esRecienAgregadas(it.category)) continue;
-      if (filtro != null && !filtro(it.category)) continue;
+      if (!filtro(it.category)) continue;
       (porCategoria[it.category] ??= <M3UItem>[]).add(it);
     }
 
@@ -1423,9 +1430,18 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
                                       const SizedBox(height: 18),
                                     ],
                                     Text(
-                                      vacioReal
-                                          ? 'No hay contenido disponible.'
-                                          : 'Cargando, un momento…',
+                                      !vacioReal
+                                          ? 'Cargando, un momento…'
+                                          // Cuota de Supabase agotada: no es
+                                          // un fallo del televisor ni de la
+                                          // red, y volvera solo. Decirlo evita
+                                          // que el usuario reinstale o
+                                          // reintente sin sentido.
+                                          : _servicio.supabaseSinCuota
+                                          ? 'Tu contenido no está disponible '
+                                              'ahora mismo. Vuelve a intentarlo '
+                                              'en un rato.'
+                                          : 'No hay contenido disponible.',
                                       style: const TextStyle(
                                         color: Colors.white38,
                                         fontSize: 18,

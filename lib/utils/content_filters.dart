@@ -84,6 +84,19 @@ class ContentFilters {
   static bool esCategoriaAnimacion(String categoria) =>
       _encaja(categoria, _clavesAnimacion);
 
+  /// Si una categoria YA TIENE su propia seccion: telenovelas o animacion.
+  ///
+  /// El televisor enseña TELENOVELAS y ANIMACION como secciones del lateral,
+  /// asi que una categoria de novelas o de anime no pinta nada ademas en
+  /// PELICULAS o en SERIES: se lee como la misma fila repetida en dos sitios.
+  /// Es la misma regla de "cada categoria en un solo sitio" que ya decidia
+  /// entre PELICULAS y SERIES por el tipo que pesa mas.
+  ///
+  /// Los doramas NO entran: no tienen seccion propia, asi que su sitio son
+  /// las SERIES.
+  static bool tieneSeccionPropia(String categoria) =>
+      esCategoriaNovela(categoria) || esCategoriaAnimacion(categoria);
+
   static const List<String> excludedCountries = [
     'arabia',
     'argentina',
