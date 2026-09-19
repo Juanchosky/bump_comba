@@ -292,31 +292,51 @@ class TMDBService {
     return salida;
   }
 
-  Future<List<Map<String, String>>> getTrendingTitles() async {
-    try {
-      final response = await http.get(
-        Uri.parse(
-          '$_baseUrl/trending/all/week?api_key=$_apiKey&language=es-ES',
-        ),
-      );
+  /// La tendencia de la semana de TMDB.
+  ///
+  /// TRES PAGINAS, NO UNA. Cada pagina son 20 titulos globales, y de esos
+  /// suelen estar en el catalogo tres o cuatro: la fila "Busqueda popular" se
+  /// llenaba con populares-por-año en vez de con tendencia de verdad. Con 60
+  /// titulos hay material para llenarla entera con lo que esta sonando ahora,
+  /// que es lo que la fila promete. Las paginas van en ORDEN: la 1 es lo que
+  /// mas suena, asi que lo mejor sigue entrando primero.
+  ///
+  /// Si una pagina falla se sigue con lo que haya: mejor tres titulos que
+  /// ninguno.
+  Future<List<Map<String, String>>> getTrendingTitles({int paginas = 3}) async {
+    final salida = <Map<String, String>>[];
+    final vistos = <String>{};
 
-      if (response.statusCode == 200) {
+    for (var pagina = 1; pagina <= paginas; pagina++) {
+      try {
+        final response = await http.get(
+          Uri.parse(
+            '$_baseUrl/trending/all/week?api_key=$_apiKey&language=es-ES'
+            '&page=$pagina',
+          ),
+        );
+        if (response.statusCode != 200) break;
+
         final data = json.decode(response.body);
-        final results = data['results'] as List;
-        return results.map((item) {
-          final title = item['title'] ?? item['name'] ?? '';
-          final date = item['release_date'] ?? item['first_air_date'] ?? '';
-          String year = '';
-          if (date.toString().length >= 4) {
-            year = date.toString().substring(0, 4);
-          }
-          return {'title': title.toString(), 'year': year};
-        }).toList();
+        final results = data['results'];
+        if (results is! List || results.isEmpty) break;
+
+        for (final item in results) {
+          final title = (item['title'] ?? item['name'] ?? '').toString();
+          if (title.isEmpty || !vistos.add(title.toLowerCase())) continue;
+          final date =
+              (item['release_date'] ?? item['first_air_date'] ?? '').toString();
+          salida.add({
+            'title': title,
+            'year': date.length >= 4 ? date.substring(0, 4) : '',
+          });
+        }
+      } catch (e) {
+        print('Error fetching trending titles (pagina $pagina): $e');
+        break;
       }
-    } catch (e) {
-      print('Error fetching trending titles: $e');
     }
-    return [];
+    return salida;
   }
 
   static final Map<String, Map<int, Map<String, dynamic>>> _seasonCache = {};

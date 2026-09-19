@@ -1098,6 +1098,12 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             ? combinedPool
             : items.where((i) => !i.isLive).toList();
 
+    // Si TMDB todavia esta contestando, NO se pone respaldo: llegaria la
+    // tendencia un segundo despues y el usuario veria cambiarse el banner
+    // solo. Se deja vacio (la portada enseña el hueco de carga) y este mismo
+    // metodo se vuelve a llamar con `notifyListeners`.
+    if (_m3uService.isFetchingTrendingBanner) return;
+
     // 2-4. El pool por año, compartido con el televisor: años recientes, con
     // peso triple al ultimo. Ver utils/hero_pool.dart.
     final finalPool = heroPoolPorAnio(_m3uService.filterValidItems(rawPool));
@@ -3291,6 +3297,17 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       return _buildHeroBanner(destacado);
     }
     if (_heroItem != null) return _buildHeroBanner(_heroItem!);
+
+    // MIENTRAS TMDB ESTA EN CAMINO, SHIMMER — NO EL RESPALDO.
+    //
+    // Es el ultimo cambio de titulo que quedaba: se pintaba el respaldo por
+    // año, y un segundo despues llegaba la tendencia y la portada se cambiaba
+    // sola delante del usuario. La peticion tarda ~1s y el respaldo solo tiene
+    // sentido si TMDB FALLA, no mientras contesta. Con el hueco de carga se ve
+    // un titulo y solo uno.
+    if (_m3uService.isFetchingTrendingBanner) {
+      return const _HiddenMoviesShimmer();
+    }
 
     // Respaldo: el pool por año compartido con el televisor.
     final pool = heroPoolPorAnio(

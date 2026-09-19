@@ -91,7 +91,13 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     if (_plazoCargaVencido) return true;
     if (_cargando) return false;
     if (_error != null) return true;
-    if (_destacados.isEmpty) return true;
+    // Sin destacado PORQUE TMDB sigue contestando: no esta listo, esta
+    // esperando. Si se diera por listo, la portada apareceria con el hueco del
+    // destacado vacio durante ese segundo. `_plazoCargaVencido` (arriba) pone
+    // el limite, asi que esto no puede colgar la pantalla.
+    if (_destacados.isEmpty) {
+      return !(_seccion == 0 && _servicio.isFetchingTrendingBanner);
+    }
     return _heroListo;
   }
 
@@ -373,6 +379,16 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
       return;
     }
 
+    // EN INICIO SE ESPERA A TMDB, igual que el telefono: si se eligiera ahora
+    // el respaldo (la primera fila), un segundo despues llegaria la tendencia
+    // y el destacado se cambiaria solo en pantalla. `_alLlegarDatos` vuelve a
+    // entrar aqui en cuanto la peticion termina, falle o no.
+    if (_seccion == 0 &&
+        _servicio.isFetchingTrendingBanner &&
+        _servicio.getTrendingBannerItems().isEmpty) {
+      return;
+    }
+
     final primera = _filas.isEmpty ? const <M3UItem>[] : _filas.first.items;
 
     var fuente = primera;
@@ -394,10 +410,11 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     if (_seccion == 0) _inicioConBanner = yaCurado;
 
     // MISMO CRITERIO QUE EL TELEFONO. `destacadosDeTendencia` sortea sobre la
-    // cabeza del banner con la semilla del dia: con el sorteo por microsegundos
-    // que habia aqui, la tele destacaba titulos distintos a los del movil y
-    // ademas se le cambiaban solos en cuanto llegaba TMDB. Ver hero_pool.dart.
-    final elegidos = destacadosDeTendencia(pool, _cuantosDestacados);
+    // cabeza del pool con la semilla de la SESION: con el sorteo por
+    // microsegundos que habia aqui, la tele destacaba titulos distintos a los
+    // del movil y ademas se le cambiaban solos en cuanto llegaba TMDB.
+    // Copia modificable: abajo se completa el mosaico. Ver hero_pool.dart.
+    final elegidos = [...destacadosDeTendencia(pool, _cuantosDestacados)];
     final vistos = elegidos.map((e) => e.seriesName ?? e.name).toSet();
     // ── SI EL SORTEO NO LLENA EL MOSAICO, SE COMPLETA ────────────────────
     //

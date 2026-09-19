@@ -134,10 +134,24 @@ M3UItem? destacadoDeTendencia(List<M3UItem> pool) {
 List<M3UItem> destacadosDeTendencia(List<M3UItem> pool, int cuantos) {
   if (pool.isEmpty || cuantos <= 0) return const [];
 
+  // SIN REPETIDOS ANTES DE CORTAR LA CABEZA. `heroPoolPorAnio` mete el año mas
+  // reciente TRES VECES para darle peso, asi que los seis primeros de ese pool
+  // pueden ser dos titulos repetidos: el sorteo se quedaba sin variedad justo
+  // en el televisor, que es quien usa ese pool en las secciones. Se quita el
+  // duplicado conservando el orden, y el peso sigue notandose porque lo del
+  // año reciente sigue estando delante.
+  final unicos = <M3UItem>[];
+  final yaEsta = <String>{};
+  for (final item in pool) {
+    if (yaEsta.add(item.seriesName ?? item.name)) unicos.add(item);
+  }
+
   // Se sortea entre la cabeza, pero si ahi no hay bastante con caratula se
   // sigue por el resto en ORDEN: lo de mas arriba es lo mas relevante.
   final cabeza =
-      pool.length > cabezaDelBanner ? pool.take(cabezaDelBanner).toList() : pool;
+      unicos.length > cabezaDelBanner
+          ? unicos.take(cabezaDelBanner).toList()
+          : unicos;
 
   final elegidos = <M3UItem>[];
   final vistos = <String>{};
@@ -154,7 +168,7 @@ List<M3UItem> destacadosDeTendencia(List<M3UItem> pool, int cuantos) {
     agregar(cabeza[semilla.abs() % cabeza.length]);
     semilla = semilla * 31 + 17;
   }
-  for (final item in pool) {
+  for (final item in unicos) {
     if (elegidos.length >= cuantos) break;
     agregar(item);
   }

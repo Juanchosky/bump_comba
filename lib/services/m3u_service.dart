@@ -3992,6 +3992,9 @@ class M3UService extends ChangeNotifier {
       debugPrint('Error fetching TMDB popular trends: $e');
     } finally {
       _isFetchingPopularTMDB = false;
+      // Igual que el banner: sin este aviso, un fallo de TMDB dejaba el
+      // buscador con el shimmer girando para siempre.
+      notifyListeners();
     }
   }
 
@@ -4322,6 +4325,14 @@ class M3UService extends ChangeNotifier {
       debugPrint('Error fetching TMDB trending for banner: $e');
     } finally {
       _isFetchingTrendingBanner = false;
+      // SIEMPRE se avisa, tambien si no salio nada.
+      //
+      // Antes solo se avisaba con resultados, y ahora las pantallas esperan a
+      // que esta peticion termine para no cambiar el banner delante del
+      // usuario: si TMDB fallaba no llegaba ningun aviso, nadie volvia a
+      // entrar a elegir y el destacado se quedaba vacio para siempre — en el
+      // televisor, sin banner en la portada.
+      notifyListeners();
     }
   }
 
