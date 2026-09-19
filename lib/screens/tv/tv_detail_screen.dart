@@ -458,11 +458,11 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
 
     // Espaciados adaptativos para que se vea armonioso tanto en teles pequeñas
     // (p. ej. 540p / 32") como en teles grandes (1080p / 4K).
-    final espacioCabecera = _espacioAdaptativo(context, 15);
+    final espacioCabecera = _espacioAdaptativo(context, 17);
     // 34 y no 26: la fila de "Quizás te guste" quedaba muy pegada a lo de
     // arriba. Va por `_espacioAdaptativo`, así que sigue creciendo o
     // encogiéndose con el tamaño del televisor.
-    final espacioEntreSecciones = _espacioAdaptativo(context, 34);
+    final espacioEntreSecciones = _espacioAdaptativo(context, 28);
     final espacioTituloACards = _espacioAdaptativo(context, 14);
 
     // ── EL "ATRAS" QUE NO ES TUYO ─────────────────────────────────────────
@@ -578,36 +578,70 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 // ── Cabecera: texto a la izquierda, imagen a la derecha ────
-                                Row(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Expanded(
-                                      child: _cabeceraTexto(esSerie, episodios),
-                                    ),
-                                    const SizedBox(width: 36),
+                                // LAS TEMPORADAS VAN AQUI, AL PIE DEL TEXTO.
+                                //
+                                // Abajo, con la fila de episodios, no caben:
+                                // ese bloque ocupa el ancho entero y los chips
+                                // pasan POR DEBAJO del recuadro del video, que
+                                // es mas alto que el texto de al lado. Daba
+                                // igual cuanto se subieran o bajaran — el
+                                // problema no era la altura, era que estaban
+                                // debajo del reproductor.
+                                //
+                                // En la columna izquierda nunca lo pisan. Y con
+                                // `IntrinsicHeight` + `Spacer` caen al FONDO de
+                                // esa columna, a la altura del borde inferior
+                                // del recuadro, en vez de quedar pegados a la
+                                // sinopsis.
+                                IntrinsicHeight(
+                                  child: Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            _cabeceraTexto(esSerie, episodios),
+                                            if (hayEpisodios &&
+                                                _temporadas.length > 1) ...[
+                                              const Spacer(),
+                                              _selectorTemporadas(),
+                                            ],
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(width: 36),
 
-                                    // La imagen ES el boton de reproducir.
-                                    //
-                                    // Antes habia un "Reproducir" aparte debajo, y sobraba: en
-                                    // la ficha ya hay una imagen grande justo donde mira el
-                                    // ojo, asi que darle el foco a ella quita un control de la
-                                    // pantalla sin quitar nada de lo que se puede hacer. Es
-                                    // ademas el primer foco, asi que entrar y pulsar OK
-                                    // reproduce, sin mover el mando.
-                                    _ImagenFicha(
-                                      clave: _huecoVistaPrevia,
-                                      autofocus: true,
-                                      // YA NO EMPUJA UNA PANTALLA NUEVA.
+                                      // La imagen ES el boton de reproducir.
                                       //
-                                      // La vista previa que se está viendo aquí y
-                                      // el reproductor grande son el mismo, y ya
-                                      // está reproduciendo: solo se agranda. Por
-                                      // eso continúa por donde iba y no recarga.
-                                      onOk:
-                                          () => TvVistaPrevia.instancia
-                                              .expandir(context),
-                                    ),
-                                  ],
+                                      // Antes habia un "Reproducir" aparte debajo, y sobraba: en
+                                      // la ficha ya hay una imagen grande justo donde mira el
+                                      // ojo, asi que darle el foco a ella quita un control de la
+                                      // pantalla sin quitar nada de lo que se puede hacer. Es
+                                      // ademas el primer foco, asi que entrar y pulsar OK
+                                      // reproduce, sin mover el mando.
+                                      // `Align` para que `stretch` no estire
+                                      // el recuadro a lo alto de la fila.
+                                      Align(
+                                        alignment: Alignment.topCenter,
+                                        child: _ImagenFicha(
+                                          clave: _huecoVistaPrevia,
+                                          autofocus: true,
+                                          // YA NO EMPUJA UNA PANTALLA NUEVA.
+                                          //
+                                          // La vista previa que se está viendo aquí y
+                                          // el reproductor grande son el mismo, y ya
+                                          // está reproduciendo: solo se agranda. Por
+                                          // eso continúa por donde iba y no recarga.
+                                          onOk:
+                                              () => TvVistaPrevia.instancia
+                                                  .expandir(context),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
 
                                 // ── Separaciones adaptativas según pantalla del TV ────
@@ -820,13 +854,44 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
     );
   }
 
+  /// Selector de temporada.
+  ///
+  /// Va al PIE de la columna izquierda, nunca en el bloque de episodios: ese
+  /// ocupa el ancho entero y los chips acababan pasando por debajo del
+  /// recuadro del video. Ver el comentario de la cabecera en el build.
+  ///
+  /// Solo aparece con mas de una temporada: con una sola no hay nada que
+  /// elegir.
+  Widget _selectorTemporadas() {
+    final temporadas = _temporadas;
+    if (temporadas.length < 2) return const SizedBox.shrink();
+
+    return SizedBox(
+      height: 38,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        children: [
+          for (final t in temporadas)
+            _ChipTemporada(
+              numero: t,
+              elegida: (_temporada ?? temporadas.first) == t,
+              onOk:
+                  () => setState(() {
+                    _temporada = t;
+                    _episodioElegido = 0;
+                  }),
+            ),
+        ],
+      ),
+    );
+  }
+
   // ── Bloque de episodios ─────────────────────────────────────────────────
   //
   // Una sola fila de numeros, como en las apps de IPTV: la lista vertical
   // obligaba a bajar episodio a episodio hasta el 12, y con el mando eso son
   // doce pulsaciones para algo que aqui son tres.
   Widget _bloqueEpisodios(List<M3UItem> episodios) {
-    final temporadas = _temporadas;
     final primero =
         episodios.isEmpty ? null : (episodios.first.episodeNumber ?? 1);
     final ultimo =
@@ -837,29 +902,6 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Selector de temporada, solo si hay mas de una.
-        if (temporadas.length > 1) ...[
-          SizedBox(
-            height: 38,
-            child: ListView(
-              scrollDirection: Axis.horizontal,
-              children: [
-                for (final t in temporadas)
-                  _ChipTemporada(
-                    numero: t,
-                    elegida: (_temporada ?? temporadas.first) == t,
-                    onOk:
-                        () => setState(() {
-                          _temporada = t;
-                          _episodioElegido = 0;
-                        }),
-                  ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 10),
-        ],
-
         // ── La cabecera de la fila ──────────────────────────────────────
         //
         // Antes aqui iba "1-6" en naranja y nada mas. Un rango suelto y en un
