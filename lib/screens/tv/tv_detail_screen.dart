@@ -607,7 +607,15 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
                                             if (hayEpisodios &&
                                                 _temporadas.length > 1) ...[
                                               const Spacer(),
-                                              _selectorTemporadas(),
+                                              // Un pelin por debajo del fondo
+                                              // de la columna. Con `Transform`
+                                              // y no con relleno: asi no
+                                              // reserva hueco y no empuja a la
+                                              // fila de episodios.
+                                              Transform.translate(
+                                                offset: const Offset(0, 1),
+                                                child: _selectorTemporadas(),
+                                              ),
                                             ],
                                           ],
                                         ),
