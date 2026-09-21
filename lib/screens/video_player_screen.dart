@@ -2205,6 +2205,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       // fluidez inicial. Son llamadas nativas rápidas; el retraso extra antes de
       // open() es mínimo y se compensa con creces.
       // Configurar MPV ANTES de open() en paralelo (Future.wait) para 0 latencia.
+      //
+      // ESTE BLOQUE SE MIDE A PROPOSITO.
+      //
+      // Es bloqueante y esta justo delante de `open()`, asi que todo lo que
+      // tarde aqui el usuario lo ve como "el video tarda en arrancar". El
+      // comentario de arriba dice "el retraso extra es minimo", y eso hay que
+      // poder comprobarlo en vez de creerlo: cualquiera que anada un `await`
+      // aqui —y ya paso con la extraccion del shader— lo vera en el log.
+      final relojConfig = Stopwatch()..start();
       await (() async {
         final activePlayer = _player;
         if (activePlayer == null) return;
@@ -2453,11 +2462,18 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             final bool conRealce =
                 _activeDecoder == 'mediacodec-copy' &&
                 filtro.permiteNivel2(_currentItem.url, intento: _retryCount);
-            // El shader se saca del APK a disco la primera vez que hace falta.
-            // Solo se pide cuando de verdad va a usarse: en el camino de
-            // hardware seria escribir un archivo para nada.
-            final rutaShader =
-                conRealce ? await filtro.rutaDelShaderDesbloqueo() : null;
+            // Se RECOGE, no se espera.
+            //
+            // Sacar el shader del APK cuesta un canal de plataforma y una
+            // escritura con flush, y aqui estamos ANTES de `open()`: cada
+            // milisegundo que se gaste en este bloque es tiempo que el usuario
+            // ve como "el video tarda en arrancar". Se precalienta en el
+            // arranque de la app (ver `FiltroCalidadService.init`) y aqui solo
+            // se lee lo que ya haya.
+            //
+            // Si todavia no esta, se reproduce sin desbloqueo esta vez y la
+            // siguiente ya lo tendra. Un adorno no bloquea una apertura.
+            final rutaShader = conRealce ? filtro.rutaShaderSiYaEsta : null;
             final ajustes = <String, String>{
               'hls-bitrate': filtro.hlsBitratePara(_currentItem.url) ?? 'auto',
               ...(conRealce
@@ -2481,6 +2497,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           debugPrint('Error configurando MPV: $e');
         }
       })();
+      debugPrint(
+        'PERFTRACE configurar-mpv (antes de open) = '
+        '${relojConfig.elapsedMilliseconds}ms',
+      );
 
       // ── ADAPTIVE QUALITY: Aplicar perfil inicial basado en estado de red ──
       // Se hace DESPUÉS del microtask original para no bloquear el arranque.

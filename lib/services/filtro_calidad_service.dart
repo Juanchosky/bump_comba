@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -266,6 +267,15 @@ class FiltroCalidadService {
         'este aparato queda descartado',
       );
       await _guardarVeredicto(VeredictoNivel2.noApto);
+    }
+
+    // El shader se saca a disco AHORA, en el arranque de la app y sin esperar
+    // a que termine. Asi cuando alguien le de a reproducir ya esta ahi y no
+    // hay que pararse a escribir un archivo con el usuario mirando.
+    //
+    // Si el aparato ya salio descartado no se molesta: no se va a usar.
+    if (_veredicto != VeredictoNivel2.noApto) {
+      unawaited(rutaDelShaderDesbloqueo());
     }
   }
 
@@ -563,6 +573,21 @@ class FiltroCalidadService {
   /// Ruta en disco del shader, o `null` si no se pudo dejar ahi.
   String? _rutaShader;
   bool _shaderIntentado = false;
+
+  /// La ruta del shader SI YA ESTA LISTA, sin esperar a nada.
+  ///
+  /// POR QUE ESTO EXISTE Y NO SE LLAMA AL `await` DIRECTAMENTE
+  /// Porque sacar el shader del APK cuesta un `rootBundle.loadString`, un
+  /// `getApplicationSupportDirectory()` —que es un canal de plataforma— y una
+  /// escritura con `flush`, todo en el isolate principal. Puesto en el camino
+  /// de `open()` eso es tiempo que el usuario ve como "el video tarda en
+  /// arrancar". Se precalienta en [init], segundos antes de que nadie
+  /// reproduzca nada, y aqui solo se recoge.
+  ///
+  /// `null` si todavia no esta: se reproduce sin desbloqueo esta vez (el resto
+  /// del nivel 2 se aplica igual) y la siguiente ya lo tendra. Nunca se
+  /// bloquea la apertura por un adorno.
+  String? get rutaShaderSiYaEsta => _rutaShader;
 
   /// Deja el shader de desbloqueo en un archivo de verdad y devuelve su ruta.
   ///

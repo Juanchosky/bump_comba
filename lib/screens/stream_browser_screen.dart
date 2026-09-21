@@ -773,10 +773,13 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                           );
                         },
                         child:
-                            // Mostrar shimmer si está cargando o si el
-                            // refresco de contenido propio (Supabase) aún
-                            // no terminó y no hay nada que mostrar todavía.
+                            // Mostrar shimmer completo mientras carga el
+                            // catálogo O mientras el banner de TMDB aún no
+                            // llegó. Sin la segunda condición, el contenido
+                            // aparece a medias: las filas de abajo visibles y
+                            // el banner en shimmer al mismo tiempo.
                             (_isLoading ||
+                                    _m3uService.isFetchingTrendingBanner ||
                                     (!_hasError &&
                                         _m3uService.isCustomRefreshing &&
                                         _m3uService.movies.isEmpty &&
@@ -840,14 +843,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
               ],
             ),
           ),
-          bottomNavigationBar:
-              (_isLoading ||
-                      (!_hasError &&
-                          _m3uService.isCustomRefreshing &&
-                          _m3uService.movies.isEmpty &&
-                          _m3uService.series.isEmpty))
-                  ? null
-                  : _buildBottomNav(),
+          bottomNavigationBar: _buildBottomNav(),
         ),
       ),
     );
@@ -4899,8 +4895,7 @@ class _HiddenMoviesShimmer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SingleChildScrollView(
-      physics:
-          const NeverScrollableScrollPhysics(), // Prevent scrolling while loading
+      physics: const NeverScrollableScrollPhysics(),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -4908,45 +4903,62 @@ class _HiddenMoviesShimmer extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 37, 16, 20),
             child: _ShimmerBox(
-              height: 480, // Match Hero height
+              height: 480,
               width: double.infinity,
               borderRadius: BorderRadius.circular(12),
             ),
           ),
-          const SizedBox(height: 16),
-          // Shimmer Category Title
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Row(
-              children: [
-                _ShimmerBox(
-                  width: 150,
-                  height: 20,
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                const Spacer(),
-                _ShimmerBox(
-                  width: 60,
-                  height: 16,
-                  borderRadius: BorderRadius.circular(4),
-                ),
-              ],
-            ),
-          ),
-          // Shimmer Category Row
-          SizedBox(
-            height: 216,
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              itemCount: 5,
-              itemBuilder: (context, index) {
-                return const _ShimmerItem();
-              },
-            ),
-          ),
+          const SizedBox(height: 8),
+          // Fila 1
+          _ShimmerRow(),
+          const SizedBox(height: 8),
+          // Fila 2
+          _ShimmerRow(),
+          const SizedBox(height: 8),
+          // Fila 3
+          _ShimmerRow(),
         ],
       ),
+    );
+  }
+}
+
+class _ShimmerRow extends StatelessWidget {
+  const _ShimmerRow();
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Row(
+            children: [
+              _ShimmerBox(
+                width: 150,
+                height: 20,
+                borderRadius: BorderRadius.circular(4),
+              ),
+              const Spacer(),
+              _ShimmerBox(
+                width: 60,
+                height: 16,
+                borderRadius: BorderRadius.circular(4),
+              ),
+            ],
+          ),
+        ),
+        SizedBox(
+          height: 216,
+          child: ListView.builder(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            itemCount: 5,
+            itemBuilder: (context, index) => const _ShimmerItem(),
+          ),
+        ),
+      ],
     );
   }
 }

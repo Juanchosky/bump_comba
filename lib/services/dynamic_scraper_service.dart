@@ -856,6 +856,22 @@ class DynamicScraperService {
               'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36',
           javaScriptEnabled: true,
           useShouldInterceptRequest: true,
+          // LA PAGINA SE PIDE FRESCA, SIEMPRE.
+          //
+          // Estas paginas incrustan un token con caducidad en la URL del
+          // stream (`?hdnts=exp=...`). Sin esto, el WebView servia el HTML y
+          // el JS desde la cache de Chromium y el scraper extraia el token
+          // GUARDADO, que puede llevar horas muerto. Medido el 2026-09-21: la
+          // URL resuelta traia `exp=1789993244`, caducado 2,4 horas antes, y
+          // era byte a byte la misma que en un log de 13 horas atras. MPV
+          // recibia un 403 en cada segmento, no decodificaba nada, y se
+          // quedaba 35 s en "Stall persistente" antes de recargar — para
+          // volver a extraer el mismo token muerto.
+          //
+          // El coste es volver a bajar el HTML y el JS de la pagina en cada
+          // extraccion. Es exactamente lo que hay que pagar: un token vivo no
+          // se puede cachear.
+          cacheMode: CacheMode.LOAD_NO_CACHE,
           allowsInlineMediaPlayback: false,
           offscreenPreRaster: false,
           transparentBackground: true,
@@ -1057,6 +1073,28 @@ class DynamicScraperService {
   ///
   /// Si no trae `exp`, diez minutos: suficiente para el caso que importa —el
   /// mismo titulo dos veces seguidas— y corto para que nada se quede rancio.
+  /// El token de la URL YA esta muerto.
+  ///
+  /// POR QUE SE COMPRUEBA ANTES DE ENTREGARLA
+  /// Porque entregarla no es gratis: MPV recibe un 403 en cada segmento, no
+  /// decodifica nada, y el reproductor tarda 35 segundos en darse cuenta y
+  /// recargar. Medido el 2026-09-21. Si el token esta caducado, mas vale
+  /// descartar el candidato y seguir buscando —o fallar rapido— que hacer
+  /// esperar medio minuto para nada.
+  ///
+  /// Se mira el `exp=` en crudo, sin el margen de un minuto de
+  /// [_caducidadDe]: aqui la pregunta no es "cuanto le queda" sino "esta ya
+  /// muerto".
+  static bool _tokenCaducado(String url) {
+    final m = RegExp(r'exp=(\d{10})').firstMatch(url);
+    if (m == null) return false;
+    final seg = int.tryParse(m.group(1)!);
+    if (seg == null) return false;
+    return DateTime.fromMillisecondsSinceEpoch(
+      seg * 1000,
+    ).isBefore(DateTime.now());
+  }
+
   DateTime _caducidadDe(String url) {
     final m = RegExp(r'exp=(\d{10})').firstMatch(url);
     if (m != null) {
@@ -1359,6 +1397,22 @@ class DynamicScraperService {
               'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36',
           javaScriptEnabled: true,
           useShouldInterceptRequest: true,
+          // LA PAGINA SE PIDE FRESCA, SIEMPRE.
+          //
+          // Estas paginas incrustan un token con caducidad en la URL del
+          // stream (`?hdnts=exp=...`). Sin esto, el WebView servia el HTML y
+          // el JS desde la cache de Chromium y el scraper extraia el token
+          // GUARDADO, que puede llevar horas muerto. Medido el 2026-09-21: la
+          // URL resuelta traia `exp=1789993244`, caducado 2,4 horas antes, y
+          // era byte a byte la misma que en un log de 13 horas atras. MPV
+          // recibia un 403 en cada segmento, no decodificaba nada, y se
+          // quedaba 35 s en "Stall persistente" antes de recargar — para
+          // volver a extraer el mismo token muerto.
+          //
+          // El coste es volver a bajar el HTML y el JS de la pagina en cada
+          // extraccion. Es exactamente lo que hay que pagar: un token vivo no
+          // se puede cachear.
+          cacheMode: CacheMode.LOAD_NO_CACHE,
           useShouldOverrideUrlLoading: true,
           mediaPlaybackRequiresUserGesture: false,
           offscreenPreRaster: false,
@@ -1653,6 +1707,14 @@ class DynamicScraperService {
             if (_esUrlFileHoster(urlStr)) {
               debugPrint(
                 'DynamicScraperService: Ignorando file-hoster en WebView: $urlStr',
+              );
+            } else if (_tokenCaducado(urlStr)) {
+              // La pagina ha servido un token muerto (casi siempre porque su
+              // HTML venia de cache). Aceptarlo cuesta 35 s de espera en el
+              // reproductor para nada.
+              debugPrint(
+                'DynamicScraperService: candidato con token CADUCADO, '
+                'descartado: $urlStr',
               );
             } else {
               final score = _getQualityScore(urlStr);
