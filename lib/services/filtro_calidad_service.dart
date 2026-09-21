@@ -168,14 +168,37 @@ class FiltroCalidadService {
 
   static const String _clave = 'filtro_calidad_techos';
 
-  /// El `_v2` no es decorativo. La primera version del canario daba por
-  /// fallido cualquier intento que no llegara a confirmarse en 20 s, y un
-  /// cierre normal —el usuario sale del video, o un hot restart— es
-  /// indistinguible de un ANR desde el arranque siguiente. Resultado: aparatos
-  /// perfectamente capaces marcados `noApto` para siempre. Al cambiar la clave,
-  /// esos veredictos falsos se quedan huerfanos y todo el mundo vuelve a
-  /// empezar de cero con la logica arreglada.
-  static const String _claveVeredicto = 'filtro_calidad_nivel2_veredicto_v2';
+  /// El sufijo de version no es decorativo: cada vez que la logica que PRODUCE
+  /// el veredicto tenia un fallo, los veredictos viejos son basura y hay que
+  /// tirarlos.
+  ///
+  ///  · `_v2` — la primera version del canario daba por fallido cualquier
+  ///    intento que no se confirmara en 20 s, y un cierre normal (salir del
+  ///    video, un hot restart) es indistinguible de un ANR desde el arranque
+  ///    siguiente.
+  ///  · `_v3` — faltaba el margen de arranque: una recarga por un STREAM roto
+  ///    —un token caducado, por ejemplo— descalificaba al aparato. Medido en
+  ///    un telefono el 2026-09-21: quedo en `noApto` por un stream muerto,
+  ///    cuando ese mismo aparato ya habia decodificado a 24 fps con
+  ///    `mediacodec-copy`.
+  static const String _claveVeredicto = 'filtro_calidad_nivel2_veredicto_v3';
+
+  /// Cuando se descarto el aparato, en milisegundos de epoca.
+  static const String _claveDescartadoEn = 'filtro_calidad_nivel2_descarte';
+
+  /// Cuanto dura un descarte antes de volver a intentarlo.
+  ///
+  /// POR QUE UN DESCARTE CADUCA
+  /// Porque `noApto` era PERMANENTE y sin vuelta atras, y eso es demasiado
+  /// frágil para una decision que se toma con UNA sola observacion: un stream
+  /// roto, un bache de red o un cierre raro bastaban para dejar el realce
+  /// apagado en ese aparato hasta reinstalar la app. Paso tres veces mientras
+  /// se desarrollaba esto.
+  ///
+  /// Con una cuarentena, lo peor que puede pasar es una reproduccion mala cada
+  /// siete dias — y un aparato descartado por error se cura solo. Siete y no
+  /// uno para que un equipo que de verdad no puede no lo pague cada dia.
+  static const Duration cuarentenaDescarte = Duration(days: 7);
 
   /// Cuanto tiene que aguantar un intento del nivel 2 para darlo por bueno.
   ///
@@ -250,6 +273,30 @@ class FiltroCalidadService {
             ? VeredictoNivel2.values[guardado]
             : VeredictoNivel2.sinProbar;
 
+    // LA CUARENTENA DEL DESCARTE.
+    //
+    // Un `noApto` caduca. Se mira ANTES del canario porque un descarte viejo
+    // ya no dice nada del aparato: pudo venir de un stream roto, de un bache
+    // de red o de un cierre raro, y dejar el realce apagado para siempre por
+    // eso es peor que arriesgar una reproduccion mala cada siete dias.
+    if (_veredicto == VeredictoNivel2.noApto) {
+      final cuando = _prefs?.getInt(_claveDescartadoEn);
+      final caducado =
+          cuando == null ||
+          DateTime.now()
+                  .difference(DateTime.fromMillisecondsSinceEpoch(cuando))
+                  .abs() >
+              cuarentenaDescarte;
+      if (caducado) {
+        debugPrint(
+          'FiltroCalidad: el descarte de este aparato ha caducado — se '
+          'vuelve a intentar',
+        );
+        await _guardarVeredicto(VeredictoNivel2.sinProbar);
+        await _prefs?.remove(_claveDescartadoEn);
+      }
+    }
+
     // EL CANARIO.
     //
     // Si el veredicto guardado sigue siendo `probando`, el intento anterior
@@ -282,6 +329,12 @@ class FiltroCalidadService {
   Future<void> _guardarVeredicto(VeredictoNivel2 v) async {
     _veredicto = v;
     await _prefs?.setInt(_claveVeredicto, v.index);
+    if (v == VeredictoNivel2.noApto) {
+      await _prefs?.setInt(
+        _claveDescartadoEn,
+        DateTime.now().millisecondsSinceEpoch,
+      );
+    }
   }
 
   void _cargarTechos() {
@@ -511,12 +564,37 @@ class FiltroCalidadService {
   /// tiene que llamar a [marcarNivel2EnPrueba] antes de abrir y a
   /// [confirmarNivel2Estable] cuando lleve [margenDePrueba] reproduciendo
   /// bien, o el canario del arranque lo dara por fallido.
+  /// DICE EN VOZ ALTA POR QUE NO.
+  ///
+  /// Devolver `false` por cuatro motivos distintos sin decir cual es el mismo
+  /// fallo silencioso que ya nos ha costado tres rondas en esta base de
+  /// codigo. En un log real el nivel 2 no entraba y no habia forma de saber si
+  /// era el veredicto, la gama del aparato o el techo sin medir: ahora se lee.
   bool permiteNivel2(String? idItem, {required int intento}) {
-    if (_veredicto == VeredictoNivel2.noApto) return false;
-    if (intento != 0) return false;
-    if (PerformanceService().isLowPerformance) return false;
-    final techo = techoConocido(idItem);
-    return techo != null && techo <= 720;
+    String? porQueNo;
+
+    if (_veredicto == VeredictoNivel2.noApto) {
+      porQueNo = 'este aparato salio descartado en una prueba anterior';
+    } else if (intento != 0) {
+      porQueNo = 'ya se esta reintentando (intento $intento)';
+    } else if (PerformanceService().isLowPerformance) {
+      porQueNo = 'aparato de gama baja';
+    } else {
+      final techo = techoConocido(idItem);
+      if (techo == null) {
+        porQueNo =
+            'no se sabe todavia a cuanto llega esta fuente — se apunta al '
+            'reproducirla y entrara la proxima vez';
+      } else if (techo > 720) {
+        porQueNo = 'la fuente llega a ${techo}p, no necesita realce';
+      }
+    }
+
+    if (porQueNo != null) {
+      debugPrint('FiltroCalidad: nivel 2 NO entra -> $porQueNo');
+      return false;
+    }
+    return true;
   }
 
   /// Deja la senal en disco ANTES de arriesgarse.

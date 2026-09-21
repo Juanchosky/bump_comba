@@ -340,6 +340,44 @@ void main() {
       expect(filtro.veredictoNivel2, VeredictoNivel2.sinProbar);
     });
 
+    test('un descarte reciente aguanta el reinicio', () async {
+      await filtro.descartarNivel2('prueba');
+      await filtro.init();
+      expect(filtro.veredictoNivel2, VeredictoNivel2.noApto);
+    });
+
+    test('un descarte viejo CADUCA y se vuelve a intentar', () async {
+      // Un `noApto` permanente es demasiado fragil para una decision tomada
+      // con una sola observacion: en un telefono de verdad, un stream con el
+      // token caducado dejo el realce apagado para siempre en un aparato que
+      // ya habia demostrado decodificar a 24 fps.
+      await filtro.descartarNivel2('prueba');
+      expect(filtro.veredictoNivel2, VeredictoNivel2.noApto);
+
+      // Se envejece el descarte mas alla de la cuarentena.
+      final viejo =
+          DateTime.now()
+              .subtract(FiltroCalidadService.cuarentenaDescarte * 2)
+              .millisecondsSinceEpoch;
+      SharedPreferences.setMockInitialValues({
+        'filtro_calidad_nivel2_veredicto_v3': VeredictoNivel2.noApto.index,
+        'filtro_calidad_nivel2_descarte': viejo,
+      });
+
+      await filtro.init();
+      expect(filtro.veredictoNivel2, VeredictoNivel2.sinProbar);
+    });
+
+    test('un descarte sin fecha se da por caducado', () async {
+      // Un veredicto escrito por una version anterior no trae fecha. Mejor
+      // reintentarlo que arrastrar un descarte del que no se sabe nada.
+      SharedPreferences.setMockInitialValues({
+        'filtro_calidad_nivel2_veredicto_v3': VeredictoNivel2.noApto.index,
+      });
+      await filtro.init();
+      expect(filtro.veredictoNivel2, VeredictoNivel2.sinProbar);
+    });
+
     test('un aparato aprobado que empieza a fallar se descarta', () async {
       await filtro.marcarNivel2EnPrueba();
       await filtro.confirmarNivel2Estable();

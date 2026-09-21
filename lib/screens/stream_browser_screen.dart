@@ -843,7 +843,15 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
               ],
             ),
           ),
-          bottomNavigationBar: _buildBottomNav(),
+          bottomNavigationBar:
+              (_isLoading ||
+                      _m3uService.isFetchingTrendingBanner ||
+                      (!_hasError &&
+                          _m3uService.isCustomRefreshing &&
+                          _m3uService.movies.isEmpty &&
+                          _m3uService.series.isEmpty))
+                  ? null
+                  : _buildBottomNav(),
         ),
       ),
     );
@@ -4908,57 +4916,38 @@ class _HiddenMoviesShimmer extends StatelessWidget {
               borderRadius: BorderRadius.circular(12),
             ),
           ),
-          const SizedBox(height: 8),
-          // Fila 1
-          _ShimmerRow(),
-          const SizedBox(height: 8),
-          // Fila 2
-          _ShimmerRow(),
-          const SizedBox(height: 8),
-          // Fila 3
-          _ShimmerRow(),
+          const SizedBox(height: 16),
+          // Shimmer Category Title
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Row(
+              children: [
+                _ShimmerBox(
+                  width: 150,
+                  height: 20,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                const Spacer(),
+                _ShimmerBox(
+                  width: 60,
+                  height: 16,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              ],
+            ),
+          ),
+          // Shimmer Category Row
+          SizedBox(
+            height: 216,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              itemCount: 5,
+              itemBuilder: (context, index) => const _ShimmerItem(),
+            ),
+          ),
         ],
       ),
-    );
-  }
-}
-
-class _ShimmerRow extends StatelessWidget {
-  const _ShimmerRow();
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Row(
-            children: [
-              _ShimmerBox(
-                width: 150,
-                height: 20,
-                borderRadius: BorderRadius.circular(4),
-              ),
-              const Spacer(),
-              _ShimmerBox(
-                width: 60,
-                height: 16,
-                borderRadius: BorderRadius.circular(4),
-              ),
-            ],
-          ),
-        ),
-        SizedBox(
-          height: 216,
-          child: ListView.builder(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            itemCount: 5,
-            itemBuilder: (context, index) => const _ShimmerItem(),
-          ),
-        ),
-      ],
     );
   }
 }

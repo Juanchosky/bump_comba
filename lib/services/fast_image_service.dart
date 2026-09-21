@@ -1257,16 +1257,14 @@ class _FastThumbnailState extends State<FastThumbnail>
     final String targetParams =
         widget.isHD
             ? 'imageView2/1/w/700/h/1050/format/webp/q/88'
-            : 'imageView2/1/w/300/h/450/format/webp/q/82';
+            : 'imageView2/1/w/500/h/750/format/webp/q/85';
 
     // Upgrade or adjust existing params if present
     if (clean.contains('imageView2')) {
-      if (widget.isHD) {
-        clean = clean.replaceAll(
-          RegExp(r'imageView2\/1\/w\/\d+\/h\/\d+\/format\/webp\/q\/\d+'),
-          targetParams,
-        );
-      }
+      clean = clean.replaceAll(
+        RegExp(r'imageView2\/1\/w\/\d+\/h\/\d+\/format\/webp\/q\/\d+'),
+        targetParams,
+      );
     } else if ((clean.contains('img.') || clean.contains('/cover/')) &&
         !clean.contains('imageMogr2')) {
       clean = clean.replaceAll(RegExp(r'!$'), '');
