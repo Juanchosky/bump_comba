@@ -657,6 +657,13 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
             await mpv.setProperty(e.key, e.value);
           }
           debugPrint('TvPlayer: ajustes de nivel 2 aplicados');
+          // Un respiro para que MPV tenga ya los parametros del video
+          // decodificados; recien aplicados los ajustes todavia salen vacios.
+          unawaited(
+            Future<void>.delayed(const Duration(seconds: 3), () async {
+              if (!_muerto) await filtro.diagnosticoDeImagen(mpv);
+            }),
+          );
         }
       } catch (e) {
         // Que un ajuste no exista en este build no puede tumbar la

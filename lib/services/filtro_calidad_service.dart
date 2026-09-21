@@ -717,31 +717,104 @@ class FiltroCalidadService {
   ///     limpia, que es la unica forma de que un escalador sharp no se dedique
   ///     a resaltar los cuadrados.
   ///  3. `deband` remata los degradados.
+  /// Imprime lo que MPV cree de verdad sobre el fotograma que esta pintando.
+  ///
+  /// ── POR QUE HACE FALTA MEDIR ESTO ──────────────────────────────────────
+  ///
+  /// El shader se bajo del 100% al 28% del filtrado y el velo siguio igual.
+  /// Eso no es un ajuste corto: es la prueba de que el velo NO lo pone el
+  /// shader, y que llevamos rondas tocando la palanca equivocada.
+  ///
+  /// El sospechoso que si encaja es el RANGO DE COLOR. Con `mediacodec` la
+  /// conversion YUV->RGB la hace el compositor de Android; con
+  /// `mediacodec-copy` la hace MPV, y los bufers de MediaCodec no traen de
+  /// forma fiable si el video es de rango limitado (16-235) o completo
+  /// (0-255). Si MPV supone completo en un video limitado, el negro 16 se
+  /// pinta como gris: un velo sobre TODA la imagen, desde el primer
+  /// fotograma y pase lo que pase con el shader.
+  ///
+  /// Esto no corrige nada a proposito. Primero hay que saber que dice MPV; si
+  /// aqui sale `colorlevels: full`, el arreglo es una linea, y si sale
+  /// `limited` hemos descartado la hipotesis con certeza en vez de encadenar
+  /// otra suposicion.
+  ///
+  /// De paso confirma si el shader llego a cargarse: nunca se ha comprobado,
+  /// y un `glsl-shaders` vacio significaria que todo este rato el unico que
+  /// estaba suavizando era `deband`.
+  Future<void> diagnosticoDeImagen(dynamic mpv) async {
+    if (mpv == null) return;
+    for (final propiedad in const [
+      'video-params/colorlevels',
+      'video-params/colormatrix',
+      'video-params/pixelformat',
+      'video-params/w',
+      'video-params/h',
+      'glsl-shaders',
+      'deband',
+    ]) {
+      try {
+        final valor = await mpv.getProperty(propiedad);
+        debugPrint('DIAGNOSTICO $propiedad = $valor');
+      } catch (e) {
+        debugPrint('DIAGNOSTICO $propiedad -> no se pudo leer ($e)');
+      }
+    }
+  }
+
   Map<String, String> ajustesMpvNivel2({String? rutaShader}) {
     return {
       if (rutaShader != null) 'glsl-shaders': rutaShader,
       'scale': 'ewa_lanczossharp',
       'cscale': 'spline36',
       'dscale': 'mitchell',
-      'linear-upscaling': 'yes',
-      'sigmoid-upscaling': 'yes',
       'correct-downscaling': 'yes',
-      // DEBAND SUAVE, NO FUERTE: EL SHADER YA SUAVIZA LAS ZONAS PLANAS.
+
+      // ── ESCALADO EN LUZ LINEAL: APAGADO ────────────────────────────────
       //
-      // Estaba en 2 iteraciones y umbral 48, de cuando el shader no llegaba
-      // al bloque completo. Con el desbloqueo de dos pasadas en marcha, los
-      // dos hacen el MISMO trabajo sobre las mismas zonas, y dos suavizadores
-      // apilados es lo que se ve como un velo encima de la imagen ("se ve
-      // nublado", 2026-09-21). El shader sabe distinguir textura de artefacto
-      // por la oscilacion; `deband` no sabe, solo suaviza.
+      // `linear-upscaling` convierte la imagen a luz lineal, la escala y la
+      // devuelve a gamma. `sigmoid-upscaling` hace lo mismo con una curva en
+      // S. Sobre el papel es mas correcto, y por eso los puse.
       //
-      // Queda una pasada corta para las bandas de degradados MUY anchos, que
-      // es lo unico que un filtro de 8 px de alcance puede no pillar. Si
-      // vuelven las bandas en cielos, subir el umbral antes que las
-      // iteraciones.
+      // El problema es que son las DOS UNICAS cosas de esta lista que tocan
+      // el tono de la imagen ENTERA. Todo lo demas —el shader, deband,
+      // scale— actua por zonas. Y un velo uniforme sobre toda la pantalla,
+      // que no se inmuta cuando el shader baja del 100% al 28% de filtrado,
+      // solo lo puede poner algo que actue sobre todo por igual.
+      //
+      // Descartado ya, con el diagnostico del 2026-09-21: NO es el rango de
+      // color. MPV lo detecta bien (`colorlevels = limited`, `bt.709`).
+      // Tampoco es que el shader no cargue: carga (`glsl-shaders` devuelve la
+      // ruta). Quedan estos dos.
+      //
+      // Lo que se pierde apagandolos es un pelo de correccion en los bordes
+      // de alto contraste al ampliar. Lo que se gana, si la hipotesis es
+      // buena, es una imagen que no parece vista a traves de una gasa.
+      'linear-upscaling': 'no',
+      'sigmoid-upscaling': 'no',
+
+      // ── DEBAND: UN POCO, Y A PROPOSITO ─────────────────────────────────
+      //
+      // Aqui hay que separar dos cosas que se apagaron juntas y NO son lo
+      // mismo (2026-09-21, probado en el aparato):
+      //
+      //  · El escalado en luz lineal era VELO PURO: cambia el tono de toda
+      //    la imagen y no esconde nada. Todo coste y ningun beneficio. Fuera
+      //    para siempre.
+      //
+      //  · `deband` SI suaviza de verdad, y por eso tapa bandas y restos de
+      //    compresion. Apagandolo desaparecio el velo pero la reproduccion
+      //    "se ve muy mal": sin nada que los disimule, los artefactos de una
+      //    fuente a bitrate corto quedan al aire.
+      //
+      // O sea que un poco de suavizado no es un defecto en este material: es
+      // parte del acabado. Lo que sobraba era el velo tonal, no este.
+      //
+      // 1 iteracion y umbral 20: la mitad largo de lo que habia cuando se
+      // quejo del velo, y con el escalado lineal ya fuera. Si se ven bandas
+      // en cielos, subir el umbral a 32 antes que las iteraciones.
       'deband': 'yes',
       'deband-iterations': '1',
-      'deband-threshold': '24',
+      'deband-threshold': '20',
       'deband-range': '16',
       'dither-depth': 'auto',
     };

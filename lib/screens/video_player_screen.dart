@@ -2502,6 +2502,18 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         '${relojConfig.elapsedMilliseconds}ms',
       );
 
+      // Que dice MPV del fotograma que esta pintando de verdad. Ver
+      // `diagnosticoDeImagen`: es para saber si el velo lo pone el rango de
+      // color, y de paso si el shader llego a cargarse.
+      if (_nivel2EnUso) {
+        Future.delayed(const Duration(seconds: 3), () async {
+          if (!mounted || _player == null) return;
+          await FiltroCalidadService().diagnosticoDeImagen(
+            _player?.platform as dynamic,
+          );
+        });
+      }
+
       // ── ADAPTIVE QUALITY: Aplicar perfil inicial basado en estado de red ──
       // Se hace DESPUÉS del microtask original para no bloquear el arranque.
       Future.delayed(const Duration(milliseconds: 1200), () async {

@@ -215,7 +215,26 @@ void main() {
       // Y el escalador sigue ahi: el shader limpia y el escalador estira
       // DESPUES, sobre la imagen ya limpia.
       expect(a['scale'], 'ewa_lanczossharp');
+    });
+
+    test('el escalado en luz lineal se queda fuera', () {
+      // ESTE era el velo, y se probo en el aparato: es de lo poco que toca el
+      // tono de la imagen ENTERA, y un velo uniforme solo lo puede poner algo
+      // que actue sobre todo por igual. No esconde ningun artefacto a cambio,
+      // asi que era todo coste.
+      final a = filtro.ajustesMpvNivel2(rutaShader: '/datos/desbloqueo.glsl');
+      expect(a['linear-upscaling'], 'no');
+      expect(a['sigmoid-upscaling'], 'no');
+    });
+
+    test('pero queda algo de deband: en este material hace falta', () {
+      // Apagandolo tambien desaparecia el velo, pero la reproduccion "se ve
+      // muy mal": sin nada que los disimule, los artefactos de una fuente a
+      // bitrate corto quedan al aire. Un poco de suavizado aqui no es un
+      // defecto, es parte del acabado.
+      final a = filtro.ajustesMpvNivel2(rutaShader: '/datos/desbloqueo.glsl');
       expect(a['deband'], 'yes');
+      expect(a['deband-iterations'], '1');
     });
 
     test('sin ruta se aplica el resto y no se inventa la clave', () {
