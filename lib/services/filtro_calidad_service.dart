@@ -726,10 +726,23 @@ class FiltroCalidadService {
       'linear-upscaling': 'yes',
       'sigmoid-upscaling': 'yes',
       'correct-downscaling': 'yes',
+      // DEBAND SUAVE, NO FUERTE: EL SHADER YA SUAVIZA LAS ZONAS PLANAS.
+      //
+      // Estaba en 2 iteraciones y umbral 48, de cuando el shader no llegaba
+      // al bloque completo. Con el desbloqueo de dos pasadas en marcha, los
+      // dos hacen el MISMO trabajo sobre las mismas zonas, y dos suavizadores
+      // apilados es lo que se ve como un velo encima de la imagen ("se ve
+      // nublado", 2026-09-21). El shader sabe distinguir textura de artefacto
+      // por la oscilacion; `deband` no sabe, solo suaviza.
+      //
+      // Queda una pasada corta para las bandas de degradados MUY anchos, que
+      // es lo unico que un filtro de 8 px de alcance puede no pillar. Si
+      // vuelven las bandas en cielos, subir el umbral antes que las
+      // iteraciones.
       'deband': 'yes',
-      'deband-iterations': '2',
-      'deband-threshold': '48',
-      'deband-range': '12',
+      'deband-iterations': '1',
+      'deband-threshold': '32',
+      'deband-range': '16',
       'dither-depth': 'auto',
     };
   }
