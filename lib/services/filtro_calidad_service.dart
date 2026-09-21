@@ -741,7 +741,7 @@ class FiltroCalidadService {
       // iteraciones.
       'deband': 'yes',
       'deband-iterations': '1',
-      'deband-threshold': '32',
+      'deband-threshold': '24',
       'deband-range': '16',
       'dither-depth': 'auto',
     };

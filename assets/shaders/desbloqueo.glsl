@@ -23,7 +23,7 @@
 // separabilidad— pero la aproximacion separable es la practica habitual en
 // tiempo real y visualmente se comporta igual.
 //
-// ── LAS TRES COMPUERTAS, Y POR QUE HACEN FALTA LAS TRES ────────────────────
+// ── LAS CUATRO COMPUERTAS, Y POR QUE HACEN FALTA LAS CUATRO ────────────────────
 //
 // 1. `rango` pesa cada vecino por lo PARECIDO que es al pixel central. Con un
 //    alcance de 8 px muchas tomas caen al otro lado de un borde, y el peso de
@@ -46,17 +46,36 @@
 //    exactamente lo que se ve como un velo por encima.
 //
 //    Pero hay una diferencia FISICA que si los separa: un macrobloque es un
-//    ESCALON —plano, salto, plano— y la textura OSCILA. Asi que en vez de
-//    mirar cuanto salta, se mira cuantas veces CAMBIA DE SENTIDO en el
-//    vecindario cercano:
+//    ESCALON —plano, salto, plano— y la textura OSCILA. Se mide como un
+//    COCIENTE: cuanta de la variacion local va en una sola direccion.
 //
-//      · Frontera de bloque   [0, 0, 0, 10, 10]  -> 0 cambios de signo.
-//      · Degradado de cielo   [0, 2, 4,  6,  8]  -> 0 cambios de signo.
-//      · Grano, tela, poros   [0, 4,-2,  5, -3]  -> 3 cambios de signo.
+//      · Frontera de bloque   [0, 0, 0, 10, 10]  -> 10/10 = 1,00  filtrar
+//      · Degradado de cielo   [0, 2, 4,  6,  8]  ->  8/8  = 1,00  filtrar
+//      · Grano, tela, poros   [0, 4,-2,  5, -3]  ->  3/25 = 0,12  no tocar
 //
-//    Con 0 o 1 cambios el filtro entra entero; con 3 se apaga. Los dos
-//    primeros casos son justo los que hay que arreglar y el tercero es justo
-//    el que habia que dejar en paz.
+//    Que sea un cociente es lo importante: NO depende de la amplitud. La
+//    primera version usaba un umbral absoluto (~1 nivel de 255) y por eso se
+//    comia la microtextura mas fina — la piel, sobre todo, que es justo la
+//    que se nota cuando falta ("se ven como con maquillaje", 2026-09-21).
+//
+// 4. `reja` — LA CUARTA, Y LA QUE MAS CAMBIA EL RESULTADO.
+//
+//    El fallo de fondo de las tres anteriores era filtrar los 921.600 pixeles
+//    por igual. Y con SIGMA = 0,09, un vecino que se diferencia en 4 niveles
+//    pesa 0,985: dentro de una cara TODOS los pixeles entran con peso casi
+//    entero, asi que el bilateral degenera en una gaussiana de radio 8. Las
+//    otras compuertas eran lo unico que separaba un rostro de un desenfoque,
+//    y no daban abasto. Bajar SIGMA no vale: tiene que llegar a ~23 niveles
+//    para aplanar el escalon.
+//
+//    La salida es lo que hacen H.264 y HEVC en su propio desbloqueo: filtrar
+//    SOLO SOBRE LA REJILLA. En el interior de un bloque no hay ninguna
+//    frontera que borrar, solo detalle que perder. Las fronteras son el 12%
+//    de la imagen; el otro 88% se estaba emborronando para nada.
+//
+//    No es un corte seco sino un suelo (SUELO_FUERA = 0,25): si el flujo no
+//    estuviera alineado a 16 px —un recorte raro, otro tamaño de bloque— el
+//    filtro sigue actuando a un cuarto en vez de desaparecer.
 //
 // POR QUE ENGANCHA EN `LUMA` Y NO EN `MAIN`
 //
@@ -69,8 +88,9 @@
 //
 // SI HAY QUE AJUSTARLO, en este orden y SIEMPRE en las dos pasadas (que una
 // quede mas fuerte que la otra se ve como estrias):
-//   · Vuelven los cuadros   -> subir SIGMA, y BORDE_ALTO si hace falta.
-//   · Sigue nublado          -> bajar OSC_ALTA (apaga el filtro antes).
+//   · Vuelven los cuadros    -> subir ANCHO_REJA a 3,0; luego SIGMA.
+//   · Se ve nublado          -> bajar SUELO_FUERA (0,25 -> 0,10).
+//   · Caras de plastico      -> bajar MONO_ALTA (protege textura antes).
 //   · Se ve de plastico      -> bajar FUERZA.
 //   · Halos junto a bordes   -> subir BORDE_BAJO.
 
@@ -80,7 +100,7 @@
 
 // Cuanto del promedio entra en la zona mas plana, por pasada. Las dos pasadas
 // se componen, asi que el efecto total es mayor que este numero.
-#define FUERZA 0.86
+#define FUERZA 0.70
 
 // Umbral de "estos dos vecinos son el mismo color, con la compresion de por
 // medio". En unidades de luma (0..1): 0,09 son ~23 niveles de 255, el tamaño
@@ -90,22 +110,36 @@
 // Caida del peso por distancia, en pixeles. 4,0 deja que la toma de +-8 pese
 // todavia 0,14: poco, pero lo justo para arrastrar el valor del bloque vecino
 // y aplanar el escalon.
-#define SIGMA_ESPACIAL 4.0
+#define SIGMA_ESPACIAL 3.0
 
 // Donde empieza y acaba de apagarse la pasada por amplitud del salto.
 #define BORDE_BAJO 0.10
 #define BORDE_ALTO 0.32
 
-// Cuantos cambios de sentido hacen falta para dar el vecindario por textura.
-// Por debajo de OSC_BAJA es un escalon o un degradado y el filtro entra
-// entero; por encima de OSC_ALTA es grano y no se toca.
-#define OSC_BAJA 1.0
-#define OSC_ALTA 2.5
+// Cuanta de la variacion local tiene que ir en una sola direccion para dar el
+// vecindario por estructura (escalon o degradado) y filtrarlo. Por debajo de
+// MONO_BAJA es textura y no se toca.
+#define MONO_BAJA 0.35
+#define MONO_ALTA 0.75
 
-// Diferencia minima para que cuente como "sentido". ~1 nivel de 255: por
-// debajo de eso es ruido de cuantizacion y contarlo como textura apagaria el
-// filtro justo en las zonas planas que hay que arreglar.
-#define MINIMO 0.004
+// Variacion por debajo de la cual el vecindario se da por plano del todo: no
+// hay textura que proteger, asi que se filtra entero.
+#define PLANO_TOTAL 0.002
+
+// La rejilla del codificador, y cuanto se sigue filtrando fuera de ella.
+#define REJA 16.0
+#define ANCHO_REJA 2.0
+#define SUELO_FUERA 0.05
+
+// Cuanto filtrar en esta coordenada, segun lo cerca que caiga de una frontera
+// de macrobloque. `c` es la coordenada del pixel EN EL EJE DE ESTA PASADA: la
+// pasada horizontal mira columnas y la vertical, filas.
+float enLaReja(float c) {
+    float dentro = mod(c, REJA);
+    float distancia = min(dentro, REJA - dentro);
+    float cerca = 1.0 - smoothstep(ANCHO_REJA, ANCHO_REJA + 2.0, distancia);
+    return SUELO_FUERA + (1.0 - SUELO_FUERA) * cerca;
+}
 
 vec4 hook() {
     float centro = HOOKED_tex(HOOKED_pos).x;
@@ -125,18 +159,22 @@ vec4 hook() {
     float mayorSaltoCerca = max(abs(m1 - centro), abs(p1 - centro));
 
     // Oscilacion: cambios de sentido en las diferencias consecutivas.
+    // MONOTONIA: cuanta de la variacion del vecindario va en UNA sola
+    // direccion. Es un cociente, asi que NO depende de la amplitud: funciona
+    // igual con un escalon de 23 niveles que con poros de 2. El umbral
+    // absoluto de antes decidia por amplitud, y por eso se comia la
+    // microtextura mas fina.
+    //
+    //   escalon  [0,0,0,9,9]   -> variacion 9,  neta 9 -> 1,00 (filtrar)
+    //   grano    [0,4,-2,5,-3] -> variacion 25, neta 3 -> 0,12 (no tocar)
     float d1 = m1 - m2;
     float d2 = centro - m1;
     float d3 = p1 - centro;
     float d4 = p2 - p1;
-    float s1 = abs(d1) > MINIMO ? sign(d1) : 0.0;
-    float s2 = abs(d2) > MINIMO ? sign(d2) : 0.0;
-    float s3 = abs(d3) > MINIMO ? sign(d3) : 0.0;
-    float s4 = abs(d4) > MINIMO ? sign(d4) : 0.0;
-    float oscilacion = 0.0;
-    oscilacion += (s1 * s2 < 0.0) ? 1.0 : 0.0;
-    oscilacion += (s2 * s3 < 0.0) ? 1.0 : 0.0;
-    oscilacion += (s3 * s4 < 0.0) ? 1.0 : 0.0;
+    float variacion = abs(d1) + abs(d2) + abs(d3) + abs(d4);
+    float neta = abs(d1 + d2 + d3 + d4);
+    // Si no varia NADA no hay textura que proteger: filtrar sale gratis.
+    float monotonia = variacion < PLANO_TOTAL ? 1.0 : neta / variacion;
 
     // ── EL PROMEDIO BILATERAL ───────────────────────────────────────────
     float acumulado = centro;
@@ -181,10 +219,11 @@ vec4 hook() {
     float promedio = acumulado / max(pesos, 1e-6);
 
     float planitud = 1.0 - smoothstep(BORDE_BAJO, BORDE_ALTO, mayorSaltoCerca);
-    float textura = smoothstep(OSC_BAJA, OSC_ALTA, oscilacion);
+    float estructura = smoothstep(MONO_BAJA, MONO_ALTA, monotonia);
+    float reja = enLaReja(HOOKED_pos.x * HOOKED_size.x);
 
     return vec4(
-        mix(centro, promedio, planitud * (1.0 - textura) * FUERZA),
+        mix(centro, promedio, planitud * estructura * reja * FUERZA),
         0.0, 0.0, 1.0
     );
 }
@@ -196,14 +235,35 @@ vec4 hook() {
 // Los mismos valores que la pasada horizontal. Si se cambia uno hay que
 // cambiar los dos: son las dos mitades del MISMO filtro, y descuadrarlos deja
 // un desbloqueo mas fuerte en un eje que en el otro, que se ve como estrias.
-#define FUERZA 0.86
+#define FUERZA 0.70
 #define SIGMA 0.09
-#define SIGMA_ESPACIAL 4.0
+#define SIGMA_ESPACIAL 3.0
 #define BORDE_BAJO 0.10
 #define BORDE_ALTO 0.32
-#define OSC_BAJA 1.0
-#define OSC_ALTA 2.5
-#define MINIMO 0.004
+// Cuanta de la variacion local tiene que ir en una sola direccion para dar el
+// vecindario por estructura (escalon o degradado) y filtrarlo. Por debajo de
+// MONO_BAJA es textura y no se toca.
+#define MONO_BAJA 0.35
+#define MONO_ALTA 0.75
+
+// Variacion por debajo de la cual el vecindario se da por plano del todo: no
+// hay textura que proteger, asi que se filtra entero.
+#define PLANO_TOTAL 0.002
+
+// La rejilla del codificador, y cuanto se sigue filtrando fuera de ella.
+#define REJA 16.0
+#define ANCHO_REJA 2.0
+#define SUELO_FUERA 0.05
+
+// Cuanto filtrar en esta coordenada, segun lo cerca que caiga de una frontera
+// de macrobloque. `c` es la coordenada del pixel EN EL EJE DE ESTA PASADA: la
+// pasada horizontal mira columnas y la vertical, filas.
+float enLaReja(float c) {
+    float dentro = mod(c, REJA);
+    float distancia = min(dentro, REJA - dentro);
+    float cerca = 1.0 - smoothstep(ANCHO_REJA, ANCHO_REJA + 2.0, distancia);
+    return SUELO_FUERA + (1.0 - SUELO_FUERA) * cerca;
+}
 
 vec4 hook() {
     // OJO: `HOOKED` aqui ES LA SALIDA DE LA PASADA ANTERIOR. MPV encadena los
@@ -219,18 +279,22 @@ vec4 hook() {
 
     float mayorSaltoCerca = max(abs(m1 - centro), abs(p1 - centro));
 
+    // MONOTONIA: cuanta de la variacion del vecindario va en UNA sola
+    // direccion. Es un cociente, asi que NO depende de la amplitud: funciona
+    // igual con un escalon de 23 niveles que con poros de 2. El umbral
+    // absoluto de antes decidia por amplitud, y por eso se comia la
+    // microtextura mas fina.
+    //
+    //   escalon  [0,0,0,9,9]   -> variacion 9,  neta 9 -> 1,00 (filtrar)
+    //   grano    [0,4,-2,5,-3] -> variacion 25, neta 3 -> 0,12 (no tocar)
     float d1 = m1 - m2;
     float d2 = centro - m1;
     float d3 = p1 - centro;
     float d4 = p2 - p1;
-    float s1 = abs(d1) > MINIMO ? sign(d1) : 0.0;
-    float s2 = abs(d2) > MINIMO ? sign(d2) : 0.0;
-    float s3 = abs(d3) > MINIMO ? sign(d3) : 0.0;
-    float s4 = abs(d4) > MINIMO ? sign(d4) : 0.0;
-    float oscilacion = 0.0;
-    oscilacion += (s1 * s2 < 0.0) ? 1.0 : 0.0;
-    oscilacion += (s2 * s3 < 0.0) ? 1.0 : 0.0;
-    oscilacion += (s3 * s4 < 0.0) ? 1.0 : 0.0;
+    float variacion = abs(d1) + abs(d2) + abs(d3) + abs(d4);
+    float neta = abs(d1 + d2 + d3 + d4);
+    // Si no varia NADA no hay textura que proteger: filtrar sale gratis.
+    float monotonia = variacion < PLANO_TOTAL ? 1.0 : neta / variacion;
 
     float acumulado = centro;
     float pesos = 1.0;
@@ -268,10 +332,11 @@ vec4 hook() {
     float promedio = acumulado / max(pesos, 1e-6);
 
     float planitud = 1.0 - smoothstep(BORDE_BAJO, BORDE_ALTO, mayorSaltoCerca);
-    float textura = smoothstep(OSC_BAJA, OSC_ALTA, oscilacion);
+    float estructura = smoothstep(MONO_BAJA, MONO_ALTA, monotonia);
+    float reja = enLaReja(HOOKED_pos.y * HOOKED_size.y);
 
     return vec4(
-        mix(centro, promedio, planitud * (1.0 - textura) * FUERZA),
+        mix(centro, promedio, planitud * estructura * reja * FUERZA),
         0.0, 0.0, 1.0
     );
 }
@@ -309,7 +374,7 @@ vec4 hook() {
 
 // Cuanto microcontraste se devuelve. 0,45 es medio realce: suficiente para
 // que una cara deje de verse de cera, poco para que no chille.
-#define NITIDEZ 0.45
+#define NITIDEZ 0.55
 
 // Tope del realce, en unidades de luma. Un detalle mas grande que esto ya es
 // un borde de verdad y no necesita ayuda; dejarlo suelto es lo que produce
@@ -324,9 +389,10 @@ vec4 hook() {
 // Las mismas de las pasadas 1 y 2, para decidir que es plano y que textura.
 #define BORDE_BAJO 0.10
 #define BORDE_ALTO 0.32
-#define OSC_BAJA 1.0
-#define OSC_ALTA 2.5
-#define MINIMO 0.004
+// Las mismas de las pasadas 1 y 2, para decidir que es plano y que textura.
+#define MONO_BAJA 0.35
+#define MONO_ALTA 0.75
+#define PLANO_TOTAL 0.002
 
 vec4 hook() {
     float centro = HOOKED_tex(HOOKED_pos).x;
@@ -345,31 +411,21 @@ vec4 hook() {
     // ── CUANTO DETALLE HAY AQUI ─────────────────────────────────────────
     // La oscilacion, medida en los dos ejes y quedandose con la mayor: una
     // reja fina puede oscilar solo en horizontal, y eso sigue siendo textura.
-    float hx1 = iz1 - iz2;
-    float hx2 = centro - iz1;
-    float hx3 = de1 - centro;
-    float hx4 = de2 - de1;
-    float oscH = 0.0;
-    oscH += (sign(abs(hx1) > MINIMO ? hx1 : 0.0) *
-             sign(abs(hx2) > MINIMO ? hx2 : 0.0) < 0.0) ? 1.0 : 0.0;
-    oscH += (sign(abs(hx2) > MINIMO ? hx2 : 0.0) *
-             sign(abs(hx3) > MINIMO ? hx3 : 0.0) < 0.0) ? 1.0 : 0.0;
-    oscH += (sign(abs(hx3) > MINIMO ? hx3 : 0.0) *
-             sign(abs(hx4) > MINIMO ? hx4 : 0.0) < 0.0) ? 1.0 : 0.0;
+    // La misma monotonia de las pasadas 1 y 2, medida en los dos ejes y
+    // quedandose con la MENOR: si en algun eje hay textura, hay textura. Una
+    // reja fina puede oscilar solo en horizontal y sigue siendo detalle que
+    // merece realce.
+    float varH = abs(iz1 - iz2) + abs(centro - iz1) +
+                 abs(de1 - centro) + abs(de2 - de1);
+    float monoH = varH < PLANO_TOTAL ? 1.0 : abs(de2 - iz2) / varH;
 
-    float vy1 = ar1 - ar2;
-    float vy2 = centro - ar1;
-    float vy3 = ab1 - centro;
-    float vy4 = ab2 - ab1;
-    float oscV = 0.0;
-    oscV += (sign(abs(vy1) > MINIMO ? vy1 : 0.0) *
-             sign(abs(vy2) > MINIMO ? vy2 : 0.0) < 0.0) ? 1.0 : 0.0;
-    oscV += (sign(abs(vy2) > MINIMO ? vy2 : 0.0) *
-             sign(abs(vy3) > MINIMO ? vy3 : 0.0) < 0.0) ? 1.0 : 0.0;
-    oscV += (sign(abs(vy3) > MINIMO ? vy3 : 0.0) *
-             sign(abs(vy4) > MINIMO ? vy4 : 0.0) < 0.0) ? 1.0 : 0.0;
+    float varV = abs(ar1 - ar2) + abs(centro - ar1) +
+                 abs(ab1 - centro) + abs(ab2 - ab1);
+    float monoV = varV < PLANO_TOTAL ? 1.0 : abs(ab2 - ar2) / varV;
 
-    float textura = smoothstep(OSC_BAJA, OSC_ALTA, max(oscH, oscV));
+    // `textura` es lo contrario de `estructura`: 1 donde hay detalle de
+    // verdad, que es justo donde este realce tiene algo que recuperar.
+    float textura = 1.0 - smoothstep(MONO_BAJA, MONO_ALTA, min(monoH, monoV));
 
     float mayorSalto = max(max(abs(iz1 - centro), abs(de1 - centro)),
                            max(abs(ar1 - centro), abs(ab1 - centro)));

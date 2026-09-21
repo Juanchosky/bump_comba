@@ -99,13 +99,66 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     ),
   );
 
+  /// El nivel 2 del filtro de calidad esta puesto en ESTA reproduccion.
+  ///
+  /// Significa `mediacodec-copy` en vez de `mediacodec`, que es la unica forma
+  /// de que MPV vea el fotograma y pueda aplicarle el shader de desbloqueo.
+  bool _nivel2EnUso = false;
+
+  /// El decoder ya elegido. Se decide en `initState` y NO aqui: este campo es
+  /// `late final`, asi que su inicializador correria la primera vez que
+  /// `build` lo leyera — y eso puede pasar DESPUES de aplicar los ajustes de
+  /// MPV. Si eso ocurriera, se pagaria la copia por CPU sin el filtro puesto,
+  /// que es lo peor de los dos mundos.
+  String _hwdec = 'mediacodec';
+
   late final VideoController _controlador = VideoController(
     _player,
-    configuration: const VideoControllerConfiguration(
+    configuration: VideoControllerConfiguration(
       enableHardwareAcceleration: true,
-      hwdec: 'mediacodec',
+      hwdec: _hwdec,
     ),
   );
+
+  /// Decide entre el camino rapido y el camino con filtro, ANTES de crear el
+  /// controlador — que es el unico momento en que se puede elegir (ver el
+  /// comentario de `_player`: por `setProperty` llega tarde).
+  ///
+  /// ── POR QUE AQUI HAY MAS CUIDADO QUE EN EL TELEFONO ────────────────────
+  ///
+  /// `mediacodec-copy` saca cada fotograma a memoria por CPU. En este SoC
+  /// (Amlogic) eso ya se probo a 1080p y eran tirones —esta documentado justo
+  /// arriba—, asi que aqui se exige ademas que la fuente NO pase de 720p, que
+  /// es la mitad de pixeles que copiar y ademas el unico caso en que el filtro
+  /// tiene algo que hacer.
+  ///
+  /// Un directo tampoco entra: no tiene segunda oportunidad, y si el aparato
+  /// no da, lo que se pierde es lo que se estaba viendo en ese momento.
+  ///
+  /// El resto de condiciones —aparato ya descartado, gama baja, cuarentena—
+  /// las decide `permiteNivel2`, que es el MISMO juez que en el telefono. Si
+  /// esta reproduccion se atraganta, la prueba se cancela sola y este aparato
+  /// no vuelve a intentarlo en una semana.
+  String _decodificadorElegido() {
+    final filtro = FiltroCalidadService();
+    final techo = filtro.techoConocido(widget.item.url);
+    final bool fuenteBaja = techo != null && techo > 0 && techo <= 720;
+
+    if (widget.item.isLive || !fuenteBaja) {
+      _nivel2EnUso = false;
+      return 'mediacodec';
+    }
+    if (!filtro.permiteNivel2(widget.item.url, intento: 0)) {
+      _nivel2EnUso = false;
+      return 'mediacodec';
+    }
+
+    _nivel2EnUso = true;
+    unawaited(filtro.marcarNivel2EnPrueba());
+    debugPrint('TvPlayer: nivel 2 puesto (fuente de ${techo}p)');
+    return 'mediacodec-copy';
+  }
+
   final List<StreamSubscription> _subs = [];
   final FocusNode _playerFocusNode = FocusNode(debugLabel: 'TvPlayerKeys');
 
@@ -367,6 +420,8 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
   @override
   void initState() {
     super.initState();
+    // LO PRIMERO, antes de que nada pueda leer `_controlador`.
+    _hwdec = _decodificadorElegido();
     // EL MISMO PERFIL DE MPV QUE EL RECEPTOR.
     //
     // Faltaba, y era la diferencia entera: el mismo video se veia fino al
@@ -417,6 +472,14 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         // el video sigue vivo pase lo que pase.
         final bool avanzo = v != _posicion;
         if (avanzo) _ultimoAvance = DateTime.now();
+
+        // La prueba del nivel 2 se da por buena cuando el video lleva un rato
+        // corriendo de verdad. Se mira la POSICION y no un temporizador: un
+        // reloj corre igual con la pantalla en negro.
+        if (_nivel2EnUso && v >= FiltroCalidadService.margenDePrueba) {
+          _nivel2EnUso = false;
+          unawaited(FiltroCalidadService().confirmarNivel2Estable());
+        }
 
         // ── MIENTRAS SE APUNTA UN SALTO, MANDA EL USUARIO ────────────────
         if (_preparandoSalto) return;
@@ -578,6 +641,29 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     // MPV arrancaba con sus valores por defecto y se comportaba de otra forma
     // — justo lo que este perfil existe para evitar.
     await TvMpvConfig.aplicarBase(_player);
+
+    // Y encima del perfil base, el nivel 2 si entro. VA DESPUES A PROPOSITO:
+    // `aplicarBase` pone `scale: bilinear` y `deband: no`, que son justo las
+    // que el nivel 2 tiene que pisar. Al reves no serviria de nada.
+    if (_nivel2EnUso) {
+      try {
+        final mpv = _player.platform as dynamic;
+        if (mpv != null) {
+          final filtro = FiltroCalidadService();
+          final ajustes = filtro.ajustesMpvNivel2(
+            rutaShader: filtro.rutaShaderSiYaEsta,
+          );
+          for (final e in ajustes.entries) {
+            await mpv.setProperty(e.key, e.value);
+          }
+          debugPrint('TvPlayer: ajustes de nivel 2 aplicados');
+        }
+      } catch (e) {
+        // Que un ajuste no exista en este build no puede tumbar la
+        // reproduccion: el video se ve igual, solo que sin realce.
+        debugPrint('TvPlayer: no se pudieron aplicar los ajustes -> $e');
+      }
+    }
 
     if (widget.item.esDeLaBD) {
       try {
@@ -1572,6 +1658,15 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     // LO PRIMERO: lo que siga corriendo por detras tiene que enterarse de que
     // ya no hay a quien servir, antes de que nada mas se destruya.
     _muerto = true;
+
+    // Salir antes de que la prueba cuajara NO es un fallo del aparato: lo
+    // normal es que el usuario se haya ido. Se cancela, y el veredicto se
+    // queda sin decidir para la proxima. Sin esto, la marca de "probando"
+    // sobrevive y al siguiente arranque se lee como un cuelgue.
+    if (_nivel2EnUso) {
+      _nivel2EnUso = false;
+      unawaited(FiltroCalidadService().cancelarPruebaNivel2());
+    }
 
     // ── LA EXTRACCION A MEDIAS SE CANCELA AQUI ───────────────────────────
     //
