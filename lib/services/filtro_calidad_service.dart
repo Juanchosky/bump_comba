@@ -809,12 +809,20 @@ class FiltroCalidadService {
       // O sea que un poco de suavizado no es un defecto en este material: es
       // parte del acabado. Lo que sobraba era el velo tonal, no este.
       //
-      // 1 iteracion y umbral 20: la mitad largo de lo que habia cuando se
-      // quejo del velo, y con el escalado lineal ya fuera. Si se ven bandas
-      // en cielos, subir el umbral a 32 antes que las iteraciones.
+      // 1 iteracion y umbral 26. El recorrido de este numero, que es el que
+      // cuenta la historia entera: 48 -> 32 -> 24 -> 20 (persiguiendo el
+      // velo, que no era este) -> 26 (pedido a mano, ya sin el escalado
+      // lineal de por medio).
+      //
+      // Se sube el UMBRAL y no las iteraciones: el umbral decide QUE se
+      // considera una banda, y las iteraciones cuantas veces se pasa por
+      // encima. Dos pasadas es lo que se acumulaba y se veia como capa.
+      //
+      // 26 sigue estando por debajo del 32 donde empezaron las quejas, asi
+      // que hay margen; si aun falta, el siguiente escalon es 30.
       'deband': 'yes',
       'deband-iterations': '1',
-      'deband-threshold': '20',
+      'deband-threshold': '26',
       'deband-range': '16',
       'dither-depth': 'auto',
     };
