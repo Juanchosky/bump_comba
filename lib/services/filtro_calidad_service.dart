@@ -1,6 +1,9 @@
 import 'dart:convert';
+import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'performance_service.dart';
@@ -31,16 +34,44 @@ enum NivelRealce {
 /// es la URL, que es lo unico estable, pero una pantalla llena de URLs no le
 /// dice nada a nadie.
 class TechoFuente {
-  const TechoFuente({required this.altura, this.nombre});
+  const TechoFuente({
+    required this.altura,
+    this.nombre,
+    this.ultima = 0,
+    this.vecesPorDebajo = 0,
+  });
 
-  /// Altura maxima en pixeles que se le ha visto decodificar.
+  /// Altura maxima en pixeles que se le ha visto decodificar. Este es el
+  /// techo: lo que el proveedor da cuando todo sale bien.
   final int altura;
 
   /// Nombre del titulo tal y como aparecia en el catalogo.
   final String? nombre;
 
+  /// Altura de la ULTIMA vez que se reprodujo.
+  final int ultima;
+
+  /// Cuantas veces se resolvio por debajo de su techo.
+  ///
+  /// PARA QUE SIRVE ESTE CONTADOR
+  /// Para separar dos problemas que se ven igual — "borroso" — y no tienen
+  /// nada que ver:
+  ///
+  ///  · `vecesPorDebajo == 0` y techo de 720: el proveedor no tiene mas. No
+  ///    hay nada que rascar por el lado de la fuente.
+  ///  · `vecesPorDebajo > 0`: el mismo titulo ha salido unas veces bien y
+  ///    otras mal. Eso NO es un limite del proveedor, es la carrera del
+  ///    scraper, y es la unica de las dos que se puede arreglar.
+  ///
+  /// Es tambien la forma de comprobar si la deduccion de variantes hermanas
+  /// esta haciendo su trabajo: si funciona, este contador deja de subir.
+  final int vecesPorDebajo;
+
   /// Esta fuente no da para mas: es de las que el filtro tiene que realzar.
   bool get esLimitada => altura <= 720;
+
+  /// El mismo titulo se ha resuelto con calidades distintas segun el dia.
+  bool get esInconsistente => vecesPorDebajo > 0;
 }
 
 /// Que se sabe sobre si ESTE aparato aguanta el nivel 2.
@@ -135,7 +166,15 @@ class FiltroCalidadService {
   FiltroCalidadService._interno();
 
   static const String _clave = 'filtro_calidad_techos';
-  static const String _claveVeredicto = 'filtro_calidad_nivel2_veredicto';
+
+  /// El `_v2` no es decorativo. La primera version del canario daba por
+  /// fallido cualquier intento que no llegara a confirmarse en 20 s, y un
+  /// cierre normal —el usuario sale del video, o un hot restart— es
+  /// indistinguible de un ANR desde el arranque siguiente. Resultado: aparatos
+  /// perfectamente capaces marcados `noApto` para siempre. Al cambiar la clave,
+  /// esos veredictos falsos se quedan huerfanos y todo el mundo vuelve a
+  /// empezar de cero con la logica arreglada.
+  static const String _claveVeredicto = 'filtro_calidad_nivel2_veredicto_v2';
 
   /// Cuanto tiene que aguantar un intento del nivel 2 para darlo por bueno.
   ///
@@ -184,6 +223,19 @@ class FiltroCalidadService {
   List<TechoFuente> fuentesLimitadas() {
     final lista = _techos.values.where((t) => t.esLimitada).toList();
     lista.sort((a, b) => a.altura.compareTo(b.altura));
+    return lista;
+  }
+
+  /// Los titulos que se han resuelto con calidades distintas segun el dia, de
+  /// mas inconsistente a menos.
+  ///
+  /// Esta es la lista que importa de las dos: lo que sale aqui NO es un limite
+  /// del proveedor —el titulo ha dado su techo alguna vez— sino la carrera del
+  /// scraper. Si la deduccion de variantes hermanas hace su trabajo, esta
+  /// lista deja de crecer.
+  List<TechoFuente> fuentesInconsistentes() {
+    final lista = _techos.values.where((t) => t.esInconsistente).toList();
+    lista.sort((a, b) => b.vecesPorDebajo.compareTo(a.vecesPorDebajo));
     return lista;
   }
 
@@ -239,6 +291,8 @@ class FiltroCalidadService {
         // ventana lo que ya se habia aprendido.
         int? alto;
         String? nombre;
+        int ultima = 0;
+        int porDebajo = 0;
         if (valor is int) {
           alto = valor;
         } else if (valor is Map) {
@@ -246,11 +300,20 @@ class FiltroCalidadService {
           alto = h is int ? h : int.tryParse('$h');
           final n = valor['n'];
           if (n is String && n.isNotEmpty) nombre = n;
+          final u = valor['u'];
+          ultima = u is int ? u : (int.tryParse('$u') ?? 0);
+          final b = valor['b'];
+          porDebajo = b is int ? b : (int.tryParse('$b') ?? 0);
         } else {
           alto = int.tryParse('$valor');
         }
         if (alto != null && alto > 0) {
-          _techos[id] = TechoFuente(altura: alto, nombre: nombre);
+          _techos[id] = TechoFuente(
+            altura: alto,
+            nombre: nombre,
+            ultima: ultima,
+            vecesPorDebajo: porDebajo,
+          );
         }
       });
       // El orden manda sobre el mapa: si una entrada esta en el mapa pero no
@@ -275,12 +338,14 @@ class FiltroCalidadService {
       await _prefs?.setString(
         _clave,
         jsonEncode({
-          'v': 2,
+          'v': 3,
           't': {
             for (final e in _techos.entries)
               e.key: {
                 'h': e.value.altura,
                 if (e.value.nombre != null) 'n': e.value.nombre,
+                if (e.value.ultima > 0) 'u': e.value.ultima,
+                if (e.value.vecesPorDebajo > 0) 'b': e.value.vecesPorDebajo,
               },
           },
           'o': _orden,
@@ -313,18 +378,32 @@ class FiltroCalidadService {
     if (idItem == null || idItem.isEmpty || altura <= 0) return;
 
     final previa = _techos[idItem];
-    // Si no sube el techo no se escribe a disco, pero si se rellena el nombre
-    // cuando falta: el registro de una version anterior no lo traia.
+    final techo = altura > (previa?.altura ?? 0) ? altura : previa!.altura;
+
+    // El contador de "salio por debajo" solo se toca cuando esta reproduccion
+    // se queda corta respecto a un techo que YA se conocia. Subir el techo no
+    // cuenta como haberse quedado corto antes: la primera vez que se ve un
+    // titulo no hay con que comparar.
+    final bool seQuedoCorta = previa != null && altura < previa.altura;
+    final nueva = TechoFuente(
+      altura: techo,
+      nombre: nombre ?? previa?.nombre,
+      ultima: altura,
+      vecesPorDebajo: (previa?.vecesPorDebajo ?? 0) + (seQuedoCorta ? 1 : 0),
+    );
+
+    // Nada que guardar si la altura repite y el resto ya estaba puesto. En HLS
+    // el mismo valor puede llegar varias veces y no vamos a escribir a disco
+    // por cada aviso.
     if (previa != null &&
-        previa.altura >= altura &&
-        (previa.nombre != null || nombre == null)) {
+        previa.altura == nueva.altura &&
+        previa.ultima == nueva.ultima &&
+        previa.vecesPorDebajo == nueva.vecesPorDebajo &&
+        previa.nombre == nueva.nombre) {
       return;
     }
 
-    _techos[idItem] = TechoFuente(
-      altura: altura > (previa?.altura ?? 0) ? altura : previa!.altura,
-      nombre: nombre ?? previa?.nombre,
-    );
+    _techos[idItem] = nueva;
     _orden.remove(idItem);
     _orden.add(idItem);
 
@@ -332,7 +411,14 @@ class FiltroCalidadService {
       _techos.remove(_orden.removeAt(0));
     }
 
-    debugPrint('FiltroCalidad: "$idItem" topa en ${altura}p');
+    if (seQuedoCorta) {
+      debugPrint(
+        'FiltroCalidad: "$idItem" salio a ${altura}p pero su techo es '
+        '${techo}p — van ${nueva.vecesPorDebajo} veces por debajo',
+      );
+    } else {
+      debugPrint('FiltroCalidad: "$idItem" topa en ${techo}p');
+    }
     await _guardarTechos();
   }
 
@@ -441,6 +527,27 @@ class FiltroCalidadService {
     await _guardarVeredicto(VeredictoNivel2.apto);
   }
 
+  /// La reproduccion termina sin haber podido confirmar, pero de forma LIMPIA.
+  ///
+  /// POR QUE ESTO ES IMPRESCINDIBLE
+  /// El canario del arranque dice "si la marca sigue puesta, el intento no
+  /// volvio". Pero hay un monton de formas de no volver que no son un fallo:
+  /// el usuario sale del video a los 10 segundos, cierra la app, o se hace un
+  /// hot restart mientras se programa. Sin esta llamada, todas ellas condenan
+  /// al aparato igual que un ANR — y eso es exactamente lo que paso la primera
+  /// vez que se probo esto en un telefono de verdad.
+  ///
+  /// Se vuelve a `sinProbar`, no a `noApto`: no se ha aprendido nada, asi que
+  /// la proxima reproduccion vuelve a intentarlo.
+  Future<void> cancelarPruebaNivel2() async {
+    if (_veredicto != VeredictoNivel2.probando) return;
+    debugPrint(
+      'FiltroCalidad: la prueba del nivel 2 acabo antes de tiempo sin fallar '
+      '— se reintentara',
+    );
+    await _guardarVeredicto(VeredictoNivel2.sinProbar);
+  }
+
   /// El intento ha ido mal de una forma que SI se ha podido observar —se
   /// congelo, hubo que reintentar— y no hace falta esperar al canario.
   ///
@@ -453,14 +560,63 @@ class FiltroCalidadService {
     await _guardarVeredicto(VeredictoNivel2.noApto);
   }
 
+  /// Ruta en disco del shader, o `null` si no se pudo dejar ahi.
+  String? _rutaShader;
+  bool _shaderIntentado = false;
+
+  /// Deja el shader de desbloqueo en un archivo de verdad y devuelve su ruta.
+  ///
+  /// POR QUE HAY QUE COPIARLO
+  /// `glsl-shaders` de MPV quiere una RUTA de sistema de archivos, y un asset
+  /// de Flutter no lo es: vive comprimido dentro del APK y solo se puede leer
+  /// por el canal de assets. Asi que se saca una vez al directorio de soporte
+  /// de la app y a partir de ahi ya es un archivo normal que mpv puede abrir.
+  ///
+  /// Se reescribe en cada arranque a proposito, y no solo si no existe: asi una
+  /// actualizacion de la app que traiga un shader nuevo no se queda con el
+  /// viejo cacheado del APK anterior.
+  Future<String?> rutaDelShaderDesbloqueo() async {
+    if (_shaderIntentado) return _rutaShader;
+    _shaderIntentado = true;
+    try {
+      final datos = await rootBundle.loadString(
+        'assets/shaders/desbloqueo.glsl',
+      );
+      final dir = await getApplicationSupportDirectory();
+      final archivo = File('${dir.path}/desbloqueo.glsl');
+      await archivo.writeAsString(datos, flush: true);
+      _rutaShader = archivo.path;
+      debugPrint('FiltroCalidad: shader de desbloqueo en $_rutaShader');
+    } catch (e) {
+      // Sin shader se pierde el desbloqueo, pero el resto del nivel 2
+      // —escalador sharp, deband— sigue aplicandose igual.
+      debugPrint('FiltroCalidad: no se pudo preparar el shader -> $e');
+      _rutaShader = null;
+    }
+    return _rutaShader;
+  }
+
   /// Los ajustes de MPV del nivel 2. Van con `mediacodec-copy`, porque sin el
   /// no se aplica ninguno.
   ///
   /// `deband` es el que mas se nota en este material: las fuentes de 720p a
   /// bitrate corto tienen bandas muy visibles en cielos y paredes, y eso si se
   /// puede arreglar de verdad. El escalador sharp es lo segundo.
-  Map<String, String> ajustesMpvNivel2() {
-    return const {
+  /// `rutaShader` es lo que devuelva [rutaDelShaderDesbloqueo]. Si es `null`
+  /// se aplica todo lo demas sin el: el desbloqueo se pierde, pero el
+  /// escalador y el `deband` no.
+  ///
+  /// EL ORDEN DE LO QUE PASA CON EL FOTOGRAMA
+  ///  1. `glsl-shaders` corre sobre `LUMA`, con la imagen todavia en su tamaño
+  ///     original. Ahi es donde esta la reja de macrobloques y donde se puede
+  ///     deshacer.
+  ///  2. `scale` la estira a la pantalla. Se hace DESPUES, sobre una imagen ya
+  ///     limpia, que es la unica forma de que un escalador sharp no se dedique
+  ///     a resaltar los cuadrados.
+  ///  3. `deband` remata los degradados.
+  Map<String, String> ajustesMpvNivel2({String? rutaShader}) {
+    return {
+      if (rutaShader != null) 'glsl-shaders': rutaShader,
       'scale': 'ewa_lanczossharp',
       'cscale': 'spline36',
       'dscale': 'mitchell',
@@ -479,6 +635,9 @@ class FiltroCalidadService {
   /// al camino de hardware sin dejar restos a medias.
   Map<String, String> ajustesMpvSinRealce() {
     return const {
+      // Vacio, no ausente: si se deja puesto el de antes, mpv lo sigue
+      // intentando cargar en el camino de hardware y llena el log de errores.
+      'glsl-shaders': '',
       'scale': 'bilinear',
       'cscale': 'bilinear',
       'linear-upscaling': 'no',

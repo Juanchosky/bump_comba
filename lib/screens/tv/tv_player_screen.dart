@@ -1243,25 +1243,31 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
 
     if (esHls && desde > Duration.zero) {
       unawaited(() async {
+        // Espera hasta 20 s (TVs lentas tardan mas de 6 s en arrancar).
         int waitCount = 0;
-        while (waitCount < 60 && !_muerto && mounted) {
+        while (waitCount < 200 && !_muerto && mounted) {
           final st = _player.state;
           final bool hasVideo = (st.width ?? 0) > 0 || _primerFrameListo;
           final bool hasPlayback =
               st.playing && st.position.inMilliseconds > 100;
-          if (hasVideo && hasPlayback) {
-            break;
-          }
+          if (hasVideo && hasPlayback) break;
           await Future.delayed(const Duration(milliseconds: 100));
           waitCount++;
         }
-        if (!_muerto && mounted) {
-          final pos = _player.state.position.inSeconds;
-          if (pos < desde.inSeconds - 5) {
-            debugPrint(
-              'TvPlayer: aplicando seek rápido a ${desde.inSeconds}s tras inicio de stream HLS',
-            );
-            _posReferencia = desde;
+        if (_muerto || !mounted) return;
+        final pos = _player.state.position.inSeconds;
+        if (pos < desde.inSeconds - 5) {
+          debugPrint(
+            'TvPlayer: aplicando seek rápido a ${desde.inSeconds}s tras inicio de stream HLS',
+          );
+          _posReferencia = desde;
+          await _player.seek(desde);
+          // Reintento si MPV no honró el seek (puede ocurrir con algunos HLS).
+          await Future.delayed(const Duration(milliseconds: 1000));
+          if (_muerto || !mounted) return;
+          final posAfter = _player.state.position.inSeconds;
+          if (posAfter < desde.inSeconds - 5) {
+            debugPrint('TvPlayer: seek no llegó, reintentando');
             await _player.seek(desde);
           }
         }

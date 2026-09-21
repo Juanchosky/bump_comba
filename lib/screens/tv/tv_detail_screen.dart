@@ -10,6 +10,7 @@ import '../../services/m3u_service.dart';
 import '../../services/tmdb_service.dart';
 import '../../services/tv/tv_vista_previa.dart';
 import '../../services/dynamic_scraper_service.dart';
+import '../../services/watch_progress_service.dart';
 import '../../utils/atras_tv.dart';
 import '../../utils/colors.dart';
 import '../../utils/titulo_tmdb.dart';
@@ -273,6 +274,7 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
     // Los que ya vienen puestos son los buenos: no se vuelve a pedir nada.
     if (widget.item.episodes.isNotEmpty) {
       setState(() => _episodiosCargados = widget.item.episodes);
+      await _restaurarEpisodio();
       return;
     }
     // Una pelicula no tiene episodios que pedir.
@@ -284,6 +286,30 @@ class _TvDetailScreenState extends State<TvDetailScreen> {
     } catch (e) {
       debugPrint('TvDetalle: no se pudieron traer los episodios: $e');
     }
+    await _restaurarEpisodio();
+  }
+
+  /// Pre-selecciona la temporada y el episodio donde el usuario se quedó.
+  Future<void> _restaurarEpisodio() async {
+    final todos = _episodios;
+    if (todos.isEmpty) return;
+    try {
+      final historial = await WatchProgressService().getHistory();
+      for (final p in historial) {
+        if (p.isCompleted) continue;
+        for (final ep in todos) {
+          final urls = [ep.url, ...ep.alternatives.map((a) => a.url)];
+          if (!urls.contains(p.url)) continue;
+          if (!mounted) return;
+          final season = ep.seasonNumber ?? 1;
+          setState(() => _temporada = season);
+          final visibles = _episodiosVisibles;
+          final idx = visibles.indexOf(ep);
+          if (idx >= 0) setState(() => _episodioElegido = idx);
+          return;
+        }
+      }
+    } catch (_) {}
   }
 
   Future<void> _buscarFicha() async {

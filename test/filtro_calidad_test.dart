@@ -126,6 +126,59 @@ void main() {
       expect(lista.first.nombre, 'Cuatro Ochenta');
     });
 
+    test('un titulo estable no cuenta ninguna vez por debajo', () async {
+      await filtro.anotarAltura('u', 720);
+      await filtro.anotarAltura('u', 720);
+      expect(filtro.techosObservados['u']?.vecesPorDebajo, 0);
+      expect(filtro.techosObservados['u']?.esInconsistente, isFalse);
+      expect(filtro.fuentesInconsistentes(), isEmpty);
+    });
+
+    test('subir el techo no cuenta como haberse quedado corto', () async {
+      // La primera vez que se ve algo no hay con que comparar: que la altura
+      // suba de 520 a 720 es el arranque normal de HLS, no una recaida.
+      await filtro.anotarAltura('u', 520);
+      await filtro.anotarAltura('u', 720);
+      expect(filtro.techosObservados['u']?.vecesPorDebajo, 0);
+    });
+
+    test('salir por debajo de un techo ya conocido si cuenta', () async {
+      await filtro.anotarAltura('u', 720, nombre: 'La Carrera');
+      // Otra reproduccion, y esta vez el scraper se queda con la ligera.
+      await filtro.anotarAltura('u', 520);
+      final t = filtro.techosObservados['u'];
+      expect(t?.altura, 720, reason: 'el techo no baja');
+      expect(t?.ultima, 520, reason: 'pero la ultima si');
+      expect(t?.vecesPorDebajo, 1);
+      expect(t?.esInconsistente, isTrue);
+      expect(filtro.fuentesInconsistentes().map((x) => x.nombre), [
+        'La Carrera',
+      ]);
+    });
+
+    test('la lista de inconsistentes va de peor a mejor', () async {
+      await filtro.anotarAltura('a', 720, nombre: 'Una Vez');
+      await filtro.anotarAltura('a', 520);
+      await filtro.anotarAltura('b', 720, nombre: 'Tres Veces');
+      await filtro.anotarAltura('b', 520);
+      await filtro.anotarAltura('b', 480);
+      await filtro.anotarAltura('b', 520);
+      expect(filtro.fuentesInconsistentes().map((x) => x.nombre), [
+        'Tres Veces',
+        'Una Vez',
+      ]);
+    });
+
+    test('el contador de recaidas sobrevive a reiniciar la app', () async {
+      await filtro.anotarAltura('u', 720, nombre: 'La Carrera');
+      await filtro.anotarAltura('u', 520);
+      await filtro.init();
+      final t = filtro.techosObservados['u'];
+      expect(t?.altura, 720);
+      expect(t?.ultima, 520);
+      expect(t?.vecesPorDebajo, 1);
+    });
+
     test('sobrevive a reiniciar la app', () async {
       await filtro.anotarAltura('u', 540, nombre: 'Una Pelicula');
       // Otra instancia del servicio leyendo las mismas prefs.
@@ -152,6 +205,30 @@ void main() {
       });
       await filtro.init();
       expect(filtro.techosObservados, isEmpty);
+    });
+  });
+
+  group('El shader de desbloqueo', () {
+    test('se enchufa en los ajustes cuando hay ruta', () {
+      final a = filtro.ajustesMpvNivel2(rutaShader: '/datos/desbloqueo.glsl');
+      expect(a['glsl-shaders'], '/datos/desbloqueo.glsl');
+      // Y el escalador sigue ahi: el shader limpia y el escalador estira
+      // DESPUES, sobre la imagen ya limpia.
+      expect(a['scale'], 'ewa_lanczossharp');
+      expect(a['deband'], 'yes');
+    });
+
+    test('sin ruta se aplica el resto y no se inventa la clave', () {
+      final a = filtro.ajustesMpvNivel2();
+      expect(a.containsKey('glsl-shaders'), isFalse);
+      expect(a['scale'], 'ewa_lanczossharp');
+    });
+
+    test('al volver al camino de hardware se suelta el shader', () {
+      // Vacio y no ausente: si se queda el de antes puesto, mpv lo sigue
+      // intentando cargar donde no puede y llena el log de errores.
+      expect(filtro.ajustesMpvSinRealce()['glsl-shaders'], '');
+      expect(filtro.ajustesMpvSinRealce()['scale'], 'bilinear');
     });
   });
 
@@ -227,6 +304,35 @@ void main() {
       // Y por tanto un cierre forzoso posterior no lo descalifica.
       await filtro.init();
       expect(filtro.veredictoNivel2, VeredictoNivel2.apto);
+    });
+
+    test('salir del video antes de tiempo NO condena al aparato', () async {
+      // Este es el caso que se vio en un telefono de verdad: el nivel 2 entro,
+      // el usuario cerro el video (o hubo un hot restart) antes de los 20 s, y
+      // el arranque siguiente lo marcaba `noApto` para siempre. Una salida
+      // limpia no ha demostrado nada y tiene que poder reintentarse.
+      await filtro.anotarAltura('u', 720);
+      await filtro.marcarNivel2EnPrueba();
+      expect(filtro.veredictoNivel2, VeredictoNivel2.probando);
+
+      await filtro.cancelarPruebaNivel2();
+      expect(filtro.veredictoNivel2, VeredictoNivel2.sinProbar);
+
+      // Y tras reiniciar sigue pudiendo intentarlo.
+      await filtro.init();
+      expect(filtro.veredictoNivel2, VeredictoNivel2.sinProbar);
+      expect(filtro.permiteNivel2('u', intento: 0), isTrue);
+    });
+
+    test('cancelar no toca un veredicto ya decidido', () async {
+      await filtro.marcarNivel2EnPrueba();
+      await filtro.confirmarNivel2Estable();
+      await filtro.cancelarPruebaNivel2();
+      expect(filtro.veredictoNivel2, VeredictoNivel2.apto);
+
+      await filtro.descartarNivel2('prueba');
+      await filtro.cancelarPruebaNivel2();
+      expect(filtro.veredictoNivel2, VeredictoNivel2.noApto);
     });
 
     test('confirmar sin haber marcado nada no aprueba de rebote', () async {

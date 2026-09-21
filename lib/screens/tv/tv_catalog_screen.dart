@@ -2250,6 +2250,20 @@ class _Tarjeta extends StatefulWidget {
 
 class _TarjetaState extends State<_Tarjeta> {
   bool _foco = false;
+  double? _progresoPct;
+
+  @override
+  void initState() {
+    super.initState();
+    _cargarProgreso();
+  }
+
+  Future<void> _cargarProgreso() async {
+    final p = await WatchProgressService().getProgressForItem(widget.item);
+    if (mounted && p != null && !p.isCompleted && p.progressPercentage > 0) {
+      setState(() => _progresoPct = p.progressPercentage / 100);
+    }
+  }
 
   /// Abre la ficha y, AL VOLVER, se queda con el foco.
   ///
@@ -2335,10 +2349,26 @@ class _TarjetaState extends State<_Tarjeta> {
                     ),
                   ),
                   decoration: const BoxDecoration(color: Color(0xFF1A1A1E)),
-                  child: FastThumbnail(
-                    url: widget.item.logo,
-                    width: 126,
-                    height: 189,
+                  child: Stack(
+                    children: [
+                      FastThumbnail(
+                        url: widget.item.logo,
+                        width: 126,
+                        height: 189,
+                      ),
+                      if (_progresoPct != null)
+                        Positioned(
+                          bottom: 0,
+                          left: 0,
+                          right: 0,
+                          child: LinearProgressIndicator(
+                            value: _progresoPct,
+                            backgroundColor: Colors.white24,
+                            color: Colors.red,
+                            minHeight: 3,
+                          ),
+                        ),
+                    ],
                   ),
                 ),
 

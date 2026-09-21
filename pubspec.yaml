@@ -87,4 +87,5 @@ flutter:
     - assets/images/fondotv.png
     - assets/images/Avanzar.png
     - assets/images/Retroceder.png
+    - assets/shaders/desbloqueo.glsl
     - .env

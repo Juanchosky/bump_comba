@@ -318,6 +318,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// queda descartado.
   bool _nivel2EnUso = false;
 
+  /// Cuanto se le perdona al arranque antes de empezar a culpar al nivel 2.
+  ///
+  /// Por debajo de esto, una recarga se achaca a la red o al proveedor. Por
+  /// encima, el video ya estaba corriendo y la culpa si es del decodificador.
+  static const Duration _margenArranqueNivel2 = Duration(seconds: 8);
+
   /// Cuando empezo a reproducirse con el nivel 2 puesto.
   ///
   /// SE MIRA DESDE EL AVANCE DE LA POSICION Y NO CON UN `Timer` A PROPOSITO.
@@ -1270,6 +1276,19 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // (ver WatchProgressService._minFlushInterval). Al cerrar el reproductor
     // hay que forzar el volcado o se perderia lo ultimo visto.
     unawaited(_watchProgressService.flush(force: true));
+
+    // SALIR DEL VIDEO NO ES UN FALLO.
+    //
+    // Si el nivel 2 estaba en prueba y todavia no habia cumplido su margen, se
+    // borra la marca del canario: el usuario simplemente se ha ido, y eso no
+    // dice nada del aparato. Sin esto, cerrar el video a los diez segundos
+    // —o un hot restart— dejaba la marca puesta y el arranque siguiente
+    // condenaba al equipo como si hubiera habido un ANR.
+    if (_nivel2EnUso && _nivel2DesdeCuando != null) {
+      _nivel2EnUso = false;
+      _nivel2DesdeCuando = null;
+      unawaited(FiltroCalidadService().cancelarPruebaNivel2());
+    }
     _noticeTimer?.cancel();
     _diagTimer?.cancel();
     _turboWatchdog?.cancel();
@@ -2434,10 +2453,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             final bool conRealce =
                 _activeDecoder == 'mediacodec-copy' &&
                 filtro.permiteNivel2(_currentItem.url, intento: _retryCount);
+            // El shader se saca del APK a disco la primera vez que hace falta.
+            // Solo se pide cuando de verdad va a usarse: en el camino de
+            // hardware seria escribir un archivo para nada.
+            final rutaShader =
+                conRealce ? await filtro.rutaDelShaderDesbloqueo() : null;
             final ajustes = <String, String>{
               'hls-bitrate': filtro.hlsBitratePara(_currentItem.url) ?? 'auto',
               ...(conRealce
-                  ? filtro.ajustesMpvNivel2()
+                  ? filtro.ajustesMpvNivel2(rutaShader: rutaShader)
                   : filtro.ajustesMpvSinRealce()),
             };
             for (final p in ajustes.entries) {
@@ -3002,6 +3026,19 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _streamSubscriptions.add(
       _player!.stream.log.listen((l) {
         final texto = l.text.toLowerCase();
+
+        // LO QUE DIGA MPV DEL SHADER SE IMPRIME SIEMPRE.
+        //
+        // Este oyente filtra por marcas de corrupcion y descarta el resto, asi
+        // que un error de compilacion del shader de desbloqueo se perdia por
+        // aqui sin dejar rastro: en el log solo quedaba el
+        // "cadena de shaders aplicada" nuestro, que unicamente prueba que
+        // `setProperty` no protesto. Exactamente el mismo fallo silencioso que
+        // ya nos comimos con `scale` y `deband`.
+        if (texto.contains('shader') || texto.contains('glsl')) {
+          debugPrint('MPV[${l.level}] ${l.prefix}: ${l.text}');
+        }
+
         if (!_marcasCorrupcion.any(texto.contains)) return;
 
         final ahora = DateTime.now();
@@ -4541,18 +4578,37 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     if (!mounted || _isVideoLoading || _isReloading || _player == null) return;
     _isReloading = true;
 
-    // Llegar aqui con el nivel 2 puesto es la senal de fallo que SI se puede
-    // observar: se congelo, o se rompio, y hubo que recargar. No se espera al
-    // canario del arranque —eso es para cuando la app no vuelve— y se
-    // descarta el aparato ya. La recarga entra con `_retryCount >= 1`, asi
-    // que `permiteNivel2` ya no lo volveria a poner en esta sesion.
+    // Llegar aqui con el nivel 2 puesto puede ser la senal de fallo que SI se
+    // puede observar —se congelo y hubo que recargar— o puede no serlo.
+    //
+    // RECARGAR NADA MAS ABRIR NO ES CULPA DEL DECODIFICADOR.
+    //
+    // El fallo que se teme es "el decodificador no da abasto MIENTRAS
+    // reproduce". Una recarga en los primeros segundos es otra cosa: el
+    // proveedor tardando, un segmento que no baja, un salto de reanudacion
+    // contra una linea justa. En un log real se vio un arranque con
+    // "Buffer recuperado tras 14 s" en una red `fair`, y el video luego iba
+    // perfecto a 24 fps. Si esa espera hubiera acabado en recarga, se habria
+    // descartado el aparato por un problema de red.
+    //
+    // Asi que se separa: antes del margen de arranque se CANCELA la prueba
+    // (vuelve a `sinProbar`, se reintenta otro dia) y solo despues se
+    // descarta. Es el mismo criterio que con la salida limpia: no se condena
+    // al equipo por algo que no ha demostrado.
     if (_nivel2EnUso) {
+      final desde = _nivel2DesdeCuando;
+      final llevaReproduciendo =
+          desde != null &&
+          DateTime.now().difference(desde) >= _margenArranqueNivel2;
       _nivel2EnUso = false;
       _nivel2DesdeCuando = null;
+      final filtro = FiltroCalidadService();
       unawaited(
-        FiltroCalidadService().descartarNivel2(
-          'hubo que recargar el video con el nivel 2 puesto',
-        ),
+        llevaReproduciendo
+            ? filtro.descartarNivel2(
+              'se congelo con el nivel 2 puesto tras reproducir un rato',
+            )
+            : filtro.cancelarPruebaNivel2(),
       );
     }
 

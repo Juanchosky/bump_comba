@@ -437,8 +437,7 @@ class DynamicScraperService {
     }
 
     // 13. OK.ru variants
-    if (lowUrl.contains('ok.ru') ||
-        lowUrl.contains('odnoklassniki')) {
+    if (lowUrl.contains('ok.ru') || lowUrl.contains('odnoklassniki')) {
       return true;
     }
 
@@ -571,16 +570,217 @@ class DynamicScraperService {
   /// Una lista maestra ocupa menos de 2 KB y esta al principio del archivo,
   /// asi que se corta la descarga a 32 KB en vez de tragarse la lista de
   /// segmentos de una pelicula entera.
+  /// TROZOS DE URL QUE DELATAN UNA VARIANTE POBRE, Y LOS DE SUS HERMANAS.
+  ///
+  /// POR QUE ESTO FUNCIONA
+  /// Estos proveedores no esconden las variantes: las publican en la MISMA
+  /// ruta, con el mismo nombre base, cambiando solo un trozo. Se ve en el
+  /// propio puntuador de mas arriba, que reconoce una familia entera —
+  /// `fd` < `ld` < `sd` < `hd` < `fhd` — y otra numerica (`480`, `720`,
+  /// `1080`). Asi que teniendo la mala en la mano, la URL de la buena no hay
+  /// que buscarla: se deduce.
+  ///
+  /// POR QUE HACE FALTA DEDUCIRLA
+  /// Porque si no, es una carrera. La pagina publica primero la variante
+  /// ligera y la buena llega un poco despues, y `resolveBestCandidate(force:
+  /// true)` cierra en cuanto terminan las 6 pasadas de JavaScript — unos 5-6
+  /// segundos, no los 15 del tope. Si la buena no llego a tiempo, se cierra
+  /// con la mala. Misma pelicula, dos resultados distintos segun como fuera la
+  /// red ese dia: de ahi el "unas veces se ve borrosa y otras no".
+  ///
+  /// Los valores van de MEJOR A PEOR, porque se prueban en ese orden y se
+  /// para en la primera que contesta.
+  ///
+  /// Ningun cambio de esta tabla puede BAJAR la calidad: `fd` es la mas pobre
+  /// en cualquier lectura, y `sd` -> `hd` es una subida en la familia
+  /// `microframe` y un empate en la suelta (el puntuador da 720 a las dos).
+  /// En el peor caso se cambia una variante por otra igual de buena.
+  static const Map<String, List<String>> _hermanasMejores = {
+    // Familia por sufijo, con guion y con raya baja.
+    '-fd.': ['-fhd.', '-hd.', '-sd.', '-ld.'],
+    '-ld.': ['-fhd.', '-hd.', '-sd.'],
+    '-sd.': ['-fhd.', '-hd.'],
+    '_fd.': ['_fhd.', '_hd.', '_sd.', '_ld.'],
+    '_ld.': ['_fhd.', '_hd.', '_sd.'],
+    '_sd.': ['_fhd.', '_hd.'],
+    // La variante de microframe, donde `hd` si significa 1080.
+    'microframe-fd': ['microframe-hd', 'microframe-sd', 'microframe-ld'],
+    'microframe-ld': ['microframe-hd', 'microframe-sd'],
+    'microframe-sd': ['microframe-hd'],
+    // Familia numerica, en el nombre del archivo y como carpeta.
+    '360.m3u8': ['1080.m3u8', '720.m3u8', '480.m3u8'],
+    '480.m3u8': ['1080.m3u8', '720.m3u8'],
+    '540.m3u8': ['1080.m3u8', '720.m3u8'],
+    '720.m3u8': ['1080.m3u8'],
+    '/360/': ['/1080/', '/720/', '/480/'],
+    '/480/': ['/1080/', '/720/'],
+    '/540/': ['/1080/', '/720/'],
+    '/720/': ['/1080/'],
+    // Y la familia por palabra.
+    'low.m3u8': ['high.m3u8', 'medium.m3u8'],
+    'medium.m3u8': ['high.m3u8'],
+  };
+
+  /// Hosts a los que ya se les ha deducido sin acertar ni una vez, con la
+  /// cuenta de fallos.
+  ///
+  /// POR QUE HACE FALTA
+  /// Porque hay proveedores para los que la deduccion NO PUEDE funcionar y se
+  /// sabe: `playspelis` le pone un hash distinto a cada variante en el nombre
+  /// del archivo, asi que cambiar el sufijo apunta a un archivo inexistente.
+  /// Medido en un log real, eran 5 peticiones tiradas a la basura en cada
+  /// reproduccion, siempre las mismas y siempre con el mismo resultado.
+  ///
+  /// Se aprende en caliente en vez de traer una lista escrita a mano: si
+  /// manana ese proveedor cambia de esquema, la lista se quedaria mintiendo.
+  /// Vive en memoria y se olvida al cerrar la app, que es justo lo que se
+  /// quiere — asi un cambio del proveedor se descubre solo en el siguiente
+  /// arranque.
+  static final Map<String, int> _fallosPorHost = {};
+
+  /// Fallos seguidos antes de dejar en paz a un host.
+  ///
+  /// Tres y no uno: un 403 suelto puede ser un token caducado o un bache, y
+  /// seria una pena descartar a un proveedor que si sirve por un tropiezo.
+  static const int _fallosParaRendirse = 3;
+
+  /// Cuantas hermanas se comprueban como maximo en una extraccion.
+  ///
+  /// Sin tope, cada candidato pobre lanzaria hasta 4 peticiones y una pagina
+  /// que publica seis variantes pondria dos docenas de peticiones sobre un
+  /// proveedor que ya trunca las respuestas. Con 8 sobra: la buena, cuando
+  /// existe, sale en los primeros intentos.
+  static const int _topeSondeosHermanas = 8;
+
+  /// Las URLs de las hermanas mejores de `url`, de mejor a peor.
+  ///
+  /// Lista vacia si la URL no delata ninguna variante conocida — que es el
+  /// caso normal y por eso esto no cuesta nada cuando no aplica.
+  static List<String> hermanasDe(String url) {
+    final bajo = url.toLowerCase();
+    final salida = <String>[];
+
+    for (final entrada in _hermanasMejores.entries) {
+      final donde = bajo.indexOf(entrada.key);
+      if (donde < 0) continue;
+      for (final mejor in entrada.value) {
+        final candidata = url.replaceRange(
+          donde,
+          donde + entrada.key.length,
+          mejor,
+        );
+        if (candidata != url && !salida.contains(candidata)) {
+          salida.add(candidata);
+        }
+      }
+    }
+
+    return salida;
+  }
+
+  /// Intenta subir de variante UNA url suelta, para la via rapida.
+  ///
+  /// Devuelve la URL mejor, o `null` si no hay nada que mejorar o la hermana
+  /// no existe — y entonces quien llama se queda con la que ya tenia.
+  ///
+  /// Prueba una sola hermana, la mejor de la lista, porque este camino existe
+  /// para resolver en ~500 ms y encadenar sondeos se lo comeria.
+  static Future<String?> _subirVarianteDeUnaUrl(
+    String url,
+    String referer,
+  ) async {
+    final puntosOriginales = _getQualityScore(url);
+    if (puntosOriginales >= 1080) return null;
+
+    final hermanas = hermanasDe(url);
+    if (hermanas.isEmpty) return null;
+
+    final puntos = await _puntuacionDeVariante(hermanas.first, referer);
+    if (puntos == null || puntos <= puntosOriginales) return null;
+
+    debugPrint(
+      'DynamicScraperService: via rapida sube de variante '
+      '(${puntosOriginales}P -> ${puntos}P): ${hermanas.first}',
+    );
+    return hermanas.first;
+  }
+
+  /// Comprueba que una variante deducida EXISTE de verdad, y con que calidad.
+  ///
+  /// Devuelve su puntuacion, o `null` si no sirve. Se pide con `Range` para
+  /// traer solo la cabecera: de una lista maestra eso basta para leer sus
+  /// `#EXT-X-STREAM-INF` y saber la altura REAL, y de una lista de variante
+  /// basta para comprobar que es un `.m3u8` y no la pagina de error del
+  /// proveedor.
+  ///
+  /// Un 403 aqui es lo esperado y no un fallo: en muchos de estos servidores
+  /// el token de la URL va firmado sobre la ruta, asi que al cambiarle el
+  /// nombre deja de valer. Se descarta y se sigue con la que ya se tenia.
+  static Future<int?> _puntuacionDeVariante(String url, String referer) async {
+    final cliente = http.Client();
+    try {
+      final peticion = http.Request('GET', Uri.parse(url))
+        ..headers.addAll({
+          'User-Agent': _ua,
+          'Referer': referer,
+          'Accept': '*/*',
+          'Range': 'bytes=0-4095',
+        });
+      final respuesta = await cliente
+          .send(peticion)
+          .timeout(const Duration(milliseconds: 1500));
+      if (respuesta.statusCode != 200 && respuesta.statusCode != 206) {
+        return null;
+      }
+
+      final buffer = StringBuffer();
+      await for (final trozo in respuesta.stream.transform(
+        const Utf8Decoder(allowMalformed: true),
+      )) {
+        buffer.write(trozo);
+        if (buffer.length > 8192) break;
+      }
+      final cuerpo = buffer.toString();
+
+      // Un `.m3u8` que no empieza por `#EXTM3U` es una pagina de error
+      // devuelta con estado 200, que es de lo que mas hacen estos servidores.
+      if (url.toLowerCase().contains('.m3u8') && !cuerpo.contains('#EXT')) {
+        return null;
+      }
+
+      // Si es maestra, la verdad esta dentro y no en el nombre.
+      if (cuerpo.contains('#EXT-X-STREAM-INF')) {
+        var mejor = 0;
+        for (final m in RegExp(
+          r'RESOLUTION=\d+x(\d+)',
+          caseSensitive: false,
+        ).allMatches(cuerpo)) {
+          final alto = int.tryParse(m.group(1) ?? '') ?? 0;
+          if (alto > mejor) mejor = alto;
+        }
+        if (mejor > 0) return mejor;
+      }
+
+      // Y si es una lista de variante, no hay forma de saber su altura desde
+      // dentro: se cree lo que diga el nombre, que es lo mismo que se hace con
+      // el candidato original.
+      return _getQualityScore(url);
+    } catch (_) {
+      return null;
+    } finally {
+      cliente.close();
+    }
+  }
+
   static Future<int?> _alturaMaximaDe(String url, String referer) async {
     final cliente = http.Client();
     try {
-      final peticion =
-          http.Request('GET', Uri.parse(url))
-            ..headers.addAll({
-              'User-Agent': _ua,
-              'Referer': referer,
-              'Accept': '*/*',
-            });
+      final peticion = http.Request('GET', Uri.parse(url))
+        ..headers.addAll({
+          'User-Agent': _ua,
+          'Referer': referer,
+          'Accept': '*/*',
+        });
       final respuesta = await cliente
           .send(peticion)
           .timeout(const Duration(seconds: 2));
@@ -951,11 +1151,33 @@ class DynamicScraperService {
       debugPrint(
         'DynamicScraperService: resuelto por vía rápida nativa -> ${fastResult.videoUrl}',
       );
-      _resueltas[pageUrl] = (
-        hasta: _caducidadDe(fastResult.videoUrl),
-        resultado: fastResult,
+      // AQUI SI HAY QUE ESPERAR, Y SE ACOTA POR ESO.
+      //
+      // La via rapida devuelve UNA url y ya: no hay lista de candidatos donde
+      // meter la hermana ni pasadas del WebView corriendo en paralelo, asi que
+      // la unica forma de aprovecharla es comprobarla antes de devolver. Es el
+      // unico sitio de todo el cambio que puede sumar tiempo, y solo cuando lo
+      // que trae la via rapida no llega a 1080p.
+      //
+      // El tope real son los 1500 ms de `_puntuacionDeVariante` por hermana, y
+      // se prueba UNA sola: la mejor de la lista. Con dos o tres se perderia el
+      // medio segundo que es toda la razon de ser de este camino.
+      final mejorado = await _subirVarianteDeUnaUrl(
+        fastResult.videoUrl,
+        pageUrl,
       );
-      return fastResult;
+      final resultado =
+          mejorado == null
+              ? fastResult
+              : ExtractedStreamResult(
+                videoUrl: mejorado,
+                subtitles: fastResult.subtitles,
+              );
+      _resueltas[pageUrl] = (
+        hasta: _caducidadDe(resultado.videoUrl),
+        resultado: resultado,
+      );
+      return resultado;
     }
 
     if (_isScrapingGlobal) await _disposeHeadless();
@@ -998,7 +1220,8 @@ class DynamicScraperService {
           candidateUrls.keys
               .where(
                 (u) =>
-                    u.toLowerCase().contains('.m3u8') && !yaSondeadas.contains(u),
+                    u.toLowerCase().contains('.m3u8') &&
+                    !yaSondeadas.contains(u),
               )
               .take(4)
               .toList();
@@ -1043,6 +1266,89 @@ class DynamicScraperService {
       }
     }
 
+    // Hermanas ya comprobadas y cuantas peticiones se han gastado, para no
+    // repetir ni pasarse del tope.
+    final Set<String> hermanasVistas = {};
+    int sondeosHermanas = 0;
+
+    /// Deduce las variantes mejores de un candidato pobre y las comprueba.
+    ///
+    /// No espera a nadie: se lanza mientras el WebView sigue escaneando, y lo
+    /// unico que hace al terminar es meter lo que encuentre en
+    /// `candidateUrls`. Si no encuentra nada, no pasa nada: se queda
+    /// exactamente el candidato que se habria elegido sin esto.
+    void subirDeVariante(String url, int puntosOriginales) {
+      // Ya hay algo de 1080p o mas entre los candidatos: no hay nada que
+      // mejorar y seria gastar peticiones por deporte.
+      if (puntosOriginales >= 1080) return;
+      if (candidateUrls.values.any((p) => p >= 1080)) return;
+      if (sondeosHermanas >= _topeSondeosHermanas) return;
+
+      // A este proveedor ya se le ha deducido sin acertar las veces
+      // suficientes. Insistir es gastar peticiones que se sabe como acaban.
+      final host = Uri.tryParse(url)?.host ?? '';
+      if ((_fallosPorHost[host] ?? 0) >= _fallosParaRendirse) return;
+
+      // Se apartan AQUI, no dentro del bucle de abajo.
+      //
+      // El WebView intercepta la misma URL varias veces —en un log real, tres
+      // para el mismo `-ld`— y cada interseccion llama aqui. Marcando dentro
+      // del bucle, las tres llamadas leian el conjunto vacio antes de que la
+      // primera escribiera y sondeaban la misma hermana tres veces. Se veia en
+      // el log como lineas repetidas.
+      final hermanas = <String>[];
+      for (final h in hermanasDe(url)) {
+        if (hermanasVistas.add(h)) hermanas.add(h);
+      }
+      if (hermanas.isEmpty) return;
+
+      unawaited(() async {
+        for (final hermana in hermanas) {
+          if (_currentSessionId != sessionId) return;
+          if (completer.isCompleted) return;
+          if (sondeosHermanas >= _topeSondeosHermanas) return;
+          // Si por el camino ha aparecido una buena de verdad, se deja de
+          // insistir: esto existe para cuando NO aparece.
+          if (candidateUrls.values.any((p) => p >= 1080)) return;
+
+          sondeosHermanas++;
+
+          final puntos = await _puntuacionDeVariante(hermana, pageUrl);
+          if (puntos == null) {
+            // Se dice en voz alta, porque el silencio aqui es lo que hizo
+            // creer que la deduccion estaba funcionando cuando no lo hacia.
+            // Hay proveedores —playspelis es uno— que le ponen un hash
+            // distinto a CADA variante en el nombre del archivo
+            // (`eca785...-microframe-ld` frente a `9546eb...-microframe-sd`),
+            // asi que cambiar solo el sufijo apunta a un archivo que no
+            // existe y la deduccion no puede hacer nada por ellos.
+            _fallosPorHost[host] = (_fallosPorHost[host] ?? 0) + 1;
+            debugPrint(
+              'DynamicScraperService: la hermana deducida no existe -> $hermana',
+            );
+            continue;
+          }
+          // Un acierto borra la cuenta: este proveedor SI sigue el esquema y
+          // no se le vuelve a dar por perdido.
+          _fallosPorHost.remove(host);
+          if (_currentSessionId != sessionId || completer.isCompleted) return;
+
+          // Solo se queda si de verdad mejora. Una hermana que puntua igual o
+          // menos no aporta y cambiar de URL por gusto solo puede romper algo.
+          if (puntos <= puntosOriginales) continue;
+
+          candidateUrls[hermana] = puntos;
+          alturaReal[hermana] = puntos;
+          debugPrint(
+            'DynamicScraperService: variante hermana mejor '
+            '(${puntosOriginales}P -> ${puntos}P): $hermana',
+          );
+          resolveBestCandidate();
+          return;
+        }
+      }());
+    }
+
     await _disposeHeadless();
 
     try {
@@ -1073,7 +1379,9 @@ class DynamicScraperService {
                   navUrl == 'http://pelisflix1.tv/') &&
               pageUrl != 'https://pelisflix1.tv/' &&
               pageUrl != 'http://pelisflix1.tv/') {
-            debugPrint('DynamicScraperService: CANCEL navegación anti-bot pelisflix -> $navUrl');
+            debugPrint(
+              'DynamicScraperService: CANCEL navegación anti-bot pelisflix -> $navUrl',
+            );
             return NavigationActionPolicy.CANCEL;
           }
           return NavigationActionPolicy.ALLOW;
@@ -1099,13 +1407,15 @@ class DynamicScraperService {
           if (urlStr.contains('content.jwplatform.com/libraries/') &&
               urlStr.endsWith('.js')) {
             try {
-              final jwResp = await http.get(
-                Uri.parse(urlStr),
-                headers: {
-                  'User-Agent': _ua,
-                  'Referer': 'https://nupload.top/',
-                },
-              ).timeout(const Duration(seconds: 6));
+              final jwResp = await http
+                  .get(
+                    Uri.parse(urlStr),
+                    headers: {
+                      'User-Agent': _ua,
+                      'Referer': 'https://nupload.top/',
+                    },
+                  )
+                  .timeout(const Duration(seconds: 6));
               if (jwResp.statusCode == 200) {
                 const patch = r"""
 ;(function(){
@@ -1126,13 +1436,13 @@ class DynamicScraperService {
   try{Object.setPrototypeOf(window.jwplayer,Object.getPrototypeOf(_jw));}catch(e){}
 })();
 """;
-                debugPrint('DynamicScraperService: Parcheando JWPlayer loader -> $urlStr');
+                debugPrint(
+                  'DynamicScraperService: Parcheando JWPlayer loader -> $urlStr',
+                );
                 return WebResourceResponse(
                   contentType: 'application/javascript',
                   statusCode: 200,
-                  data: Uint8List.fromList(
-                    utf8.encode(jwResp.body + patch),
-                  ),
+                  data: Uint8List.fromList(utf8.encode(jwResp.body + patch)),
                 );
               }
             } catch (_) {}
@@ -1208,29 +1518,54 @@ class DynamicScraperService {
           // equivocada y no encuentra nada.
           if (request.isForMainFrame != true) {
             final embedHosts = [
-              'nupload.top', 'streamwish', 'filelions', 'wishfast',
-              'streamvid', 'moviesapi', 'voe.sx', 'ibelin', 'doodstream',
-              'mixdrop', 'supervideo', 'vudeo', 'waaw', 'vidmoly',
-              'streamlare', 'streamtape', 'vidoza', 'uqload', 'upstream',
-              'ok.ru', 'odnoklassniki',
+              'nupload.top',
+              'streamwish',
+              'filelions',
+              'wishfast',
+              'streamvid',
+              'moviesapi',
+              'voe.sx',
+              'ibelin',
+              'doodstream',
+              'mixdrop',
+              'supervideo',
+              'vudeo',
+              'waaw',
+              'vidmoly',
+              'streamlare',
+              'streamtape',
+              'vidoza',
+              'uqload',
+              'upstream',
+              'ok.ru',
+              'odnoklassniki',
             ];
             // Comparar solo contra el host (no los query params) para evitar
             // falsos positivos como ?domain=nupload.top en URLs de anuncios.
             final embedHost = Uri.tryParse(urlStr)?.host ?? '';
             if (embedHosts.any((h) => embedHost.contains(h)) &&
-                !urlStr.contains('.js') && !urlStr.contains('.css') &&
-                !urlStr.contains('.png') && !urlStr.contains('.jpg') &&
-                !urlStr.contains('.gif') && !urlStr.contains('.webp')) {
-              debugPrint('DynamicScraperService: Detectado iframe embed -> $urlStr');
+                !urlStr.contains('.js') &&
+                !urlStr.contains('.css') &&
+                !urlStr.contains('.png') &&
+                !urlStr.contains('.jpg') &&
+                !urlStr.contains('.gif') &&
+                !urlStr.contains('.webp')) {
+              debugPrint(
+                'DynamicScraperService: Detectado iframe embed -> $urlStr',
+              );
               unawaited(() async {
                 try {
-                  final embedResult = await _extractDirectStreamFromEmbed(urlStr)
-                      .timeout(const Duration(seconds: 10));
-                  if (embedResult != null && embedResult.videoUrl.isNotEmpty &&
+                  final embedResult = await _extractDirectStreamFromEmbed(
+                    urlStr,
+                  ).timeout(const Duration(seconds: 10));
+                  if (embedResult != null &&
+                      embedResult.videoUrl.isNotEmpty &&
                       _currentSessionId == sessionId) {
                     final score = _getQualityScore(embedResult.videoUrl);
                     candidateUrls[embedResult.videoUrl] = score;
-                    debugPrint('DynamicScraperService: Stream via iframe embed (Score: ${score}P): ${embedResult.videoUrl}');
+                    debugPrint(
+                      'DynamicScraperService: Stream via iframe embed (Score: ${score}P): ${embedResult.videoUrl}',
+                    );
                     resolveBestCandidate();
                   }
                 } catch (_) {}
@@ -1241,23 +1576,29 @@ class DynamicScraperService {
           // Interceptar sv3.ibra.lat/?s= (JWPlayer de nupload.top pide este URL
           // para obtener el m3u8; la URL redirige al .m3u8 real).
           if (urlStr.contains('sv3.ibra.lat') && urlStr.contains('?s=')) {
-            debugPrint('DynamicScraperService: Interceptando sv3.ibra.lat -> $urlStr');
+            debugPrint(
+              'DynamicScraperService: Interceptando sv3.ibra.lat -> $urlStr',
+            );
             unawaited(() async {
               try {
-                final svRes = await http.get(
-                  Uri.parse(urlStr),
-                  headers: {
-                    'User-Agent': _ua,
-                    'Referer': 'https://nupload.top/',
-                    'Accept': '*/*',
-                  },
-                ).timeout(const Duration(seconds: 8));
+                final svRes = await http
+                    .get(
+                      Uri.parse(urlStr),
+                      headers: {
+                        'User-Agent': _ua,
+                        'Referer': 'https://nupload.top/',
+                        'Accept': '*/*',
+                      },
+                    )
+                    .timeout(const Duration(seconds: 8));
                 if (svRes.statusCode == 200 && _currentSessionId == sessionId) {
                   final body = svRes.body;
                   if (body.startsWith('#EXTM3U') || body.contains('#EXT-X-')) {
                     // La URL ?s= misma sirve como stream (el player sigue el redirect)
                     candidateUrls[urlStr] = 1080;
-                    debugPrint('DynamicScraperService: Stream via sv3.ibra.lat (Score: 1080P): $urlStr');
+                    debugPrint(
+                      'DynamicScraperService: Stream via sv3.ibra.lat (Score: 1080P): $urlStr',
+                    );
                     resolveBestCandidate();
                   }
                 }
@@ -1268,17 +1609,21 @@ class DynamicScraperService {
           // Interceptar respuesta de api.kindor.io (API de JWPlayer usada por nupload.top)
           if (urlStr.contains('api.kindor.io') ||
               urlStr.contains('cdn.jwplayer.com/v2/media/')) {
-            debugPrint('DynamicScraperService: Interceptando JWPlayer API -> $urlStr');
+            debugPrint(
+              'DynamicScraperService: Interceptando JWPlayer API -> $urlStr',
+            );
             unawaited(() async {
               try {
-                final kindorRes = await http.get(
-                  Uri.parse(urlStr),
-                  headers: {
-                    'User-Agent': _ua,
-                    'Referer': 'https://nupload.top/',
-                    'Accept': 'application/json,*/*',
-                  },
-                ).timeout(const Duration(seconds: 6));
+                final kindorRes = await http
+                    .get(
+                      Uri.parse(urlStr),
+                      headers: {
+                        'User-Agent': _ua,
+                        'Referer': 'https://nupload.top/',
+                        'Accept': 'application/json,*/*',
+                      },
+                    )
+                    .timeout(const Duration(seconds: 6));
                 if (kindorRes.statusCode == 200 &&
                     _currentSessionId == sessionId) {
                   final kindorBody = kindorRes.body;
@@ -1316,6 +1661,11 @@ class DynamicScraperService {
                 'DynamicScraperService: Intercepted candidate stream (Score: $score P): $urlStr',
               );
               resolveBestCandidate();
+              // Se lanza EN PARALELO, con el WebView todavia escaneando, y no
+              // al cerrar: asi cuando terminan las pasadas la hermana buena ya
+              // esta entre los candidatos y `resolveBestCandidate` la coge sin
+              // que la extraccion haya tardado ni un milisegundo mas.
+              subirDeVariante(urlStr, score);
             }
           }
           return null;
@@ -1516,7 +1866,9 @@ class DynamicScraperService {
                         final itemMap = Map<String, dynamic>.from(item);
                         final u = itemMap['url']?.toString();
                         final s = itemMap['score'];
-                        if (u != null && u.isNotEmpty && s is num &&
+                        if (u != null &&
+                            u.isNotEmpty &&
+                            s is num &&
                             !_esUrlFileHoster(u)) {
                           candidateUrls[u] = s.toInt();
                         }
@@ -1567,11 +1919,12 @@ class DynamicScraperService {
 
       // nupload.top necesita ~20s: JWPlayer tarda ~8s en cargar librerías
       // antes de hacer el request a sv3.ibra.lat que queremos interceptar.
-      final scraperTimeoutSecs = pageUrl.contains('pelisflix') ||
-              pageUrl.contains('nupload') ||
-              pageUrl.contains('sv3.ibra')
-          ? 30
-          : 15;
+      final scraperTimeoutSecs =
+          pageUrl.contains('pelisflix') ||
+                  pageUrl.contains('nupload') ||
+                  pageUrl.contains('sv3.ibra')
+              ? 30
+              : 15;
       final result = await completer.future.timeout(
         Duration(seconds: scraperTimeoutSecs),
         onTimeout: () {
@@ -1710,14 +2063,16 @@ class DynamicScraperService {
     // Intento genérico para otros servidores embebidos
     try {
       final client = http.Client();
-      final res = await client.get(
-        Uri.parse(embedUrl),
-        headers: {
-          'User-Agent': _ua,
-          'Accept':
-              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        },
-      ).timeout(const Duration(seconds: 4));
+      final res = await client
+          .get(
+            Uri.parse(embedUrl),
+            headers: {
+              'User-Agent': _ua,
+              'Accept':
+                  'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            },
+          )
+          .timeout(const Duration(seconds: 4));
       client.close();
       if (res.statusCode == 200) {
         final m3u8Match = RegExp(
@@ -1743,16 +2098,18 @@ class DynamicScraperService {
   Future<ExtractedStreamResult?> _extractIbelinStream(String ibelinUrl) async {
     try {
       final client = http.Client();
-      final res = await client.get(
-        Uri.parse(ibelinUrl),
-        headers: {
-          'User-Agent': _ua,
-          'Accept':
-              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-          'Referer': 'https://www.peelink2.com/',
-        },
-      ).timeout(const Duration(seconds: 5));
+      final res = await client
+          .get(
+            Uri.parse(ibelinUrl),
+            headers: {
+              'User-Agent': _ua,
+              'Accept':
+                  'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+              'Referer': 'https://www.peelink2.com/',
+            },
+          )
+          .timeout(const Duration(seconds: 5));
       client.close();
 
       if (res.statusCode != 200) return null;
@@ -1787,15 +2144,17 @@ class DynamicScraperService {
   ) async {
     try {
       final client = http.Client();
-      final res = await client.get(
-        Uri.parse(peelinkUrl),
-        headers: {
-          'User-Agent': _ua,
-          'Accept':
-              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-        },
-      ).timeout(const Duration(seconds: 7));
+      final res = await client
+          .get(
+            Uri.parse(peelinkUrl),
+            headers: {
+              'User-Agent': _ua,
+              'Accept':
+                  'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+            },
+          )
+          .timeout(const Duration(seconds: 7));
       client.close();
 
       if (res.statusCode != 200) return null;
@@ -1849,9 +2208,7 @@ class DynamicScraperService {
         final videoRegex = RegExp(r'''video\[\d+\]\s*=\s*['"]([^'"]+)['"]''');
         for (final vm in videoRegex.allMatches(html)) {
           final vVal = vm.group(1) ?? '';
-          final srcMatch = RegExp(
-            r'''src=['"]([^'"]+)['"]''',
-          ).firstMatch(vVal);
+          final srcMatch = RegExp(r'''src=['"]([^'"]+)['"]''').firstMatch(vVal);
           if (srcMatch != null) {
             candidateServerUrls.add(srcMatch.group(1)!);
           }
@@ -1883,7 +2240,8 @@ class DynamicScraperService {
         var target = serverUrl;
 
         // Desempaquetar redirecciones base64 de peliculasrey si aplica
-        if (target.contains('peliculasrey.me') || target.contains('/red2.php/')) {
+        if (target.contains('peliculasrey.me') ||
+            target.contains('/red2.php/')) {
           final b64Part = target.split('/red2.php/').last;
           try {
             var dec = utf8.decode(base64.decode(b64Part), allowMalformed: true);
@@ -1900,7 +2258,8 @@ class DynamicScraperService {
         // no esperamos por hosts lentos para evitar latencia innecesaria en TV.
         if (extractedResults.isNotEmpty) {
           final lowTarget = target.toLowerCase();
-          final isLikelyFastHost = lowTarget.contains('voe') ||
+          final isLikelyFastHost =
+              lowTarget.contains('voe') ||
               lowTarget.contains('ibelin') ||
               lowTarget.contains('streamwish') ||
               lowTarget.contains('filelions');
@@ -1917,11 +2276,12 @@ class DynamicScraperService {
 
       if (extractedResults.isNotEmpty) {
         final primary = extractedResults.first;
-        final altUrls = extractedResults
-            .skip(1)
-            .map((r) => r.videoUrl)
-            .where((u) => u != primary.videoUrl)
-            .toList();
+        final altUrls =
+            extractedResults
+                .skip(1)
+                .map((r) => r.videoUrl)
+                .where((u) => u != primary.videoUrl)
+                .toList();
 
         final Set<ScrapedSubtitle> allSubs = {};
         for (final r in extractedResults) {
@@ -1960,15 +2320,17 @@ class DynamicScraperService {
       }
 
       final client = http.Client();
-      http.Response res = await client.get(
-        Uri.parse(currentUrl),
-        headers: {
-          'User-Agent': _ua,
-          'Accept':
-              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-        },
-      ).timeout(const Duration(seconds: 7));
+      http.Response res = await client
+          .get(
+            Uri.parse(currentUrl),
+            headers: {
+              'User-Agent': _ua,
+              'Accept':
+                  'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+            },
+          )
+          .timeout(const Duration(seconds: 7));
 
       // Redirección JavaScript de VOE a dominio de entrega
       if (res.body.contains("window.location.href = '") ||
@@ -1979,13 +2341,12 @@ class DynamicScraperService {
         if (redirectMatch != null) {
           final redirectUrl = redirectMatch.group(1)!;
           currentUrl = redirectUrl;
-          res = await client.get(
-            Uri.parse(currentUrl),
-            headers: {
-              'User-Agent': _ua,
-              'Referer': voeUrl,
-            },
-          ).timeout(const Duration(seconds: 7));
+          res = await client
+              .get(
+                Uri.parse(currentUrl),
+                headers: {'User-Agent': _ua, 'Referer': voeUrl},
+              )
+              .timeout(const Duration(seconds: 7));
         }
       }
       client.close();
@@ -2021,10 +2382,9 @@ class DynamicScraperService {
             if (streamUrl.contains('master.m3u8')) {
               try {
                 final masterClient = http.Client();
-                final masterRes = await masterClient.get(
-                  Uri.parse(streamUrl),
-                  headers: {'User-Agent': _ua},
-                ).timeout(const Duration(seconds: 2));
+                final masterRes = await masterClient
+                    .get(Uri.parse(streamUrl), headers: {'User-Agent': _ua})
+                    .timeout(const Duration(seconds: 2));
                 masterClient.close();
                 if (masterRes.statusCode == 200) {
                   final lines = masterRes.body.split('\n');
@@ -2137,15 +2497,18 @@ class DynamicScraperService {
   Future<ScrapedMetadata?> _scrapePelisflixMetadata(String url) async {
     try {
       final client = http.Client();
-      final res = await client.get(
-        Uri.parse(url),
-        headers: {
-          'User-Agent': _desktopUa,
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-          'Referer': 'https://pelisflix1.tv/',
-        },
-      ).timeout(const Duration(seconds: 10));
+      final res = await client
+          .get(
+            Uri.parse(url),
+            headers: {
+              'User-Agent': _desktopUa,
+              'Accept':
+                  'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+              'Referer': 'https://pelisflix1.tv/',
+            },
+          )
+          .timeout(const Duration(seconds: 10));
       client.close();
 
       if (res.statusCode != 200) return null;
@@ -2159,7 +2522,10 @@ class DynamicScraperService {
       if (ogTitle != null) {
         title = ogTitle.group(1)!.trim();
       } else {
-        final h1 = RegExp(r'<h1[^>]*>(.*?)</h1>', dotAll: true).firstMatch(html);
+        final h1 = RegExp(
+          r'<h1[^>]*>(.*?)</h1>',
+          dotAll: true,
+        ).firstMatch(html);
         if (h1 != null) {
           title = h1.group(1)!.replaceAll(RegExp(r'<[^>]*>'), '').trim();
         }
@@ -2191,14 +2557,19 @@ class DynamicScraperService {
         final epUrl = m.group(1)!;
         if (!seenUrls.add(epUrl)) continue;
         final epTitle = m.group(2)!.replaceAll(RegExp(r'<[^>]*>'), '').trim();
-        episodes.add(M3UItem(
-          name: epTitle.isNotEmpty ? epTitle : 'Episodio ${episodes.length + 1}',
-          url: epUrl,
-          logo: thumb,
-          category: 'Episodios',
-          isLive: false,
-          isDynamic: true,
-        ));
+        episodes.add(
+          M3UItem(
+            name:
+                epTitle.isNotEmpty
+                    ? epTitle
+                    : 'Episodio ${episodes.length + 1}',
+            url: epUrl,
+            logo: thumb,
+            category: 'Episodios',
+            isLive: false,
+            isDynamic: true,
+          ),
+        );
       }
 
       if (title.isNotEmpty) {
@@ -2218,15 +2589,18 @@ class DynamicScraperService {
   Future<ExtractedStreamResult?> _extractPelisflixStream(String pageUrl) async {
     try {
       final client = http.Client();
-      final res = await client.get(
-        Uri.parse(pageUrl),
-        headers: {
-          'User-Agent': _desktopUa,
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-          'Referer': '${Uri.parse(pageUrl).origin}/',
-        },
-      ).timeout(const Duration(seconds: 10));
+      final res = await client
+          .get(
+            Uri.parse(pageUrl),
+            headers: {
+              'User-Agent': _desktopUa,
+              'Accept':
+                  'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+              'Referer': '${Uri.parse(pageUrl).origin}/',
+            },
+          )
+          .timeout(const Duration(seconds: 10));
       client.close();
 
       if (res.statusCode != 200) return null;
@@ -2243,7 +2617,9 @@ class DynamicScraperService {
       // data-url="<base64>" y el JS lo monta al hacer clic. Vienen en orden
       // LATINO, CASTELLANO, SUBTITULADO, así que el orden del documento ya
       // prioriza Latino. Leerlos aquí evita el WebView (anuncios + redirect).
-      for (final m in RegExp(r'data-url="([A-Za-z0-9+/=]{16,})"').allMatches(html)) {
+      for (final m in RegExp(
+        r'data-url="([A-Za-z0-9+/=]{16,})"',
+      ).allMatches(html)) {
         try {
           final u = utf8.decode(base64.decode(m.group(1)!));
           if (u.startsWith('http') && !iframes.contains(u)) iframes.add(u);
@@ -2258,26 +2634,33 @@ class DynamicScraperService {
       iframes.sort((a, b) {
         int score(String u) {
           final l = u.toLowerCase();
-          if (l.contains('nupload') || l.contains('voe') ||
-              l.contains('ibelin') || l.contains('savefiles')) {
+          if (l.contains('nupload') ||
+              l.contains('voe') ||
+              l.contains('ibelin') ||
+              l.contains('savefiles')) {
             return 0;
           }
           return 1;
         }
+
         final c = score(a).compareTo(score(b));
         return c != 0 ? c : pos[a]!.compareTo(pos[b]!);
       });
 
       for (final iframeSrc in iframes) {
         final low = iframeSrc.toLowerCase();
-        if (low.contains('doubleclick') || low.contains('google-analytics') ||
-            low.contains('googlesyndication') || low.contains('ads')) {
+        if (low.contains('doubleclick') ||
+            low.contains('google-analytics') ||
+            low.contains('googlesyndication') ||
+            low.contains('ads')) {
           continue;
         }
 
         final result = await _extractDirectStreamFromEmbed(iframeSrc);
         if (result != null && result.videoUrl.isNotEmpty) {
-          debugPrint('DynamicScraperService (Pelisflix): stream via iframe -> ${result.videoUrl}');
+          debugPrint(
+            'DynamicScraperService (Pelisflix): stream via iframe -> ${result.videoUrl}',
+          );
           return result;
         }
       }
@@ -2308,15 +2691,17 @@ class DynamicScraperService {
   Future<ScrapedMetadata?> _scrapePeelinkMetadata(String url) async {
     try {
       final client = http.Client();
-      final res = await client.get(
-        Uri.parse(url),
-        headers: {
-          'User-Agent': _ua,
-          'Accept':
-              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-        },
-      ).timeout(const Duration(seconds: 8));
+      final res = await client
+          .get(
+            Uri.parse(url),
+            headers: {
+              'User-Agent': _ua,
+              'Accept':
+                  'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+            },
+          )
+          .timeout(const Duration(seconds: 8));
       client.close();
 
       if (res.statusCode != 200) return null;
@@ -2413,7 +2798,10 @@ class DynamicScraperService {
     final arrMatch = arrRegex.firstMatch(body);
     if (arrMatch == null) return null;
     final arrStr = arrMatch.group(1)!;
-    final items = RegExp(r'"([^"]+)"').allMatches(arrStr).map((m) => m.group(1)!).toList();
+    final items =
+        RegExp(
+          r'"([^"]+)"',
+        ).allMatches(arrStr).map((m) => m.group(1)!).toList();
     if (items.isEmpty) return null;
     final result = StringBuffer();
     for (final item in items) {
@@ -2429,20 +2817,20 @@ class DynamicScraperService {
     return s.isEmpty ? null : s;
   }
 
-  Future<ExtractedStreamResult?> _extractNuploadStream(
-    String embedUrl,
-  ) async {
+  Future<ExtractedStreamResult?> _extractNuploadStream(String embedUrl) async {
     try {
-      final res = await http.get(
-        Uri.parse(embedUrl),
-        headers: {
-          'User-Agent': _ua,
-          'Referer': 'https://pelisflix1.tv/',
-          'Accept':
-              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-        },
-      ).timeout(const Duration(seconds: 8));
+      final res = await http
+          .get(
+            Uri.parse(embedUrl),
+            headers: {
+              'User-Agent': _ua,
+              'Referer': 'https://pelisflix1.tv/',
+              'Accept':
+                  'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+            },
+          )
+          .timeout(const Duration(seconds: 8));
 
       if (res.statusCode != 200) return null;
       final body = res.body;
@@ -2457,7 +2845,9 @@ class DynamicScraperService {
         r'var\s+([A-Za-z_]\w*)\s*=\s*\["[A-Za-z0-9+/=]+",',
       ).firstMatch(body);
 
-      final seszMatch = RegExp(r'''sesz\s*=\s*"([^"]{20,})"''').firstMatch(body);
+      final seszMatch = RegExp(
+        r'''sesz\s*=\s*"([^"]{20,})"''',
+      ).firstMatch(body);
 
       if (arrayNameMatch != null && seszMatch != null) {
         final arrName = arrayNameMatch.group(1)!;
@@ -2466,8 +2856,13 @@ class DynamicScraperService {
         // Buscar el offset numérico usado en la resta: "parseInt(atob(value).replace(...)) - OFFSET"
         // El replace(/\D/g,'') mete paréntesis extra, así que se toma lo que
         // haya hasta el primer "- NUM" tras parseInt(atob(.
-        final offsetMatch = RegExp(r'parseInt\(atob\(.{0,80}?\)\s*-\s*(\d+)').firstMatch(body);
-        final decodedOffset = offsetMatch != null ? int.tryParse(offsetMatch.group(1)!) ?? 1323034 : 1323034;
+        final offsetMatch = RegExp(
+          r'parseInt\(atob\(.{0,80}?\)\s*-\s*(\d+)',
+        ).firstMatch(body);
+        final decodedOffset =
+            offsetMatch != null
+                ? int.tryParse(offsetMatch.group(1)!) ?? 1323034
+                : 1323034;
 
         final baseUrl = _decodeNuploadArray(arrName, body, decodedOffset);
         if (baseUrl != null && baseUrl.startsWith('http')) {
@@ -2475,14 +2870,16 @@ class DynamicScraperService {
           debugPrint('NuploadExtractor: GET $streamApiUrl');
           try {
             final client = http.Client();
-            final streamRes = await client.get(
-              Uri.parse(streamApiUrl),
-              headers: {
-                'User-Agent': _ua,
-                'Referer': 'https://nupload.top/',
-                'Accept': '*/*',
-              },
-            ).timeout(const Duration(seconds: 6));
+            final streamRes = await client
+                .get(
+                  Uri.parse(streamApiUrl),
+                  headers: {
+                    'User-Agent': _ua,
+                    'Referer': 'https://nupload.top/',
+                    'Accept': '*/*',
+                  },
+                )
+                .timeout(const Duration(seconds: 6));
             client.close();
             // La respuesta es el .m3u8 directo O redirige a él
             final finalUrl = streamRes.request?.url.toString() ?? streamApiUrl;
@@ -2492,14 +2889,17 @@ class DynamicScraperService {
               // termina en .m3u8 pero dice "File deleted by DMCA request".
               // Solo vale un #EXTM3U de verdad.
               if (bodyM.contains('#EXTM3U')) {
-                final m3u8url = finalUrl.contains('.m3u8') ? finalUrl : streamApiUrl;
+                final m3u8url =
+                    finalUrl.contains('.m3u8') ? finalUrl : streamApiUrl;
                 debugPrint('NuploadExtractor: stream -> $m3u8url');
                 return ExtractedStreamResult(
                   videoUrl: m3u8url,
                   headers: cabecerasObligatorias(m3u8url),
                 );
               }
-              debugPrint('NuploadExtractor: el servidor devolvió una lista cebo');
+              debugPrint(
+                'NuploadExtractor: el servidor devolvió una lista cebo',
+              );
               // A veces la respuesta es JSON con "file"
               final jsonFileMatch = RegExp(
                 r'"file"\s*:\s*"(https?://[^"]+\.m3u8[^"]*)"',
@@ -2539,13 +2939,12 @@ class DynamicScraperService {
       }
 
       final client = http.Client();
-      final res = await client.get(
-        Uri.parse(embedUrl),
-        headers: {
-          'User-Agent': _desktopUa,
-          'Referer': 'https://ok.ru/',
-        },
-      ).timeout(const Duration(seconds: 8));
+      final res = await client
+          .get(
+            Uri.parse(embedUrl),
+            headers: {'User-Agent': _desktopUa, 'Referer': 'https://ok.ru/'},
+          )
+          .timeout(const Duration(seconds: 8));
       client.close();
 
       if (res.statusCode != 200) return null;
@@ -2555,7 +2954,10 @@ class DynamicScraperService {
       final List<String> altUrls = [];
 
       // 1. Parsear data-options
-      final optMatch = RegExp(r'''data-options=(["'])(.*?)\1''', dotAll: true).firstMatch(html);
+      final optMatch = RegExp(
+        r'''data-options=(["'])(.*?)\1''',
+        dotAll: true,
+      ).firstMatch(html);
       if (optMatch != null) {
         try {
           var rawOpt = optMatch.group(2) ?? '';
@@ -2575,7 +2977,8 @@ class DynamicScraperService {
             if (hlsManifest != null && hlsManifest.isNotEmpty) {
               if (hlsUrl == null) {
                 hlsUrl = hlsManifest;
-              } else if (hlsManifest != hlsUrl && !altUrls.contains(hlsManifest)) {
+              } else if (hlsManifest != hlsUrl &&
+                  !altUrls.contains(hlsManifest)) {
                 altUrls.add(hlsManifest);
               }
             }
@@ -2594,9 +2997,14 @@ class DynamicScraperService {
 
       // 2. Fallback regex directo para ondemandHls
       if (hlsUrl == null) {
-        final regHls = RegExp(r'''ondemandHls[\\"\':\s]+(https:[^\\"\']+\.m3u8[^\s\\"\']*)''').firstMatch(html);
+        final regHls = RegExp(
+          r'''ondemandHls[\\"\':\s]+(https:[^\\"\']+\.m3u8[^\s\\"\']*)''',
+        ).firstMatch(html);
         if (regHls != null) {
-          hlsUrl = regHls.group(1)!.replaceAll(r'\/', '/').replaceAll(r'\u0026', '&');
+          hlsUrl = regHls
+              .group(1)!
+              .replaceAll(r'\/', '/')
+              .replaceAll(r'\u0026', '&');
         }
       }
 
@@ -2608,10 +3016,7 @@ class DynamicScraperService {
       return ExtractedStreamResult(
         videoUrl: primaryUrl,
         alternativeUrls: remainingAlts,
-        headers: {
-          'User-Agent': _desktopUa,
-          'Referer': 'https://ok.ru/',
-        },
+        headers: {'User-Agent': _desktopUa, 'Referer': 'https://ok.ru/'},
       );
     } catch (e) {
       debugPrint('DynamicScraperService: error extractOkRuStream: $e');
@@ -2619,30 +3024,37 @@ class DynamicScraperService {
     return null;
   }
 
-  Future<ExtractedStreamResult?> _extractSaveFilesStream(String embedUrl) async {
+  Future<ExtractedStreamResult?> _extractSaveFilesStream(
+    String embedUrl,
+  ) async {
     try {
-      final codeMatch = RegExp(r'savefiles\.com/(?:e/)?([A-Za-z0-9_-]+)', caseSensitive: false)
-          .firstMatch(embedUrl);
+      final codeMatch = RegExp(
+        r'savefiles\.com/(?:e/)?([A-Za-z0-9_-]+)',
+        caseSensitive: false,
+      ).firstMatch(embedUrl);
       if (codeMatch == null) return null;
       final fileCode = codeMatch.group(1)!;
 
       final client = http.Client();
-      final res = await client.post(
-        Uri.parse('https://savefiles.com/dl'),
-        headers: {
-          'User-Agent': _desktopUa,
-          'Referer': embedUrl,
-          'Origin': 'https://savefiles.com',
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        },
-        body: {
-          'op': 'embed',
-          'file_code': fileCode,
-          'auto': '1',
-          'referer': 'https://ww3.gnulahd.nu/',
-        },
-      ).timeout(const Duration(seconds: 8));
+      final res = await client
+          .post(
+            Uri.parse('https://savefiles.com/dl'),
+            headers: {
+              'User-Agent': _desktopUa,
+              'Referer': embedUrl,
+              'Origin': 'https://savefiles.com',
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'Accept':
+                  'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            },
+            body: {
+              'op': 'embed',
+              'file_code': fileCode,
+              'auto': '1',
+              'referer': 'https://ww3.gnulahd.nu/',
+            },
+          )
+          .timeout(const Duration(seconds: 8));
       client.close();
 
       if (res.statusCode != 200) return null;
@@ -2650,14 +3062,15 @@ class DynamicScraperService {
       final body = res.body;
 
       // Buscar el archivo m3u8 en la configuración del reproductor SaveFiles
-      final m3u8Match = RegExp(
-        r'''sources\s*:\s*\[\s*\{\s*file\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]''',
-        caseSensitive: false,
-      ).firstMatch(body) ??
-      RegExp(
-        r'''['"](https?://[^'"\s]+\.m3u8[^'"\s]*)['"]''',
-        caseSensitive: false,
-      ).firstMatch(body);
+      final m3u8Match =
+          RegExp(
+            r'''sources\s*:\s*\[\s*\{\s*file\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]''',
+            caseSensitive: false,
+          ).firstMatch(body) ??
+          RegExp(
+            r'''['"](https?://[^'"\s]+\.m3u8[^'"\s]*)['"]''',
+            caseSensitive: false,
+          ).firstMatch(body);
 
       if (m3u8Match != null) {
         final streamUrl = m3u8Match.group(1)!;
@@ -2697,15 +3110,17 @@ class DynamicScraperService {
     try {
       // Reutilizar el mismo client para página + API (mismo host) → una sola negociación TLS.
       final client = http.Client();
-      final res = await client.get(
-        Uri.parse(pageUrl),
-        headers: {
-          'User-Agent': _desktopUa,
-          'Accept':
-              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-        },
-      ).timeout(const Duration(seconds: 12));
+      final res = await client
+          .get(
+            Uri.parse(pageUrl),
+            headers: {
+              'User-Agent': _desktopUa,
+              'Accept':
+                  'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+            },
+          )
+          .timeout(const Duration(seconds: 12));
 
       if (res.statusCode != 200) return null;
       final html = res.body;
@@ -2724,14 +3139,24 @@ class DynamicScraperService {
 
         for (final m in allCards) {
           final cardTag = m.group(0)!;
-          final href = RegExp(r'''href=['"]([^'"]+)['"]''', caseSensitive: false).firstMatch(cardTag)?.group(1);
-          final sStr = RegExp(r'''data-s=['"](\d+)['"]''', caseSensitive: false).firstMatch(cardTag)?.group(1);
-          final eStr = RegExp(r'''data-e=['"](\d+)['"]''', caseSensitive: false).firstMatch(cardTag)?.group(1);
+          final href = RegExp(
+            r'''href=['"]([^'"]+)['"]''',
+            caseSensitive: false,
+          ).firstMatch(cardTag)?.group(1);
+          final sStr = RegExp(
+            r'''data-s=['"](\d+)['"]''',
+            caseSensitive: false,
+          ).firstMatch(cardTag)?.group(1);
+          final eStr = RegExp(
+            r'''data-e=['"](\d+)['"]''',
+            caseSensitive: false,
+          ).firstMatch(cardTag)?.group(1);
 
           final s = int.tryParse(sStr ?? '') ?? 1;
           final e = int.tryParse(eStr ?? '') ?? 1;
 
-          if (href != null && (s < minSeason || (s == minSeason && e < minEpisode))) {
+          if (href != null &&
+              (s < minSeason || (s == minSeason && e < minEpisode))) {
             minSeason = s;
             minEpisode = e;
             bestHref = href;
@@ -2745,28 +3170,39 @@ class DynamicScraperService {
       }
 
       final pidMatch = RegExp(r'_gnrdPid\s*=\s*(\d+)').firstMatch(html);
-      final tokMatch = RegExp(r'''_gnrdTok\s*=\s*['"]([^'"]+)['"]''').firstMatch(html);
-      final vdAuthMatch = RegExp(r'''VD_AUTH\s*=\s*['"]([^'"]+)['"]''').firstMatch(html);
-      final ttAuthMatch = RegExp(r'''(?:^|[^a-zA-Z0-9_])AUTH\s*=\s*['"]([^'"]+)['"]''').firstMatch(html);
+      final tokMatch = RegExp(
+        r'''_gnrdTok\s*=\s*['"]([^'"]+)['"]''',
+      ).firstMatch(html);
+      final vdAuthMatch = RegExp(
+        r'''VD_AUTH\s*=\s*['"]([^'"]+)['"]''',
+      ).firstMatch(html);
+      final ttAuthMatch = RegExp(
+        r'''(?:^|[^a-zA-Z0-9_])AUTH\s*=\s*['"]([^'"]+)['"]''',
+      ).firstMatch(html);
 
       if (pidMatch != null && tokMatch != null) {
         final pid = pidMatch.group(1)!;
         final tok = tokMatch.group(1)!;
-        final vdAuth = vdAuthMatch?.group(1) ?? '&t=69d77fa4e43d2d340a4306574a3af563';
-        final ttAuth = ttAuthMatch?.group(1) ?? '&t=2020e4d463d84d7745ee262348f5b65d';
+        final vdAuth =
+            vdAuthMatch?.group(1) ?? '&t=69d77fa4e43d2d340a4306574a3af563';
+        final ttAuth =
+            ttAuthMatch?.group(1) ?? '&t=2020e4d463d84d7745ee262348f5b65d';
 
         final uri = Uri.parse(pageUrl);
-        final apiUrl = '${uri.scheme}://${uri.host}/wp-json/gnrd/v1/player?id=$pid&t=$tok';
+        final apiUrl =
+            '${uri.scheme}://${uri.host}/wp-json/gnrd/v1/player?id=$pid&t=$tok';
 
         // Reutilizar el mismo client → misma conexión TCP/TLS para página + API.
-        final apiRes = await client.get(
-          Uri.parse(apiUrl),
-          headers: {
-            'User-Agent': _desktopUa,
-            'Referer': pageUrl,
-            'Accept': 'application/json, text/plain, */*',
-          },
-        ).timeout(const Duration(seconds: 12));
+        final apiRes = await client
+            .get(
+              Uri.parse(apiUrl),
+              headers: {
+                'User-Agent': _desktopUa,
+                'Referer': pageUrl,
+                'Accept': 'application/json, text/plain, */*',
+              },
+            )
+            .timeout(const Duration(seconds: 12));
 
         if (apiRes.statusCode == 200) {
           final apiJson = json.decode(apiRes.body) as Map<String, dynamic>;
@@ -2798,7 +3234,8 @@ class DynamicScraperService {
                 if (src == null || src.isEmpty) continue;
                 if (label.contains('latino')) {
                   latino.add(src);
-                } else if (label.contains('castellano') || label.contains('español')) {
+                } else if (label.contains('castellano') ||
+                    label.contains('español')) {
                   castellano.add(src);
                 } else if (label.contains('sub')) {
                   subtitulado.add(src);
@@ -2821,14 +3258,21 @@ class DynamicScraperService {
             //   4 = resto                 → HTTP call + calidad desconocida
             int velocidad(String s) {
               final low = s.toLowerCase();
-              if (low.contains('savefiles') || low.contains('savefile')) return 0;
-              if (low.contains('ok.ru') || low.contains('odnoklassniki')) return 1;
-              if (low.contains('vidara') || low.contains('the.tube') || low.contains('they.tube')) return 2;
+              if (low.contains('savefiles') || low.contains('savefile'))
+                return 0;
+              if (low.contains('ok.ru') || low.contains('odnoklassniki'))
+                return 1;
+              if (low.contains('vidara') ||
+                  low.contains('the.tube') ||
+                  low.contains('they.tube'))
+                return 2;
               if (low.contains('voe')) return 3;
               return 4;
             }
 
-            candidateServers.sort((a, b) => velocidad(a).compareTo(velocidad(b)));
+            candidateServers.sort(
+              (a, b) => velocidad(a).compareTo(velocidad(b)),
+            );
 
             final List<ExtractedStreamResult> extractedResults = [];
 
@@ -2847,19 +3291,21 @@ class DynamicScraperService {
               }
 
               // 2. Servidor Vidara: resolución directa mediante vidara-resolve.php
-              if (src.contains('vidara.to') || src.contains('vidaraa.cc') || src.contains('vidara')) {
-                final m = RegExp(r'https?://([^/]+)/(?:e/)?([^/?#]+)').firstMatch(src);
+              if (src.contains('vidara.to') ||
+                  src.contains('vidaraa.cc') ||
+                  src.contains('vidara')) {
+                final m = RegExp(
+                  r'https?://([^/]+)/(?:e/)?([^/?#]+)',
+                ).firstMatch(src);
                 if (m != null) {
                   final host = m.group(1)!;
                   final code = m.group(2)!;
-                  final vidaraM3u8 = '${uri.scheme}://${uri.host}/panel/vidara-resolve.php?pl=1&code=$code&host=$host$vdAuth&ext=.m3u8';
+                  final vidaraM3u8 =
+                      '${uri.scheme}://${uri.host}/panel/vidara-resolve.php?pl=1&code=$code&host=$host$vdAuth&ext=.m3u8';
                   extractedResults.add(
                     ExtractedStreamResult(
                       videoUrl: vidaraM3u8,
-                      headers: {
-                        'User-Agent': _ua,
-                        'Referer': pageUrl,
-                      },
+                      headers: {'User-Agent': _ua, 'Referer': pageUrl},
                     ),
                   );
                   if (extractedResults.length >= 2) break;
@@ -2879,17 +3325,17 @@ class DynamicScraperService {
 
               // C. Servidor the.tube
               if (src.contains('the.tube') || src.contains('they.tube')) {
-                final m = RegExp(r'the(?:y)?\.tube/(?:e/)?([A-Za-z0-9_-]+)').firstMatch(src);
+                final m = RegExp(
+                  r'the(?:y)?\.tube/(?:e/)?([A-Za-z0-9_-]+)',
+                ).firstMatch(src);
                 if (m != null) {
                   final code = m.group(1)!;
-                  final tubeUrl = '${uri.scheme}://${uri.host}/panel/the-tube-resolve.php?code=$code$ttAuth';
+                  final tubeUrl =
+                      '${uri.scheme}://${uri.host}/panel/the-tube-resolve.php?code=$code$ttAuth';
                   extractedResults.add(
                     ExtractedStreamResult(
                       videoUrl: tubeUrl,
-                      headers: {
-                        'User-Agent': _ua,
-                        'Referer': pageUrl,
-                      },
+                      headers: {'User-Agent': _ua, 'Referer': pageUrl},
                     ),
                   );
                   if (extractedResults.length >= 2) break;
@@ -2898,7 +3344,9 @@ class DynamicScraperService {
               }
 
               // D. Servidor VOE
-              if (src.contains('voe.sx') || src.contains('voe.') || src.contains('voe-network')) {
+              if (src.contains('voe.sx') ||
+                  src.contains('voe.') ||
+                  src.contains('voe-network')) {
                 final voeRes = await _extractVoeStream(src);
                 if (voeRes != null && voeRes.videoUrl.isNotEmpty) {
                   extractedResults.add(voeRes);
@@ -2921,7 +3369,8 @@ class DynamicScraperService {
               final primary = extractedResults.first;
               final altUrls = <String>[];
               for (final r in extractedResults) {
-                if (r.videoUrl != primary.videoUrl && !altUrls.contains(r.videoUrl)) {
+                if (r.videoUrl != primary.videoUrl &&
+                    !altUrls.contains(r.videoUrl)) {
                   altUrls.add(r.videoUrl);
                 }
                 for (final alt in r.alternativeUrls) {
@@ -2936,10 +3385,10 @@ class DynamicScraperService {
                 videoUrl: primary.videoUrl,
                 subtitles: primary.subtitles,
                 alternativeUrls: altUrls,
-                headers: primary.headers.isNotEmpty ? primary.headers : {
-                  'User-Agent': _ua,
-                  'Referer': pageUrl,
-                },
+                headers:
+                    primary.headers.isNotEmpty
+                        ? primary.headers
+                        : {'User-Agent': _ua, 'Referer': pageUrl},
               );
             }
           }
@@ -2947,7 +3396,10 @@ class DynamicScraperService {
       }
 
       // Fallback si no hubo _gnrdPid: buscar iframe en el HTML
-      final iframeMatch = RegExp(r'''<iframe[^>]+src=['"]([^'"]+)['"]''', caseSensitive: false).firstMatch(html);
+      final iframeMatch = RegExp(
+        r'''<iframe[^>]+src=['"]([^'"]+)['"]''',
+        caseSensitive: false,
+      ).firstMatch(html);
       if (iframeMatch != null) {
         final ifrSrc = iframeMatch.group(1)!;
         if (!ifrSrc.contains('youtube') && !ifrSrc.contains('about:blank')) {
@@ -2965,15 +3417,17 @@ class DynamicScraperService {
   Future<ScrapedMetadata?> _scrapeGnulaMetadata(String url) async {
     try {
       final client = http.Client();
-      final res = await client.get(
-        Uri.parse(url),
-        headers: {
-          'User-Agent': _desktopUa,
-          'Accept':
-              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-        },
-      ).timeout(const Duration(seconds: 10));
+      final res = await client
+          .get(
+            Uri.parse(url),
+            headers: {
+              'User-Agent': _desktopUa,
+              'Accept':
+                  'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+            },
+          )
+          .timeout(const Duration(seconds: 10));
       client.close();
 
       if (res.statusCode != 200) return null;
@@ -2986,13 +3440,25 @@ class DynamicScraperService {
         caseSensitive: false,
       ).firstMatch(html);
       if (ogTitle != null) {
-        title = ogTitle.group(1)!
-            .replaceAll(RegExp(r'\s*\(?\d{4}\)?\s*(?:Película Completa|Serie Completa)?\s*(?:Español\s*Latino|Castellano|Subtitulado)?\s*(?:HD)?\s*\|\s*Gnula.*$', caseSensitive: false), '')
-            .replaceAll(' - Gnula', '')
-            .trim();
+        title =
+            ogTitle
+                .group(1)!
+                .replaceAll(
+                  RegExp(
+                    r'\s*\(?\d{4}\)?\s*(?:Película Completa|Serie Completa)?\s*(?:Español\s*Latino|Castellano|Subtitulado)?\s*(?:HD)?\s*\|\s*Gnula.*$',
+                    caseSensitive: false,
+                  ),
+                  '',
+                )
+                .replaceAll(' - Gnula', '')
+                .trim();
       }
       if (title.isEmpty) {
-        final h1Match = RegExp(r'''<h1[^>]*>(.*?)</h1>''', dotAll: true, caseSensitive: false).firstMatch(html);
+        final h1Match = RegExp(
+          r'''<h1[^>]*>(.*?)</h1>''',
+          dotAll: true,
+          caseSensitive: false,
+        ).firstMatch(html);
         if (h1Match != null) {
           title = h1Match.group(1)!.replaceAll(RegExp(r'<[^>]*>'), '').trim();
         }
@@ -3018,7 +3484,11 @@ class DynamicScraperService {
         desc = descMatch.group(1)!.trim();
       }
       if (desc == null || desc.isEmpty) {
-        final synMatch = RegExp(r'''class=['"][^'"]*gnrd-fi-syn[^'"]*['"][^>]*>(.*?)</div>''', dotAll: true, caseSensitive: false).firstMatch(html);
+        final synMatch = RegExp(
+          r'''class=['"][^'"]*gnrd-fi-syn[^'"]*['"][^>]*>(.*?)</div>''',
+          dotAll: true,
+          caseSensitive: false,
+        ).firstMatch(html);
         if (synMatch != null) {
           desc = synMatch.group(1)!.replaceAll(RegExp(r'<[^>]*>'), '').trim();
         }
@@ -3037,26 +3507,48 @@ class DynamicScraperService {
         final tagAttrs = m.group(1) ?? '';
         final inner = m.group(2) ?? '';
 
-        final hrefMatch = RegExp(r'''href=['"]([^'"]+)['"]''', caseSensitive: false).firstMatch(tagAttrs);
+        final hrefMatch = RegExp(
+          r'''href=['"]([^'"]+)['"]''',
+          caseSensitive: false,
+        ).firstMatch(tagAttrs);
         if (hrefMatch == null) continue;
         final epUrl = hrefMatch.group(1)!;
         if (!seenUrls.add(epUrl)) continue;
 
-        final seasonMatch = RegExp(r'''data-s=['"]([^'"]+)['"]''', caseSensitive: false).firstMatch(tagAttrs);
-        final numMatch = RegExp(r'''class=['"][^'"]*gnrd-epc-n[^'"]*['"][^>]*>([^<]+)<''', caseSensitive: false).firstMatch(inner);
-        final titleMatch = RegExp(r'''class=['"][^'"]*gnrd-epc-title[^'"]*['"][^>]*>([^<]+)<''', caseSensitive: false).firstMatch(inner);
-        final durMatch = RegExp(r'''class=['"][^'"]*gnrd-epc-dur[^'"]*['"][^>]*>([^<]+)<''', caseSensitive: false).firstMatch(inner);
-        final imgMatch = RegExp(r'''<img[^>]+(?:src|data-src)=['"]([^'"]+)['"]''', caseSensitive: false).firstMatch(inner);
+        final seasonMatch = RegExp(
+          r'''data-s=['"]([^'"]+)['"]''',
+          caseSensitive: false,
+        ).firstMatch(tagAttrs);
+        final numMatch = RegExp(
+          r'''class=['"][^'"]*gnrd-epc-n[^'"]*['"][^>]*>([^<]+)<''',
+          caseSensitive: false,
+        ).firstMatch(inner);
+        final titleMatch = RegExp(
+          r'''class=['"][^'"]*gnrd-epc-title[^'"]*['"][^>]*>([^<]+)<''',
+          caseSensitive: false,
+        ).firstMatch(inner);
+        final durMatch = RegExp(
+          r'''class=['"][^'"]*gnrd-epc-dur[^'"]*['"][^>]*>([^<]+)<''',
+          caseSensitive: false,
+        ).firstMatch(inner);
+        final imgMatch = RegExp(
+          r'''<img[^>]+(?:src|data-src)=['"]([^'"]+)['"]''',
+          caseSensitive: false,
+        ).firstMatch(inner);
 
         final codeStr = numMatch?.group(1)?.trim() ?? ''; // ej: "2x10"
-        final epTitleClean = titleMatch?.group(1)?.trim() ?? ''; // ej: "Donde pertenecemos"
+        final epTitleClean =
+            titleMatch?.group(1)?.trim() ?? ''; // ej: "Donde pertenecemos"
         final durStr = durMatch?.group(1)?.trim(); // ej: "53 min"
         final epThumb = imgMatch?.group(1)?.trim() ?? thumb;
 
         int? sNum;
         int? epNum;
         if (codeStr.isNotEmpty) {
-          final parts = RegExp(r'(\d+)x(\d+)', caseSensitive: false).firstMatch(codeStr);
+          final parts = RegExp(
+            r'(\d+)x(\d+)',
+            caseSensitive: false,
+          ).firstMatch(codeStr);
           if (parts != null) {
             sNum = int.tryParse(parts.group(1)!);
             epNum = int.tryParse(parts.group(2)!);
@@ -3069,7 +3561,10 @@ class DynamicScraperService {
           if (epTitleClean.isNotEmpty) epTitleClean,
         ].join(' - ');
 
-        final finalName = displayName.isNotEmpty ? displayName : 'Episodio ${episodes.length + 1}';
+        final finalName =
+            displayName.isNotEmpty
+                ? displayName
+                : 'Episodio ${episodes.length + 1}';
 
         episodes.add(
           M3UItem(
