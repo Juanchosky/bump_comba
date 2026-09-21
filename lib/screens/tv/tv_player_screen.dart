@@ -139,7 +139,27 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
   /// las decide `permiteNivel2`, que es el MISMO juez que en el telefono. Si
   /// esta reproduccion se atraganta, la prueba se cancela sola y este aparato
   /// no vuelve a intentarlo en una semana.
+  /// El nivel 2 NO entra en el televisor.
+  ///
+  /// Se cableo el 2026-09-21 y se probo el mismo dia: la reproduccion se puso
+  /// "super lenta, nada fluida". O sea que el aviso que ya estaba escrito en
+  /// el comentario de `_player` —`mediacodec-copy` en este SoC son tirones—
+  /// vale tambien a 720p, no solo a 1080p como se supuso al cablearlo.
+  ///
+  /// Se deja el cableado entero en su sitio, apagado por aqui, y NO se borra
+  /// a proposito: el trabajo de averiguar donde enchufarlo ya esta hecho, y
+  /// si algun dia hay un televisor con mas musculo esto es una linea.
+  ///
+  /// Lo que SI sigue llegando al televisor, porque no depende del decodificador
+  /// y no cuesta rendimiento: el filtro de capa (`RealceDeVideo`), el registro
+  /// de alturas y el tope de bitrate levantado para fuentes de 720p.
+  static const bool _nivel2PermitidoEnTv = false;
+
   String _decodificadorElegido() {
+    if (!_nivel2PermitidoEnTv) {
+      _nivel2EnUso = false;
+      return 'mediacodec';
+    }
     final filtro = FiltroCalidadService();
     final techo = filtro.techoConocido(widget.item.url);
     final bool fuenteBaja = techo != null && techo > 0 && techo <= 720;

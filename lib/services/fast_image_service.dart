@@ -693,6 +693,26 @@ class FastImageService {
   /// los topes de un telefono de gama alta.
   static bool modoTelevisor = false;
 
+  /// El escalon de TMDB que cubre `anchoNecesario` pixeles de ancho.
+  ///
+  /// Se sube al PRIMER escalon que cubra lo que hace falta, y nunca a uno por
+  /// debajo: pedir menos de lo que se va a pintar es ampliar, que es justo el
+  /// fallo que esto arregla (ver `_tamanoTmdbSegunUso`). `w780` es el tope
+  /// porque a partir de ahi TMDB solo tiene `original`, que en una caratula
+  /// puede venir en 2000 px y no aporta nada a una tarjeta.
+  static String tamanoTmdbPara(int anchoNecesario) {
+    if (anchoNecesario <= 185) return 'w185';
+    if (anchoNecesario <= 342) return 'w342';
+    if (anchoNecesario <= 500) return 'w500';
+    // Tope en `w500` en el televisor. Un JPEG de 780 px se descodifica igual
+    // aunque luego se reduzca, y en un aparato de 1 GB ese trabajo extra en
+    // cada miniatura de una rejilla se nota al desplazarse. Las tarjetas
+    // piden 252, asi que este tope no recorta nada de lo que se ve: solo
+    // afecta a quien pidiera mas de 500, que hoy no es nadie.
+    if (modoTelevisor) return 'w500';
+    return 'w780';
+  }
+
   void _loadSettings() {
     SharedPreferences.getInstance()
         .then((prefs) {
@@ -1087,6 +1107,38 @@ class _FastThumbnailState extends State<FastThumbnail>
     return (ancho * 2).round().clamp(160, 1280);
   }
 
+  /// Que tamaño pedirle a TMDB cuando nadie pide nada en concreto.
+  ///
+  /// ── EL FALLO QUE ARREGLA ───────────────────────────────────────────────
+  ///
+  /// Esto era `w185` fijo. En el telefono se sostiene —una tarjeta de 126 px
+  /// no da para mas— pero en el televisor las tarjetas son varias veces mas
+  /// grandes, y NINGUNA pantalla del televisor pasa `isHD`. Resultado: todas
+  /// las caratulas del televisor eran una imagen de 185 px de ancho estirada
+  /// hasta el tamaño de la tarjeta.
+  ///
+  /// Y lo que lo hacia invisible desde fuera: este bloque REESCRIBE la URL que
+  /// le den, asi que poner las caratulas en buena calidad en el catalogo no
+  /// servia de nada — se sustituia por `w185` igual (2026-09-21).
+  ///
+  /// ── POR QUE NO CUESTA MEMORIA ──────────────────────────────────────────
+  ///
+  /// Que es lo que daba miedo, y con razon: en un aparato de 1 GB un mapa de
+  /// bits grande es lo que tumba la app. Pero el tamaño del mapa de bits NO
+  /// lo decide la imagen que se descarga, lo decide `_computeCacheWidth`, que
+  /// en el televisor ya limita la descodificacion. Pedir una imagen mas grande
+  /// gasta mas red y mas disco; la memoria se queda donde estaba.
+  ///
+  /// Lo que se gana es que la descodificacion parta de pixeles de verdad en
+  /// vez de inventarlos ampliando.
+  String _tamanoTmdbSegunUso() {
+    // Fuera del televisor no se toca nada: en el telefono `w185` para las
+    // cuadriculas es la decision de siempre y ahi no hay queja.
+    if (!FastImageService.modoTelevisor) return 'w185';
+
+    return FastImageService.tamanoTmdbPara(_computeCacheWidth() ?? 500);
+  }
+
   @override
   void didUpdateWidget(FastThumbnail oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -1294,7 +1346,7 @@ class _FastThumbnailState extends State<FastThumbnail>
       final String tmdbTargetSize =
           widget.pantallaCompleta
               ? 'original'
-              : (widget.isHD ? 'w500' : 'w185');
+              : (widget.isHD ? 'w500' : _tamanoTmdbSegunUso());
       clean = clean.replaceAll(
         RegExp(r'\/t\/p\/(w\d+(_and_h\d+_\w+)?|original)\/'),
         '/t/p/$tmdbTargetSize/',
@@ -1423,6 +1475,19 @@ class _FastThumbnailState extends State<FastThumbnail>
               fit: widget.fit,
               alignment: widget.alignment,
               gaplessPlayback: true,
+              // `low` A PROPOSITO, TAMBIEN EN EL TELEVISOR.
+              //
+              // Estuvo en `medium` (mipmaps) unas horas el 2026-09-21, por la
+              // tarjeta que crece al enfocarse. Se quito: `medium` se paga en
+              // CADA fotograma y en CADA miniatura a la vez, y en una rejilla
+              // que se desplaza eso son decenas de imagenes remuestreadas por
+              // fotograma. En un televisor de 1 GB es justo lo que se nota
+              // como navegacion pastosa.
+              //
+              // El arreglo de verdad de la nitidez fue pedirle a TMDB el
+              // tamaño correcto (ver `tamanoTmdbPara`), que se paga UNA vez al
+              // descargar y no en cada fotograma. Eso se queda.
+              filterQuality: FilterQuality.low,
               frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
                 // FIX: frame == null significa que la imagen TODAVÍA se está
                 // cargando. Antes se marcaba _hasLoaded=true en esa primera

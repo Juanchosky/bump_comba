@@ -64,8 +64,31 @@ class TvMpvConfig {
       NetworkQuality.excellent => 0, // 0 = sin techo por este lado
     };
 
-    // Techo por aparato: la gama baja no pasa de 3 Mbps.
-    final int porAparato = gamaBaja ? 3000000 : 0;
+    // ── TECHO POR APARATO ──────────────────────────────────────────────
+    //
+    // La gama baja no pasa de 3 Mbps... salvo si ya se sabe que la fuente
+    // topa en 720p, y entonces sube a 6.
+    //
+    // POR QUE ES SEGURO SUBIRLO AHI. Este tope existe para que el aparato no
+    // se ahogue decodificando, y **lo que cuesta decodificar lo marca la
+    // RESOLUCION, no el bitrate**: son los pixeles por segundo que tiene que
+    // sacar el decodificador. Un 720p a 6 Mbps no le da mas trabajo al
+    // decodificador por hardware que un 720p a 3 Mbps; lo que sube es el
+    // trafico de red y el troceo del flujo, que son baratos al lado.
+    //
+    // POR QUE HACE FALTA. En el televisor se ven macrobloques mucho mas que
+    // en el telefono, y ahi NO se puede hacer nada por software: el shader de
+    // desbloqueo necesita `mediacodec-copy` y este SoC no lo aguanta (ver
+    // `_nivel2PermitidoEnTv` en la pantalla del reproductor). O sea que en el
+    // televisor la UNICA palanca que queda contra el bloque es pedir una
+    // copia mejor codificada — y este tope era lo que lo impedia: obligaba a
+    // quedarse con el 720p MAS comprimido de los que ofrece la lista, que es
+    // exactamente el que mas cuadros tiene.
+    //
+    // El techo por red sigue mandando por encima de esto, que es la
+    // proteccion de verdad si la linea no da.
+    final bool fuenteBaja = techoFuente != null && techoFuente <= 720;
+    final int porAparato = gamaBaja ? (fuenteBaja ? 6000000 : 3000000) : 0;
 
     // Y el scrapeado, un escalon por debajo del resto.
     //
@@ -75,7 +98,6 @@ class TvMpvConfig {
     // banda que gasta sigue siendo de 720p, asi que los topes por red y por
     // aparato, que son los que hablan de lo que el enlace y el cacharro
     // aguantan, se quedan donde estan.
-    final bool fuenteBaja = techoFuente != null && techoFuente <= 720;
     final int porOrigen = (esScrapeado && !fuenteBaja) ? 6000000 : 0;
 
     final topes = [porRed, porAparato, porOrigen].where((t) => t > 0).toList();

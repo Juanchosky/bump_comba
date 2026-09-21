@@ -100,7 +100,7 @@
 
 // Cuanto del promedio entra en la zona mas plana, por pasada. Las dos pasadas
 // se componen, asi que el efecto total es mayor que este numero.
-#define FUERZA 0.70
+#define FUERZA 0.78
 
 // Umbral de "estos dos vecinos son el mismo color, con la compresion de por
 // medio". En unidades de luma (0..1): 0,09 son ~23 niveles de 255, el tamaño
@@ -128,7 +128,7 @@
 
 // La rejilla del codificador, y cuanto se sigue filtrando fuera de ella.
 #define REJA 16.0
-#define ANCHO_REJA 2.0
+#define ANCHO_REJA 2.5
 #define SUELO_FUERA 0.05
 
 // Cuanto filtrar en esta coordenada, segun lo cerca que caiga de una frontera
@@ -235,7 +235,7 @@ vec4 hook() {
 // Los mismos valores que la pasada horizontal. Si se cambia uno hay que
 // cambiar los dos: son las dos mitades del MISMO filtro, y descuadrarlos deja
 // un desbloqueo mas fuerte en un eje que en el otro, que se ve como estrias.
-#define FUERZA 0.70
+#define FUERZA 0.78
 #define SIGMA 0.09
 #define SIGMA_ESPACIAL 3.0
 #define BORDE_BAJO 0.10
@@ -252,7 +252,7 @@ vec4 hook() {
 
 // La rejilla del codificador, y cuanto se sigue filtrando fuera de ella.
 #define REJA 16.0
-#define ANCHO_REJA 2.0
+#define ANCHO_REJA 2.5
 #define SUELO_FUERA 0.05
 
 // Cuanto filtrar en esta coordenada, segun lo cerca que caiga de una frontera

@@ -822,7 +822,7 @@ class FiltroCalidadService {
       // que hay margen; si aun falta, el siguiente escalon es 30.
       'deband': 'yes',
       'deband-iterations': '1',
-      'deband-threshold': '26',
+      'deband-threshold': '36',
       'deband-range': '16',
       'dither-depth': 'auto',
     };
