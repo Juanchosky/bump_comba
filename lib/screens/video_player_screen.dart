@@ -25,6 +25,7 @@ import '../services/network_quality_service.dart';
 import '../services/adaptive_buffer_service.dart';
 import '../services/video_prewarm_service.dart';
 import '../services/turbo_proxy.dart';
+import '../services/filtro_calidad_service.dart';
 import 'package:http/http.dart' as http;
 
 import '../utils/snack_bar_utils.dart';
@@ -310,6 +311,22 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool _saltarABDPorCongelamiento = false;
   bool _isLiveContent = false;
   int _retryCount = 0;
+
+  /// Esta reproduccion se abrio con el nivel 2 del filtro de calidad
+  /// (`mediacodec-copy` + shaders). Solo sirve para saber a quien echarle la
+  /// culpa si algo va mal: si hay que recargar con esto puesto, el aparato
+  /// queda descartado.
+  bool _nivel2EnUso = false;
+
+  /// Cuando empezo a reproducirse con el nivel 2 puesto.
+  ///
+  /// SE MIRA DESDE EL AVANCE DE LA POSICION Y NO CON UN `Timer` A PROPOSITO.
+  /// Un temporizador habria que cancelarlo en cada camino de salida, y
+  /// olvidarse de uno no es inocente: dejaria el veredicto en `probando` para
+  /// siempre y el canario del arranque descartaria el aparato sin que hubiera
+  /// pasado nada. Ademas, que la posicion avance ES la prueba que se busca —
+  /// el fallo que se teme es justamente que el video no corra.
+  DateTime? _nivel2DesdeCuando;
 
   // Slider dragging state
   bool _isDragging = false;
@@ -2204,7 +2221,47 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             // El congelamiento con audio que -copy pretendía evitar es menos
             // grave que no poder decodificar: para eso está el escalón de
             // _retryCount >= 2, que llega solo si el Surface falla de verdad.
-            decoder = (_retryCount >= 2) ? 'mediacodec-copy' : 'mediacodec';
+            //
+            // EXCEPCION: EL NIVEL 2 DEL FILTRO DE CALIDAD
+            //
+            // Lo de arriba sigue mandando para todo lo normal. Pero el parrafo
+            // del incidente dice, literal, "cada frame 1080p se copia a RAM":
+            // el problema era el TAMANO del fotograma, no `-copy` por si
+            // mismo. Un 720p son 921.600 pixeles contra 2.073.600 — menos de
+            // la mitad de copia.
+            //
+            // Y 720p es justo el contenido que necesita la cadena de shaders
+            // de MPV, que es lo unico que puede quitarle bandas y darle
+            // nitidez de verdad (con `mediacodec` a secas el fotograma va
+            // directo a la Surface y todos esos ajustes se ignoran).
+            //
+            // `permiteNivel2` solo dice si cuando: el ajuste esta encendido a
+            // mano, el aparato no es de gama baja, YA SE SABE por una
+            // reproduccion anterior que este titulo no pasa de 720p, y es el
+            // primer intento. Si algo se rompe, `_retryCount` sube y la
+            // escalera de siempre se lo lleva por delante.
+            final bool realceNivel2 = FiltroCalidadService().permiteNivel2(
+              _currentItem.url,
+              intento: _retryCount,
+            );
+            if (realceNivel2) {
+              decoder = 'mediacodec-copy';
+              // La senal va a disco AHORA, antes de que se abra nada. Si este
+              // aparato se atraganca no habra un "despues" en el que apuntar
+              // el fallo: el proceso se muere. Lo unico que queda es esta
+              // marca, y el arranque siguiente la encuentra sin borrar.
+              await FiltroCalidadService().marcarNivel2EnPrueba();
+              _nivel2EnUso = true;
+              _nivel2DesdeCuando = DateTime.now();
+              debugPrint(
+                'FiltroCalidad: nivel 2 activo (fuente <=720p) -> '
+                'mediacodec-copy + shaders',
+              );
+            } else {
+              _nivel2EnUso = false;
+              _nivel2DesdeCuando = null;
+              decoder = (_retryCount >= 2) ? 'mediacodec-copy' : 'mediacodec';
+            }
           } else if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
             decoder = 'videotoolbox-copy';
           } else {
@@ -2320,9 +2377,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               // 'max' en una conexión modesta causa rebuffering constante.
               // 3 Mbps queda dentro de 720p (2–3 Mbps) y por debajo de 1080p
               // (5–8 Mbps) en los perfiles típicos de ok.ru.
+              // El tope de 3 Mbps se levanta cuando YA SE SABE que la
+              // fuente no pasa de 720p: sin un 1080p al que irse, lo unico
+              // que hacia era quedarse con la version mas comprimida de las
+              // de 720p. Ver `hlsBitratePara`.
               mpv.setProperty(
                 'hls-bitrate',
-                esContenidoScrapeado ? '3000000' : 'auto',
+                FiltroCalidadService().hlsBitratePara(_currentItem.url) ??
+                    (esContenidoScrapeado ? '3000000' : 'auto'),
               ),
               if (isHlsStream) ...[
                 mpv.setProperty('hls-forward-cache-secs', '45'),
@@ -2354,24 +2416,39 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           // Los ajustes de escalado (`scale`, `deband`, ...) solo hacen algo
           // cuando MPV renderiza por su cadena de shaders. Con
           // `hwdec: mediacodec` el fotograma va del decodificador a la Surface
-          // sin pasar por ahi y se ignoran; quedan puestos para cuando el
-          // reintento baja a `mediacodec-copy`, que si pasa por el renderizador.
+          // sin pasar por ahi y se ignoran.
+          //
+          // De ahi que aqui haya DOS juegos de valores y no uno:
+          //
+          //  · Si el filtro de calidad ha entrado en nivel 2, el decodificador
+          //    de arriba es `mediacodec-copy` y el fotograma SI pasa por el
+          //    renderizador. Entonces estos ajustes hacen su trabajo y se
+          //    ponen los buenos: escalador sharp y `deband`, que es lo que le
+          //    quita las bandas a un 720p con poco bitrate.
+          //
+          //  · Si no, se ponen los neutros de siempre. No es que hagan falta
+          //    —se ignoran igual— pero dejan el estado limpio para cuando el
+          //    reintento >= 2 baje a `-copy` por su cuenta.
           if (_currentItem.esDeLaBD && !lowPerf) {
-            for (final p
-                in const {
-                  'hls-bitrate': 'auto',
-                  'scale': 'bilinear',
-                  'cscale': 'bilinear',
-                  'linear-upscaling': 'no',
-                  'sigmoid-upscaling': 'no',
-                  'deband': 'no',
-                  'dither-depth': 'no',
-                }.entries) {
+            final filtro = FiltroCalidadService();
+            final bool conRealce =
+                _activeDecoder == 'mediacodec-copy' &&
+                filtro.permiteNivel2(_currentItem.url, intento: _retryCount);
+            final ajustes = <String, String>{
+              'hls-bitrate': filtro.hlsBitratePara(_currentItem.url) ?? 'auto',
+              ...(conRealce
+                  ? filtro.ajustesMpvNivel2()
+                  : filtro.ajustesMpvSinRealce()),
+            };
+            for (final p in ajustes.entries) {
               try {
                 await mpv.setProperty(p.key, p.value);
               } catch (e) {
                 debugPrint('MPV: rechazado ${p.key}=${p.value} -> $e');
               }
+            }
+            if (conRealce) {
+              debugPrint('FiltroCalidad: cadena de shaders aplicada');
             }
           }
 
@@ -2815,6 +2892,30 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       }),
     );
 
+    // ── ALTURA REAL DE LA FUENTE ────────────────────────────────────────
+    //
+    // El filtro de calidad necesita saber a cuanto llega DE VERDAD la fuente,
+    // y eso no se puede deducir ni de la URL ni de la lista maestra: lo unico
+    // que no miente es lo que acaba decodificando MPV. Se escucha aqui y no en
+    // una espera de una sola vez porque en HLS la altura CAMBIA en marcha — la
+    // primera variante que carga suele ser la ligera y sube despues.
+    //
+    // `anotarAltura` se queda con la mayor vista, mueve el `ValueNotifier` que
+    // hace entrar y salir al filtro de capa, y deja apuntado el techo del
+    // titulo para la proxima vez (que es cuando puede entrar el nivel 2).
+    _streamSubscriptions.add(
+      _player!.stream.height.listen((altura) {
+        if (!mounted || altura == null || altura <= 0) return;
+        unawaited(
+          FiltroCalidadService().anotarAltura(
+            _currentItem.url,
+            altura,
+            nombre: _currentItem.name,
+          ),
+        );
+      }),
+    );
+
     // Buffering stream to show/hide loading spinner
     // + Auto-recuperación: si el player sale de buffering exitosamente
     //   mientras _hasError está activo, significa que el stream se recuperó
@@ -3011,6 +3112,25 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _streamSubscriptions.add(
       _player!.stream.position.listen((position) {
         if (!mounted || _player == null) return;
+
+        // ── APROBAR EL NIVEL 2 EN ESTE APARATO ──────────────────────────
+        //
+        // Que la posicion siga llegando aqui despues del margen es la prueba
+        // que se buscaba: el fallo que se teme es que el video NO corra. Si
+        // hubiera ido mal, `_reloadVideo` ya habria descartado el aparato y
+        // apagado `_nivel2EnUso`, y no se llegaria a esta linea.
+        //
+        // Se apaga la bandera al confirmar para no repetir la escritura en
+        // cada tic de posicion.
+        final desde = _nivel2DesdeCuando;
+        if (_nivel2EnUso &&
+            desde != null &&
+            DateTime.now().difference(desde) >=
+                FiltroCalidadService.margenDePrueba) {
+          _nivel2DesdeCuando = null;
+          unawaited(FiltroCalidadService().confirmarNivel2Estable());
+        }
+
         // Failsafe: Si la posición avanza, el stream ya está reproduciendo indiscutiblemente.
         // Apagamos _isVideoLoading para que el póster borroso se retire al instante.
         if (position.inMilliseconds > 200) {
@@ -4420,6 +4540,21 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // ── RE-ENTRANCY GUARD ─────────────────────────────────────────────────
     if (!mounted || _isVideoLoading || _isReloading || _player == null) return;
     _isReloading = true;
+
+    // Llegar aqui con el nivel 2 puesto es la senal de fallo que SI se puede
+    // observar: se congelo, o se rompio, y hubo que recargar. No se espera al
+    // canario del arranque —eso es para cuando la app no vuelve— y se
+    // descarta el aparato ya. La recarga entra con `_retryCount >= 1`, asi
+    // que `permiteNivel2` ya no lo volveria a poner en esta sesion.
+    if (_nivel2EnUso) {
+      _nivel2EnUso = false;
+      _nivel2DesdeCuando = null;
+      unawaited(
+        FiltroCalidadService().descartarNivel2(
+          'hubo que recargar el video con el nivel 2 puesto',
+        ),
+      );
+    }
 
     // Rotar User-Agent en cada intento
     _userAgentIndex++;
@@ -6951,12 +7086,22 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                                 }
                                                 return child!;
                                               },
-                                              child: Video(
-                                                key: ValueKey(_videoKey),
-                                                controller: controller,
-                                                fill: Colors.black,
-                                                fit: BoxFit.contain,
-                                                controls: NoVideoControls,
+                                              // El filtro de capa va POR
+                                              // FUERA del `Video`: el motor lo
+                                              // aplica al componer la textura,
+                                              // que es el unico punto por el
+                                              // que se puede tocar el
+                                              // fotograma con `hwdec:
+                                              // mediacodec`. Con fuentes de
+                                              // 1080p no envuelve nada.
+                                              child: RealceDeVideo(
+                                                child: Video(
+                                                  key: ValueKey(_videoKey),
+                                                  controller: controller,
+                                                  fill: Colors.black,
+                                                  fit: BoxFit.contain,
+                                                  controls: NoVideoControls,
+                                                ),
                                               ),
                                             );
                                           },

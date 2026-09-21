@@ -49,7 +49,10 @@ class TvMpvConfig {
   ///
   /// Se consulta al abrir cada video, asi que si la red cambia entre un
   /// titulo y el siguiente, el siguiente ya se pide distinto.
-  static String hlsBitrate({bool esScrapeado = false}) {
+  /// `techoFuente` es la altura maxima REAL de la fuente, cuando se sabe (la
+  /// apunta `FiltroCalidadService` al reproducir). Sirve para no aplicarle a
+  /// un 720p un tope que existe para frenar un 1080p que no existe.
+  static String hlsBitrate({bool esScrapeado = false, int? techoFuente}) {
     final gamaBaja = PerformanceService().isLowPerformance;
     final red = NetworkQualityService().quality.value;
 
@@ -65,13 +68,17 @@ class TvMpvConfig {
     final int porAparato = gamaBaja ? 3000000 : 0;
 
     // Y el scrapeado, un escalon por debajo del resto.
-    final int porOrigen = esScrapeado ? 6000000 : 0;
+    //
+    // Salvo si ya se sabe que esa fuente no pasa de 720p: entonces el escalon
+    // no frena nada —no hay 1080p al que pudiera irse— y lo unico que hace es
+    // quedarse con el 720p mas comprimido de los que ofrece. El ancho de
+    // banda que gasta sigue siendo de 720p, asi que los topes por red y por
+    // aparato, que son los que hablan de lo que el enlace y el cacharro
+    // aguantan, se quedan donde estan.
+    final bool fuenteBaja = techoFuente != null && techoFuente <= 720;
+    final int porOrigen = (esScrapeado && !fuenteBaja) ? 6000000 : 0;
 
-    final topes = [
-      porRed,
-      porAparato,
-      porOrigen,
-    ].where((t) => t > 0).toList();
+    final topes = [porRed, porAparato, porOrigen].where((t) => t > 0).toList();
     if (topes.isEmpty) return 'max';
     return topes.reduce((a, b) => a < b ? a : b).toString();
   }

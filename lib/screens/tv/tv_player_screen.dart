@@ -9,6 +9,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import '../../services/dynamic_scraper_service.dart';
 import '../../services/turbo_proxy.dart';
 import '../../services/tv/tv_mpv_config.dart';
+import '../../services/filtro_calidad_service.dart';
 import '../../utils/atras_tv.dart';
 import '../../utils/cabeceras_stream.dart';
 import '../../utils/motivos_reporte.dart';
@@ -393,6 +394,22 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         }
         if (v) _anotarCorte();
       }),
+      // La altura REAL de la fuente, que es lo unico que no miente sobre la
+      // calidad: ni la URL ni la lista maestra lo dicen del todo. Mueve el
+      // filtro de capa y deja apuntado el techo del titulo, que es lo que
+      // luego decide si a este contenido se le puede levantar el tope de
+      // bitrate. En HLS la altura cambia en marcha, de ahi que sea un
+      // `listen` y no una comprobacion de una sola vez.
+      _player.stream.height.listen((v) {
+        if (!mounted || v == null || v <= 0) return;
+        unawaited(
+          FiltroCalidadService().anotarAltura(
+            widget.item.url,
+            v,
+            nombre: widget.item.name,
+          ),
+        );
+      }),
       _player.stream.position.listen((v) {
         // Cada vez que la posicion se mueve de verdad se apunta la hora: es lo
         // unico que prueba que el video esta corriendo. Se apunta SIEMPRE,
@@ -566,7 +583,14 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
       try {
         final mpv = _player.platform as dynamic;
         if (mpv != null) {
-          await mpv.setProperty('hls-bitrate', TvMpvConfig.hlsBitrate());
+          await mpv.setProperty(
+            'hls-bitrate',
+            TvMpvConfig.hlsBitrate(
+              techoFuente: FiltroCalidadService().techoConocido(
+                widget.item.url,
+              ),
+            ),
+          );
           await mpv.setProperty('scale', 'bilinear');
           await mpv.setProperty('cscale', 'bilinear');
           await mpv.setProperty('linear-upscaling', 'no');
@@ -707,7 +731,14 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
           await mpv.setProperty('demuxer-readahead-secs', '20');
           // Tambien el directo: 'max' fijo le pedia la copia mas gorda a un
           // aparato flojo o a una linea justa, que es donde peor sienta.
-          await mpv.setProperty('hls-bitrate', TvMpvConfig.hlsBitrate());
+          await mpv.setProperty(
+            'hls-bitrate',
+            TvMpvConfig.hlsBitrate(
+              techoFuente: FiltroCalidadService().techoConocido(
+                widget.item.url,
+              ),
+            ),
+          );
           await mpv.setProperty('hls-forward-cache-secs', '30');
           await mpv.setProperty('hls-back-cache-secs', '10');
           await mpv.setProperty('cache-pause-initial', 'no');
@@ -720,13 +751,19 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
           // permite iniciar de inmediato y saltar sin pausas excesivas.
           await mpv.setProperty('cache-secs', '120');
           await mpv.setProperty('demuxer-readahead-secs', '45');
-          final bool esScrapeado = DynamicScraperService().isSupported(widget.item.url) ||
+          final bool esScrapeado =
+              DynamicScraperService().isSupported(widget.item.url) ||
               low.contains('savefiles') ||
               low.contains('okcdn') ||
               low.contains('gnula');
           await mpv.setProperty(
             'hls-bitrate',
-            TvMpvConfig.hlsBitrate(esScrapeado: esScrapeado),
+            TvMpvConfig.hlsBitrate(
+              esScrapeado: esScrapeado,
+              techoFuente: FiltroCalidadService().techoConocido(
+                widget.item.url,
+              ),
+            ),
           );
           await mpv.setProperty('hls-forward-cache-secs', '45');
           await mpv.setProperty('hls-back-cache-secs', '30');
@@ -2009,11 +2046,15 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     // ── Motivos del reporte ───────────────────────────────────────────────
     if (_reporteAbierto) {
       if (k == LogicalKeyboardKey.arrowUp) {
-        setState(() => _reporteIdx = (_reporteIdx - 1).clamp(0, _motivos.length - 1));
+        setState(
+          () => _reporteIdx = (_reporteIdx - 1).clamp(0, _motivos.length - 1),
+        );
         return KeyEventResult.handled;
       }
       if (k == LogicalKeyboardKey.arrowDown) {
-        setState(() => _reporteIdx = (_reporteIdx + 1).clamp(0, _motivos.length - 1));
+        setState(
+          () => _reporteIdx = (_reporteIdx + 1).clamp(0, _motivos.length - 1),
+        );
         return KeyEventResult.handled;
       }
       if (ok) {
@@ -2248,20 +2289,25 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         fit: StackFit.expand,
         children: [
           RepaintBoundary(
-            child: Video(
-              controller: _controlador,
-              controls: NoVideoControls,
-              // EN PEQUEÑO LLENA EL RECUADRO; EN GRANDE, NO.
-              //
-              // Por defecto el vídeo se ajusta entero (`contain`), así que si
-              // su proporción no es la del hueco deja franjas negras — el
-              // recuadro de la ficha se veía a medio ocupar.
-              //
-              // Ahí `cover` es lo correcto: es una vista previa, se recorta un
-              // poco por los lados y llena el hueco. A pantalla completa se
-              // vuelve a `contain`, porque recortar una película para que
-              // cuadre con el televisor sí sería quitarle imagen al usuario.
-              fit: grande ? BoxFit.contain : BoxFit.cover,
+            // Igual que en el telefono: el realce va por fuera del `Video`
+            // porque es una capa del motor, no un shader de MPV. Se queda
+            // dormido con cualquier fuente que pase de 720p.
+            child: RealceDeVideo(
+              child: Video(
+                controller: _controlador,
+                controls: NoVideoControls,
+                // EN PEQUEÑO LLENA EL RECUADRO; EN GRANDE, NO.
+                //
+                // Por defecto el vídeo se ajusta entero (`contain`), así que si
+                // su proporción no es la del hueco deja franjas negras — el
+                // recuadro de la ficha se veía a medio ocupar.
+                //
+                // Ahí `cover` es lo correcto: es una vista previa, se recorta un
+                // poco por los lados y llena el hueco. A pantalla completa se
+                // vuelve a `contain`, porque recortar una película para que
+                // cuadre con el televisor sí sería quitarle imagen al usuario.
+                fit: grande ? BoxFit.contain : BoxFit.cover,
+              ),
             ),
           ),
 
@@ -2803,11 +2849,7 @@ class _IconoPista extends StatelessWidget {
   final String? etiqueta;
   final bool focused;
 
-  const _IconoPista({
-    required this.icon,
-    this.etiqueta,
-    required this.focused,
-  });
+  const _IconoPista({required this.icon, this.etiqueta, required this.focused});
 
   @override
   Widget build(BuildContext context) {
@@ -2960,8 +3002,7 @@ class _MenuReporte extends StatelessWidget {
                   style: TextStyle(
                     color: i == indice ? Colors.white : Colors.white54,
                     fontSize: 16,
-                    fontWeight:
-                        i == indice ? FontWeight.w600 : FontWeight.w400,
+                    fontWeight: i == indice ? FontWeight.w600 : FontWeight.w400,
                   ),
                 ),
               ),

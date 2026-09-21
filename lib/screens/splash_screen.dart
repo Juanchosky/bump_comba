@@ -10,6 +10,7 @@ import '../utils/transitions.dart';
 import 'stream_browser_screen.dart';
 import '../services/social_rewards_service.dart';
 import '../services/game_config_service.dart';
+import '../services/filtro_calidad_service.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -57,6 +58,7 @@ class _SplashScreenState extends State<SplashScreen>
         PremiumService().initialize().timeout(const Duration(seconds: 3)),
         GameConfigService().init().timeout(const Duration(seconds: 3)),
         _scoreService.init().timeout(const Duration(seconds: 3)),
+        FiltroCalidadService().init().timeout(const Duration(seconds: 3)),
       ]).catchError((e) {
         debugPrint('Error initializing critical services: $e');
         return [];
