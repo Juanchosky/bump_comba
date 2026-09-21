@@ -2259,9 +2259,25 @@ class _TarjetaState extends State<_Tarjeta> {
   }
 
   Future<void> _cargarProgreso() async {
-    final p = await WatchProgressService().getProgressForItem(widget.item);
+    WatchProgress? p = await WatchProgressService().getProgressForItem(
+      widget.item,
+    );
+    // Para series, el shell no coincide con las URLs de episodios: hay que
+    // buscar en el historial por seriesName.
+    if (p == null &&
+        (widget.item.isSeries || widget.item.seriesName != null)) {
+      final nombre = widget.item.seriesName ?? widget.item.name;
+      final historial = await WatchProgressService().getHistory();
+      for (final h in historial) {
+        if (h.isCompleted) continue;
+        if (h.seriesName == nombre) {
+          p = h;
+          break;
+        }
+      }
+    }
     if (mounted && p != null && !p.isCompleted && p.progressPercentage > 0) {
-      setState(() => _progresoPct = p.progressPercentage / 100);
+      setState(() => _progresoPct = p!.progressPercentage / 100);
     }
   }
 
