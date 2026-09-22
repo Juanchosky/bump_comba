@@ -1173,7 +1173,7 @@ class _TvCatalogScreenState extends State<TvCatalogScreen> {
     }
 
     if (_seguirViendo.isNotEmpty) {
-      filas.add((titulo: 'Seguir viendo', items: _seguirViendo));
+      filas.add((titulo: _tituloSeguirViendo, items: _seguirViendo));
     }
 
     final favoritos = _agrupar(_servicio.getFavorites());
@@ -2059,6 +2059,7 @@ class _FilaState extends State<_Fila> {
                     nodo: _nodos[i],
                     onTecla: (e) => _tecla(i, e),
                     onVolver: () => enfocar(i),
+                    mostrarProgreso: widget.titulo == _tituloSeguirViendo,
                   );
                   if (!_ranking) return tarjeta;
                   // Ranking: el número detrás, a la izquierda y apoyado abajo
@@ -2228,6 +2229,14 @@ class _NumeroRanking extends StatelessWidget {
   }
 }
 
+/// El titulo de la fila de continuar viendo.
+///
+/// Esta en una constante y no escrito a mano en los dos sitios porque la fila
+/// se CREA con este texto y la tarjeta decide por el si pinta la barra de
+/// progreso. Si alguien renombra la fila y la comparacion se queda con el
+/// texto viejo, la barra desaparece de todas partes sin que nada falle.
+const String _tituloSeguirViendo = 'Seguir viendo';
+
 /// Una carátula del catálogo.
 class _Tarjeta extends StatefulWidget {
   final M3UItem item;
@@ -2237,11 +2246,25 @@ class _Tarjeta extends StatefulWidget {
   /// Se llama al volver de la ficha, para recuperar el foco.
   final VoidCallback onVolver;
 
+  /// Si esta tarjeta pinta la barrita roja de progreso.
+  ///
+  /// Solo la fila de "Seguir viendo". Antes se pintaba en TODAS las filas en
+  /// las que apareciera un titulo ya empezado —"Mi lista", una categoria,
+  /// el Top 10— y ahi no aporta: esa barra dice "por donde ibas", que es
+  /// justo el sentido de la fila de continuar viendo y de ninguna otra.
+  ///
+  /// Ademas se ahorra trabajo: con esto en `false` la tarjeta ni siquiera
+  /// consulta el historial. Para una serie esa consulta recorre el historial
+  /// ENTERO buscando por nombre, y se hacia una vez por tarjeta de la
+  /// pantalla.
+  final bool mostrarProgreso;
+
   const _Tarjeta({
     required this.item,
     required this.nodo,
     required this.onTecla,
     required this.onVolver,
+    this.mostrarProgreso = false,
   });
 
   @override
@@ -2259,13 +2282,13 @@ class _TarjetaState extends State<_Tarjeta> {
   }
 
   Future<void> _cargarProgreso() async {
+    if (!widget.mostrarProgreso) return;
     WatchProgress? p = await WatchProgressService().getProgressForItem(
       widget.item,
     );
     // Para series, el shell no coincide con las URLs de episodios: hay que
     // buscar en el historial por seriesName.
-    if (p == null &&
-        (widget.item.isSeries || widget.item.seriesName != null)) {
+    if (p == null && (widget.item.isSeries || widget.item.seriesName != null)) {
       final nombre = widget.item.seriesName ?? widget.item.name;
       final historial = await WatchProgressService().getHistory();
       for (final h in historial) {
