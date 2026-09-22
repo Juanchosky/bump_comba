@@ -693,6 +693,29 @@ class FastImageService {
   /// los topes de un telefono de gama alta.
   static bool modoTelevisor = false;
 
+  /// Que tamaño pedir para el destacado, que ocupa el ancho entero.
+  ///
+  /// ── POR QUE NO ES SIEMPRE `original` ───────────────────────────────────
+  ///
+  /// Lo era, y con un motivo bueno: TMDB no tiene nada entre `w1280` y
+  /// `original`, y `w1280` en un panel de 1920 se estira un 50%.
+  ///
+  /// Lo que ese razonamiento no tuvo en cuenta es lo que cuesta. `original`
+  /// de un fondo viene muchas veces en 3840 px: varios MB que hay que
+  /// descargar ENTEROS antes de poder pintar un solo pixel. En un Chromecast
+  /// HD —1,4 GB de RAM, 338 MB libres medidos el 2026-09-21— eso fueron ~10
+  /// segundos de banner en negro al arrancar.
+  ///
+  /// Y el destacado es lo PRIMERO que se ve. Diez segundos de agujero al
+  /// entrar pesan mas que un 50% de ampliacion en una imagen que ademas
+  /// lleva dos velos degradados encima.
+  ///
+  /// Asi que en gama baja se pide `w1280` y en el resto se sigue pidiendo
+  /// `original`, que es donde la decision original era la buena.
+  static String tamanoDelDestacado() {
+    return PerformanceService().isLowPerformance ? 'w1280' : 'original';
+  }
+
   /// El escalon de TMDB que cubre `anchoNecesario` pixeles de ancho.
   ///
   /// Se sube al PRIMER escalon que cubra lo que hace falta, y nunca a uno por
@@ -1084,7 +1107,16 @@ class _FastThumbnailState extends State<FastThumbnail>
     // allí las medidas que ya pasan las pantallas se siguen ignorando igual
     // que antes.
     if (!FastImageService.modoTelevisor) return null;
-    if (widget.pantallaCompleta) return 1920;
+    if (widget.pantallaCompleta) {
+      // Que se descodifique al tamaño que SE PIDIO, no siempre a 1920: con
+      // `w1280` pedido, descodificar a 1920 es ampliar en el descodificador y
+      // pagar el mapa de bits grande para nada. 1920x1080 en 4 bytes son
+      // 8,3 MB; 1280x720 son 3,7 MB. Con 338 MB libres en un Chromecast HD,
+      // esos 4,6 MB de diferencia en la PRIMERA imagen que se pinta no son
+      // calderilla. El escalado hasta la pantalla lo hace la GPU, que para
+      // eso esta.
+      return FastImageService.tamanoDelDestacado() == 'original' ? 1920 : 1280;
+    }
     // En el televisor sí se respeta la medida que pida quien lo usa: la copia
     // desenfocada del resplandor pide 400 y va a 30 de desenfoque, así que
     // descodificarla entera era pagar memoria por un detalle que no se ve.
@@ -1345,7 +1377,7 @@ class _FastThumbnailState extends State<FastThumbnail>
     if (clean.contains('image.tmdb.org/t/p/')) {
       final String tmdbTargetSize =
           widget.pantallaCompleta
-              ? 'original'
+              ? FastImageService.tamanoDelDestacado()
               : (widget.isHD ? 'w500' : _tamanoTmdbSegunUso());
       clean = clean.replaceAll(
         RegExp(r'\/t\/p\/(w\d+(_and_h\d+_\w+)?|original)\/'),
