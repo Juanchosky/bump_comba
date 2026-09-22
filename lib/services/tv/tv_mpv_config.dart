@@ -90,19 +90,46 @@ class TvMpvConfig {
     final bool fuenteBaja = techoFuente != null && techoFuente <= 720;
     final int porAparato = gamaBaja ? (fuenteBaja ? 6000000 : 3000000) : 0;
 
-    // Y el scrapeado, un escalon por debajo del resto.
-    //
-    // Salvo si ya se sabe que esa fuente no pasa de 720p: entonces el escalon
-    // no frena nada —no hay 1080p al que pudiera irse— y lo unico que hace es
-    // quedarse con el 720p mas comprimido de los que ofrece. El ancho de
-    // banda que gasta sigue siendo de 720p, asi que los topes por red y por
-    // aparato, que son los que hablan de lo que el enlace y el cacharro
-    // aguantan, se quedan donde estan.
-    final int porOrigen = (esScrapeado && !fuenteBaja) ? 6000000 : 0;
-
-    final topes = [porRed, porAparato, porOrigen].where((t) => t > 0).toList();
+    // El scrapeado YA NO se frena por origen. La proteccion que importa es la
+    // de red y la de aparato; el origen solo estaba dejando al contenido con
+    // la copia mas comprimida sin necesidad.
+    final topes = [porRed, porAparato].where((t) => t > 0).toList();
     if (topes.isEmpty) return 'max';
     return topes.reduce((a, b) => a < b ? a : b).toString();
+  }
+
+  /// ¿El video que esta sonando viene con tan poco caudal que los
+  /// macrobloques son inevitables?
+  ///
+  /// ── DE DONDE SALE EL UMBRAL ────────────────────────────────────────────
+  ///
+  /// No se puede usar una cifra fija, porque lo que es poco para 720p es
+  /// mucho para 480p. Lo que decide es el caudal POR PIXEL: cuantos bits le
+  /// toca a cada pixel de cada fotograma.
+  ///
+  /// Con H.264 a 24 fps, por debajo de ~0,07 bits por pixel el codificador ya
+  /// no puede guardar el detalle de los bloques planos y el damero aparece
+  /// SIEMPRE, sea cual sea el reproductor. Por encima de ~0,15 la imagen es
+  /// limpia salvo que el codificador este mal configurado.
+  ///
+  /// Para 1280x720 a 24 fps eso son ~1,55 Mbps. Se usa 0,07 —el extremo
+  /// pesimista— a proposito: cambiar de servidor le CUESTA al usuario un
+  /// corte y una recarga, asi que solo compensa cuando lo que hay es
+  /// claramente malo, no meramente mejorable.
+  ///
+  /// `fps` entra en la cuenta porque el mismo bitrate rinde la mitad a 48 fps
+  /// que a 24. Si no se sabe, se supone 24, que es lo que trae este catalogo.
+  static bool caudalInsuficiente({
+    required int? ancho,
+    required int? alto,
+    required double? bitsPorSegundo,
+    double fps = 24,
+  }) {
+    if (ancho == null || alto == null || bitsPorSegundo == null) return false;
+    if (ancho <= 0 || alto <= 0 || bitsPorSegundo <= 0) return false;
+    if (fps <= 0) fps = 24;
+    final double bitsPorPixel = bitsPorSegundo / (ancho * alto * fps);
+    return bitsPorPixel < 0.07;
   }
 
   /// El desbloqueo que el PROPIO CODEC lleva dentro.

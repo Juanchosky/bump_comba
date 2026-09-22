@@ -48,7 +48,7 @@ class PremiumService {
   CustomerInfo? _customerInfo; // Store full info
   SharedPreferences? _prefs;
 
-  // PC License State
+  // PC License Stated
   String? _pcExpirationDate;
   static const String _pcManagementUrl =
       'https://bump-comba-landing.vercel.app/';

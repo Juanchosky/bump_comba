@@ -98,7 +98,7 @@ class AdaptiveBufferService {
     networkTimeout: 45,
     reconnectSleep: '0.5',
     httpPipelining: true,
-    hlsBitrate: 'auto',
+    hlsBitrate: 'max',
   );
 
   static const AdaptiveBufferConfig _fair = AdaptiveBufferConfig(
@@ -118,7 +118,7 @@ class AdaptiveBufferService {
     networkTimeout: 30,
     reconnectSleep: '1',
     httpPipelining: false, // Desactivar para conexiones inestables
-    hlsBitrate: 'auto', // HLS VOD: mantener selección adaptativa, no forzar calidad mínima
+    hlsBitrate: 'max',
   );
 
   static const AdaptiveBufferConfig _poor = AdaptiveBufferConfig(
@@ -138,7 +138,7 @@ class AdaptiveBufferService {
     reconnectSleep: '2',
     httpPipelining: false,
     dropNonRefFrames: true, // Modo de emergencia: solo keyframes
-    hlsBitrate: 'auto',
+    hlsBitrate: 'max',
   );
 
   void resetState() {}
@@ -368,9 +368,7 @@ class AdaptiveBufferService {
       await mpv.setProperty('network-timeout', weak ? '30' : '20');
       await mpv.setProperty('http-reconnect', 'yes');
       await mpv.setProperty('http-reconnect-sleep', '0.5');
-      // HLS: mantener 'auto'. 'min' fuerza la peor calidad sin necesidad y para
-      // .ts crudo (Xtream) no aplica.
-      await mpv.setProperty('hls-bitrate', 'auto');
+      await mpv.setProperty('hls-bitrate', 'max');
     } catch (e) {
       debugPrint('AdaptiveBuffer: Error applying LIVE-resilient config: $e');
     }

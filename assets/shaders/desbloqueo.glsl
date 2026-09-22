@@ -100,7 +100,7 @@
 
 // Cuanto del promedio entra en la zona mas plana, por pasada. Las dos pasadas
 // se componen, asi que el efecto total es mayor que este numero.
-#define FUERZA 0.78
+#define FUERZA 0.95
 
 // Umbral de "estos dos vecinos son el mismo color, con la compresion de por
 // medio". En unidades de luma (0..1): 0,09 son ~23 niveles de 255, el tamaño
@@ -128,8 +128,8 @@
 
 // La rejilla del codificador, y cuanto se sigue filtrando fuera de ella.
 #define REJA 16.0
-#define ANCHO_REJA 2.5
-#define SUELO_FUERA 0.05
+#define ANCHO_REJA 4.0
+#define SUELO_FUERA 0.15
 
 // Cuanto filtrar en esta coordenada, segun lo cerca que caiga de una frontera
 // de macrobloque. `c` es la coordenada del pixel EN EL EJE DE ESTA PASADA: la
@@ -235,7 +235,7 @@ vec4 hook() {
 // Los mismos valores que la pasada horizontal. Si se cambia uno hay que
 // cambiar los dos: son las dos mitades del MISMO filtro, y descuadrarlos deja
 // un desbloqueo mas fuerte en un eje que en el otro, que se ve como estrias.
-#define FUERZA 0.78
+#define FUERZA 0.95
 #define SIGMA 0.09
 #define SIGMA_ESPACIAL 3.0
 #define BORDE_BAJO 0.10
@@ -252,8 +252,8 @@ vec4 hook() {
 
 // La rejilla del codificador, y cuanto se sigue filtrando fuera de ella.
 #define REJA 16.0
-#define ANCHO_REJA 2.5
-#define SUELO_FUERA 0.05
+#define ANCHO_REJA 4.0
+#define SUELO_FUERA 0.15
 
 // Cuanto filtrar en esta coordenada, segun lo cerca que caiga de una frontera
 // de macrobloque. `c` es la coordenada del pixel EN EL EJE DE ESTA PASADA: la
@@ -393,7 +393,7 @@ vec4 hook() {
 //
 // Si se ve crujiente, con filos o con textura de lija, ESTE es el mando. Si
 // lo que se ven son aureolas junto a los bordes, el mando es MARGEN_HALO.
-#define NITIDEZ 1.44
+#define NITIDEZ 1.65
 
 // Tope del realce, en unidades de luma. Un detalle mas grande que esto ya es
 // un borde de verdad y no necesita ayuda; dejarlo suelto es lo que produce
@@ -405,7 +405,7 @@ vec4 hook() {
 // sordo al mando de NITIDEZ—; 0,25 da filo sin llegar al halo, que aparece
 // cuando el realce se sale mucho y pinta un contorno que no estaba.
 // Si se ven bordes con aureola, bajar esto antes que NITIDEZ.
-#define MARGEN_HALO 0.25
+#define MARGEN_HALO 0.30
 
 // Cuanto grano. 0,006 son ~1,5 niveles de 255: por debajo del umbral de
 // "esto tiene ruido" y por encima del de "esto esta muerto". Pedia un

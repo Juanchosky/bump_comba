@@ -122,18 +122,17 @@ void main() {
       expect(filtro.hlsBitratePara('https://ejemplo.com/limitada'), 'max');
     });
 
-    test('en la TV, el escalon del scrapeado se salta con fuente de 720p', () {
-      // Sin saber el techo: se aplica el escalon de 6 Mbps de siempre.
-      expect(TvMpvConfig.hlsBitrate(esScrapeado: true), '6000000');
-      // Sabiendo que no hay 1080p al que irse, ese escalon no frena nada.
+    test('en la TV, el scrapeado ya no tiene tope propio', () {
+      // Con red buena y aparato bueno, todo pide 'max' — scrapeado o no.
+      expect(TvMpvConfig.hlsBitrate(esScrapeado: true), 'max');
+      expect(TvMpvConfig.hlsBitrate(esScrapeado: false), 'max');
       expect(
         TvMpvConfig.hlsBitrate(esScrapeado: true, techoFuente: 720),
-        isNot('6000000'),
+        'max',
       );
-      // Y con una fuente que si da 1080p se queda como estaba.
       expect(
         TvMpvConfig.hlsBitrate(esScrapeado: true, techoFuente: 1080),
-        '6000000',
+        'max',
       );
     });
   });

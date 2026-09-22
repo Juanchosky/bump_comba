@@ -2379,7 +2379,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               mpv.setProperty('demuxer-max-bytes', '67108864'),
               mpv.setProperty('demuxer-max-back-bytes', '33554432'),
               mpv.setProperty('demuxer-readahead-secs', '20'),
-              mpv.setProperty('hls-bitrate', 'auto'),
+              mpv.setProperty('hls-bitrate', 'max'),
               mpv.setProperty('hls-forward-cache-secs', '30'),
               mpv.setProperty('hls-back-cache-secs', '10'),
               mpv.setProperty('demuxer-lavf-hacks', 'yes'),
@@ -2400,20 +2400,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 isHlsStream ? '67108864' : (lowPerf ? '25165824' : '50331648'),
               ),
               mpv.setProperty('demuxer-readahead-secs', lowPerf ? '45' : '90'),
-              // Contenido scrapeado (GnulaHD, ok.ru CDN): limitar a 720p.
-              // Estos streams HLS normalmente ofrecen 480p/720p/1080p; forzar
-              // 'max' en una conexión modesta causa rebuffering constante.
-              // 3 Mbps queda dentro de 720p (2–3 Mbps) y por debajo de 1080p
-              // (5–8 Mbps) en los perfiles típicos de ok.ru.
-              // El tope de 3 Mbps se levanta cuando YA SE SABE que la
-              // fuente no pasa de 720p: sin un 1080p al que irse, lo unico
-              // que hacia era quedarse con la version mas comprimida de las
-              // de 720p. Ver `hlsBitratePara`.
-              mpv.setProperty(
-                'hls-bitrate',
-                FiltroCalidadService().hlsBitratePara(_currentItem.url) ??
-                    (esContenidoScrapeado ? '3000000' : 'auto'),
-              ),
+              mpv.setProperty('hls-bitrate', 'max'),
               if (isHlsStream) ...[
                 mpv.setProperty('hls-forward-cache-secs', '45'),
                 mpv.setProperty('hls-back-cache-secs', '30'),
@@ -2437,10 +2424,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
           await Future.wait(futures);
 
-          // DESPUES del bloque de arriba, no dentro: ahi va un
-          // `hls-bitrate: auto` para VOD y `Future.wait` no garantiza el orden,
-          // asi que metido en la misma lista podia ganar el 'auto'.
-          //
           // Los ajustes de escalado (`scale`, `deband`, ...) solo hacen algo
           // cuando MPV renderiza por su cadena de shaders. Con
           // `hwdec: mediacodec` el fotograma va del decodificador a la Surface
@@ -2475,7 +2458,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             // siguiente ya lo tendra. Un adorno no bloquea una apertura.
             final rutaShader = conRealce ? filtro.rutaShaderSiYaEsta : null;
             final ajustes = <String, String>{
-              'hls-bitrate': filtro.hlsBitratePara(_currentItem.url) ?? 'auto',
+              'hls-bitrate': 'max',
               ...(conRealce
                   ? filtro.ajustesMpvNivel2(rutaShader: rutaShader)
                   : filtro.ajustesMpvSinRealce()),

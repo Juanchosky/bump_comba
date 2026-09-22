@@ -386,6 +386,22 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
   // estar en varios sitios y el primero no siempre responde.
   late List<String> _urls;
   int _idxServidor = 0;
+
+  /// Cuantas veces se ha cambiado de servidor POR CAUDAL BAJO.
+  ///
+  /// Tope de uno por reproduccion, y es deliberado. Cambiar de servidor le
+  /// cuesta al usuario un corte y una recarga; encadenar varios buscando el
+  /// mejor convierte "se ve con cuadros" en "no para de cortarse", que es
+  /// peor. Con un salto se sale del servidor claramente malo; si el siguiente
+  /// tampoco da, al menos no se le arruina la pelicula probando.
+  int _saltosPorCaudal = 0;
+
+  /// Lecturas seguidas de caudal bajo. Hacen falta DOS para actuar.
+  ///
+  /// `video-bitrate` es una media movil: justo despues de un salto de
+  /// posicion, de un corte o del arranque sale hundido sin que la fuente
+  /// tenga nada malo. Exigir dos lecturas seguidas (10 s) filtra ese ruido.
+  int _lecturasCaudalBajo = 0;
   VoidCallback? _m3uListener;
 
   Timer? _vigilante;
@@ -1713,6 +1729,71 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     });
   }
 
+  /// Cambia de servidor si el que suena trae tan poco caudal que los
+  /// macrobloques son inevitables.
+  ///
+  /// ── POR QUE ESTO ES LO UNICO QUE FUNCIONA EN EL TELEVISOR ──────────────
+  ///
+  /// Los cuadritos son informacion que el codificador TIRO en origen. No se
+  /// recuperan; como mucho se disimulan. En el telefono se disimulan con el
+  /// shader de desbloqueo, pero en el televisor eso no se puede —esta medido:
+  /// `mediacodec-copy` solo ya descarta fotogramas— y el desenfoque de capa
+  /// tampoco cabe.
+  ///
+  /// Asi que en el televisor no queda mas que ATACAR LA CAUSA: si esta
+  /// llegando una copia mala y hay otro servidor, se pide la otra. El dato
+  /// que lo delata es "solo pasa con algunos titulos": si fuera el aparato,
+  /// pasaria con todos.
+  ///
+  /// ── LAS CONDICIONES, Y POR QUE CADA UNA ────────────────────────────────
+  void _revisarCaudal(double? bitsPorSegundo) {
+    // En vivo no: no hay segunda oportunidad y un corte se lleva justo lo que
+    // se estaba viendo. Ademas el caudal de un directo sube y baja solo.
+    if (widget.item.isLive) return;
+
+    // Nada de meterse si ya hay algo en marcha o ya no hay adonde ir.
+    if (_muerto || _cambiandoServidor || _agotado) return;
+    if (_urls.length <= 1) return;
+    if (_saltosPorCaudal > 0) return;
+
+    // Solo con el video ya asentado. Durante el arranque y los primeros
+    // segundos la media del bitrate no vale para nada.
+    if (!_primerFrameListo) return;
+    if (_posicion.inSeconds < 12) return;
+
+    // Y durante un salto de posicion, menos aun: al saltar se vacia el bufer
+    // y la media del bitrate se hunde varios segundos sin que la fuente tenga
+    // nada malo. Se reinicia la cuenta para no arrastrar una lectura falsa.
+    if (_preparandoSalto) {
+      _lecturasCaudalBajo = 0;
+      return;
+    }
+
+    final bajo = TvMpvConfig.caudalInsuficiente(
+      ancho: _player.state.width,
+      alto: _player.state.height,
+      bitsPorSegundo: bitsPorSegundo,
+    );
+
+    if (!bajo) {
+      _lecturasCaudalBajo = 0;
+      return;
+    }
+
+    // Dos lecturas seguidas (10 s) antes de molestar al usuario.
+    _lecturasCaudalBajo++;
+    if (_lecturasCaudalBajo < 2) return;
+
+    _saltosPorCaudal++;
+    final mbps = (bitsPorSegundo! / 1000000).toStringAsFixed(2);
+    debugPrint(
+      'TvPlayer: caudal bajo (${mbps}Mbps para '
+      '${_player.state.width}x${_player.state.height}) — se prueba otro '
+      'servidor a ver si trae una copia mejor',
+    );
+    unawaited(_siguienteServidor('caudal bajo: ${mbps}Mbps'));
+  }
+
   Future<void> _siguienteServidor(String motivo) async {
     // Sin pantalla no hay nada que rescatar: cambiar de servidor aqui solo
     // abriria otro WebView para nadie.
@@ -1889,13 +1970,35 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
           'decoder-frame-drop-count',
         );
         final segundosBufer = _bufer - _posicion;
+
+        // ── EL BITRATE DEL VIDEO, QUE ES LO QUE DECIDE SI HAY CUADROS ────
+        //
+        // "Solo pasa con algunos titulos" es el dato que cambia el
+        // diagnostico: si fuera el aparato pasaria con TODOS. Que pase solo
+        // con algunos significa que esas fuentes concretas vienen peor, y
+        // para saber cuanto peor hace falta el numero.
+        //
+        // La referencia, para leerlo: un 720p decente va sobre los 3-5 Mbps.
+        // Por debajo de ~1,5 Mbps los macrobloques son inevitables y no hay
+        // reproductor que los quite — lo que falta es informacion que el
+        // codificador tiro en origen.
+        //
+        // `video-bitrate` es el del flujo que se esta pintando AHORA, asi que
+        // en HLS refleja la variante elegida de verdad, no la que anuncia la
+        // lista.
+        final bitrate = await mpv.getProperty('video-bitrate');
+        final mbps = double.tryParse('${bitrate ?? ''}');
+
         debugPrint(
           'TvPlayer diag: bufer=${segundosBufer.inSeconds}s '
           '${_kbps.toStringAsFixed(0)}KB/s '
           'descartados(vo)=${descartados ?? "?"} '
           'descartados(dec)=${descartadosDec ?? "?"} '
-          'colchon=${_esperaBufer}s',
+          'colchon=${_esperaBufer}s '
+          'video=${mbps == null ? "?" : "${(mbps / 1000000).toStringAsFixed(2)}Mbps"}',
         );
+
+        _revisarCaudal(mbps);
       } catch (_) {}
     });
   }
@@ -2607,15 +2710,59 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
               //    30% | 0,54  | 1,4 niveles
               //    45% | 0,70  | 0,6 niveles   <- probado, se veia peor que 0
               //
-              // El umbral de lo visible en zona lisa esta sobre los 2 niveles,
-              // asi que 20% deja el bloque justo asomando: rebajado, no
-              // borrado, y con el 80% del detalle intacto.
+              // El umbral de lo visible en zona lisa esta sobre los 2
+              // niveles. Al 10% el bloque queda en 3,9 —o sea que SE VE, no
+              // se ha borrado— a cambio de conservar el 90% del detalle.
+              //
+              // Esa es la eleccion, y conviene tenerla clara: a partir de
+              // aqui hacia abajo el filtro casi no quita cuadros, solo deja
+              // de restar nitidez. El recorrido ha sido
+              // 0,5 -> 0,6 -> 0,65 -> 0 -> 0,45 -> 0,50 -> 0,25 -> 0,43 ->
+              // 0,29, y cada vez que se ha subido por encima del 20% la
+              // respuesta ha sido que se veia peor.
               //
               // OJO POR ABAJO: el desenfoque cuesta una capa intermedia y una
               // pasada a pantalla completa en CADA fotograma, y ese coste no
               // baja con el radio. Por debajo del 2% se paga entero a cambio
               // de algo que no se ve — ahi es mejor 0,0, que se salta la capa
               // y sale gratis.
+              // ── APAGADO: MEDIDO, NO CABE ─────────────────────────
+              //
+              // El 2026-09-22, con el suavizado al 10% (el valor mas bajo que
+              // llego a probarse en el aparato):
+              //
+              //   descartados(vo)  141 -> 173 -> 210 -> 246 -> 280  (cada 5s)
+              //   descartados(dec) 0
+              //   bufer 240s, 0 KB/s
+              //
+              // Son ~7 fotogramas por segundo tirados: a 24 fps, casi un
+              // tercio de la pelicula. Y las otras dos cifras senalan donde:
+              // el DECODIFICADOR va fino (dec=0) y la red tampoco es (bufer
+              // lleno). Se cae entero en `vo`, que es el pintado — y lo unico
+              // que se le habia anadido al pintado era esto.
+              //
+              // POR QUE NO SIRVE BAJAR EL PORCENTAJE. El coste de esto no
+              // esta en el radio: esta en que `ImageFiltered` obliga a pintar
+              // el video en una CAPA INTERMEDIA de 1920x1080 y luego
+              // componerla. Esa parte se paga igual con radio 0,29 que con
+              // 0,65. Bajar el porcentaje reduce el beneficio y NO reduce el
+              // coste — por eso seguia a tirones al 10%.
+              //
+              // AL 20% a peticion (2026-09-22).
+              //
+              // Subir de 10% a 20% no cambia practicamente nada del coste: lo
+              // caro es la capa intermedia de 1920x1080, que se crea igual
+              // para cualquier radio mayor que cero. Asi que si al 10% iba a
+              // tirones, al 20% ira parecido — y si aqui va fluido, al 10%
+              // tambien habria ido.
+              //
+              // Lo que si cambia es el efecto: 80% del detalle conservado en
+              // vez del 90%, y el bloque baja de 3,9 a 2,5 niveles, que es
+              // justo el umbral de lo visible.
+              //
+              // O sea que la decision de verdad es binaria —capa o no capa— y
+              // dentro de "capa" conviene el valor que mejor se vea, no el
+              // mas bajo. Para apagarlo: 0,0.
               suavizado: 0.43,
               child: Video(
                 controller: _controlador,
