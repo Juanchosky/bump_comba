@@ -5,6 +5,7 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:http/http.dart' as http;
 import 'm3u_service.dart';
 import '../utils/cabeceras_stream.dart';
+import 'tv/tv_mpv_config.dart';
 
 class ScrapedSubtitle {
   final String url;
@@ -253,6 +254,24 @@ class ScrapedMetadata {
   });
 }
 
+class CalidadManifiestoHls {
+  final int? alturaMaxima;
+  final int? anchoMaximo;
+  final double? bandwidth;
+  final double? bitsPorPixel;
+  final bool esCaudalInsuficiente;
+  final int? mejorAlturaSuficiente;
+
+  const CalidadManifiestoHls({
+    this.alturaMaxima,
+    this.anchoMaximo,
+    this.bandwidth,
+    this.bitsPorPixel,
+    this.esCaudalInsuficiente = false,
+    this.mejorAlturaSuficiente,
+  });
+}
+
 class DynamicScraperService {
   static final DynamicScraperService _instance =
       DynamicScraperService._internal();
@@ -492,9 +511,6 @@ class DynamicScraperService {
     // 3. 720P (HD)
     if (combined.contains('720p') ||
         combined.contains('720') ||
-        combined.contains('microframe-sd') ||
-        lowerUrl.contains('-sd.m3u8') ||
-        lowerUrl.contains('_sd.m3u8') ||
         lowerUrl.contains('hd.m3u8') ||
         lowerUrl.contains('-hd.m3u8') ||
         lowerUrl.contains('_hd.m3u8') ||
@@ -516,9 +532,12 @@ class DynamicScraperService {
       return 1080;
     }
 
-    // 5. 540P
+    // 5. 540P / 480P (SD)
     if (combined.contains('540p') ||
         combined.contains('540') ||
+        combined.contains('microframe-sd') ||
+        lowerUrl.contains('-sd.m3u8') ||
+        lowerUrl.contains('_sd.m3u8') ||
         combined.contains('microframe-ld') ||
         lowerUrl.contains('-ld.m3u8') ||
         lowerUrl.contains('540.m3u8')) {
@@ -750,15 +769,19 @@ class DynamicScraperService {
 
       // Si es maestra, la verdad esta dentro y no en el nombre.
       if (cuerpo.contains('#EXT-X-STREAM-INF')) {
-        var mejor = 0;
-        for (final m in RegExp(
-          r'RESOLUTION=\d+x(\d+)',
-          caseSensitive: false,
-        ).allMatches(cuerpo)) {
-          final alto = int.tryParse(m.group(1) ?? '') ?? 0;
-          if (alto > mejor) mejor = alto;
+        final info = await analizarManifiestoHls(url, referer: referer);
+        if (info != null) {
+          if (info.mejorAlturaSuficiente != null) {
+            return info.mejorAlturaSuficiente;
+          }
+          if (info.esCaudalInsuficiente && info.alturaMaxima != null) {
+            // Penalizar fuentes con macrobloques inevitables: por ejemplo,
+            // un 720p sin bitrate se penaliza a 400 para que cualquier fuente
+            // decente gane.
+            return 400;
+          }
+          if (info.alturaMaxima != null) return info.alturaMaxima;
         }
-        if (mejor > 0) return mejor;
       }
 
       // Y si es una lista de variante, no hay forma de saber su altura desde
@@ -772,19 +795,26 @@ class DynamicScraperService {
     }
   }
 
-  static Future<int?> _alturaMaximaDe(String url, String referer) async {
+  /// Analiza un manifiesto HLS extrayendo resolución real y verificando si el
+  /// caudal (bits/pixel) es suficiente para no generar macrobloques severos.
+  static Future<CalidadManifiestoHls?> analizarManifiestoHls(
+    String url, {
+    String referer = '',
+  }) async {
     final cliente = http.Client();
     try {
       final peticion = http.Request('GET', Uri.parse(url))
         ..headers.addAll({
           'User-Agent': _ua,
-          'Referer': referer,
+          if (referer.isNotEmpty) 'Referer': referer,
           'Accept': '*/*',
         });
       final respuesta = await cliente
           .send(peticion)
-          .timeout(const Duration(seconds: 2));
-      if (respuesta.statusCode != 200) return null;
+          .timeout(const Duration(seconds: 3));
+      if (respuesta.statusCode != 200 && respuesta.statusCode != 206) {
+        return null;
+      }
 
       final buffer = StringBuffer();
       await for (final trozo in respuesta.stream.transform(
@@ -795,17 +825,70 @@ class DynamicScraperService {
       }
 
       final cuerpo = buffer.toString();
-      if (!cuerpo.contains('#EXT-X-STREAM-INF')) return null;
-
-      var mejor = 0;
-      for (final m in RegExp(
-        r'RESOLUTION=\d+x(\d+)',
-        caseSensitive: false,
-      ).allMatches(cuerpo)) {
-        final alto = int.tryParse(m.group(1) ?? '') ?? 0;
-        if (alto > mejor) mejor = alto;
+      if (!cuerpo.contains('#EXT-X-STREAM-INF')) {
+        return null;
       }
-      return mejor > 0 ? mejor : null;
+
+      int? maxAlto;
+      int? maxAncho;
+      double? maxBandwidth;
+      double? maxBpp;
+      int? mejorSuficiente;
+      bool todasInsuficientes = true;
+
+      final lineas = cuerpo.split('\n');
+      for (final linea in lineas) {
+        if (!linea.startsWith('#EXT-X-STREAM-INF')) continue;
+
+        final resMatch = RegExp(r'RESOLUTION=(\d+)x(\d+)', caseSensitive: false)
+            .firstMatch(linea);
+        final ancho = resMatch != null ? int.tryParse(resMatch.group(1) ?? '') : null;
+        final alto = resMatch != null ? int.tryParse(resMatch.group(2) ?? '') : null;
+
+        final avgBwMatch = RegExp(r'AVERAGE-BANDWIDTH=(\d+)', caseSensitive: false)
+            .firstMatch(linea);
+        final bwMatch = RegExp(r'BANDWIDTH=(\d+)', caseSensitive: false)
+            .firstMatch(linea);
+        final bw = double.tryParse(avgBwMatch?.group(1) ?? bwMatch?.group(1) ?? '');
+
+        final fpsMatch = RegExp(r'FRAME-RATE=([\d.]+)', caseSensitive: false)
+            .firstMatch(linea);
+        final fps = double.tryParse(fpsMatch?.group(1) ?? '') ?? 24.0;
+
+        if (alto != null && (maxAlto == null || alto > maxAlto)) {
+          maxAlto = alto;
+          maxAncho = ancho;
+          maxBandwidth = bw;
+        }
+
+        if (ancho != null && alto != null && bw != null && bw > 0) {
+          final bpp = bw / (ancho * alto * fps);
+          final insuficiente = TvMpvConfig.caudalInsuficiente(
+            ancho: ancho,
+            alto: alto,
+            bitsPorSegundo: bw,
+            fps: fps,
+          );
+          if (!insuficiente) {
+            todasInsuficientes = false;
+            if (mejorSuficiente == null || alto > mejorSuficiente) {
+              mejorSuficiente = alto;
+            }
+          }
+          if (maxBpp == null || bpp > maxBpp) {
+            maxBpp = bpp;
+          }
+        }
+      }
+
+      return CalidadManifiestoHls(
+        alturaMaxima: maxAlto,
+        anchoMaximo: maxAncho,
+        bandwidth: maxBandwidth,
+        bitsPorPixel: maxBpp,
+        esCaudalInsuficiente: todasInsuficientes && maxAlto != null,
+        mejorAlturaSuficiente: mejorSuficiente,
+      );
     } catch (_) {
       return null;
     } finally {
@@ -1271,12 +1354,22 @@ class DynamicScraperService {
           try {
             await Future.wait(
               sinSondear.map((u) async {
-                final alto = await _alturaMaximaDe(u, pageUrl);
-                if (alto != null) {
-                  alturaReal[u] = alto;
-                  debugPrint(
-                    'DynamicScraperService: lista maestra con ${alto}p -> $u',
-                  );
+                final info = await analizarManifiestoHls(u, referer: pageUrl);
+                if (info != null) {
+                  final alto = info.mejorAlturaSuficiente ?? info.alturaMaxima;
+                  if (alto != null) {
+                    if (info.esCaudalInsuficiente) {
+                      alturaReal[u] = 400; // Penalizar candidato con caudal insuficiente (<0.07 bpp)
+                      debugPrint(
+                        'DynamicScraperService: lista maestra con caudal insuficiente (<0.07 bpp, ${alto}p) -> $u',
+                      );
+                    } else {
+                      alturaReal[u] = alto;
+                      debugPrint(
+                        'DynamicScraperService: lista maestra con ${alto}p y caudal adecuado -> $u',
+                      );
+                    }
+                  }
                 }
               }),
             ).timeout(const Duration(seconds: 3));
@@ -1291,13 +1384,15 @@ class DynamicScraperService {
       }
 
       if (maxScore >= 1080 || force) {
+        final others = candidateUrls.keys.where((u) => u != bestUrl).toList();
         debugPrint(
-          'DynamicScraperService: Best candidate resolved (Score: $maxScore P): $bestUrl',
+          'DynamicScraperService: Best candidate resolved (Score: $maxScore P): $bestUrl (${others.length} alternativas)',
         );
         completer.complete(
           ExtractedStreamResult(
             videoUrl: bestUrl,
             subtitles: detectedSubtitles.toList(),
+            alternativeUrls: others,
           ),
         );
         _disposeHeadless();
@@ -1783,9 +1878,9 @@ class DynamicScraperService {
 
                       if (combined.includes('2160p') || combined.includes('2160') || combined.includes('4k') || combined.includes('uhd') || combined.includes('ultrahd')) return 2160;
                       if (combined.includes('1080p') || combined.includes('1080') || combined.includes('fhd') || combined.includes('fullhd') || combined.includes('full-hd') || combined.includes('microframe-hd') || lowerUrl.includes('1080.m3u8') || lowerUrl.includes('1080/') || lowerUrl.includes('1080_') || lowerUrl.includes('1080-')) return 1080;
-                      if (combined.includes('720p') || combined.includes('720') || combined.includes('microframe-sd') || lowerUrl.includes('-sd.m3u8') || lowerUrl.includes('_sd.m3u8') || lowerUrl.includes('hd.m3u8') || lowerUrl.includes('-hd.m3u8') || lowerUrl.includes('_hd.m3u8') || lowerUrl.includes('720.m3u8') || lowerUrl.includes('720/') || lowerUrl.includes('720_') || lowerUrl.includes('720-') || lowerUrl.includes('high.m3u8') || lowerText === 'hd' || lowerText.includes('720')) return 720;
+                      if (combined.includes('720p') || combined.includes('720') || lowerUrl.includes('hd.m3u8') || lowerUrl.includes('-hd.m3u8') || lowerUrl.includes('_hd.m3u8') || lowerUrl.includes('720.m3u8') || lowerUrl.includes('720/') || lowerUrl.includes('720_') || lowerUrl.includes('720-') || lowerUrl.includes('high.m3u8') || lowerText === 'hd' || lowerText.includes('720')) return 720;
                       if (lowerUrl.includes('master.m3u8') || lowerUrl.includes('playlist.m3u8') || lowerUrl.includes('index.m3u8') || lowerUrl.includes('manifest.m3u8')) return 1080;
-                      if (combined.includes('540p') || combined.includes('540') || combined.includes('microframe-ld') || lowerUrl.includes('-ld.m3u8') || lowerUrl.includes('540.m3u8')) return 540;
+                      if (combined.includes('540p') || combined.includes('540') || combined.includes('microframe-sd') || lowerUrl.includes('-sd.m3u8') || lowerUrl.includes('_sd.m3u8') || combined.includes('microframe-ld') || lowerUrl.includes('-ld.m3u8') || lowerUrl.includes('540.m3u8')) return 540;
                       if (combined.includes('480p') || combined.includes('480') || lowerUrl.includes('480.m3u8') || lowerUrl.includes('medium.m3u8')) return 480;
                       if (combined.includes('360p') || combined.includes('360') || combined.includes('240p') || combined.includes('240') || combined.includes('microframe-fd') || lowerUrl.includes('-fd.m3u8') || lowerUrl.includes('360.m3u8') || lowerUrl.includes('low.m3u8')) return 360;
                       return 300;
@@ -3123,19 +3218,30 @@ class DynamicScraperService {
 
       final body = res.body;
 
-      // Buscar el archivo m3u8 en la configuración del reproductor SaveFiles
-      final m3u8Match =
-          RegExp(
-            r'''sources\s*:\s*\[\s*\{\s*file\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]''',
-            caseSensitive: false,
-          ).firstMatch(body) ??
-          RegExp(
-            r'''['"](https?://[^'"\s]+\.m3u8[^'"\s]*)['"]''',
-            caseSensitive: false,
-          ).firstMatch(body);
+      // Buscar todos los archivos m3u8 en la configuración del reproductor SaveFiles
+      final allUrls = <String>[];
+      for (final m in RegExp(
+        r'''(?:file|src)\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]''',
+        caseSensitive: false,
+      ).allMatches(body)) {
+        final u = m.group(1)!;
+        if (!allUrls.contains(u)) allUrls.add(u);
+      }
+      if (allUrls.isEmpty) {
+        for (final m in RegExp(
+          r'''['"](https?://[^'"\s]+\.m3u8[^'"\s]*)['"]''',
+          caseSensitive: false,
+        ).allMatches(body)) {
+          final u = m.group(1)!;
+          if (!allUrls.contains(u)) allUrls.add(u);
+        }
+      }
 
-      if (m3u8Match != null) {
-        final streamUrl = m3u8Match.group(1)!;
+      if (allUrls.isNotEmpty) {
+        // Ordenar por puntuación de calidad descendente para elegir la mejor copia
+        allUrls.sort((a, b) => _getQualityScore(b).compareTo(_getQualityScore(a)));
+        final streamUrl = allUrls.first;
+        final altUrls = allUrls.skip(1).toList();
 
         // Subtítulos si existen
         final List<ScrapedSubtitle> subs = [];
@@ -3155,6 +3261,7 @@ class DynamicScraperService {
         return ExtractedStreamResult(
           videoUrl: streamUrl,
           subtitles: subs,
+          alternativeUrls: altUrls,
           headers: {
             'User-Agent': _desktopUa,
             'Referer': 'https://savefiles.com/',
@@ -3320,15 +3427,20 @@ class DynamicScraperService {
             //   4 = resto                 → HTTP call + calidad desconocida
             int velocidad(String s) {
               final low = s.toLowerCase();
-              if (low.contains('savefiles') || low.contains('savefile'))
+              if (low.contains('savefiles') || low.contains('savefile')) {
                 return 0;
-              if (low.contains('ok.ru') || low.contains('odnoklassniki'))
+              }
+              if (low.contains('ok.ru') || low.contains('odnoklassniki')) {
                 return 1;
+              }
               if (low.contains('vidara') ||
                   low.contains('the.tube') ||
-                  low.contains('they.tube'))
+                  low.contains('they.tube')) {
                 return 2;
-              if (low.contains('voe')) return 3;
+              }
+              if (low.contains('voe')) {
+                return 3;
+              }
               return 4;
             }
 
@@ -3667,4 +3779,70 @@ class DynamicScraperService {
     }
     return null;
   }
+
+  /// Busca páginas de streaming alternativas de un título contra otros dominios soportados.
+  Future<List<String>> buscarAlternativasPorTitulo(
+    String titulo, {
+    String? excluirHost,
+  }) async {
+    final clean = NormalizationUtils.normalizeSeriesName(titulo)
+        .replaceAll(RegExp(r'\s*\(\d{4}\)|\s*\[\d{4}\]'), '')
+        .trim();
+    if (clean.isEmpty) return const [];
+
+    final resultados = <String>[];
+    final hostExcluido = (excluirHost ?? '').toLowerCase();
+
+    await Future.wait([
+      // 1. Pelisflix
+      if (!hostExcluido.contains('pelisflix'))
+        () async {
+          try {
+            final uri = Uri.parse('https://pelisflix1.tv/?s=${Uri.encodeComponent(clean)}');
+            final res = await http.get(uri, headers: {
+              'User-Agent': _desktopUa,
+              'Accept': 'text/html',
+              'Referer': 'https://pelisflix1.tv/',
+            }).timeout(const Duration(seconds: 4));
+            if (res.statusCode == 200) {
+              final links = RegExp(
+                r'''href=['"](https?://pelisflix[^\s'"]+/(?:pelicula|series)/[^\s'"]+)['"]''',
+                caseSensitive: false,
+              ).allMatches(res.body).map((m) => m.group(1)!).toSet();
+              resultados.addAll(links.take(2));
+            }
+          } catch (_) {}
+        }(),
+
+      // 2. Gnula
+      if (!hostExcluido.contains('gnula'))
+        () async {
+          try {
+            final uri = Uri.parse('https://gnula.nu/?s=${Uri.encodeComponent(clean)}');
+            final res = await http.get(uri, headers: {
+              'User-Agent': _desktopUa,
+              'Accept': 'text/html',
+              'Referer': 'https://gnula.nu/',
+            }).timeout(const Duration(seconds: 4));
+            if (res.statusCode == 200) {
+              final links = RegExp(
+                r'''href=['"](https?://gnula\.[^\s'"]+/[^\s'"]+)['"]''',
+                caseSensitive: false,
+              )
+                  .allMatches(res.body)
+                  .map((m) => m.group(1)!)
+                  .where((u) =>
+                      !u.contains('/tag/') &&
+                      !u.contains('/category/') &&
+                      !u.contains('/page/'))
+                  .toSet();
+              resultados.addAll(links.take(2));
+            }
+          } catch (_) {}
+        }(),
+    ]);
+
+    return resultados.toList();
+  }
 }
+

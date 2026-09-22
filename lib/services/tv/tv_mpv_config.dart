@@ -67,28 +67,27 @@ class TvMpvConfig {
     // ── TECHO POR APARATO ──────────────────────────────────────────────
     //
     // La gama baja no pasa de 3 Mbps... salvo si ya se sabe que la fuente
-    // topa en 720p, y entonces sube a 6.
+    // topa en 720p, y entonces se retira el techo por aparato (0).
     //
-    // POR QUE ES SEGURO SUBIRLO AHI. Este tope existe para que el aparato no
+    // POR QUE ES SEGURO QUITARLO AHI. Este tope existe para que el aparato no
     // se ahogue decodificando, y **lo que cuesta decodificar lo marca la
     // RESOLUCION, no el bitrate**: son los pixeles por segundo que tiene que
-    // sacar el decodificador. Un 720p a 6 Mbps no le da mas trabajo al
-    // decodificador por hardware que un 720p a 3 Mbps; lo que sube es el
-    // trafico de red y el troceo del flujo, que son baratos al lado.
+    // sacar el decodificador. Un 720p no le da mas trabajo al decodificador
+    // por hardware si viene a mas bitrate; lo que sube es el trafico de red
+    // y el troceo del flujo, que son baratos al lado.
     //
     // POR QUE HACE FALTA. En el televisor se ven macrobloques mucho mas que
     // en el telefono, y ahi NO se puede hacer nada por software: el shader de
     // desbloqueo necesita `mediacodec-copy` y este SoC no lo aguanta (ver
     // `_nivel2PermitidoEnTv` en la pantalla del reproductor). O sea que en el
     // televisor la UNICA palanca que queda contra el bloque es pedir una
-    // copia mejor codificada — y este tope era lo que lo impedia: obligaba a
-    // quedarse con el 720p MAS comprimido de los que ofrece la lista, que es
-    // exactamente el que mas cuadros tiene.
+    // copia mejor codificada — y este tope era lo que lo impedia si la lista
+    // ofrece una variante a mayor caudal.
     //
     // El techo por red sigue mandando por encima de esto, que es la
     // proteccion de verdad si la linea no da.
     final bool fuenteBaja = techoFuente != null && techoFuente <= 720;
-    final int porAparato = gamaBaja ? (fuenteBaja ? 6000000 : 3000000) : 0;
+    final int porAparato = gamaBaja ? (fuenteBaja ? 0 : 3000000) : 0;
 
     // El scrapeado YA NO se frena por origen. La proteccion que importa es la
     // de red y la de aparato; el origen solo estaba dejando al contenido con
@@ -191,7 +190,7 @@ class TvMpvConfig {
         'linear-upscaling': 'no',
         'sigmoid-upscaling': 'no',
         'deband': 'no',
-        'dither-depth': 'no',
+        'dither-depth': 'auto',
         'cache': 'yes',
         // media_kit trae 'cache-on-disk': 'yes' por defecto (ver la tabla de
         // propiedades de NativePlayer). El telefono ya lo apaga a mano; el
@@ -257,7 +256,7 @@ class TvMpvConfig {
         'user-agent': kUserAgentPorDefecto,
         'http-header-fields': 'Connection: keep-alive',
         'demuxer-cache-wait': 'no',
-        'hls-bitrate': hlsBitrate(),
+        'hls-bitrate': hlsBitrate(techoFuente: techoFuente),
         'stream-buffer-size': '8388608',
         'network-timeout': '35',
         'http-reconnect': 'yes',

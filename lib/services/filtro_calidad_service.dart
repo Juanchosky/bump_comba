@@ -168,6 +168,7 @@ class FiltroCalidadService {
   FiltroCalidadService._interno();
 
   static const String _clave = 'filtro_calidad_techos';
+  static const String _claveFuentesFlojas = 'filtro_calidad_fuentes_flojas';
 
   /// El sufijo de version no es decorativo: cada vez que la logica que PRODUCE
   /// el veredicto tenia un fallo, los veredictos viejos son basura y hay que
@@ -220,6 +221,9 @@ class FiltroCalidadService {
   /// clave del item (su URL) -> lo observado de esa fuente.
   final Map<String, TechoFuente> _techos = {};
 
+  /// URLs identificadas con compresión severa / macrobloqueo inevitable (<0.07 bpp).
+  final Set<String> _fuentesFlojas = {};
+
   /// Los mismos ids, del mas viejo al mas reciente, para poder desalojar.
   final List<String> _orden = [];
 
@@ -267,6 +271,8 @@ class FiltroCalidadService {
   Future<void> init() async {
     _prefs = await SharedPreferences.getInstance();
     _cargarTechos();
+    final flojas = _prefs?.getStringList(_claveFuentesFlojas) ?? const [];
+    _fuentesFlojas.addAll(flojas);
 
     final guardado = _prefs?.getInt(_claveVeredicto) ?? 0;
     _veredicto =
@@ -489,6 +495,30 @@ class FiltroCalidadService {
       debugPrint('FiltroCalidad: "$idItem" topa en ${techo}p');
     }
     await _guardarTechos();
+  }
+
+  /// ¿Es una URL de stream conocida por tener macrobloques o caudal insuficiente de origen?
+  bool esFuenteFloja(String? url) {
+    if (url == null || url.isEmpty) return false;
+    return _fuentesFlojas.contains(url);
+  }
+
+  /// Guarda una URL como fuente floja confirmada para que futuras búsquedas
+  /// e indexaciones la bajen de prioridad frente a otros mirrors.
+  Future<void> anotarFuenteFloja(
+    String url, {
+    String? titulo,
+    double? bpp,
+    int? alto,
+  }) async {
+    if (url.isEmpty) return;
+    if (_fuentesFlojas.add(url)) {
+      debugPrint(
+        'FiltroCalidad: anotada fuente floja confirmada ($url) '
+        '${titulo != null ? "[$titulo]" : ""} ${alto != null ? "${alto}p" : ""}',
+      );
+      await _prefs?.setStringList(_claveFuentesFlojas, _fuentesFlojas.toList());
+    }
   }
 
   /// Que nivel de realce pide una altura dada.
@@ -807,7 +837,7 @@ class FiltroCalidadService {
       'linear-upscaling': 'no',
       'sigmoid-upscaling': 'no',
       'deband': 'no',
-      'dither-depth': 'no',
+      'dither-depth': 'auto',
     };
   }
 

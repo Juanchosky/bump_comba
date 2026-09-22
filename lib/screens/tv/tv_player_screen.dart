@@ -402,6 +402,15 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
   /// posicion, de un corte o del arranque sale hundido sin que la fuente
   /// tenga nada malo. Exigir dos lecturas seguidas (10 s) filtra ese ruido.
   int _lecturasCaudalBajo = 0;
+
+  /// Si el caudal es insuficiente según [TvMpvConfig.caudalInsuficiente],
+  /// el macrobloqueo es inevitable del origen: el desenfoque de capa no lo
+  /// arregla y solo cobra fotogramas. Se desactiva cuando esto es true.
+  bool _bloqueoInevitable = false;
+  int _ticksBloqueoInevitable = 0;
+  bool _avisoCalidadBaja = false;
+  bool _buscandoOtraFuente = false;
+  final FocusNode _focoBuscarFuente = FocusNode();
   VoidCallback? _m3uListener;
 
   Timer? _vigilante;
@@ -610,8 +619,9 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     if (_urls.length <= 1) {
       debugPrint(
         'TvPlayer: "${widget.item.name}" no tiene servidor alternativo '
-        '— esperando si el indexado de BD encuentra alguno',
+        '— buscando alternativas en otros proveedores...',
       );
+      unawaited(_buscarAlternativasDeOtrosProveedores());
     } else {
       debugPrint('TvPlayer: ${_urls.length} servidores disponibles');
     }
@@ -823,7 +833,7 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
           await mpv.setProperty('linear-upscaling', 'no');
           await mpv.setProperty('sigmoid-upscaling', 'no');
           await mpv.setProperty('deband', 'no');
-          await mpv.setProperty('dither-depth', 'no');
+          await mpv.setProperty('dither-depth', 'auto');
           await mpv.setProperty('vd-lavc-fast', 'yes');
           await mpv.setProperty('vd-lavc-skiploopfilter', 'nonref');
         }
@@ -1057,16 +1067,47 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
             .timeout(const Duration(seconds: 45));
 
         if (r != null && r.videoUrl.isNotEmpty) {
-          _resueltos[indice] = r.videoUrl;
-          if (indice < _urls.length) {
-            _urls[indice] = r.videoUrl;
-          }
+          String urlElegida = r.videoUrl;
+
+          // Si hay alternativas en el resultado, agregarlas a la lista de URLs
           if (r.alternativeUrls.isNotEmpty) {
             for (final alt in r.alternativeUrls) {
               if (!_urls.contains(alt)) {
                 _urls.add(alt);
               }
             }
+          }
+
+          // ── VERIFICACIÓN DE BITRATE/CAUDAL ANTES DE ABRIR ─────────
+          // Si el candidato primario tiene caudal insuficiente pero alguna
+          // de las alternativas tiene mejor caudal, elegimos la alternativa.
+          if (urlElegida.toLowerCase().contains('.m3u8')) {
+            try {
+              final info = await DynamicScraperService.analizarManifiestoHls(urlElegida);
+              if (info != null && info.esCaudalInsuficiente) {
+                debugPrint(
+                  'TvPlayer: stream primario ($urlElegida) tiene caudal insuficiente '
+                  '(<0.07 bpp). Verificando alternativas antes de abrir...',
+                );
+                for (final alt in r.alternativeUrls) {
+                  if (alt.toLowerCase().contains('.m3u8')) {
+                    final altInfo = await DynamicScraperService.analizarManifiestoHls(alt);
+                    if (altInfo != null && !altInfo.esCaudalInsuficiente) {
+                      debugPrint(
+                        'TvPlayer: alternativa pre-validada con caudal adecuado -> $alt',
+                      );
+                      urlElegida = alt;
+                      break;
+                    }
+                  }
+                }
+              }
+            } catch (_) {}
+          }
+
+          _resueltos[indice] = urlElegida;
+          if (indice < _urls.length) {
+            _urls[indice] = urlElegida;
           }
           // LOS SUBTITULOS SE GUARDAN, no se tiran.
           //
@@ -1266,6 +1307,115 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
       if (_resueltos.containsKey(i)) continue;
       if (!_reproduccionSana) return;
       await _resolverPagina(i);
+    }
+  }
+
+  /// Busca alternativas en segundo plano cruzando con otros dominios y con el catálogo.
+  Future<void> _buscarAlternativasDeOtrosProveedores() async {
+    if (_muerto) return;
+    try {
+      final altsM3u = M3UService().getAlternativesFor(widget.item);
+      for (final a in altsM3u) {
+        if (!_urls.contains(a.url)) _urls.add(a.url);
+      }
+
+      final hostActual = Uri.tryParse(widget.item.url)?.host;
+      final altsScraper = await DynamicScraperService().buscarAlternativasPorTitulo(
+        widget.item.name,
+        excluirHost: hostActual,
+      );
+      if (_muerto) return;
+      for (final s in altsScraper) {
+        if (!_urls.contains(s)) _urls.add(s);
+      }
+
+      if (_urls.length > 1 && mounted) {
+        setState(() {});
+        debugPrint(
+          'TvPlayer: ${_urls.length} servidores disponibles tras búsqueda cruzada',
+        );
+        _prepararAlternativasEnSegundoPlano();
+      }
+    } catch (e) {
+      debugPrint('TvPlayer: error buscando alternativas cruzadas: $e');
+    }
+  }
+
+  /// Dispara una re-búsqueda en frío invalidando la caché del scraper y
+  /// anotando la fuente actual como floja.
+  Future<void> _rebuscarFuenteEnFrio() async {
+    if (_buscandoOtraFuente || _muerto) return;
+    setState(() => _buscandoOtraFuente = true);
+
+    debugPrint('TvPlayer: re-búsqueda en frío solicitada por calidad de origen baja...');
+    try {
+      DynamicScraperService().invalidateCache(widget.item.url);
+      _rotos.clear();
+
+      unawaited(FiltroCalidadService().anotarFuenteFloja(
+        widget.item.url,
+        titulo: widget.item.name,
+        alto: _player.state.height,
+      ));
+      unawaited(M3UService().reportContent(
+        name: widget.item.name,
+        category: widget.item.category,
+        url: widget.item.url,
+        reason: 'fuente_floja_caudal_insuficiente',
+      ));
+
+      final hostActual = Uri.tryParse(widget.item.url)?.host;
+      final alts = await DynamicScraperService().buscarAlternativasPorTitulo(
+        widget.item.name,
+        excluirHost: hostActual,
+      );
+
+      final altsM3u = M3UService().getAlternativesFor(widget.item);
+      for (final a in altsM3u) {
+        if (!_urls.contains(a.url)) alts.add(a.url);
+      }
+
+      if (_muerto) return;
+
+      if (alts.isNotEmpty) {
+        final nuevas = alts.where((u) => !_urls.contains(u)).toList();
+        if (nuevas.isNotEmpty) {
+          _urls.addAll(nuevas);
+          if (mounted) {
+            setState(() {
+              _avisoCalidadBaja = false;
+              _buscandoOtraFuente = false;
+            });
+          }
+          debugPrint(
+            'TvPlayer: re-búsqueda en frío encontró ${nuevas.length} nuevas fuentes. '
+            'Probando siguiente servidor...',
+          );
+          await _siguienteServidor('re-búsqueda en frío tras calidad baja');
+          return;
+        }
+      }
+
+      final r = await DynamicScraperService().extractStreamResult(widget.item.url);
+      if (_muerto) return;
+      if (r != null && r.videoUrl.isNotEmpty && r.videoUrl != _urls[_idxServidor]) {
+        _urls.add(r.videoUrl);
+        if (mounted) {
+          setState(() {
+            _avisoCalidadBaja = false;
+            _buscandoOtraFuente = false;
+          });
+        }
+        await _siguienteServidor('re-extracción en frío con nuevo mirror');
+        return;
+      }
+
+      if (mounted) {
+        setState(() => _buscandoOtraFuente = false);
+      }
+    } catch (e) {
+      debugPrint('TvPlayer: error en re-búsqueda en frío: $e');
+      if (mounted) setState(() => _buscandoOtraFuente = false);
     }
   }
 
@@ -1833,6 +1983,8 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     // nuevo y encadenaria otro cambio.
     if (mounted) setState(() => _primerFrameListo = false);
     _segundosDesdeAbrir = 0;
+    _lecturasCaudalBajo = 0;
+    _bloqueoInevitable = false;
     final desde = _posicion;
     _idxServidor = candidatos.first;
     debugPrint('TvPlayer: cambio de servidor ($motivo) -> $_idxServidor');
@@ -1941,9 +2093,19 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     // Un ultimo guardado al salir: sin el se pierden hasta 5 s, y salir es
     // justo cuando el usuario espera que quede anotado por donde iba.
     _guardar();
-    if (_m3uListener != null) {
-      M3UService().removeListener(_m3uListener!);
+    if (_ticksBloqueoInevitable >= 4) {
+      unawaited(FiltroCalidadService().anotarFuenteFloja(
+        widget.item.url,
+        titulo: widget.item.name,
+      ));
+      unawaited(M3UService().reportContent(
+        name: widget.item.name,
+        category: widget.item.category,
+        url: widget.item.url,
+        reason: 'fuente_floja_caudal_insuficiente',
+      ));
     }
+    _focoBuscarFuente.dispose();
     _playerFocusNode.dispose();
     _player.dispose();
     super.dispose();
@@ -2018,13 +2180,35 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         final bitrate = await mpv.getProperty('video-bitrate');
         final mbps = double.tryParse('${bitrate ?? ''}');
 
+        // Si el caudal no alcanza para evitar macrobloqueos inevitables,
+        // el desenfoque de capa solo consume fotogramas sin solucionar el
+        // defecto de compresión de origen. Se apaga condicionalmente en ese caso.
+        final insuficiente = TvMpvConfig.caudalInsuficiente(
+          ancho: _player.state.width,
+          alto: _player.state.height,
+          bitsPorSegundo: mbps,
+        );
+        if (insuficiente != _bloqueoInevitable && mounted) {
+          setState(() => _bloqueoInevitable = insuficiente);
+        }
+
+        if (_bloqueoInevitable && _urls.length <= 1) {
+          _ticksBloqueoInevitable++;
+          if (_ticksBloqueoInevitable >= 3 && !_avisoCalidadBaja && mounted) {
+            setState(() => _avisoCalidadBaja = true);
+          }
+        } else {
+          _ticksBloqueoInevitable = 0;
+        }
+
         debugPrint(
           'TvPlayer diag: bufer=${segundosBufer.inSeconds}s '
           '${_kbps.toStringAsFixed(0)}KB/s '
           'descartados(vo)=${descartados ?? "?"} '
           'descartados(dec)=${descartadosDec ?? "?"} '
           'colchon=${_esperaBufer}s '
-          'video=${mbps == null ? "?" : "${(mbps / 1000000).toStringAsFixed(2)}Mbps"}',
+          'video=${mbps == null ? "?" : "${(mbps / 1000000).toStringAsFixed(2)}Mbps"}'
+          '${_bloqueoInevitable ? " [bloqueo inevitable -> blur 0.0]" : ""}',
         );
 
         _revisarCaudal(mbps);
@@ -2860,8 +3044,13 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
               //
               // O sea que la decision de verdad es binaria —capa o no capa— y
               // dentro de "capa" conviene el valor que mejor se vea, no el
-              // mas bajo. Para apagarlo: 0,0.
-              suavizado: 0.43,
+              // mas bajo.
+              //
+              // CONDICIONAL: Cuando el caudal es insuficiente (_bloqueoInevitable),
+              // el macrobloqueo es inevitable del origen (<0.07 bpp) y el
+              // blur ciego solo cuesta fotogramas sin arreglarlo; se apaga (0.0).
+              // Con caudal adecuado, se mantiene en 0.43.
+              suavizado: _bloqueoInevitable ? 0.0 : 0.43,
               child: Video(
                 controller: _controlador,
                 controls: NoVideoControls,
@@ -2982,6 +3171,115 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
                       ),
                     ),
                   ],
+                ),
+              ),
+            ),
+
+          // ── Aviso de Calidad Baja cuando no hay servidores alternativos ──
+          if (_avisoCalidadBaja && grande && !_agotado)
+            Positioned(
+              top: 24,
+              left: 48,
+              right: 48,
+              child: AnimatedOpacity(
+                opacity: _controlesVisibles || _buscandoOtraFuente ? 1.0 : 0.8,
+                duration: const Duration(milliseconds: 300),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xEB1E1E1E),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.amber.withValues(alpha: 0.5)),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Colors.black45,
+                        blurRadius: 10,
+                        offset: Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(
+                        Icons.warning_amber_rounded,
+                        color: Colors.amber,
+                        size: 28,
+                      ),
+                      const SizedBox(width: 14),
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              'Calidad de origen baja para este título',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            SizedBox(height: 2),
+                            Text(
+                              'El proveedor comprimió en exceso este video (<0.07 bits/píxel).',
+                              style: TextStyle(
+                                color: Colors.white70,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      _buscandoOtraFuente
+                          ? const SizedBox(
+                            width: 24,
+                            height: 24,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.amber,
+                            ),
+                          )
+                          : Focus(
+                            focusNode: _focoBuscarFuente,
+                            onKeyEvent: (node, event) {
+                              if (event is KeyDownEvent &&
+                                  (event.logicalKey == LogicalKeyboardKey.select ||
+                                      event.logicalKey == LogicalKeyboardKey.enter)) {
+                                _rebuscarFuenteEnFrio();
+                                return KeyEventResult.handled;
+                              }
+                              return KeyEventResult.ignored;
+                            },
+                            child: Builder(
+                              builder: (context) {
+                                final enfocado = Focus.of(context).hasFocus;
+                                return OutlinedButton.icon(
+                                  onPressed: _rebuscarFuenteEnFrio,
+                                  icon: const Icon(Icons.search_rounded, size: 18),
+                                  label: const Text('Buscar otra fuente'),
+                                  style: OutlinedButton.styleFrom(
+                                    foregroundColor: enfocado ? Colors.black : Colors.white,
+                                    backgroundColor:
+                                        enfocado ? Colors.white : Colors.white10,
+                                    side: BorderSide(
+                                      color: enfocado ? Colors.white : Colors.white24,
+                                    ),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.white54, size: 20),
+                        onPressed: () => setState(() => _avisoCalidadBaja = false),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),

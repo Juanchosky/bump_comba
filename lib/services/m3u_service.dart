@@ -3324,24 +3324,56 @@ class M3UService extends ChangeNotifier {
       }
     }
 
-    // 3. Si aún no hay match en los índices, buscar en el contenido propio de la BD
+    final List<M3UItem> encontradas = [];
+    final Set<String> urlsVistas = {item.url};
+
+    // 3. Buscar en el contenido propio de la BD (custom_content) por coincidencias de título
     if (_customItems.isNotEmpty) {
       final norm = _normalizeTitleForMatching(item.name);
       final canon = _canonicalTitleKey(item.name).replaceAll(' ', '');
       for (final c in _customItems) {
+        if (urlsVistas.contains(c.url)) continue;
         if (c.isSeries == item.isSeries && c.isLive == item.isLive) {
           for (final t in _titulosDeMatch(c)) {
             if ((norm.isNotEmpty && _normalizeTitleForMatching(t) == norm) ||
                 (canon.isNotEmpty &&
                     _canonicalTitleKey(t).replaceAll(' ', '') == canon)) {
-              return [c.copyWith(sourceName: 'BD (Más rápida)')];
+              encontradas.add(c.copyWith(sourceName: 'BD (Más rápida)'));
+              urlsVistas.add(c.url);
+              break;
             }
           }
         }
       }
     }
 
-    return const [];
+    // 4. Si aún no hay alternativas, buscar en los items generales de la lista M3U
+    if (encontradas.isEmpty && _items.isNotEmpty) {
+      final norm = _normalizeTitleForMatching(item.name);
+      final canon = _canonicalTitleKey(item.name).replaceAll(' ', '');
+      for (final it in _items) {
+        if (urlsVistas.contains(it.url)) continue;
+        if (it.isSeries == item.isSeries && it.isLive == item.isLive) {
+          final itNorm = _normalizeTitleForMatching(it.name);
+          final itCanon = _canonicalTitleKey(it.name).replaceAll(' ', '');
+          if ((norm.isNotEmpty && itNorm == norm) ||
+              (canon.isNotEmpty && itCanon == canon)) {
+            encontradas.add(
+              it.copyWith(
+                sourceName:
+                    (it.sourceName != null && it.sourceName!.isNotEmpty)
+                        ? it.sourceName!
+                        : 'Alternativa M3U',
+              ),
+            );
+            urlsVistas.add(it.url);
+            if (encontradas.length >= 3) break;
+          }
+        }
+      }
+    }
+
+    return encontradas;
   }
 
   /// Las categorias que se enseñan en la pantalla de inicio, EN ORDEN.

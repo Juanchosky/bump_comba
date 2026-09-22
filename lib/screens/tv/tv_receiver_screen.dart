@@ -516,7 +516,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
             await mpv.setProperty('linear-upscaling', 'no');
             await mpv.setProperty('sigmoid-upscaling', 'no');
             await mpv.setProperty('deband', 'no');
-            await mpv.setProperty('dither-depth', 'no');
+            await mpv.setProperty('dither-depth', 'auto');
             await mpv.setProperty('vd-lavc-fast', 'yes');
             await mpv.setProperty('vd-lavc-skiploopfilter', 'nonref');
           } else {
