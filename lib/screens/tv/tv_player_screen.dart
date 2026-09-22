@@ -168,6 +168,33 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
   ///
   /// Lo que SI llega al televisor: el desenfoque de capa de aqui abajo, el
   /// filtro de color, el registro de alturas y el tope de bitrate levantado.
+  /// CERRADO: el televisor no puede con `mediacodec-copy`. Y ya no es una
+  /// suposicion — esta medido, y por accidente de la forma mas limpia
+  /// posible.
+  ///
+  /// La prueba del 2026-09-21 iba a comparar la copia CON el shader ligero.
+  /// El shader no llego a extraerse a tiempo y la reproduccion fue sin el
+  /// (lo canto el aviso de mas abajo). Asi que lo que se midio fue la copia
+  /// DESNUDA, sin una sola instruccion de shader encima:
+  ///
+  ///   hwdec-current = mediacodec-copy
+  ///   glsl-shaders  = (vacio)
+  ///   descartados(vo): 0 -> 0 -> 9 -> 31
+  ///
+  /// Con `hwdec: mediacodec` ese contador se quedaba en 1 durante minutos.
+  /// O sea que **la copia por si sola ya descarta fotogramas**, antes de
+  /// pedirle ningun trabajo extra a la GPU. El log se llena ademas de
+  /// `mali_gralloc: Attempt to call unlock*() on an buffer locked with
+  /// invalid write locks`, que es el camino de la copia machacando al
+  /// asignador de la GPU.
+  ///
+  /// Esto cierra el asunto: el coste NO eran las pasadas del shader, era
+  /// sacar cada fotograma a memoria. Y como el shader necesita esa copia para
+  /// existir, **en el televisor no se puede desbloquear por software**, ni
+  /// con una pasada ni con media.
+  ///
+  /// Lo que queda para los cuadros ahi: el desenfoque de capa de aqui abajo
+  /// (ciego, pero gratis) y el bitrate, que ya pide `max`.
   static const bool _nivel2PermitidoEnTv = false;
 
   String _decodificadorElegido() {
@@ -725,9 +752,23 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
           // Los ajustes MINIMOS, no los del telefono: solo el shader ligero.
           // Meter el escalador sharp o `deband` encima contaminaria la
           // medida — si fuera a tirones no sabriamos a cuenta de que.
-          final ajustes = filtro.ajustesMpvTvLigero(
-            rutaShader: filtro.rutaShaderLigeroSiYaEsta,
-          );
+          // Se AWAITA la extraccion en vez de leer la ruta ya lista.
+          //
+          // El 2026-09-21 se leyo la version sincrona y salio `null`: el
+          // precalentado no habia terminado y la prueba corrio sin shader.
+          // Aqui ya estamos en un tramo asincrono, despues de `aplicarBase`,
+          // asi que esperar no cuesta nada al arranque — y depender del reloj
+          // para algo asi es como se pierde un experimento entero.
+          final rutaLigero =
+              filtro.rutaShaderLigeroSiYaEsta ??
+              await filtro.rutaDelShaderLigero();
+          if (rutaLigero == null) {
+            debugPrint(
+              'TvPlayer: AVISO el shader ligero no estaba extraido todavia; '
+              'esta reproduccion va SIN desbloqueo',
+            );
+          }
+          final ajustes = filtro.ajustesMpvTvLigero(rutaShader: rutaLigero);
           for (final e in ajustes.entries) {
             await mpv.setProperty(e.key, e.value);
           }
@@ -2499,8 +2540,15 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
               //    0,45 |    2,2 niveles    |   78%
               //    0,50 |    1,7 niveles    |   73%
               //    0,55 |    1,3 niveles    |   69%
-              //    0,60 |    1,0 niveles    |   64%   <- aqui
+              //    0,60 |    1,0 niveles    |   64%
+              //    0,65 |    0,8 niveles    |   59%   <- aqui
               //    0,70 |    0,5 niveles    |   55%   <- probado y RECHAZADO
+              //
+              // 0,65 es medio escalon del 0,70 que se rechazo, y ya no queda
+              // sitio: el bloque esta en 0,8 niveles —la mitad del umbral de
+              // visibilidad— asi que subir mas no puede quitar bloque que ya
+              // no se ve, solo detalle. Si aun se notan cuadros a partir de
+              // aqui, NO son los macrobloques que este filtro ataca.
               //
               // El 0,70 se probo y la respuesta fue "se ve de menos calidad":
               // ahi ya se tira casi la mitad del detalle. 0,60 es el ultimo
@@ -2532,10 +2580,71 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
               // false`, hay que devolver esto a 0.5 (ver la tabla de radios
               // que hay en el historial: 0,50 deja el bloque en 1,7 niveles
               // —por debajo de verse— conservando el 73% del detalle).
-              suavizado: _nivel2PermitidoEnTv ? 0.0 : 0.6,
+              // 0,45: EL ESCALON MAS BAJO DE LA TABLA, y a proposito.
+              //
+              // El recorrido fue 0,5 -> 0,6 -> 0,65 subiendo, y luego a 0 para
+              // ver la imagen desnuda. Sin nada se veia MEJOR que con 0,65, y
+              // eso ordena la escala: el desenfoque estaba cobrando mas de lo
+              // que devolvia. Asi que al volver a poner algo, se entra por
+              // abajo y no por el medio.
+              //
+              // A 0,45 se conserva el 78% del detalle fino (contra el 59% que
+              // dejaba 0,65) y el escalon de bloque queda en 2,2 niveles, justo
+              // en el umbral de lo visible: rebaja los cuadros sin llegar a
+              // borrarlos. Ese es el compromiso que se pidio.
+              //
+              // ── LA ESCALA EN PORCENTAJE ──────────────────────────
+              //
+              // El radio en pixeles no dice nada a simple vista, asi que va
+              // aqui la equivalencia. El % se lee como CUANTO DETALLE FINO SE
+              // CEDE, que es lo que de verdad se paga:
+              //
+              //     %  | sigma | bloque que queda
+              //     1% | 0,09  | 5,8 niveles
+              //     5% | 0,20  | 4,9 niveles
+              //    10% | 0,29  | 3,9 niveles
+              //    20% | 0,43  | 2,5 niveles   <- AQUI
+              //    30% | 0,54  | 1,4 niveles
+              //    45% | 0,70  | 0,6 niveles   <- probado, se veia peor que 0
+              //
+              // El umbral de lo visible en zona lisa esta sobre los 2 niveles,
+              // asi que 20% deja el bloque justo asomando: rebajado, no
+              // borrado, y con el 80% del detalle intacto.
+              //
+              // OJO POR ABAJO: el desenfoque cuesta una capa intermedia y una
+              // pasada a pantalla completa en CADA fotograma, y ese coste no
+              // baja con el radio. Por debajo del 2% se paga entero a cambio
+              // de algo que no se ve — ahi es mejor 0,0, que se salta la capa
+              // y sale gratis.
+              suavizado: 0.43,
               child: Video(
                 controller: _controlador,
                 controls: NoVideoControls,
+                // ── NITIDEZ AL AMPLIAR: `low` Y NO SE TOCA ──────────────
+                //
+                // La fuente es 1280x720 y el Chromecast saca 1920x1080, asi
+                // que cada fotograma se amplia 1,5x. `low` es un bilineal y
+                // es lo mas blando que hay para eso, asi que se probo `high`
+                // (bicubico) el 2026-09-21.
+                //
+                // RESULTADO: LA PANTALLA SE QUEDO TODA EN BLANCO.
+                //
+                // La razon es que esto NO es una imagen normal: es un
+                // `Texture`, una superficie externa de Android que el motor
+                // no posee. Esta app corre sobre Skia (tiene Impeller
+                // desactivado), y el muestreo bicubico sobre una textura
+                // externa no esta soportado por ese camino: en vez de fallar
+                // con un error, devuelve basura.
+                //
+                // O sea que no es cuestion de que cueste demasiado —no llego
+                // ni a ser un problema de rendimiento—. Simplemente no se
+                // puede. `medium` tampoco se ha probado y NO merece la pena
+                // arriesgarse: usa mipmaps, que es otro camino que la textura
+                // externa puede no tener.
+                //
+                // La nitidez de la ampliacion, en el televisor, hay que darla
+                // por cerrada igual que el desbloqueo.
+                filterQuality: FilterQuality.low,
                 // EN PEQUEÑO LLENA EL RECUADRO; EN GRANDE, NO.
                 //
                 // Por defecto el vídeo se ajusta entero (`contain`), así que si

@@ -324,10 +324,11 @@ class FiltroCalidadService {
     // Si el aparato ya salio descartado no se molesta: no se va a usar.
     if (_veredicto != VeredictoNivel2.noApto) {
       unawaited(rutaDelShaderDesbloqueo());
-      // El shader LIGERO no se precalienta: hoy no lo usa nadie
-      // (`_nivel2PermitidoEnTv` esta en `false`) y escribir un archivo de mas
-      // en el arranque de un aparato de 1,4 GB es justo lo que no hace falta.
-      // Si se enciende la prueba, se extrae en ese momento.
+      // Y el LIGERO, que es el del televisor. Tiene que precalentarse aqui:
+      // quien lo usa lee `rutaShaderLigeroSiYaEsta`, que es SINCRONO para no
+      // meter un `await` en el camino de abrir el video. Si no esta extraido
+      // a tiempo, esa ruta sale `null` y el shader no se aplica — callando.
+      unawaited(rutaDelShaderLigero());
     }
   }
 
@@ -507,13 +508,63 @@ class FiltroCalidadService {
   /// oscuras: levantar el negro las deja lavadas y se nota mucho mas que la
   /// falta de resolucion. Y pasarse de contraste empasta las sombras, que es
   /// justo donde la compresion ya ha hecho destrozo.
+  /// Contrastes REBAJADOS (eran 1,06 / 1,10 / 1,14).
+  ///
+  /// Un contraste lineal siempre recorta por un extremo: no hay pivote que
+  /// salve los dos. Bajando el pivote a 72 las sombras dejan de aplastarse
+  /// pero los blancos empiezan a saturar, asi que hay que bajar tambien la
+  /// cantidad para que ninguno de los dos extremos duela.
+  ///
+  /// Con estos valores y pivote 72 el recorte de negro se queda en los
+  /// niveles 4-6 —ruido de cuantizacion, nada que se vea— y el blanco aguanta
+  /// hasta 238-245, donde de todas formas estas fuentes no traen detalle.
+  ///
+  /// ── POR QUE LA SATURACION SUBE MUCHO MAS QUE EL CONTRASTE ─────────────
+  ///
+  /// Se pidio la imagen "mas viva", y de los dos mandos que hay para eso
+  /// solo uno es gratis despues de arreglar las sombras:
+  ///
+  ///  · El CONTRASTE tiene el techo puesto por los negros. Con pivote 72, a
+  ///    partir de 1,12 el recorte vuelve a pasar del nivel 7 y estariamos
+  ///    deshaciendo el arreglo. Por eso se queda en 1,06-1,10, que es el
+  ///    maximo que cabe.
+  ///
+  ///  · La SATURACION no toca los negros en absoluto: la matriz conserva la
+  ///    luminancia, asi que mueve el color sin mover el brillo. Un pixel
+  ///    negro no tiene color que saturar y sale igual de negro.
+  ///
+  /// Por eso el empujon va casi todo por ahi (1,05->1,14, 1,10->1,20,
+  /// 1,14->1,26). Lo unico que arriesga es saturar un canal en colores ya muy
+  /// vivos; comprobado con colores reales a 1,26 —piel, cielo, cesped, rojo
+  /// fuerte— y ninguno se sale de rango.
+  static (double, double) _contrasteYSaturacion(NivelRealce nivel) =>
+      switch (nivel) {
+        NivelRealce.ninguno => (1.0, 1.0),
+        NivelRealce.suave => (1.06, 1.14),
+        NivelRealce.medio => (1.08, 1.20),
+        NivelRealce.fuerte => (1.10, 1.26),
+      };
+
+  /// La matriz cruda, para poder comprobar en un test que no aplasta las
+  /// sombras ni satura las luces. `ColorFilter` no deja leer sus valores.
+  ///
+  /// Pasa por [_contrasteYSaturacion], el MISMO sitio del que tira
+  /// [filtroDeColor]. Si los numeros estuvieran escritos dos veces, cambiar
+  /// uno solo dejaria el test aprobando una matriz que ya no es la que se
+  /// pinta — que es la forma mas facil de que un test mienta.
+  @visibleForTesting
+  static List<double>? matrizParaPruebas(int altura) {
+    final (double c, double s) = _contrasteYSaturacion(
+      FiltroCalidadService().nivelPara(altura),
+    );
+    if (c == 1.0 && s == 1.0) return null;
+    return _matriz(c, s);
+  }
+
   ColorFilter? filtroDeColor(int altura) {
-    final (double contraste, double saturacion) = switch (nivelPara(altura)) {
-      NivelRealce.ninguno => (1.0, 1.0),
-      NivelRealce.suave => (1.06, 1.05),
-      NivelRealce.medio => (1.10, 1.10),
-      NivelRealce.fuerte => (1.14, 1.14),
-    };
+    final (double contraste, double saturacion) = _contrasteYSaturacion(
+      nivelPara(altura),
+    );
 
     if (contraste == 1.0 && saturacion == 1.0) return null;
     return ColorFilter.matrix(_matriz(contraste, saturacion));
@@ -541,7 +592,31 @@ class FiltroCalidadService {
     final double s21 = inv * lg;
     final double s22 = inv * lb + s;
 
-    final double t = 128 * (1 - c);
+    // ── EL PIVOTE DEL CONTRASTE, Y POR QUE NO ES 128 ───────────────────
+    //
+    // El contraste gira alrededor de un punto: lo que esta por encima se
+    // aclara y lo que esta por debajo se oscurece. Con el gris medio (128)
+    // como pivote —que es lo "correcto" de libro— las sombras se llevan todo
+    // el castigo:
+    //
+    //   pivote 128, c=1,10  ->  TODO por debajo del nivel 11,6 sale NEGRO
+    //                           PURO. En una escena oscura eso es casi la
+    //                           imagen entera aplastada a un plano liso.
+    //
+    // Y era real: "las escenas en negro no se ven nada bien" (2026-09-21).
+    // No era solo la compresion de la fuente; este filtro estaba recortando
+    // el pie de la curva.
+    //
+    // Con pivote 72 el recorte se va al nivel 4, que ya es ruido. Lo que se
+    // paga a cambio es que el blanco satura sobre el 245 en vez del 248 — un
+    // punto y medio de margen en las altas luces, donde no hay detalle que
+    // perder y donde el ojo ademas no distingue. Cambio barato.
+    //
+    // 72 y no mas abajo: el pivote tambien marca desde donde se realza, y
+    // bajarlo demasiado dejaria los medios sin el contraste que este filtro
+    // existe para dar.
+    const double pivote = 72;
+    final double t = pivote * (1 - c);
 
     return <double>[
       c * s00, c * s01, c * s02, 0, t, //

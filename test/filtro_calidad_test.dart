@@ -52,6 +52,49 @@ void main() {
       expect(filtro.filtroDeColor(480), isA<ColorFilter>());
     });
 
+    test('no aplasta los negros', () {
+      // ESTE era el fallo de "las escenas en negro no se ven nada bien": el
+      // contraste giraba alrededor del gris medio, asi que con c=1,10 TODO
+      // lo que estuviera por debajo del nivel 11,6 salia negro puro. En una
+      // escena oscura eso es casi la imagen entera aplastada a un plano.
+      //
+      // La matriz es lineal: salida = ganancia * entrada + desplazamiento.
+      // El nivel donde se pierde el negro es -desplazamiento / ganancia.
+      for (final altura in const [720, 540, 480]) {
+        final m = (filtro.filtroDeColor(altura)! as dynamic);
+        // La fila roja de la matriz 4x5: [0..2] son los pesos, [4] el
+        // desplazamiento en unidades 0..255.
+        final matriz = FiltroCalidadService.matrizParaPruebas(altura)!;
+        final ganancia = matriz[0] + matriz[1] + matriz[2];
+        final desplazamiento = matriz[4];
+        final corte = -desplazamiento / ganancia;
+        expect(
+          corte,
+          lessThan(7.0),
+          reason:
+              'a ${altura}p se pierde todo por debajo del nivel '
+              '${corte.toStringAsFixed(1)}: eso es sombra aplastada',
+        );
+        expect(m, isNotNull);
+      }
+    });
+
+    test('tampoco satura los blancos', () {
+      for (final altura in const [720, 540, 480]) {
+        final matriz = FiltroCalidadService.matrizParaPruebas(altura)!;
+        final ganancia = matriz[0] + matriz[1] + matriz[2];
+        final desplazamiento = matriz[4];
+        final satura = (255 - desplazamiento) / ganancia;
+        expect(
+          satura,
+          greaterThan(235.0),
+          reason:
+              'a ${altura}p se satura todo por encima del nivel '
+              '${satura.toStringAsFixed(1)}',
+        );
+      }
+    });
+
     test('no hay forma de apagarlo: va solo y siempre', () {
       // No existe interruptor a proposito. Si alguien anade uno, este test
       // deja de compilar y hay que pensarlo dos veces.
