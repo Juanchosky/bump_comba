@@ -374,12 +374,23 @@ vec4 hook() {
 
 // Cuanto microcontraste se devuelve. 0,45 es medio realce: suficiente para
 // que una cara deje de verse de cera, poco para que no chille.
-#define NITIDEZ 0.55
+// Subido de 0,55 a 0,80 a peticion (2026-09-21). Puede subirse con menos
+// miedo que un realce normal porque va multiplicado por `textura`: entra
+// donde hay detalle de verdad y se queda en cero sobre los restos de
+// macrobloque, que es lo que un `sharpen` ciego realzaria de vuelta.
+#define NITIDEZ 0.80
 
 // Tope del realce, en unidades de luma. Un detalle mas grande que esto ya es
 // un borde de verdad y no necesita ayuda; dejarlo suelto es lo que produce
 // los halos blancos junto a los contornos.
 #define TOPE_DETALLE 0.06
+
+// Cuanto puede asomar el pixel realzado fuera del rango de sus vecinos, en
+// tanto por uno de ese rango. 0 es el recorte estricto de antes —seguro pero
+// sordo al mando de NITIDEZ—; 0,25 da filo sin llegar al halo, que aparece
+// cuando el realce se sale mucho y pinta un contorno que no estaba.
+// Si se ven bordes con aureola, bajar esto antes que NITIDEZ.
+#define MARGEN_HALO 0.25
 
 // Cuanto grano. 0,006 son ~1,5 niveles de 255: por debajo del umbral de
 // "esto tiene ruido" y por encima del de "esto esta muerto". Pedia un
@@ -447,9 +458,18 @@ vec4 hook() {
     // Red de seguridad contra halos: pase lo que pase, el pixel no puede
     // salirse del rango de sus vecinos inmediatos. Un realce que sobrepasa
     // ese rango es, por definicion, un contorno inventado.
+    // El margen (MARGEN_HALO) es lo que hace que subir NITIDEZ se NOTE.
+    //
+    // Antes el recorte era al rango exacto de los vecinos, y eso ataba el
+    // realce: por mucho que se subiera la ganancia, el pixel no podia pasar
+    // del vecino mas claro, asi que a partir de cierto punto el mando dejaba
+    // de hacer efecto. Se permite ahora asomar un poco por fuera —lo justo
+    // para que un borde tenga filo— y se sigue cortando ahi, que es lo que
+    // evita el halo blanco.
     float minimoLocal = min(min(iz1, de1), min(min(ar1, ab1), centro));
     float maximoLocal = max(max(iz1, de1), max(max(ar1, ab1), centro));
-    realzado = clamp(realzado, minimoLocal, maximoLocal);
+    float margen = (maximoLocal - minimoLocal) * MARGEN_HALO;
+    realzado = clamp(realzado, minimoLocal - margen, maximoLocal + margen);
 
     // ── EL GRANO ────────────────────────────────────────────────────────
     // Solo donde la imagen quedo plana, que es donde se nota la ausencia y
