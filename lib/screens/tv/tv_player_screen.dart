@@ -153,6 +153,21 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
   /// Lo que SI sigue llegando al televisor, porque no depende del decodificador
   /// y no cuesta rendimiento: el filtro de capa (`RealceDeVideo`), el registro
   /// de alturas y el tope de bitrate levantado para fuentes de 720p.
+  /// El nivel 2 NO entra en el televisor.
+  ///
+  /// Se cableo el 2026-09-21 y la reproduccion se puso "super lenta, nada
+  /// fluida". Se preparo despues una prueba con el shader LIGERO —una sola
+  /// pasada, ~11 tomas por pixel en vez de ~30— para separar si costaba la
+  /// copia del fotograma o las pasadas, pero se decidio no seguir por ahi y
+  /// quedarse con lo que ya funcionaba.
+  ///
+  /// Esa prueba queda montada y lista: poner esto en `true` la enciende
+  /// entera —shader ligero, ajustes minimos y el desenfoque de capa apagado
+  /// para no medir dos cosas a la vez—. Si algun dia interesa saberlo, no hay
+  /// que rehacer nada.
+  ///
+  /// Lo que SI llega al televisor: el desenfoque de capa de aqui abajo, el
+  /// filtro de color, el registro de alturas y el tope de bitrate levantado.
   static const bool _nivel2PermitidoEnTv = false;
 
   String _decodificadorElegido() {
@@ -660,7 +675,44 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     // estuvieran puestos el tamaño de cache, el reparto del bufer y el resto.
     // MPV arrancaba con sus valores por defecto y se comportaba de otra forma
     // — justo lo que este perfil existe para evitar.
-    await TvMpvConfig.aplicarBase(_player);
+    await TvMpvConfig.aplicarBase(
+      _player,
+      // Para decidir si se conserva el filtro de bucle del codec: con una
+      // fuente de 720p hay holgura, con una de 1080p no.
+      techoFuente: FiltroCalidadService().techoConocido(widget.item.url),
+    );
+
+    // QUE DECODIFICADOR ACABO USANDO, de verdad.
+    //
+    // Hace falta porque las opciones `vd-lavc-*` que acaba de poner
+    // `aplicarBase` SOLO cuentan si MPV cayo a software: con MediaCodec
+    // quien descodifica es el hardware y libavcodec no pinta nada. Sin esta
+    // linea no hay forma de saber si el ajuste esta actuando o es un no-op,
+    // que es exactamente el tipo de suposicion que ya nos costo cinco rondas
+    // con el velo.
+    unawaited(
+      Future<void>.delayed(const Duration(seconds: 4), () async {
+        if (_muerto) return;
+        try {
+          final mpv = _player.platform as dynamic;
+          if (mpv == null) return;
+          for (final propiedad in const [
+            'hwdec-current',
+            'video-codec',
+            'video-params/w',
+            'video-params/h',
+            'hls-bitrate',
+          ]) {
+            debugPrint(
+              'TvPlayer DIAGNOSTICO $propiedad = '
+              '${await mpv.getProperty(propiedad)}',
+            );
+          }
+        } catch (e) {
+          debugPrint('TvPlayer DIAGNOSTICO no se pudo leer -> $e');
+        }
+      }),
+    );
 
     // Y encima del perfil base, el nivel 2 si entro. VA DESPUES A PROPOSITO:
     // `aplicarBase` pone `scale: bilinear` y `deband: no`, que son justo las
@@ -670,8 +722,11 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         final mpv = _player.platform as dynamic;
         if (mpv != null) {
           final filtro = FiltroCalidadService();
-          final ajustes = filtro.ajustesMpvNivel2(
-            rutaShader: filtro.rutaShaderSiYaEsta,
+          // Los ajustes MINIMOS, no los del telefono: solo el shader ligero.
+          // Meter el escalador sharp o `deband` encima contaminaria la
+          // medida — si fuera a tirones no sabriamos a cuenta de que.
+          final ajustes = filtro.ajustesMpvTvLigero(
+            rutaShader: filtro.rutaShaderLigeroSiYaEsta,
           );
           for (final e in ajustes.entries) {
             await mpv.setProperty(e.key, e.value);
@@ -2421,6 +2476,63 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
             // porque es una capa del motor, no un shader de MPV. Se queda
             // dormido con cualquier fuente que pase de 720p.
             child: RealceDeVideo(
+              // SUAVIZADO DE CAPA: SOLO AQUI, SOLO EN EL TELEVISOR.
+              //
+              // El telefono no lo lleva y no debe llevarlo: alli el shader de
+              // desbloqueo hace este trabajo CON CRITERIO —solo en la rejilla
+              // de macrobloques y solo donde no hay textura— y añadirle
+              // encima un desenfoque ciego seria devolverle el velo que
+              // costo cinco rondas quitar.
+              //
+              // Aqui es distinto porque aqui no hay shader: el diagnostico
+              // midio `hwdec-current = mediacodec` (el fotograma no pasa por
+              // MPV) y `hls-bitrate = max` (la palanca del bitrate ya esta
+              // abierta del todo). No queda nada mas barato que probar.
+              //
+              // ── DE DONDE SALE EL 0,5 ───────────────────────────────
+              //
+              // Un gaussiano no sabe que esta borrando, pero SI ataca mas a
+              // lo estrecho que a lo ancho. Midiendo cuanto sobrevive a cada
+              // radio (escalon de bloque de 6 niveles, detalle fino de 2 px):
+              //
+              //   sigma | escalon de bloque | detalle conservado
+              //    0,45 |    2,2 niveles    |   78%
+              //    0,50 |    1,7 niveles    |   73%
+              //    0,55 |    1,3 niveles    |   69%
+              //    0,60 |    1,0 niveles    |   64%   <- aqui
+              //    0,70 |    0,5 niveles    |   55%   <- probado y RECHAZADO
+              //
+              // El 0,70 se probo y la respuesta fue "se ve de menos calidad":
+              // ahi ya se tira casi la mitad del detalle. 0,60 es el ultimo
+              // escalon antes de ese, asi que si este tambien se ve pobre, el
+              // margen se acabo y hay que aceptar que un filtro CIEGO no
+              // puede quitar mas bloque sin cobrarlo en detalle.
+              //
+              // En una zona lisa el ojo empieza a ver un escalon sobre los
+              // 2 niveles de 255. A 0,50 el bloque cae a 1,7 —justo por
+              // debajo de verse— y todavia se conserva casi tres cuartas
+              // partes del detalle. A 0,70 el bloque estaba requetemuerto
+              // pero se tiraba casi la mitad del detalle, y eso es lo que se
+              // vio como "menos calidad".
+              //
+              // OJO CON LA TENTACION DE COMPENSARLO CON CONTRASTE: no sirve.
+              // El contraste multiplica todo por igual, incluido el escalon
+              // que el desenfoque acaba de rebajar. Subir contraste tras
+              // desenfocar es, matematicamente, lo mismo que haber
+              // desenfocado menos. El unico mando de verdad es este.
+              // 0 MIENTRAS DURE LA PRUEBA DEL SHADER.
+              //
+              // Este desenfoque de capa existe porque en el televisor no
+              // habia shader. Si ahora lo hay, dejar los dos puestos seria
+              // suavizar dos veces —y medir dos cosas a la vez, que es como
+              // se pierden cinco rondas—. El shader filtra con criterio y
+              // este no, asi que si el shader entra, este sobra.
+              //
+              // Si la prueba sale mal y se vuelve a `_nivel2PermitidoEnTv =
+              // false`, hay que devolver esto a 0.5 (ver la tabla de radios
+              // que hay en el historial: 0,50 deja el bloque en 1,7 niveles
+              // —por debajo de verse— conservando el 73% del detalle).
+              suavizado: _nivel2PermitidoEnTv ? 0.0 : 0.6,
               child: Video(
                 controller: _controlador,
                 controls: NoVideoControls,

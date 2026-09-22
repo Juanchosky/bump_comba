@@ -243,6 +243,17 @@ void main() {
       expect(a['scale'], 'ewa_lanczossharp');
     });
 
+    test('los ajustes ligeros de la TV no traen nada de propina', () {
+      // La prueba del televisor mide UNA cosa: si la copia del fotograma mas
+      // una pasada de shader caben. Si se colara el escalador sharp o
+      // `deband`, un resultado malo no diria a cuenta de que fue.
+      final a = filtro.ajustesMpvTvLigero(rutaShader: '/datos/ligero.glsl');
+      expect(a['glsl-shaders'], '/datos/ligero.glsl');
+      expect(a['scale'], 'bilinear');
+      expect(a['deband'], 'no');
+      expect(a['linear-upscaling'], 'no');
+    });
+
     test('al volver al camino de hardware se suelta el shader', () {
       // Vacio y no ausente: si se queda el de antes puesto, mpv lo sigue
       // intentando cargar donde no puede y llena el log de errores.

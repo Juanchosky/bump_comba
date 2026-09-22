@@ -1,3 +1,4 @@
+import 'dart:ui' as ui;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -323,6 +324,10 @@ class FiltroCalidadService {
     // Si el aparato ya salio descartado no se molesta: no se va a usar.
     if (_veredicto != VeredictoNivel2.noApto) {
       unawaited(rutaDelShaderDesbloqueo());
+      // El shader LIGERO no se precalienta: hoy no lo usa nadie
+      // (`_nivel2PermitidoEnTv` esta en `false`) y escribir un archivo de mas
+      // en el arranque de un aparato de 1,4 GB es justo lo que no hace falta.
+      // Si se enciende la prueba, se extrae en ese momento.
     }
   }
 
@@ -678,6 +683,59 @@ class FiltroCalidadService {
   /// Se reescribe en cada arranque a proposito, y no solo si no existe: asi una
   /// actualizacion de la app que traiga un shader nuevo no se queda con el
   /// viejo cacheado del APK anterior.
+  String? _rutaShaderLigero;
+  bool _shaderLigeroIntentado = false;
+
+  /// El shader ligero ya extraido, o `null` si aun no. Version sincrona, para
+  /// no meter un `await` en el camino critico de abrir el video.
+  String? get rutaShaderLigeroSiYaEsta => _rutaShaderLigero;
+
+  /// Deja en disco el shader LIGERO —una sola pasada— y devuelve su ruta.
+  ///
+  /// Es el de la prueba del televisor: ver la cabecera de
+  /// `desbloqueo_ligero.glsl` para por que existe y que se pierde.
+  Future<String?> rutaDelShaderLigero() async {
+    if (_shaderLigeroIntentado) return _rutaShaderLigero;
+    _shaderLigeroIntentado = true;
+    try {
+      final datos = await rootBundle.loadString(
+        'assets/shaders/desbloqueo_ligero.glsl',
+      );
+      final dir = await getApplicationSupportDirectory();
+      final archivo = File('${dir.path}/desbloqueo_ligero.glsl');
+      await archivo.writeAsString(datos, flush: true);
+      _rutaShaderLigero = archivo.path;
+      debugPrint('FiltroCalidad: shader ligero en $_rutaShaderLigero');
+    } catch (e) {
+      debugPrint('FiltroCalidad: no se pudo preparar el shader ligero -> $e');
+      _rutaShaderLigero = null;
+    }
+    return _rutaShaderLigero;
+  }
+
+  /// Los ajustes MINIMOS para el televisor: el shader ligero y NADA mas.
+  ///
+  /// Todo lo que el nivel 2 del telefono añade encima —escalador sharp,
+  /// `deband`, dither— cuesta GPU en cada fotograma, y esta prueba existe
+  /// justamente para saber cuanto aguanta este aparato. Meter extras aqui
+  /// contaminaria la medida: si va a tirones no sabriamos si fue la copia del
+  /// fotograma, el shader, o el escalador.
+  ///
+  /// El escalador se deja explicitamente en `bilinear` y `deband` en `no`
+  /// para pisar lo que ya puso `TvMpvConfig.aplicarBase`, y que el unico
+  /// cambio respecto al camino de siempre sea el shader.
+  Map<String, String> ajustesMpvTvLigero({String? rutaShader}) {
+    return {
+      if (rutaShader != null) 'glsl-shaders': rutaShader,
+      'scale': 'bilinear',
+      'cscale': 'bilinear',
+      'linear-upscaling': 'no',
+      'sigmoid-upscaling': 'no',
+      'deband': 'no',
+      'dither-depth': 'no',
+    };
+  }
+
   Future<String?> rutaDelShaderDesbloqueo() async {
     if (_shaderIntentado) return _rutaShader;
     _shaderIntentado = true;
@@ -872,9 +930,43 @@ class FiltroCalidadService {
 ///
 /// Cuando no hay nada que filtrar devuelve el hijo pelado, sin capa de mas.
 class RealceDeVideo extends StatelessWidget {
-  const RealceDeVideo({super.key, required this.child});
+  const RealceDeVideo({super.key, required this.child, this.suavizado = 0.0});
 
   final Widget child;
+
+  /// Radio del suavizado sobre la capa de video, en pixeles. 0 lo apaga.
+  ///
+  /// ── CUANDO SE USA ESTO, Y POR QUE ES LA ULTIMA OPCION ──────────────────
+  ///
+  /// En el televisor NO se puede desbloquear como en el telefono. El
+  /// diagnostico del 2026-09-21 lo dejo medido y sin lugar a interpretacion:
+  ///
+  ///   hwdec-current = mediacodec   -> el fotograma va del decodificador a la
+  ///                                   Surface sin pasar por MPV: ni shader,
+  ///                                   ni scale, ni deband. Y ademas hace que
+  ///                                   las opciones `vd-lavc-*` sean un no-op,
+  ///                                   porque descodifica el hardware.
+  ///   hls-bitrate   = max          -> la palanca del bitrate ya esta abierta
+  ///                                   del todo. Lo que se ve YA es la mejor
+  ///                                   copia que da el proveedor.
+  ///
+  /// O sea que las palancas baratas estan agotadas. La unica capa que queda
+  /// sobre el video en el televisor es esta, la del motor de Flutter — la
+  /// misma por la que el `ColorFilter` de aqui al lado SI funciona sobre un
+  /// `Texture`, que es lo que la hace posible.
+  ///
+  /// ── Y POR QUE NO ES GRATIS, QUE HAY QUE DECIRLO ────────────────────────
+  ///
+  /// Es un desenfoque CIEGO. No distingue un borde de macrobloque de una
+  /// cara, asi que reparte por igual: exactamente la clase de suavizado que
+  /// en el telefono se veia como velo. Aqui se acepta porque en el televisor
+  /// no hay alternativa con criterio, y porque se pidio mas suavizado
+  /// sabiendo el precio.
+  ///
+  /// Y cuesta GPU: obliga a una capa intermedia y a un desenfoque a pantalla
+  /// completa en cada fotograma. Por eso el valor por defecto es 0 —apagado—
+  /// y el televisor pasa un radio pequeño a proposito.
+  final double suavizado;
 
   @override
   Widget build(BuildContext context) {
@@ -882,9 +974,27 @@ class RealceDeVideo extends StatelessWidget {
     return ValueListenableBuilder<int>(
       valueListenable: servicio.alturaActual,
       builder: (context, altura, hijo) {
+        Widget salida = hijo!;
+
+        // El suavizado va DEBAJO del filtro de color, no encima: primero se
+        // difuminan las fronteras y luego se sube el contraste. Al reves, el
+        // contraste realzaria los bordes de bloque y el desenfoque tendria
+        // que borrar algo que acabamos de marcar mas.
+        if (suavizado > 0 &&
+            servicio.nivelPara(altura) != NivelRealce.ninguno) {
+          salida = ImageFiltered(
+            imageFilter: ui.ImageFilter.blur(
+              sigmaX: suavizado,
+              sigmaY: suavizado,
+              tileMode: TileMode.decal,
+            ),
+            child: salida,
+          );
+        }
+
         final filtro = servicio.filtroDeColor(altura);
-        if (filtro == null) return hijo!;
-        return ColorFiltered(colorFilter: filtro, child: hijo);
+        if (filtro == null) return salida;
+        return ColorFiltered(colorFilter: filtro, child: salida);
       },
       child: child,
     );

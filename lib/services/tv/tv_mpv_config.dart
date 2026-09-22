@@ -105,9 +105,46 @@ class TvMpvConfig {
     return topes.reduce((a, b) => a < b ? a : b).toString();
   }
 
+  /// El desbloqueo que el PROPIO CODEC lleva dentro.
+  ///
+  /// `vd-lavc-skiploopfilter` decide si se SALTA el filtro de bucle de
+  /// H.264. Y ese filtro no es un extra: es el desbloqueador que el
+  /// codec lleva dentro, el que suaviza las fronteras de macrobloque
+  /// dentro del propio decodificador. Saltarselo es, literalmente,
+  /// apagar el antibloques del codec.
+  ///
+  /// Estaba en `nonref` —saltarselo en los fotogramas que no sirven de
+  /// referencia— por fluidez, y en un aparato asi era una decision
+  /// razonable. Pero es tambien la causa mas directa posible de los
+  /// cuadros que se ven en el televisor, y en el televisor NO hay plan
+  /// B: el shader de desbloqueo necesita `mediacodec-copy`, que este
+  /// SoC no aguanta.
+  ///
+  /// OJO, Y ES IMPORTANTE PARA NO ENGAÑARSE: con `hwdec: mediacodec`
+  /// quien descodifica es MediaCodec, y estas opciones son de
+  /// libavcodec. Ahi no hacen NADA — ni bien ni mal. Solo cuentan
+  /// cuando el camino de hardware no puede con el flujo y MPV cae a
+  /// software, que es justo cuando peor se ve. O sea: gratis en el caso
+  /// normal, y una mejora real en el caso malo.
+  ///
+  /// Con una fuente que ya se sabe que no pasa de 720p hay holgura de
+  /// sobra para no saltarse nada; de 1080p para arriba se mantiene el
+  /// ahorro de siempre.
+  static Map<String, String> opcionesDeDecodificacion(int? techoFuente) {
+    final bool fuenteBaja =
+        techoFuente != null && techoFuente > 0 && techoFuente <= 720;
+    return fuenteBaja
+        ? const {'vd-lavc-fast': 'no', 'vd-lavc-skiploopfilter': 'none'}
+        : const {'vd-lavc-fast': 'yes', 'vd-lavc-skiploopfilter': 'nonref'};
+  }
+
   /// Aplica el perfil base. Pensado para VOD: lectura adelantada larga y cache
   /// generoso. Para directos hay que bajar ambos despues (ver el receptor).
-  static Future<void> aplicarBase(Player player) async {
+  ///
+  /// `techoFuente` es la altura maxima real de la fuente, cuando se sabe:
+  /// decide si se conserva el filtro de bucle del codec (ver
+  /// [opcionesDeDecodificacion]).
+  static Future<void> aplicarBase(Player player, {int? techoFuente}) async {
     // Solo propiedades SEGURAS en Android (nunca vo=gpu / profile=fast).
     // Optimizado para FLUIDEZ máxima en TVs de gama baja (Chromecast HD,
     // TV boxes con ~1GB RAM y SoC débil).
@@ -117,8 +154,8 @@ class TvMpvConfig {
 
       final opciones = <String, String>{
         'vd-lavc-threads': '0',
-        'vd-lavc-fast': 'yes',
-        'vd-lavc-skiploopfilter': 'nonref',
+
+        ...opcionesDeDecodificacion(techoFuente),
         'video-sync': 'audio',
         'framedrop': 'vo',
         'scale': 'bilinear',

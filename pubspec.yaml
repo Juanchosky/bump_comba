@@ -88,4 +88,5 @@ flutter:
     - assets/images/Avanzar.png
     - assets/images/Retroceder.png
     - assets/shaders/desbloqueo.glsl
+    - assets/shaders/desbloqueo_ligero.glsl
     - .env
