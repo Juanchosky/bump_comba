@@ -830,6 +830,7 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
           );
           await mpv.setProperty('scale', 'bilinear');
           await mpv.setProperty('cscale', 'bilinear');
+          await mpv.setProperty('sharpen', '0.0');
           await mpv.setProperty('linear-upscaling', 'no');
           await mpv.setProperty('sigmoid-upscaling', 'no');
           await mpv.setProperty('deband', 'no');
@@ -3049,8 +3050,8 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
               // CONDICIONAL: Cuando el caudal es insuficiente (_bloqueoInevitable),
               // el macrobloqueo es inevitable del origen (<0.07 bpp) y el
               // blur ciego solo cuesta fotogramas sin arreglarlo; se apaga (0.0).
-              // Con caudal adecuado, se mantiene en 0.43.
-              suavizado: _bloqueoInevitable ? 0.0 : 0.43,
+              // Con caudal adecuado, se sube a 0.55 para acabado liso y suave.
+              suavizado: _bloqueoInevitable ? 0.0 : 0.55,
               child: Video(
                 controller: _controlador,
                 controls: NoVideoControls,

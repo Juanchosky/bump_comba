@@ -26,6 +26,7 @@ import '../services/adaptive_buffer_service.dart';
 import '../services/video_prewarm_service.dart';
 import '../services/turbo_proxy.dart';
 import '../services/filtro_calidad_service.dart';
+import '../services/tv/tv_mpv_config.dart';
 import 'package:http/http.dart' as http;
 
 import '../utils/snack_bar_utils.dart';
@@ -460,6 +461,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// antes de un cambio de servidor. Se usa para restaurarla en el servidor
   /// nuevo, cuyas pistas pueden tener ids distintos pero el mismo orden.
   int? _pistaAudioAnterior;
+
+  /// Cambios de servidor por caudal bajo (max 1 por reproduccion).
+  int _saltosPorCaudal = 0;
+  int _lecturasCaudalBajo = 0;
+  int _tickCaudal = 0;
 
   String? _findFirstValidLogo(M3UItem mainItem) {
     if (mainItem.logo != null && mainItem.logo!.trim().isNotEmpty) {
@@ -4071,6 +4077,64 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     return false;
   }
 
+  Future<void> _revisarCaudal() async {
+    if (_isLiveContent) return;
+    if (_player == null || _isReloading || _isVideoLoading) return;
+    if (_serverItems.length <= 1) return;
+    if (_saltosPorCaudal > 0) return;
+    if (!_hasPlaybackStarted) return;
+    final pos = _player!.state.position;
+    if (pos.inSeconds < 12) return;
+
+    try {
+      final mpv = _player?.platform as dynamic;
+      if (mpv == null) return;
+      final raw = await mpv.getProperty('video-bitrate');
+      final bps = double.tryParse('${raw ?? ''}');
+      final bajo = TvMpvConfig.caudalInsuficiente(
+        ancho: _player?.state.width,
+        alto: _player?.state.height,
+        bitsPorSegundo: bps,
+      );
+      if (!bajo) {
+        _lecturasCaudalBajo = 0;
+        return;
+      }
+      _lecturasCaudalBajo++;
+      if (_lecturasCaudalBajo < 2) return;
+
+      _saltosPorCaudal++;
+      final mbps = (bps! / 1000000).toStringAsFixed(2);
+      debugPrint(
+        'VideoPlayer: caudal bajo (${mbps}Mbps para '
+        '${_player!.state.width}x${_player!.state.height}) — cambio silencioso',
+      );
+
+      final audioActual = _player?.state.track.audio;
+      if (audioActual != null &&
+          audioActual.id != 'auto' &&
+          audioActual.id != 'no') {
+        _pistaAudioAnterior = int.tryParse(audioActual.id);
+      }
+
+      final currentPos = _player!.state.position;
+      if (_currentServerIndex == 0 && _serverItems.length > 1) {
+        _retryCount = 0;
+        _currentServerIndex = 1;
+        _stallTimer?.cancel();
+        for (final s in _streamSubscriptions) {
+          s.cancel();
+        }
+        _streamSubscriptions.clear();
+        await _initializePlayer(
+          _serverItems[1],
+          startFrom: currentPos.inSeconds > 5 ? currentPos : null,
+          isLocalReload: true,
+        );
+      }
+    } catch (_) {}
+  }
+
   void _startStallMonitor() {
     _stallTimer?.cancel();
     // El health monitor de vivo se cancela AQUI, junto con el stall timer.
@@ -4100,6 +4164,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       if (_throughputSampleTick >= 5) {
         _throughputSampleTick = 0;
         unawaited(_sampleRealThroughput());
+      }
+
+      // Cada 5 s revisa el caudal del video: si la fuente viene demasiado
+      // comprimida y hay otro servidor, cambia en silencio.
+      _tickCaudal++;
+      if (_tickCaudal >= 5) {
+        _tickCaudal = 0;
+        unawaited(_revisarCaudal());
       }
 
       // Un reproductor pausado (por el usuario o con la app en segundo plano)

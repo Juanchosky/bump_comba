@@ -834,6 +834,7 @@ class FiltroCalidadService {
       if (rutaShader != null) 'glsl-shaders': rutaShader,
       'scale': 'bilinear',
       'cscale': 'bilinear',
+      'sharpen': '0.0',
       'linear-upscaling': 'no',
       'sigmoid-upscaling': 'no',
       'deband': 'no',

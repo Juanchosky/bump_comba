@@ -187,6 +187,7 @@ class TvMpvConfig {
         'framedrop': 'vo',
         'scale': 'bilinear',
         'cscale': 'bilinear',
+        'sharpen': '0.0',
         'linear-upscaling': 'no',
         'sigmoid-upscaling': 'no',
         'deband': 'no',

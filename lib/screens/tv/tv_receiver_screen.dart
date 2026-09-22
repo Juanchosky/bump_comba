@@ -513,6 +513,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
             );
             await mpv.setProperty('scale', 'bilinear');
             await mpv.setProperty('cscale', 'bilinear');
+            await mpv.setProperty('sharpen', '0.0');
             await mpv.setProperty('linear-upscaling', 'no');
             await mpv.setProperty('sigmoid-upscaling', 'no');
             await mpv.setProperty('deband', 'no');
@@ -527,6 +528,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
             );
             await mpv.setProperty('scale', 'bilinear');
             await mpv.setProperty('cscale', 'bilinear');
+            await mpv.setProperty('sharpen', '0.0');
             await mpv.setProperty('deband', 'no');
             await mpv.setProperty('vd-lavc-skiploopfilter', 'nonref');
           }
