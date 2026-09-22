@@ -577,7 +577,9 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
           estadoCambio = true;
         }
 
-        _posicion = v;
+        if (!_preparandoSalto) {
+          _posicion = v;
+        }
         if (mounted && (_controlesVisibles || estadoCambio)) setState(() {});
       }),
       _player.stream.duration.listen((v) {
@@ -1844,12 +1846,39 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     //
     // Queda en el log, que es donde sirve.
 
+    // Se guarda la pista de audio que sonaba ANTES de cambiar: el servidor
+    // nuevo puede tener las pistas en distinto orden o con distintas
+    // etiquetas, y sin esto MPV elige la primera que le cuadra con `alang`
+    // — que puede ser otra.
+    final pistaAntes = _player.state.track.audio;
+
     try {
       // Se retoma por donde iba, no desde cero: cambiar de servidor no puede
       // costarle al usuario volver a buscar su minuto.
       await _abrir(desde);
     } catch (e) {
       debugPrint('TvPlayer: el cambio de servidor fallo: $e');
+    }
+
+    // Se restaura la misma pista de audio por INDICE. El id cambia entre
+    // servidores, pero la posicion (1.a, 2.a...) suele coincidir.
+    if (pistaAntes.id != 'auto' && pistaAntes.id != 'no') {
+      unawaited(
+        Future<void>.delayed(const Duration(seconds: 2), () async {
+          if (_muerto) return;
+          final pistas = _pistasAudio;
+          final idx = int.tryParse(pistaAntes.id);
+          if (idx != null && idx > 0 && idx <= pistas.length) {
+            final destino = pistas[idx - 1];
+            if (_player.state.track.audio.id != destino.id) {
+              await _player.setAudioTrack(destino);
+              debugPrint(
+                'TvPlayer: pista de audio restaurada -> ${destino.id}',
+              );
+            }
+          }
+        }),
+      );
     }
 
     _segundosSinAvance = 0;
@@ -2010,7 +2039,7 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
       setState(() => _controlesVisibles = true);
     }
     _ocultar = Timer(const Duration(seconds: 5), () {
-      if (mounted && !_menuAbierto) {
+      if (mounted && !_menuAbierto && !_ajustesAbierto) {
         setState(() => _controlesVisibles = false);
       }
     });
@@ -2093,10 +2122,16 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
 
   void _aplicarSalto() {
     if (!_preparandoSalto) return;
+    _confirmarSalto?.cancel();
+    _confirmarSalto = null;
     _saltosSeguidos = 0; // la carrerilla se pierde al soltar
     _ultimoSalto = null;
-    _player.seek(_saltoPrevisto);
-    setState(() => _preparandoSalto = false);
+    final destino = _saltoPrevisto;
+    _player.seek(destino);
+    setState(() {
+      _posicion = destino;
+      _preparandoSalto = false;
+    });
   }
 
   // ── Pistas ───────────────────────────────────────────────────────────────
@@ -2332,18 +2367,34 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
       return KeyEventResult.handled;
     }
 
-    // ── Ajustes del titulo ────────────────────────────────────────────────
+    // ── Opciones de información del título ────────────────────────────────
     //
-    // Se queda ABIERTO al marcar: guardar en la lista o dar un pulgar son
-    // cosas que se ven en el sitio, y cerrarlo obligaria a volver a entrar
-    // para corregirse. Solo "Reportar" lo cierra, porque lleva a otra lista.
+    // Se despliegan al navegar o pulsar hacia abajo.
+    // Al pulsar hacia arriba ("cuando suba"), se vuelve a los controles normales.
+    // Las opciones se recorren con izquierda y derecha.
     if (_ajustesAbierto) {
+      _mostrarControles();
+      if (k == LogicalKeyboardKey.arrowLeft) {
+        if (_ajustesIdx > 0) {
+          setState(() => _ajustesIdx--);
+        }
+        return KeyEventResult.handled;
+      }
+      if (k == LogicalKeyboardKey.arrowRight) {
+        if (_ajustesIdx < 3) {
+          setState(() => _ajustesIdx++);
+        }
+        return KeyEventResult.handled;
+      }
       if (k == LogicalKeyboardKey.arrowUp) {
-        setState(() => _ajustesIdx = (_ajustesIdx - 1).clamp(0, 3));
+        setState(() {
+          _ajustesAbierto = false;
+          _foco = 4;
+        });
+        _mostrarControles();
         return KeyEventResult.handled;
       }
       if (k == LogicalKeyboardKey.arrowDown) {
-        setState(() => _ajustesIdx = (_ajustesIdx + 1).clamp(0, 3));
         return KeyEventResult.handled;
       }
       if (ok) {
@@ -2421,16 +2472,56 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
       return KeyEventResult.handled;
     }
 
+    // ── Teclas multimedia dedicadas de reproducción y salto ─────────────
     if (k == LogicalKeyboardKey.mediaPlayPause) {
       _alternarReproduccion();
       _mostrarControles();
       return KeyEventResult.handled;
     }
+    if (k == LogicalKeyboardKey.mediaPlay) {
+      if (!_reproduciendo) _alternarReproduccion();
+      _mostrarControles();
+      return KeyEventResult.handled;
+    }
+    if (k == LogicalKeyboardKey.mediaPause ||
+        k == LogicalKeyboardKey.mediaStop) {
+      if (_reproduciendo) _alternarReproduccion();
+      _mostrarControles();
+      return KeyEventResult.handled;
+    }
+    if (k == LogicalKeyboardKey.mediaFastForward ||
+        k == LogicalKeyboardKey.mediaTrackNext) {
+      _saltar(1);
+      _mostrarControles();
+      return KeyEventResult.handled;
+    }
+    if (k == LogicalKeyboardKey.mediaRewind ||
+        k == LogicalKeyboardKey.mediaTrackPrevious) {
+      _saltar(-1);
+      _mostrarControles();
+      return KeyEventResult.handled;
+    }
 
-    // La primera pulsación con los controles ocultos solo los revela.
+    // Si los controles estaban ocultos:
+    // - OK pausa / reproduce inmediatamente sin requerir una segunda pulsación.
+    // - Flechas Izquierda / Derecha saltan inmediatamente 10 s y muestran controles.
     final estaban = _controlesVisibles;
     _mostrarControles();
-    if (!estaban) return KeyEventResult.handled;
+    if (!estaban) {
+      if (ok) {
+        _alternarReproduccion();
+        return KeyEventResult.handled;
+      }
+      if (k == LogicalKeyboardKey.arrowLeft) {
+        _saltar(-1);
+        return KeyEventResult.handled;
+      }
+      if (k == LogicalKeyboardKey.arrowRight) {
+        _saltar(1);
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.handled;
+    }
 
     // ── Línea de tiempo ───────────────────────────────────────────────────
     if (_foco == 1) {
@@ -2453,8 +2544,11 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         return KeyEventResult.handled;
       }
       if (ok) {
-        _aplicarSalto();
-        setState(() => _foco = 0);
+        if (_preparandoSalto) {
+          _aplicarSalto();
+        } else {
+          _alternarReproduccion();
+        }
         return KeyEventResult.handled;
       }
       return KeyEventResult.handled;
@@ -2462,7 +2556,7 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
 
     // ── La fila de iconos ─────────────────────────────────────────────────
     //
-    // 2 subtitulos · 3 audio · 4 ajustes. Izquierda y derecha la recorren sin
+    // 2 subtitulos · 3 audio · 4 info. Izquierda y derecha la recorren sin
     // dar la vuelta: al llegar al filo no pasa nada, que es lo que uno espera
     // de una fila.
     if (_foco >= 2 && _foco <= 4) {
@@ -2478,10 +2572,13 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         setState(() => _foco = 1);
         return KeyEventResult.handled;
       }
-      // Abajo da la vuelta al play: volver a reproducir es lo que se quiere
-      // casi siempre después de pasar por aquí.
+      // Al pulsar hacia abajo desde la fila de controles, se despliegan
+      // directamente las opciones disponibles (Mi lista, Me gusta, No me gusta, Reportar).
       if (k == LogicalKeyboardKey.arrowDown) {
-        setState(() => _foco = 0);
+        setState(() {
+          _ajustesIdx = 0;
+          _ajustesAbierto = true;
+        });
         return KeyEventResult.handled;
       }
       if (ok) {
@@ -2504,10 +2601,12 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     // ── Botón de play ─────────────────────────────────────────────────────
     if (k == LogicalKeyboardKey.arrowLeft) {
       _saltar(-1);
+      setState(() => _foco = 1);
       return KeyEventResult.handled;
     }
     if (k == LogicalKeyboardKey.arrowRight) {
       _saltar(1);
+      setState(() => _foco = 1);
       return KeyEventResult.handled;
     }
     if (k == LogicalKeyboardKey.arrowDown) {
@@ -2747,7 +2846,6 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
               // componerla. Esa parte se paga igual con radio 0,29 que con
               // 0,65. Bajar el porcentaje reduce el beneficio y NO reduce el
               // coste — por eso seguia a tirones al 10%.
-              //
               // AL 20% a peticion (2026-09-22).
               //
               // Subir de 10% a 20% no cambia practicamente nada del coste: lo
@@ -2930,11 +3028,8 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
               foco: _foco,
               fmt: _fmt,
               reportando: _reportando,
-            ),
-
-          if (grande && _ajustesAbierto)
-            _MenuAjustes(
-              indice: _ajustesIdx,
+              opcionesAbiertas: _ajustesAbierto,
+              opcionesIdx: _ajustesIdx,
               esFavorito: _esFavorito,
               meGusta: _meGusta,
               noMeGusta: _noMeGusta,
@@ -3041,6 +3136,11 @@ class _Controles extends StatelessWidget {
   final int foco;
   final String Function(Duration) fmt;
   final bool reportando;
+  final bool opcionesAbiertas;
+  final int opcionesIdx;
+  final bool esFavorito;
+  final bool meGusta;
+  final bool noMeGusta;
 
   const _Controles({
     required this.titulo,
@@ -3053,6 +3153,11 @@ class _Controles extends StatelessWidget {
     required this.foco,
     required this.fmt,
     required this.reportando,
+    required this.opcionesAbiertas,
+    required this.opcionesIdx,
+    required this.esFavorito,
+    required this.meGusta,
+    required this.noMeGusta,
   });
 
   @override
@@ -3072,12 +3177,12 @@ class _Controles extends StatelessWidget {
             : 0.0;
 
     return Container(
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.bottomCenter,
           end: Alignment.topCenter,
-          colors: [Colors.black87, Colors.transparent],
-          stops: [0.0, 0.55],
+          colors: const [Colors.black87, Colors.transparent],
+          stops: [0.0, opcionesAbiertas ? 0.70 : 0.55],
         ),
       ),
       // Mismas medidas que el receptor: 40 a la izquierda, 48 a la derecha,
@@ -3296,36 +3401,33 @@ class _Controles extends StatelessWidget {
                         _IconoPista(
                           icon: Icons.subtitles_outlined,
                           etiqueta: 'Subtítulos',
-                          focused: foco == 2,
+                          focused: foco == 2 && !opcionesAbiertas,
                         ),
                         const SizedBox(width: 26),
                         _IconoPista(
                           icon: Icons.multitrack_audio_rounded,
                           etiqueta: 'Audio',
-                          focused: foco == 3,
+                          focused: foco == 3 && !opcionesAbiertas,
                         ),
                         const SizedBox(width: 26),
-                        // ── Ajustes del titulo ─────────────────────────────
-                        //
-                        // UN SOLO ICONO, NO CUATRO. Mi lista, los pulgares y
-                        // reportar eran cuatro iconos seguidos en la barra:
-                        // cuatro paradas del mando entre la pelicula y lo que
-                        // de verdad se usa aqui, y una barra que no se lee de
-                        // un vistazo. Detras del engranaje se entiende solo y
-                        // deja sitio para lo que venga despues.
-                        //
-                        // Mismo trato que Subtitulos y Audio: icono plano con
-                        // su palabra, y el foco solo cambia el color.
-                        _IconoPista(
-                          icon:
-                              reportando
-                                  ? Icons.hourglass_empty_rounded
-                                  : Icons.settings_outlined,
-                          etiqueta: 'Ajustes',
-                          focused: foco == 4,
+                        // ── Botón Info con flechita hacia abajo ───────────────
+                        _BotonInfo(
+                          focused: foco == 4 && !opcionesAbiertas,
+                          abierta: opcionesAbiertas,
+                          reportando: reportando,
                         ),
                       ],
                     ),
+                    // ── Opciones disponibles al pulsar/navegar hacia abajo ──
+                    if (opcionesAbiertas) ...[
+                      const SizedBox(height: 16),
+                      _FilaOpciones(
+                        indice: opcionesIdx,
+                        esFavorito: esFavorito,
+                        meGusta: meGusta,
+                        noMeGusta: noMeGusta,
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -3371,19 +3473,57 @@ class _IconoPista extends StatelessWidget {
   }
 }
 
-/// Lo que hay detrás del engranaje: la lista, los pulgares y el reporte.
-///
-/// Mismo trato que el menú de pistas —fondo oscuro a pantalla completa, sin
-/// caja, lo enfocado en blanco— para que las dos listas del reproductor se
-/// lean como hermanas. Lo que está PUESTO se dice con un icono a la izquierda,
-/// no con color: el color ya significa "aquí está el mando".
-class _MenuAjustes extends StatelessWidget {
+/// Botón "Info" con flechita hacia abajo (o hacia arriba al estar desplegado).
+class _BotonInfo extends StatelessWidget {
+  final bool focused;
+  final bool abierta;
+  final bool reportando;
+
+  const _BotonInfo({
+    required this.focused,
+    required this.abierta,
+    required this.reportando,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = focused ? Colors.white : Colors.white54;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        AnimatedDefaultTextStyle(
+          duration: const Duration(milliseconds: 130),
+          style: TextStyle(
+            color: color,
+            fontSize: 15,
+            fontWeight: FontWeight.w500,
+          ),
+          child: const Text('Info'),
+        ),
+        const SizedBox(width: 4),
+        Icon(
+          reportando
+              ? Icons.hourglass_empty_rounded
+              : (abierta
+                  ? Icons.keyboard_arrow_up_rounded
+                  : Icons.keyboard_arrow_down_rounded),
+          size: 20,
+          color: color,
+        ),
+      ],
+    );
+  }
+}
+
+/// Fila horizontal de opciones disponibles para el título:
+/// Mi lista, Me gusta, No me gusta y Reportar.
+class _FilaOpciones extends StatelessWidget {
   final int indice;
   final bool esFavorito;
   final bool meGusta;
   final bool noMeGusta;
 
-  const _MenuAjustes({
+  const _FilaOpciones({
     required this.indice,
     required this.esFavorito,
     required this.meGusta,
@@ -3392,67 +3532,93 @@ class _MenuAjustes extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final filas = <({IconData icono, String texto})>[
+    final opciones = <({String texto, bool activo})>[
       (
-        icono: esFavorito ? Icons.check_rounded : Icons.add_rounded,
-        texto: esFavorito ? 'Quitar de Mi lista' : 'Añadir a Mi lista',
+        texto: esFavorito ? 'En Mi lista' : 'Añadir a Mi lista',
+        activo: esFavorito,
       ),
-      (
-        icono: meGusta ? Icons.thumb_up_rounded : Icons.thumb_up_outlined,
-        texto: 'Me gusta',
-      ),
-      (
-        icono: noMeGusta ? Icons.thumb_down_rounded : Icons.thumb_down_outlined,
-        texto: 'No me gusta',
-      ),
-      (icono: Icons.flag_outlined, texto: 'Reportar un problema'),
+      (texto: 'Me gusta', activo: meGusta),
+      (texto: 'No me gusta', activo: noMeGusta),
+      (texto: 'Reportar problema', activo: false),
     ];
 
-    return Container(
-      color: Colors.black.withValues(alpha: 0.88),
-      alignment: Alignment.center,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 580),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Padding(
-              padding: EdgeInsets.only(left: 2, bottom: 14),
-              child: Text(
-                'AJUSTES',
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      alignment: Alignment.centerLeft,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (var i = 0; i < opciones.length; i++) ...[
+            if (i > 0) const SizedBox(width: 10),
+            _ItemOpcion(
+              texto: opciones[i].texto,
+              activo: opciones[i].activo,
+              enfocado: i == indice,
+            ),
+          ],
+          const SizedBox(width: 16),
+          const Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.arrow_upward_rounded, size: 14, color: Colors.white38),
+              SizedBox(width: 4),
+              Text(
+                'Subir para volver',
                 style: TextStyle(
                   color: Colors.white38,
                   fontSize: 13,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 1.2,
+                  fontWeight: FontWeight.w400,
                 ),
               ),
-            ),
-            for (var i = 0; i < filas.length; i++)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                child: Row(
-                  children: [
-                    Icon(
-                      filas[i].icono,
-                      size: 19,
-                      color: i == indice ? Colors.white : Colors.white54,
-                    ),
-                    const SizedBox(width: 12),
-                    Text(
-                      filas[i].texto,
-                      style: TextStyle(
-                        color: i == indice ? Colors.white : Colors.white54,
-                        fontSize: 16,
-                        fontWeight:
-                            i == indice ? FontWeight.w600 : FontWeight.w400,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-          ],
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Botón individual de opción con estilo TV y realce de foco (solo texto).
+class _ItemOpcion extends StatelessWidget {
+  final String texto;
+  final bool activo;
+  final bool enfocado;
+
+  const _ItemOpcion({
+    required this.texto,
+    required this.activo,
+    required this.enfocado,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 140),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color:
+            enfocado
+                ? Colors.white
+                : activo
+                ? Colors.white.withValues(alpha: 0.18)
+                : const Color(0xFF1E1E22),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color:
+              enfocado
+                  ? Colors.white
+                  : activo
+                  ? Colors.white38
+                  : Colors.white12,
+          width: 1.2,
+        ),
+      ),
+      child: Text(
+        texto,
+        style: TextStyle(
+          color: enfocado ? const Color(0xFF0B0B0D) : Colors.white,
+          fontSize: 14,
+          fontWeight: enfocado ? FontWeight.w700 : FontWeight.w500,
         ),
       ),
     );

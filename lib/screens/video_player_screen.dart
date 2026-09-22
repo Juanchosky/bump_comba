@@ -456,6 +456,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   List<M3UItem> _serverItems = [];
   String? _primaryLogo;
 
+  /// Indice (1-based) de la pista de audio que el usuario estaba escuchando
+  /// antes de un cambio de servidor. Se usa para restaurarla en el servidor
+  /// nuevo, cuyas pistas pueden tener ids distintos pero el mismo orden.
+  int? _pistaAudioAnterior;
+
   String? _findFirstValidLogo(M3UItem mainItem) {
     if (mainItem.logo != null && mainItem.logo!.trim().isNotEmpty) {
       return mainItem.logo;
@@ -2311,7 +2316,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               lowPlayback.contains('output=m3u8');
 
           final futures = <Future<dynamic>>[
-            mpv.setProperty('alang', 'es,spa,esp,es-ES,es-MX,es-419'),
+            mpv.setProperty(
+              'alang',
+              'es-419,es-MX,es-LA,lat,spa,es,esp,es-ES',
+            ),
             mpv.setProperty('cache', 'yes'),
             mpv.setProperty('cache-pause', 'yes'),
             mpv.setProperty('cache-on-disk', 'no'),
@@ -2925,6 +2933,27 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 _isVideoLoading = false;
                 _hasPlaybackStarted = true;
               });
+            }
+            // Restaurar la pista de audio que tenia antes del cambio de
+            // servidor: el servidor nuevo puede tener las pistas en distinto
+            // orden y `alang` no basta si las etiquetas no coinciden.
+            final idx = _pistaAudioAnterior;
+            if (idx != null) {
+              _pistaAudioAnterior = null;
+              final pistas =
+                  _player?.state.tracks.audio
+                      .where((t) => t.id != 'auto' && t.id != 'no')
+                      .toList() ??
+                  [];
+              if (idx > 0 && idx <= pistas.length) {
+                final destino = pistas[idx - 1];
+                if (_player?.state.track.audio.id != destino.id) {
+                  _player?.setAudioTrack(destino);
+                  debugPrint(
+                    'VideoPlayer: pista de audio restaurada -> ${destino.id}',
+                  );
+                }
+              }
             }
           }
         }
@@ -4629,6 +4658,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
     // Rotar User-Agent en cada intento
     _userAgentIndex++;
+
+    // Guardar la pista de audio activa para restaurarla en el servidor nuevo.
+    final audioActual = _player?.state.track.audio;
+    if (audioActual != null &&
+        audioActual.id != 'auto' &&
+        audioActual.id != 'no') {
+      _pistaAudioAnterior = int.tryParse(audioActual.id);
+    }
 
     // Capturar la posición actual de forma inteligente
     Duration currentPos = Duration.zero;

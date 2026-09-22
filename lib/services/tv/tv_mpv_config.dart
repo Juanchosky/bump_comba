@@ -183,6 +183,7 @@ class TvMpvConfig {
         'vd-lavc-threads': '0',
 
         ...opcionesDeDecodificacion(techoFuente),
+        'alang': 'es-419,es-MX,es-LA,lat,spa,es,esp,es-ES',
         'video-sync': 'audio',
         'framedrop': 'vo',
         'scale': 'bilinear',
@@ -267,7 +268,7 @@ class TvMpvConfig {
         // la opcion sin aplicar (sin reconexion de ffmpeg en la TV). El prefijo
         // %N% le dice a MPV cuantos caracteres ocupa el valor literal.
         'stream-lavf-o':
-            'reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,'
+            'reconnect=1,reconnect_streamed=1,'
             'reconnect_delay_max=2,reconnect_on_network_error=1,'
             'reconnect_on_http_error=%7%5xx,429',
         'http-pipelining': 'yes',
