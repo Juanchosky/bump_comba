@@ -374,11 +374,26 @@ vec4 hook() {
 
 // Cuanto microcontraste se devuelve. 0,45 es medio realce: suficiente para
 // que una cara deje de verse de cera, poco para que no chille.
-// Subido de 0,55 a 0,80 a peticion (2026-09-21). Puede subirse con menos
-// miedo que un realce normal porque va multiplicado por `textura`: entra
-// donde hay detalle de verdad y se queda en cero sobre los restos de
-// macrobloque, que es lo que un `sharpen` ciego realzaria de vuelta.
-#define NITIDEZ 0.80
+// QUE SIGNIFICA ESTE NUMERO, para poder pedirlo en porcentaje.
+//
+// Es directamente la FRACCION DEL DETALLE que se devuelve: 0,80 son un 80%,
+// 1,44 son un 144%. Por encima de 1,0 se esta añadiendo MAS microcontraste
+// del que el pixel tenia, que es lo que en television llaman "realce" y en
+// fotografia "sobreenfoque" — legitimo mientras no chille.
+//
+// Recorrido: 0,45 (original) -> 0,55 -> 0,80 -> 1,44 (+80% a peticion,
+// 2026-09-21).
+//
+// Se puede subir con menos miedo que un realce normal por dos motivos:
+//  · Va multiplicado por `textura`, asi que entra donde hay detalle de verdad
+//    y se queda en CERO sobre los restos de macrobloque — que es justo lo que
+//    un `sharpen` ciego realzaria de vuelta.
+//  · El recorte al rango de los vecinos (mas MARGEN_HALO) lo frena antes de
+//    que pinte un contorno inventado.
+//
+// Si se ve crujiente, con filos o con textura de lija, ESTE es el mando. Si
+// lo que se ven son aureolas junto a los bordes, el mando es MARGEN_HALO.
+#define NITIDEZ 1.44
 
 // Tope del realce, en unidades de luma. Un detalle mas grande que esto ya es
 // un borde de verdad y no necesita ayuda; dejarlo suelto es lo que produce

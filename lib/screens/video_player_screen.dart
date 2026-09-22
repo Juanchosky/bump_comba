@@ -7183,6 +7183,31 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                               // mediacodec`. Con fuentes de
                                               // 1080p no envuelve nada.
                                               child: RealceDeVideo(
+                                                // SIN suavizado de capa aqui,
+                                                // a proposito.
+                                                //
+                                                // Se probo al 20% el
+                                                // 2026-09-21 y se quito: en
+                                                // el telefono ya corre el
+                                                // shader de desbloqueo, que
+                                                // filtra CON CRITERIO —solo
+                                                // en la rejilla y solo donde
+                                                // no hay textura—. Un
+                                                // desenfoque CIEGO encima
+                                                // emborrona todo y luego la
+                                                // tercera pasada realza solo
+                                                // una parte: el resultado es
+                                                // peor que no hacer ninguna
+                                                // de las dos.
+                                                //
+                                                // El valor por defecto es 0,0
+                                                // y entonces ni siquiera se
+                                                // crea la capa intermedia,
+                                                // asi que ademas sale gratis.
+                                                //
+                                                // En la TV si se usa, porque
+                                                // alli no hay shader: ver
+                                                // `_nivel2PermitidoEnTv`.
                                                 child: Video(
                                                   key: ValueKey(_videoKey),
                                                   controller: controller,
