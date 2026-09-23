@@ -1740,14 +1740,15 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
               // pantalla negra sin ninguna indicación de que estuviera cargando.
               AnimatedSwitcher(
                 duration: const Duration(milliseconds: 300),
-                child: _estaCargando
-                    ? const Center(
-                        key: ValueKey('receiver_spinner_active'),
-                        child: TvLoadingAnimation(size: 58, strokeWidth: 4),
-                      )
-                    : const SizedBox.shrink(
-                        key: ValueKey('receiver_spinner_empty'),
-                      ),
+                child:
+                    _estaCargando
+                        ? const Center(
+                          key: ValueKey('receiver_spinner_active'),
+                          child: TvLoadingAnimation(size: 58, strokeWidth: 4),
+                        )
+                        : const SizedBox.shrink(
+                          key: ValueKey('receiver_spinner_empty'),
+                        ),
               ),
               // Velocidad de descarga: solo cuando ACOMPAÑA a algo.
               //

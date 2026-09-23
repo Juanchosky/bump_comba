@@ -26,6 +26,7 @@ import '../services/cast_service.dart';
 import '../services/network_quality_service.dart';
 import '../services/ad_service.dart';
 import '../services/turbo_proxy.dart';
+import '../utils/device_utils.dart';
 import 'stream_browser_screen.dart';
 
 class ContentDetailScreen extends StatefulWidget {
@@ -1273,7 +1274,10 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                       _buildSliverAppBar(),
                       SliverToBoxAdapter(
                         child: Padding(
-                          padding: const EdgeInsets.all(16.0),
+                          padding: EdgeInsets.symmetric(
+                            horizontal: DeviceUtils.isTablet(context) ? 24.0 : 16.0,
+                            vertical: 16.0,
+                          ),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
@@ -1360,8 +1364,10 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   }
 
   Widget _buildSliverAppBar() {
+    final tablet = DeviceUtils.isTablet(context);
+    final isPortrait = MediaQuery.of(context).size.height > MediaQuery.of(context).size.width;
     return SliverAppBar(
-      expandedHeight: 250,
+      expandedHeight: tablet ? (isPortrait ? 350 : 300) : 250,
       pinned: true,
       backgroundColor: AppColors.background,
       elevation: 0,
@@ -1416,6 +1422,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
     final displayTitle =
         yearMatch != null ? name.substring(0, yearMatch.start).trim() : name;
     final year = yearMatch?.group(1);
+    final tablet = DeviceUtils.isTablet(context);
     final isPhone =
         defaultTargetPlatform == TargetPlatform.iOS &&
         MediaQuery.of(context).size.width < 500;
@@ -1427,7 +1434,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
           displayTitle,
           style: TextStyle(
             color: Colors.white,
-            fontSize: isPhone ? 20.0 : 22.5,
+            fontSize: tablet ? 25.0 : (isPhone ? 20.0 : 22.5),
             fontWeight: FontWeight.w700,
             letterSpacing: 0.2,
           ),
@@ -1616,6 +1623,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   }
 
   Widget _buildPlayButton() {
+    final tablet = DeviceUtils.isTablet(context);
     final isPhone =
         defaultTargetPlatform == TargetPlatform.iOS &&
         MediaQuery.of(context).size.width < 500;
@@ -1624,7 +1632,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
       children: [
         SizedBox(
           width: double.infinity,
-          height: isPhone ? 44.0 : 50.0,
+          height: tablet ? 52.0 : (isPhone ? 44.0 : 50.0),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(4),
             child: Stack(
@@ -1646,13 +1654,13 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                     icon: Icon(
                       Icons.play_arrow,
                       color: const Color(0xFF0a0a0a),
-                      size: isPhone ? 20.0 : 22.0,
+                      size: tablet ? 24.0 : (isPhone ? 20.0 : 22.0),
                     ),
                     label: Text(
                       _isLoadingEpisodes ? 'Ver' : 'Ver',
                       style: TextStyle(
                         color: const Color(0xFF0a0a0a),
-                        fontSize: isPhone ? 14.0 : 15.0,
+                        fontSize: tablet ? 16.0 : (isPhone ? 14.0 : 15.0),
                         fontWeight: FontWeight.bold,
                       ),
                     ),
@@ -1997,12 +2005,14 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   }
 
   Widget _buildEpisodePulse() {
+    final tablet = DeviceUtils.isTablet(context);
+    final thumbW = tablet ? 150.0 : 120.0;
+    final thumbH = tablet ? 85.0 : 70.0;
     return AnimatedBuilder(
       animation: _pulseController,
       builder: (context, child) {
         return Opacity(
-          opacity:
-              0.4 + (_pulseController.value * 0.4), // Pulse between 0.4 and 0.8
+          opacity: 0.4 + (_pulseController.value * 0.4),
           child: Column(
             children: List.generate(
               3,
@@ -2011,8 +2021,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                 child: Row(
                   children: [
                     Container(
-                      width: 120,
-                      height: 70,
+                      width: thumbW,
+                      height: thumbH,
                       decoration: BoxDecoration(
                         color: Colors.white.withValues(alpha: 0.08),
                         borderRadius: BorderRadius.circular(4),
@@ -2055,6 +2065,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
   Widget _buildEpisodesList() {
     final episodes = _seasonMap[_selectedSeason] ?? [];
+    final tablet = DeviceUtils.isTablet(context);
     final isPhone =
         defaultTargetPlatform == TargetPlatform.iOS &&
         MediaQuery.of(context).size.width < 500;
@@ -2069,7 +2080,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
               'Episodios',
               style: TextStyle(
                 color: Colors.white,
-                fontSize: isPhone ? 17.0 : 20.0,
+                fontSize: tablet ? 22.0 : (isPhone ? 17.0 : 20.0),
                 fontWeight: FontWeight.bold,
               ),
             ),
@@ -2182,6 +2193,9 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                       .map((entry) => entry.key)
                       .toSet();
 
+              final epThumbW = tablet ? 150.0 : 120.0;
+              final epThumbH = tablet ? 85.0 : 70.0;
+
               return ListView.builder(
                 padding: EdgeInsets.zero,
                 shrinkWrap: true,
@@ -2236,8 +2250,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                                   (!isDuplicateOrGeneric ? epLogo : null);
 
                               return SizedBox(
-                                width: 120,
-                                height: 70,
+                                width: epThumbW,
+                                height: epThumbH,
                                 child: AnimatedSwitcher(
                                   duration: const Duration(milliseconds: 250),
                                   child:
@@ -2251,8 +2265,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                                               FastThumbnail(
                                                 url: effectiveImage,
                                                 title: episode.name,
-                                                width: 120,
-                                                height: 70,
+                                                width: epThumbW,
+                                                height: epThumbH,
                                                 fit: BoxFit.cover,
                                                 borderRadius:
                                                     BorderRadius.circular(8),
@@ -2486,6 +2500,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   }
 
   Widget _buildVersionSelector() {
+    final tablet = DeviceUtils.isTablet(context);
     final isPhone =
         defaultTargetPlatform == TargetPlatform.iOS &&
         MediaQuery.of(context).size.width < 500;
@@ -2496,7 +2511,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
           'Opciones de Idioma / Versiones',
           style: TextStyle(
             color: Colors.white,
-            fontSize: isPhone ? 17.0 : 19.7,
+            fontSize: tablet ? 21.0 : (isPhone ? 17.0 : 19.7),
             fontWeight: FontWeight.bold,
           ),
         ),
@@ -2562,6 +2577,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   Widget _buildSimilarTitles() {
     final filteredSimilar = _m3uService.filterValidItems(widget.similarItems);
     if (filteredSimilar.isEmpty) return const SizedBox.shrink();
+    final tablet = DeviceUtils.isTablet(context);
     final isPhone =
         defaultTargetPlatform == TargetPlatform.iOS &&
         MediaQuery.of(context).size.width < 500;
@@ -2573,13 +2589,13 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
           'Esto te puede gustar',
           style: TextStyle(
             color: Colors.white,
-            fontSize: isPhone ? 17.0 : 19.5,
+            fontSize: tablet ? 21.0 : (isPhone ? 17.0 : 19.5),
             fontWeight: FontWeight.w600,
           ),
         ),
         const SizedBox(height: 16),
         SizedBox(
-          height: 216, // High density poster height + title
+          height: tablet ? 260 : 216,
           child: ListView.builder(
             scrollDirection: Axis.horizontal,
             padding: EdgeInsets.zero,
@@ -2616,7 +2632,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                         });
                   },
                   child: SizedBox(
-                    width: 124, // Standard horizontal row width
+                    width: tablet ? 148 : 124,
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
