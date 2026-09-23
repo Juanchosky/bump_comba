@@ -6,6 +6,7 @@ import 'package:flutter/gestures.dart' show VelocityTracker, PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
 import 'dart:ui';
+import 'dart:math' as math;
 import 'dart:async';
 import 'package:media_kit/media_kit.dart';
 
@@ -25,7 +26,6 @@ import '../services/cast_service.dart';
 import '../services/network_quality_service.dart';
 import '../services/ad_service.dart';
 import '../services/turbo_proxy.dart';
-import '../utils/device_utils.dart';
 import 'stream_browser_screen.dart';
 
 class ContentDetailScreen extends StatefulWidget {
@@ -1273,10 +1273,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                       _buildSliverAppBar(),
                       SliverToBoxAdapter(
                         child: Padding(
-                          padding: EdgeInsets.symmetric(
-                            horizontal: DeviceUtils.isTablet(context) ? 24.0 : 16.0,
-                            vertical: 16.0,
-                          ),
+                          padding: const EdgeInsets.all(16.0),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
@@ -1363,10 +1360,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   }
 
   Widget _buildSliverAppBar() {
-    final tablet = DeviceUtils.isTablet(context);
-    final isPortrait = MediaQuery.of(context).size.height > MediaQuery.of(context).size.width;
     return SliverAppBar(
-      expandedHeight: tablet ? (isPortrait ? 350 : 300) : 250,
+      expandedHeight: 250,
       pinned: true,
       backgroundColor: AppColors.background,
       elevation: 0,
@@ -1421,8 +1416,9 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
     final displayTitle =
         yearMatch != null ? name.substring(0, yearMatch.start).trim() : name;
     final year = yearMatch?.group(1);
-    final tablet = DeviceUtils.isTablet(context);
-    final isPhone = MediaQuery.of(context).size.width < 500;
+    final isPhone =
+        defaultTargetPlatform == TargetPlatform.iOS &&
+        MediaQuery.of(context).size.width < 500;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1431,7 +1427,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
           displayTitle,
           style: TextStyle(
             color: Colors.white,
-            fontSize: tablet ? 25.0 : (isPhone ? 20.0 : 22.5),
+            fontSize: isPhone ? 20.0 : 22.5,
             fontWeight: FontWeight.w700,
             letterSpacing: 0.2,
           ),
@@ -1620,14 +1616,15 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   }
 
   Widget _buildPlayButton() {
-    final tablet = DeviceUtils.isTablet(context);
-    final isPhone = MediaQuery.of(context).size.width < 500;
+    final isPhone =
+        defaultTargetPlatform == TargetPlatform.iOS &&
+        MediaQuery.of(context).size.width < 500;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         SizedBox(
           width: double.infinity,
-          height: tablet ? 52.0 : (isPhone ? 44.0 : 50.0),
+          height: isPhone ? 44.0 : 50.0,
           child: ClipRRect(
             borderRadius: BorderRadius.circular(4),
             child: Stack(
@@ -1649,13 +1646,13 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                     icon: Icon(
                       Icons.play_arrow,
                       color: const Color(0xFF0a0a0a),
-                      size: tablet ? 24.0 : (isPhone ? 20.0 : 22.0),
+                      size: isPhone ? 20.0 : 22.0,
                     ),
                     label: Text(
                       _isLoadingEpisodes ? 'Ver' : 'Ver',
                       style: TextStyle(
                         color: const Color(0xFF0a0a0a),
-                        fontSize: tablet ? 16.0 : (isPhone ? 14.0 : 15.0),
+                        fontSize: isPhone ? 14.0 : 15.0,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
@@ -1738,6 +1735,68 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
             ),
           ),
         ),
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton.icon(
+            onPressed: () async {
+              try {
+                await widget.onToggleFavorite(widget.item);
+                if (mounted) {
+                  setState(() {
+                    _isFavorite = widget.item.isFavorite;
+                  });
+                }
+              } catch (e) {
+                if (mounted) {
+                  SnackBarUtils.showAppSnackBar(
+                    context,
+                    e.toString().replaceAll('Exception: ', ''),
+                    action: SnackBarAction(
+                      label: 'Ver Planes',
+                      textColor: Colors.amberAccent,
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => const SubscriptionScreen(),
+                          ),
+                        );
+                      },
+                    ),
+                  );
+                }
+              }
+            },
+            icon: Icon(
+              _isFavorite ? Icons.check : Icons.add,
+              color: Colors.white,
+              size: isPhone ? 20.0 : 22.0,
+            ),
+            label: Text(
+              _isFavorite ? 'En lista' : 'Mi lista',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: isPhone ? 14.0 : 15.0,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color.fromARGB(
+                255,
+                255,
+                255,
+                255,
+              ).withValues(alpha: 0.14),
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(4),
+              ),
+              elevation: 0,
+            ),
+          ),
+        ),
       ],
     );
   }
@@ -1766,93 +1825,105 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
   Widget _buildSocialButtons() {
     return Row(
-      mainAxisAlignment: MainAxisAlignment.start,
       children: [
-        // 1. Mi lista
-        _SimpleActionButton(
-          icon: _isFavorite ? Icons.check : Icons.add,
-          label: _isFavorite ? 'En lista' : 'Mi lista',
-          isActive: _isFavorite,
-          onPressed: () async {
-            try {
-              await widget.onToggleFavorite(widget.item);
-              if (mounted) {
-                setState(() {
-                  _isFavorite = widget.item.isFavorite;
-                });
-              }
-            } catch (e) {
-              if (mounted) {
-                SnackBarUtils.showAppSnackBar(
-                  context,
-                  e.toString().replaceAll('Exception: ', ''),
-                  action: SnackBarAction(
-                    label: 'Ver Planes',
-                    textColor: Colors.amberAccent,
-                    onPressed: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => const SubscriptionScreen(),
-                        ),
-                      );
-                    },
-                  ),
-                );
-              }
-            }
-          },
-        ),
-        const SizedBox(width: 20),
-        // 2. Me gusta
-        _SimpleActionButton(
-          icon: _isLiked ? Icons.thumb_up : Icons.thumb_up_outlined,
-          label: 'Me gusta',
+        // 1. Like
+        _PremiumSocialButton(
+          icon: Icons.thumb_up_outlined,
+          activeIcon: Icons.thumb_up,
           isActive: _isLiked,
           isLoading: _isLiking,
           onPressed: _isLiking ? null : _toggleLike,
+          tooltip: 'Me gusta',
+          withConfetti: true,
         ),
-        const SizedBox(width: 20),
-        // 3. No me gusta
-        _SimpleActionButton(
-          icon: _isDisliked ? Icons.thumb_down : Icons.thumb_down_outlined,
-          label: 'No me gusta',
+        const SizedBox(width: 10),
+        // 2. Dislike
+        _PremiumSocialButton(
+          icon: Icons.thumb_down_outlined,
+          activeIcon: Icons.thumb_down,
           isActive: _isDisliked,
           isLoading: _isDisliking,
           onPressed: _isDisliking ? null : _toggleDislike,
+          tooltip: 'No me gusta',
+          jumpDown: true,
         ),
-        const SizedBox(width: 20),
-        // 4. Reportar
-        _SimpleActionButton(
-          icon: Icons.flag_outlined,
-          label: 'Reportar',
-          isLoading: _isReporting,
-          onPressed: _isReporting ? null : _showReportOptions,
+        const SizedBox(width: 10),
+        // 3. Report
+        Container(
+          height: 44,
+          width: 44,
+          decoration: BoxDecoration(
+            color: Colors.transparent,
+            borderRadius: BorderRadius.circular(4),
+            shape: BoxShape.rectangle,
+          ),
+          child: IconButton(
+            iconSize: 22,
+            padding: EdgeInsets.zero,
+            icon:
+                _isReporting
+                    ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                    : const Icon(Icons.flag_outlined, color: Colors.white),
+            onPressed: _isReporting ? null : _showReportOptions,
+            tooltip: 'Reportar problema',
+          ),
         ),
-        const SizedBox(width: 20),
-        // 5. Compartir
-        _SimpleActionButton(
-          icon: Icons.share_outlined,
-          label: 'Compartir',
-          onPressed: _shareContent,
+        const SizedBox(width: 10),
+        // 4. Share
+        Container(
+          height: 44,
+          width: 44,
+          decoration: BoxDecoration(
+            color: Colors.transparent,
+            borderRadius: BorderRadius.circular(4),
+            shape: BoxShape.rectangle,
+          ),
+          child: IconButton(
+            iconSize: 22,
+            padding: EdgeInsets.zero,
+            icon: const Icon(Icons.share_outlined, color: Colors.white),
+            onPressed: _shareContent,
+            tooltip: 'Compartir',
+          ),
         ),
         ValueListenableBuilder<bool>(
           valueListenable: CastService().isCasting,
           builder: (context, isCasting, _) {
             if (!isCasting) return const SizedBox.shrink();
             return Padding(
-              padding: const EdgeInsets.only(left: 20),
-              child: _SimpleActionButton(
-                icon: Icons.cast_connected_rounded,
-                label: 'Desconectar',
-                onPressed: () {
-                  CastService().disconnect();
-                  SnackBarUtils.showAppSnackBar(
-                    context,
-                    'Chromecast desconectado',
-                    action: null,
-                  );
-                },
+              padding: const EdgeInsets.only(left: 10),
+              child: Container(
+                height: 44,
+                width: 44,
+                decoration: BoxDecoration(
+                  color: Colors.transparent,
+                  borderRadius: BorderRadius.circular(4),
+                  shape: BoxShape.rectangle,
+                ),
+                child: IconButton(
+                  iconSize: 22,
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(
+                    Icons.cast_connected_rounded,
+                    color: Colors.white,
+                  ),
+                  onPressed: () {
+                    CastService().disconnect();
+                    SnackBarUtils.showAppSnackBar(
+                      context,
+                      'Chromecast desconectado',
+                      action: null,
+                    );
+                  },
+                  tooltip: 'Desconectar de TV',
+                ),
               ),
             );
           },
@@ -1926,15 +1997,12 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   }
 
   Widget _buildEpisodePulse() {
-    final tablet = DeviceUtils.isTablet(context);
-    final thumbW = tablet ? 150.0 : 120.0;
-    final thumbH = tablet ? 85.0 : 70.0;
     return AnimatedBuilder(
       animation: _pulseController,
       builder: (context, child) {
         return Opacity(
           opacity:
-              0.4 + (_pulseController.value * 0.4),
+              0.4 + (_pulseController.value * 0.4), // Pulse between 0.4 and 0.8
           child: Column(
             children: List.generate(
               3,
@@ -1943,8 +2011,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                 child: Row(
                   children: [
                     Container(
-                      width: thumbW,
-                      height: thumbH,
+                      width: 120,
+                      height: 70,
                       decoration: BoxDecoration(
                         color: Colors.white.withValues(alpha: 0.08),
                         borderRadius: BorderRadius.circular(4),
@@ -1987,8 +2055,9 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 
   Widget _buildEpisodesList() {
     final episodes = _seasonMap[_selectedSeason] ?? [];
-    final tablet = DeviceUtils.isTablet(context);
-    final isPhone = MediaQuery.of(context).size.width < 500;
+    final isPhone =
+        defaultTargetPlatform == TargetPlatform.iOS &&
+        MediaQuery.of(context).size.width < 500;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2000,7 +2069,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
               'Episodios',
               style: TextStyle(
                 color: Colors.white,
-                fontSize: tablet ? 22.0 : (isPhone ? 17.0 : 20.0),
+                fontSize: isPhone ? 17.0 : 20.0,
                 fontWeight: FontWeight.bold,
               ),
             ),
@@ -2113,8 +2182,6 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                       .map((entry) => entry.key)
                       .toSet();
 
-              final epThumbW = tablet ? 150.0 : 120.0;
-              final epThumbH = tablet ? 85.0 : 70.0;
               return ListView.builder(
                 padding: EdgeInsets.zero,
                 shrinkWrap: true,
@@ -2169,8 +2236,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                                   (!isDuplicateOrGeneric ? epLogo : null);
 
                               return SizedBox(
-                                width: epThumbW,
-                                height: epThumbH,
+                                width: 120,
+                                height: 70,
                                 child: AnimatedSwitcher(
                                   duration: const Duration(milliseconds: 250),
                                   child:
@@ -2184,8 +2251,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                                               FastThumbnail(
                                                 url: effectiveImage,
                                                 title: episode.name,
-                                                width: epThumbW,
-                                                height: epThumbH,
+                                                width: 120,
+                                                height: 70,
                                                 fit: BoxFit.cover,
                                                 borderRadius:
                                                     BorderRadius.circular(8),
@@ -2419,8 +2486,9 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   }
 
   Widget _buildVersionSelector() {
-    final tablet = DeviceUtils.isTablet(context);
-    final isPhone = MediaQuery.of(context).size.width < 500;
+    final isPhone =
+        defaultTargetPlatform == TargetPlatform.iOS &&
+        MediaQuery.of(context).size.width < 500;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2428,7 +2496,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
           'Opciones de Idioma / Versiones',
           style: TextStyle(
             color: Colors.white,
-            fontSize: tablet ? 21.0 : (isPhone ? 17.0 : 19.7),
+            fontSize: isPhone ? 17.0 : 19.7,
             fontWeight: FontWeight.bold,
           ),
         ),
@@ -2494,8 +2562,9 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
   Widget _buildSimilarTitles() {
     final filteredSimilar = _m3uService.filterValidItems(widget.similarItems);
     if (filteredSimilar.isEmpty) return const SizedBox.shrink();
-    final tablet = DeviceUtils.isTablet(context);
-    final isPhone = MediaQuery.of(context).size.width < 500;
+    final isPhone =
+        defaultTargetPlatform == TargetPlatform.iOS &&
+        MediaQuery.of(context).size.width < 500;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2504,13 +2573,13 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
           'Esto te puede gustar',
           style: TextStyle(
             color: Colors.white,
-            fontSize: tablet ? 21.0 : (isPhone ? 17.0 : 19.5),
+            fontSize: isPhone ? 17.0 : 19.5,
             fontWeight: FontWeight.w600,
           ),
         ),
         const SizedBox(height: 16),
         SizedBox(
-          height: tablet ? 260 : 216,
+          height: 216, // High density poster height + title
           child: ListView.builder(
             scrollDirection: Axis.horizontal,
             padding: EdgeInsets.zero,
@@ -2547,7 +2616,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
                         });
                   },
                   child: SizedBox(
-                    width: tablet ? 148 : 124,
+                    width: 124, // Standard horizontal row width
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -2605,62 +2674,198 @@ class _ContentDetailScreenState extends State<ContentDetailScreen>
 // ANIMATED UI COMPONENTS
 // ===========================================================================
 
-class _SimpleActionButton extends StatelessWidget {
+class _PremiumSocialButton extends StatefulWidget {
   final IconData icon;
-  final String label;
+  final IconData activeIcon;
   final bool isActive;
   final bool isLoading;
   final VoidCallback? onPressed;
+  final String tooltip;
+  final bool jumpDown;
+  final bool withConfetti;
 
-  const _SimpleActionButton({
+  const _PremiumSocialButton({
     required this.icon,
-    required this.label,
-    this.isActive = false,
+    required this.activeIcon,
+    required this.isActive,
     this.isLoading = false,
     this.onPressed,
+    required this.tooltip,
+    this.jumpDown = false,
+    this.withConfetti = false,
   });
 
   @override
+  State<_PremiumSocialButton> createState() => _PremiumSocialButtonState();
+}
+
+class _PremiumSocialButtonState extends State<_PremiumSocialButton>
+    with TickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<double> _scaleAnimation;
+  late Animation<double> _jumpAnimation;
+  late AnimationController _confettiController;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 500),
+    );
+
+    _confettiController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    );
+
+    _scaleAnimation = TweenSequence<double>([
+      TweenSequenceItem(
+        tween: Tween<double>(
+          begin: 1.0,
+          end: 1.25,
+        ).chain(CurveTween(curve: Curves.easeOut)),
+        weight: 40,
+      ),
+      TweenSequenceItem(
+        tween: Tween<double>(
+          begin: 1.25,
+          end: 1.0,
+        ).chain(CurveTween(curve: Curves.bounceOut)),
+        weight: 60,
+      ),
+    ]).animate(_controller);
+
+    // Jump logic (White-space between icon and particles)
+    final double jumpDist = widget.jumpDown ? 10.0 : -10.0;
+    _jumpAnimation = TweenSequence<double>([
+      TweenSequenceItem(
+        tween: Tween<double>(
+          begin: 0.0,
+          end: jumpDist,
+        ).chain(CurveTween(curve: Curves.easeOut)),
+        weight: 40,
+      ),
+      TweenSequenceItem(
+        tween: Tween<double>(
+          begin: jumpDist,
+          end: 0.0,
+        ).chain(CurveTween(curve: Curves.bounceOut)),
+        weight: 60,
+      ),
+    ]).animate(_controller);
+  }
+
+  @override
+  void didUpdateWidget(covariant _PremiumSocialButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // ONLY animate when transitioning to active - fixes "both move" bug
+    if (widget.isActive && !oldWidget.isActive) {
+      _controller.forward(from: 0.0);
+      if (widget.withConfetti) {
+        _confettiController.forward(from: 0.0);
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _confettiController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onPressed,
-      behavior: HitTestBehavior.opaque,
-      child: SizedBox(
-        width: 56,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            isLoading
-                ? const SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.white70,
+    return Stack(
+      alignment: Alignment.center,
+      clipBehavior: Clip.none,
+      children: [
+        if (widget.withConfetti)
+          Positioned(
+            child: AnimatedBuilder(
+              animation: _confettiController,
+              builder: (context, child) {
+                return CustomPaint(
+                  size: const Size(60, 60),
+                  painter: _ConfettiPainter(
+                    progress: _confettiController.value,
+                  ),
+                );
+              },
+            ),
+          ),
+        Container(
+          height: 44,
+          width: 44,
+          decoration: const BoxDecoration(color: Colors.transparent),
+          child:
+              widget.isLoading
+                  ? const Center(
+                    child: SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
                     ),
                   )
-                : Icon(
-                    icon,
-                    color: isActive ? Colors.white : Colors.white70,
-                    size: 22,
+                  : AnimatedBuilder(
+                    animation: _controller,
+                    builder: (context, child) {
+                      return Transform.translate(
+                        offset: Offset(0, _jumpAnimation.value),
+                        child: Transform.scale(
+                          scale: _scaleAnimation.value,
+                          child: IconButton(
+                            iconSize: 22,
+                            padding: EdgeInsets.zero,
+                            icon: Icon(
+                              widget.isActive ? widget.activeIcon : widget.icon,
+                              color: Colors.white,
+                            ),
+                            onPressed: widget.onPressed,
+                            tooltip: widget.tooltip,
+                          ),
+                        ),
+                      );
+                    },
                   ),
-            const SizedBox(height: 5),
-            Text(
-              label,
-              textAlign: TextAlign.center,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: isActive ? Colors.white : Colors.white70,
-                fontSize: 11,
-                fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
-                height: 1.2,
-              ),
-            ),
-          ],
         ),
-      ),
+      ],
     );
   }
 }
 
+class _ConfettiPainter extends CustomPainter {
+  final double progress;
+  _ConfettiPainter({required this.progress});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (progress == 0 || progress == 1) return;
+
+    final center = Offset(size.width / 2, size.height / 2);
+    final paint = Paint()..style = PaintingStyle.fill;
+
+    // 8 particles in a circle
+    for (int i = 0; i < 8; i++) {
+      final double angle = (i * 45) * 3.14159 / 180;
+      final double radius = 12 + (progress * 28);
+      final double opacity = 1.0 - progress;
+
+      final particlePos = Offset(
+        center.dx + radius * math.cos(angle),
+        center.dy + radius * math.sin(angle),
+      );
+
+      paint.color = Colors.white.withValues(alpha: opacity * 0.8);
+      canvas.drawCircle(particlePos, 2.0 * (1.0 - progress), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ConfettiPainter oldDelegate) =>
+      oldDelegate.progress != progress;
+}
