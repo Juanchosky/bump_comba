@@ -75,10 +75,11 @@ class ContentFilters {
   static bool esCategoriaDorama(String categoria) =>
       _encaja(categoria, clavesDorama);
 
-  /// Telenovela. Un nombre que hable de doramas NO cuenta, aunque lleve la
-  /// palabra "novela" al lado ("Novelas y Doramas").
+  /// Telenovela. Si la categoria lleva alguna clave de novela, cuenta, aunque
+  /// tambien sea dorama (p.ej. "Doramas (novela)" aparece en TELENOVELAS y en
+  /// SERIES).
   static bool esCategoriaNovela(String categoria) =>
-      !esCategoriaDorama(categoria) && _encaja(categoria, _clavesNovela);
+      _encaja(categoria, _clavesNovela);
 
   /// Animacion, anime y contenido infantil.
   static bool esCategoriaAnimacion(String categoria) =>
@@ -92,10 +93,13 @@ class ContentFilters {
   /// Es la misma regla de "cada categoria en un solo sitio" que ya decidia
   /// entre PELICULAS y SERIES por el tipo que pesa mas.
   ///
-  /// Los doramas NO entran: no tienen seccion propia, asi que su sitio son
-  /// las SERIES.
+  /// Los doramas puros NO entran: no tienen seccion propia, asi que su sitio
+  /// son las SERIES. Pero una categoria que es dorama Y novela a la vez
+  /// (p.ej. "Doramas (novela)") aparece en TELENOVELAS sin dejar de salir en
+  /// SERIES.
   static bool tieneSeccionPropia(String categoria) =>
-      esCategoriaNovela(categoria) || esCategoriaAnimacion(categoria);
+      (!esCategoriaDorama(categoria) && esCategoriaNovela(categoria)) ||
+      esCategoriaAnimacion(categoria);
 
   static const List<String> excludedCountries = [
     'arabia',
