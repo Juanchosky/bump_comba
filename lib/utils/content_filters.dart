@@ -282,33 +282,114 @@ class ContentFilters {
   ];
 
   static const List<Map<String, dynamic>> curatedNovelaSections = [
+    // ── POR PAIS / ORIGEN ──────────────────────────────────────────────────
     {
       'title': 'Telenovelas Mexicanas',
-      'keywords': ['mexican', 'mexico', 'televisa', 'azteca', 'mexicana'],
+      'keywords': ['mexican', 'mexico', 'méxico', 'televisa', 'azteca', 'mexicana'],
     },
     {
       'title': 'Telenovelas Colombianas',
       'keywords': ['colombian', 'colombia', 'rcn', 'caracol', 'colombiana'],
     },
     {
-      'title': 'Novelas Españolas',
-      'keywords': ['españa', 'spanish', 'española', 'espanola', 'rtve'],
-    },
-    {
-      'title': 'Popular',
-      'keywords': ['popular', 'top', 'mejor', 'exito', 'hit'],
+      'title': 'Novelas Brasileñas',
+      'keywords': ['brasil', 'brasileña', 'brasilena', 'globo', 'brazilian', 'brazil'],
     },
     {
       'title': 'Novelas Turcas',
-      'keywords': ['turca', 'turco', 'turkish', 'turquia', 'turkey'],
+      'keywords': ['turca', 'turco', 'turkish', 'turquia', 'turkey', 'estambul'],
     },
+    {
+      'title': 'Novelas Españolas',
+      'keywords': ['españa', 'spanish', 'española', 'espanola', 'rtve', 'antena 3'],
+    },
+    {
+      'title': 'Novelas Americanas',
+      'keywords': ['americana', 'american', 'usa', 'estados unidos', 'gringa'],
+    },
+    {
+      'title': 'Telenovelas Venezolanas',
+      'keywords': ['venezolana', 'venezuela', 'venezuelan', 'venevision', 'rctv'],
+    },
+    {
+      'title': 'Telenovelas Argentinas',
+      'keywords': ['argentina', 'argentino', 'telefe', 'buenos aires'],
+    },
+    {
+      'title': 'Doramas Coreanos',
+      'keywords': ['corea', 'korean', 'k-drama', 'kdrama', 'dorama', 'coreano', 'coreana'],
+    },
+    // ── POR TEMATICA ───────────────────────────────────────────────────────
+    {
+      'title': 'Romance y Amor',
+      'keywords': [
+        'amor', 'love', 'corazon', 'corazón', 'pasion', 'pasión',
+        'romance', 'romantica', 'romántica', 'amante', 'beso',
+        'enamorada', 'enamorado', 'querer',
+      ],
+    },
+    {
+      'title': 'Drama y Tragedia',
+      'keywords': [
+        'drama', 'tragedia', 'lagrima', 'lágrima', 'llanto',
+        'sufrimiento', 'dolor', 'destino', 'tormenta',
+      ],
+    },
+    {
+      'title': 'Intriga y Suspenso',
+      'keywords': [
+        'secreto', 'misterio', 'mentira', 'traicion', 'traición',
+        'venganza', 'pecado', 'culpa', 'sombra', 'oscuro', 'oscura',
+        'engaño', 'engano', 'verdad', 'oculto', 'oculta',
+      ],
+    },
+    {
+      'title': 'Poder y Ambición',
+      'keywords': [
+        'poder', 'rico', 'rica', 'dinero', 'imperio', 'reina', 'rey',
+        'corona', 'herencia', 'ambicion', 'ambición', 'fortuna',
+        'millonario', 'millonaria', 'patron', 'patrón', 'jefe', 'jefa',
+      ],
+    },
+    {
+      'title': 'Familia',
+      'keywords': [
+        'familia', 'madre', 'padre', 'hijo', 'hija', 'hermano',
+        'hermana', 'mama', 'mamá', 'papa', 'papá', 'hogar', 'casa',
+        'abuela', 'abuelo',
+      ],
+    },
+    {
+      'title': 'Época y Clásicas',
+      'keywords': [
+        'epoca', 'época', 'colonial', 'hacienda', 'rancho',
+        'historica', 'histórica', 'clasica', 'clásica', 'antigua',
+        'siglo', 'revolucion', 'revolución', 'biblica', 'bíblica',
+      ],
+    },
+    {
+      'title': 'Crimen y Narcos',
+      'keywords': [
+        'narco', 'cartel', 'mafia', 'criminal', 'crimen',
+        'policia', 'policía', 'detective', 'señora', 'patron',
+        'capo', 'droga', 'pablo', 'escobar', 'chapo',
+      ],
+    },
+    {
+      'title': 'Comedia Romántica',
+      'keywords': [
+        'comedia', 'divertida', 'humor', 'risa', 'vecina',
+        'vecino', 'fea', 'betty', 'ugly',
+      ],
+    },
+    // ── OTROS ──────────────────────────────────────────────────────────────
     {
       'title': 'Reality Shows',
       'keywords': ['reality', 'show', 'concurso', 'talent', 'competencia'],
     },
     {
-      'title': 'Novelas Americanas',
-      'keywords': ['americana', 'american', 'usa', 'estados unidos', 'gringa'],
+      'title': 'Popular',
+      'keywords': ['popular', 'top', 'mejor', 'exito', 'éxito', 'hit'],
     },
   ];
 
