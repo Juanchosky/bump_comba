@@ -88,6 +88,11 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
   /// quedaba en negro sin ninguna señal de que estuviera cargando.
   bool _primerFrameListo = false;
 
+  /// Retardo para no quitar el último frame de inmediato al cargar contenido
+  /// nuevo. Si el servidor nuevo carga en menos de 2 s, el usuario no ve
+  /// spinner — solo un instante de frame congelado.
+  Timer? _spinnerDemorado;
+
   /// Momento del último avance real de posición, para distinguir
   /// reproducción fluida de congelamiento/buffering real.
   DateTime _ultimoAvance = DateTime.now();
@@ -164,6 +169,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
         '${DateTime.now().difference(_lastLoadAt).inMilliseconds}ms '
         '(${r.width.toInt()}x${r.height.toInt()})',
       );
+      _spinnerDemorado?.cancel();
       setState(() {
         _primerFrameListo = true;
         _buffering = false;
@@ -432,14 +438,27 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     _lastLoadAt = DateTime.now();
     _ultimoAvance = DateTime.now();
     if (mounted) {
+      // ── TRANSICIÓN SUAVE: spinner demorado ─────────────────────────────
+      //
+      // NO se pone `_primerFrameListo = false` de inmediato. El último frame
+      // del contenido anterior se mantiene visible en la Surface de Android
+      // mientras MPV abre el nuevo. Si el servidor nuevo carga en menos de
+      // 2 s, el usuario no ve spinner — solo un instante de frame congelado,
+      // que es mucho menos molesto que una pantalla negra con spinner.
+      //
+      // El timer se cancela en cuanto llega el primer frame del contenido
+      // nuevo (en `_onRectCambio` o en la red de seguridad de `_pushStatus`).
+      _spinnerDemorado?.cancel();
       setState(() {
         _hasMedia = true;
         _buffering = true;
-        // Cada LOAD empieza sin imagen: el spinner se mantiene hasta que
-        // llegue el primer frame del contenido NUEVO, no del anterior.
-        _primerFrameListo = false;
         _posAnterior = null;
         _buffered = Duration.zero;
+      });
+      _spinnerDemorado = Timer(const Duration(seconds: 2), () {
+        if (mounted) {
+          setState(() => _primerFrameListo = false);
+        }
       });
     }
     try {
@@ -978,6 +997,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
             '${desdeLoad.inMilliseconds}ms',
           );
           if (mounted) {
+            _spinnerDemorado?.cancel();
             setState(() {
               _primerFrameListo = true;
               _buffering = false;
@@ -1617,6 +1637,7 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     _commandSub?.cancel();
     _hideControlsTimer?.cancel();
     _seekDebounce?.cancel();
+    _spinnerDemorado?.cancel();
     _focusNode.dispose();
     _preguntaTimer?.cancel();
     _videoController.rect.removeListener(_onRectCambio);
@@ -1717,10 +1738,17 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
               // Se mantiene mientras haya buffering genuino O mientras no haya llegado el
               // primer frame: sin lo segundo, el arranque de una transmisión era
               // pantalla negra sin ninguna indicación de que estuviera cargando.
-              if (_estaCargando)
-                const Center(
-                  child: TvLoadingAnimation(size: 58, strokeWidth: 4),
-                ),
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 300),
+                child: _estaCargando
+                    ? const Center(
+                        key: ValueKey('receiver_spinner_active'),
+                        child: TvLoadingAnimation(size: 58, strokeWidth: 4),
+                      )
+                    : const SizedBox.shrink(
+                        key: ValueKey('receiver_spinner_empty'),
+                      ),
+              ),
               // Velocidad de descarga: solo cuando ACOMPAÑA a algo.
               //
               // La condicion era `_downloadSpeedKbps > 0 || _buffering`, y como

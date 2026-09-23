@@ -416,6 +416,10 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
   VoidCallback? _m3uListener;
 
   Timer? _vigilante;
+  /// Retardo para no mostrar el spinner de inmediato al cambiar de servidor.
+  /// El último frame del video se mantiene visible en la Surface de Android;
+  /// si el servidor nuevo carga en menos de 2 s, el usuario no ve spinner.
+  Timer? _spinnerDemorado;
   Duration _posVigilada = Duration.zero;
   int _segundosSinAvance = 0;
   bool _cambiandoServidor = false;
@@ -525,7 +529,9 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         if (mounted) {
           setState(() {
             _reproduciendo = v;
-            _spinnerVisible = _cargando;
+            if (_spinnerDemorado == null || !_spinnerDemorado!.isActive) {
+              _spinnerVisible = _cargando;
+            }
           });
         }
       }),
@@ -533,7 +539,9 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         if (mounted) {
           setState(() {
             _buffering = v;
-            _spinnerVisible = _cargando;
+            if (_spinnerDemorado == null || !_spinnerDemorado!.isActive) {
+              _spinnerVisible = _cargando;
+            }
           });
         }
         if (v) _anotarCorte();
@@ -580,12 +588,15 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
           _arranco = true;
           _primerFrameListo = true;
           if (_spinnerVisible) {
+            _spinnerDemorado?.cancel();
             _spinnerVisible = false;
             estadoCambio = true;
           }
-        } else if (_cargando != _spinnerVisible) {
-          _spinnerVisible = _cargando;
-          estadoCambio = true;
+        } else if (_spinnerDemorado == null || !_spinnerDemorado!.isActive) {
+          if (_cargando != _spinnerVisible) {
+            _spinnerVisible = _cargando;
+            estadoCambio = true;
+          }
         }
 
         if (!_preparandoSalto) {
@@ -683,6 +694,7 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     _controlador.rect.addListener(() {
       final r = _controlador.rect.value;
       if (r != null && r.width > 0 && !_primerFrameListo && mounted) {
+        _spinnerDemorado?.cancel();
         setState(() {
           _primerFrameListo = true;
           if (_posicion > Duration.zero) {
@@ -1398,10 +1410,26 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     _buferVigilado = Duration.zero;
     _bytesVigilados = TurboProxy.instance.currentBytesDownloaded;
     _arranco = false;
-    // Se repinta ya: sin esto el spinner esperaba al próximo evento de MPV, y
-    // mientras se resuelve la página no llega ninguno.
-    if (mounted && !_spinnerVisible) {
-      setState(() => _spinnerVisible = _cargando);
+    // ── TRANSICIÓN SUAVE: spinner demorado ─────────────────────────────────
+    //
+    // NO se muestra el spinner de inmediato. El último frame del video se
+    // mantiene visible en la Surface de Android mientras MPV está parado;
+    // si el servidor nuevo carga en menos de 2 s, el usuario no ve spinner
+    // — solo un instante de frame congelado, que es mucho menos molesto.
+    //
+    // El timer se cancela en cuanto llega el primer frame del servidor nuevo
+    // (en el listener de `rect` o en el de `position`).
+    final bool esCambioServidor = _posicion > Duration.zero || _idxServidor > 0;
+    _spinnerDemorado?.cancel();
+    if (esCambioServidor) {
+      _spinnerVisible = false;
+      _spinnerDemorado = Timer(const Duration(seconds: 2), () {
+        if (mounted && !_primerFrameListo && _cargando) {
+          setState(() => _spinnerVisible = true);
+        }
+      });
+    } else {
+      _spinnerVisible = _cargando;
     }
     _posReferencia = null;
     // Servidor nuevo, colchon nuevo: lo que no daba el anterior no condena a
@@ -1613,8 +1641,13 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
 
       // Repintar SOLO cuando el spinner cambia de estado. Un `setState` por
       // segundo en un televisor de gama baja se nota.
-      if (_cargando != _spinnerVisible) {
-        setState(() => _spinnerVisible = _cargando);
+      // Durante los primeros 2s de un cambio de servidor, el spinner se
+      // gobierna por el timer demorado, no por el vigilante: sin esto el
+      // vigilante lo enciende a la primera vuelta y el delay no sirve.
+      if (_spinnerDemorado == null || !_spinnerDemorado!.isActive) {
+        if (_cargando != _spinnerVisible) {
+          setState(() => _spinnerVisible = _cargando);
+        }
       }
 
       // En pausa no se vigila NADA: ni la posicion, ni los bytes, ni el
@@ -1679,6 +1712,7 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
             _posicion > _posReferencia! + const Duration(milliseconds: 500)) {
           _arranco = true;
           _primerFrameListo = true;
+          _spinnerDemorado?.cancel();
           _spinnerVisible = false;
           // Este servidor SI va: la cuenta de fallos seguidos vuelve a cero.
           _fallosSeguidos = 0;
@@ -1929,6 +1963,8 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     // Servidor nuevo: vuelve a no haber imagen hasta que llegue la primera. Sin
     // esto, el vigilante seguiria contando desde el primer segundo del video
     // nuevo y encadenaria otro cambio.
+    // NO se pone _spinnerVisible = true aquí. El timer demorado de _abrir()
+    // se encarga: si el servidor nuevo carga rápido, no se ve spinner.
     if (mounted) setState(() => _primerFrameListo = false);
     _segundosDesdeAbrir = 0;
     _lecturasCaudalBajo = 0;
@@ -2037,6 +2073,7 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     _reintento?.cancel();
     _sondeoVelocidad?.cancel();
     _vigilante?.cancel();
+    _spinnerDemorado?.cancel();
     _guardado?.cancel();
     // Un ultimo guardado al salir: sin el se pierden hasta 5 s, y salir es
     // justo cuando el usuario espera que quede anotado por donde iba.
@@ -3067,16 +3104,21 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
           // cubre tambien ese tramo.
           // El spinner, mientras haya algo que esperar. Si ya no queda
           // servidor, esperar es mentir: se dice lo que pasa.
-          if (_cargando && !_agotado)
-            Center(
-              // Se queda también en pequeño —es lo que explica por qué el
-              // recuadro está negro— pero a escala: 54 px dentro de
-              // 360 x 203 lo llenan entero.
-              child: TvLoadingAnimation(
-                size: grande ? 58 : 34,
-                strokeWidth: grande ? 4 : 2.5,
-              ),
-            ),
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 300),
+            child: (_spinnerVisible && !_agotado)
+                ? Center(
+                    key: const ValueKey('tv_spinner_active'),
+                    // Se queda también en pequeño —es lo que explica por qué el
+                    // recuadro está negro— pero a escala: 54 px dentro de
+                    // 360 x 203 lo llenan entero.
+                    child: TvLoadingAnimation(
+                      size: grande ? 58 : 34,
+                      strokeWidth: grande ? 4 : 2.5,
+                    ),
+                  )
+                : const SizedBox.shrink(key: ValueKey('tv_spinner_empty')),
+          ),
 
           // ── Se acabaron los servidores ────────────────────────────
           //

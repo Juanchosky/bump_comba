@@ -116,6 +116,35 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       ValueNotifier<VideoController?>(null);
 
   bool _isVideoLoading = true;
+
+  // ── Transición suave entre servidores ────────────────────────────────────
+  //
+  // Al cambiar de servidor, el último frame del video se mantiene visible en
+  // la textura de media_kit. Si se pone `_isVideoLoading = true` de
+  // inmediato, el build pinta el fondo borroso (poster) encima y el usuario
+  // percibe un corte. Demorar 1,5 s da al servidor nuevo tiempo para cargar
+  // sin que el overlay tape el último frame.
+  //
+  // Si el servidor nuevo tarda más de 1,5 s, ahí sí se muestra el loading.
+  // Es el mismo approach que el televisor, adaptado al teléfono.
+  Timer? _loadingDemorado;
+
+  /// Pone `_isVideoLoading = true` con un retardo para no tapar el último
+  /// frame inmediatamente. Se usa SOLO en cambios de servidor / reloads.
+  void _ponerLoadingDemorado() {
+    _loadingDemorado?.cancel();
+    _loadingDemorado = Timer(const Duration(milliseconds: 1500), () {
+      if (mounted && !_hasPlaybackStarted) {
+        setState(() => _isVideoLoading = true);
+      }
+    });
+  }
+
+  /// Cancela el timer demorado y apaga el loading.
+  void _cancelarLoadingDemorado() {
+    _loadingDemorado?.cancel();
+    _loadingDemorado = null;
+  }
   bool _isBuffering = false;
   // True solo durante la carga inicial del contenido (primer play).
   bool _isInitialLoad = true;
@@ -1305,6 +1334,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _turboWatchdog?.cancel();
     _serverFailoverTimer?.cancel();
     _watchdogArranque?.cancel();
+    _loadingDemorado?.cancel();
     _castStallMonitorTimer?.cancel();
 
     for (final s in _streamSubscriptions) {
@@ -1826,7 +1856,20 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       AdService().recordVideoStart();
 
       setState(() {
-        _isVideoLoading = true;
+        // TRANSICIÓN SUAVE: en cambios de servidor (isLocalReload), NO se
+        // pone _isVideoLoading de inmediato. El último frame se mantiene
+        // visible en la textura de media_kit durante 1,5 s, dando al
+        // servidor nuevo tiempo para cargar sin que el usuario vea un
+        // corte. Si pasan 1,5 s sin frame, ahí sí se muestra el loading.
+        //
+        // En la carga INICIAL del contenido sí se pone de inmediato porque
+        // no hay frame anterior que mantener.
+        if (isLocalReload && _hasPlaybackStarted) {
+          // NO se toca _isVideoLoading aquí: se deja el timer demorado.
+          _ponerLoadingDemorado();
+        } else {
+          _isVideoLoading = true;
+        }
         _hasPlaybackStarted = false;
         // Contenido nuevo, presupuesto de cortes nuevo: los stalls de la
         // pelicula anterior no pueden condenar al servidor de esta.
@@ -2875,6 +2918,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       }
 
       if (mounted) {
+        _cancelarLoadingDemorado();
         setState(() {
           _isVideoLoading = false;
           _isInitialLoad =
@@ -2937,6 +2981,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             _watchdogArranque?.cancel();
             _serverFailoverTimer?.cancel();
             if (_isVideoLoading || !_hasPlaybackStarted) {
+              _cancelarLoadingDemorado();
               setState(() {
                 _isVideoLoading = false;
                 _hasPlaybackStarted = true;
@@ -3226,6 +3271,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           _watchdogArranque?.cancel();
           _serverFailoverTimer?.cancel();
           if (_isVideoLoading || !_hasPlaybackStarted) {
+            _cancelarLoadingDemorado();
             setState(() {
               _isVideoLoading = false;
               _hasPlaybackStarted = true;
@@ -4691,6 +4737,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
 
     if (mounted && _player == activePlayer) {
+      _cancelarLoadingDemorado();
       setState(() => _isVideoLoading = false);
       _startHideControlsTimer();
     }
@@ -4892,7 +4939,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
           bool handled = false;
           if (canUseFastPath) {
-            if (mounted) setState(() => _isVideoLoading = true);
+            // TRANSICIÓN SUAVE: el camino rápido reutiliza el mismo Player,
+            // así que el último frame se mantiene en la textura. Se demora
+            // el spinner para no tapar ese frame.
+            _ponerLoadingDemorado();
             debugPrint(
               'VOD reload rápido (loadfile) #$_retryCount at ${currentPos.inSeconds}s. UA: $_currentUserAgent',
             );
@@ -7324,14 +7374,21 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                         );
                                       },
                                     ),
-                                    if (_isVideoLoading ||
-                                        _isBuffering ||
-                                        _isSeeking)
-                                      _buildVideoLoading(
-                                        showBackground: _isVideoLoading,
-                                      )
-                                    else
-                                      const SizedBox.shrink(),
+                                     AnimatedSwitcher(
+                                       duration: const Duration(milliseconds: 300),
+                                       child: (_isVideoLoading ||
+                                               _isBuffering ||
+                                               _isSeeking)
+                                           ? KeyedSubtree(
+                                               key: const ValueKey('phone_loading_active'),
+                                               child: _buildVideoLoading(
+                                                 showBackground: _isVideoLoading,
+                                               ),
+                                             )
+                                           : const SizedBox.shrink(
+                                               key: ValueKey('phone_loading_empty'),
+                                             ),
+                                     ),
                                   ],
                                 ),
                               ),
