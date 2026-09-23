@@ -414,7 +414,8 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
     }
     playHeaders.addAll(cabecerasObligatorias(playUrl));
 
-    final bool esScrapeadoReal = isScrapeado ||
+    final bool esScrapeadoReal =
+        isScrapeado ||
         playUrl.contains('savefiles') ||
         playUrl.contains('okcdn') ||
         playUrl.contains('vidara') ||
@@ -486,9 +487,9 @@ class _TvReceiverScreenState extends State<TvReceiverScreen> {
               await mpv.setProperty('demuxer-readahead-secs', '45');
               // Contenido scrapeado (GnulaHD / SaveFiles / okcdn): cap 720p para evitar rebuffering.
               await mpv.setProperty(
-              'hls-bitrate',
-              TvMpvConfig.hlsBitrate(esScrapeado: esScrapeadoReal),
-            );
+                'hls-bitrate',
+                TvMpvConfig.hlsBitrate(esScrapeado: esScrapeadoReal),
+              );
               await mpv.setProperty('hls-forward-cache-secs', '45');
               await mpv.setProperty('hls-back-cache-secs', '30');
               await mpv.setProperty('cache-pause-initial', 'no');

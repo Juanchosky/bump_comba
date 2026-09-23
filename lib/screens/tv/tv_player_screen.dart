@@ -385,6 +385,7 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
   // Mismo problema que en la transmision y misma solucion: el titulo puede
   // estar en varios sitios y el primero no siempre responde.
   late List<String> _urls;
+  late List<M3UItem> _items;
   int _idxServidor = 0;
 
   /// Cuantas veces se ha cambiado de servidor POR CAUDAL BAJO.
@@ -409,8 +410,9 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
   bool _bloqueoInevitable = false;
   int _ticksBloqueoInevitable = 0;
   bool _avisoCalidadBaja = false;
-  bool _buscandoOtraFuente = false;
-  final FocusNode _focoBuscarFuente = FocusNode();
+  bool _avisoCalidadYaMostrado = false;
+  int _contadorAviso = 5;
+  Timer? _timerAviso;
   VoidCallback? _m3uListener;
 
   Timer? _vigilante;
@@ -615,6 +617,7 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
             : M3UService().getAlternativesFor(widget.item);
 
     _urls = <String>{widget.item.url, for (final alt in alts) alt.url}.toList();
+    _items = [widget.item, ...alts];
 
     if (_urls.length <= 1) {
       debugPrint(
@@ -1342,83 +1345,6 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     }
   }
 
-  /// Dispara una re-búsqueda en frío invalidando la caché del scraper y
-  /// anotando la fuente actual como floja.
-  Future<void> _rebuscarFuenteEnFrio() async {
-    if (_buscandoOtraFuente || _muerto) return;
-    setState(() => _buscandoOtraFuente = true);
-
-    debugPrint('TvPlayer: re-búsqueda en frío solicitada por calidad de origen baja...');
-    try {
-      DynamicScraperService().invalidateCache(widget.item.url);
-      _rotos.clear();
-
-      unawaited(FiltroCalidadService().anotarFuenteFloja(
-        widget.item.url,
-        titulo: widget.item.name,
-        alto: _player.state.height,
-      ));
-      unawaited(M3UService().reportContent(
-        name: widget.item.name,
-        category: widget.item.category,
-        url: widget.item.url,
-        reason: 'fuente_floja_caudal_insuficiente',
-      ));
-
-      final hostActual = Uri.tryParse(widget.item.url)?.host;
-      final alts = await DynamicScraperService().buscarAlternativasPorTitulo(
-        widget.item.name,
-        excluirHost: hostActual,
-      );
-
-      final altsM3u = M3UService().getAlternativesFor(widget.item);
-      for (final a in altsM3u) {
-        if (!_urls.contains(a.url)) alts.add(a.url);
-      }
-
-      if (_muerto) return;
-
-      if (alts.isNotEmpty) {
-        final nuevas = alts.where((u) => !_urls.contains(u)).toList();
-        if (nuevas.isNotEmpty) {
-          _urls.addAll(nuevas);
-          if (mounted) {
-            setState(() {
-              _avisoCalidadBaja = false;
-              _buscandoOtraFuente = false;
-            });
-          }
-          debugPrint(
-            'TvPlayer: re-búsqueda en frío encontró ${nuevas.length} nuevas fuentes. '
-            'Probando siguiente servidor...',
-          );
-          await _siguienteServidor('re-búsqueda en frío tras calidad baja');
-          return;
-        }
-      }
-
-      final r = await DynamicScraperService().extractStreamResult(widget.item.url);
-      if (_muerto) return;
-      if (r != null && r.videoUrl.isNotEmpty && r.videoUrl != _urls[_idxServidor]) {
-        _urls.add(r.videoUrl);
-        if (mounted) {
-          setState(() {
-            _avisoCalidadBaja = false;
-            _buscandoOtraFuente = false;
-          });
-        }
-        await _siguienteServidor('re-extracción en frío con nuevo mirror');
-        return;
-      }
-
-      if (mounted) {
-        setState(() => _buscandoOtraFuente = false);
-      }
-    } catch (e) {
-      debugPrint('TvPlayer: error en re-búsqueda en frío: $e');
-      if (mounted) setState(() => _buscandoOtraFuente = false);
-    }
-  }
 
   /// La URL de video REAL de cada servidor que guarda una pagina en vez de un
   /// fichero (el contenido propio: cuevana, flixlat...).
@@ -1953,6 +1879,13 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
     if (_muerto) return;
     if (_cambiandoServidor || _agotado) return;
 
+    // Nunca cambiar servidor para contenidos de peelink o pelisflix.
+    final urlBaja = widget.item.url.toLowerCase();
+    if (urlBaja.contains('peelink') || urlBaja.contains('pelisflix')) {
+      debugPrint('TvPlayer: contenido peelink/pelisflix — no se cambia de servidor ($motivo)');
+      return;
+    }
+
     // Si solo hay un servidor, no hay adonde saltar
     if (_urls.length <= 1) {
       debugPrint('TvPlayer: el único servidor disponible falló ($motivo)');
@@ -1975,6 +1908,20 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
       );
       _rendirse();
       return;
+    }
+
+    // No cambiar a un servidor que trae otro idioma: si el actual es español
+    // y el candidato esta marcado como ingles, se descarta.
+    final actualEsEspanol = !widget.item.esAudioIngles;
+    if (actualEsEspanol) {
+      candidatos.removeWhere((i) {
+        if (i >= _items.length) return false;
+        return _items[i].esAudioIngles;
+      });
+      if (candidatos.isEmpty) {
+        debugPrint('TvPlayer: todos los candidatos traen otro idioma — no se cambia');
+        return;
+      }
     }
 
     _fallosSeguidos++;
@@ -2106,7 +2053,7 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
         reason: 'fuente_floja_caudal_insuficiente',
       ));
     }
-    _focoBuscarFuente.dispose();
+    _timerAviso?.cancel();
     _playerFocusNode.dispose();
     _player.dispose();
     super.dispose();
@@ -2195,8 +2142,24 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
 
         if (_bloqueoInevitable && _urls.length <= 1) {
           _ticksBloqueoInevitable++;
-          if (_ticksBloqueoInevitable >= 3 && !_avisoCalidadBaja && mounted) {
+          if (_ticksBloqueoInevitable >= 3 &&
+              !_avisoCalidadBaja &&
+              !_avisoCalidadYaMostrado &&
+              mounted) {
+            _avisoCalidadYaMostrado = true;
+            _contadorAviso = 5;
             setState(() => _avisoCalidadBaja = true);
+            _timerAviso?.cancel();
+            _timerAviso = Timer.periodic(const Duration(seconds: 1), (t) {
+              if (!mounted) { t.cancel(); return; }
+              _contadorAviso--;
+              if (_contadorAviso <= 0) {
+                t.cancel();
+                setState(() => _avisoCalidadBaja = false);
+              } else {
+                setState(() {});
+              }
+            });
           }
         } else {
           _ticksBloqueoInevitable = 0;
@@ -3183,7 +3146,7 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
               left: 48,
               right: 48,
               child: AnimatedOpacity(
-                opacity: _controlesVisibles || _buscandoOtraFuente ? 1.0 : 0.8,
+                opacity: 0.9,
                 duration: const Duration(milliseconds: 300),
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
@@ -3222,7 +3185,7 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
                             ),
                             SizedBox(height: 2),
                             Text(
-                              'El proveedor comprimió en exceso este video (<0.07 bits/píxel).',
+                              'El proveedor comprimió en exceso este video.',
                               style: TextStyle(
                                 color: Colors.white70,
                                 fontSize: 13,
@@ -3232,52 +3195,28 @@ class TvPlayerScreenState extends State<TvPlayerScreen> {
                         ),
                       ),
                       const SizedBox(width: 12),
-                      _buscandoOtraFuente
-                          ? const SizedBox(
-                            width: 24,
-                            height: 24,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
+                      SizedBox(
+                        width: 36,
+                        height: 36,
+                        child: Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            CircularProgressIndicator(
+                              value: _contadorAviso / 5,
+                              strokeWidth: 2.5,
                               color: Colors.amber,
+                              backgroundColor: Colors.white12,
                             ),
-                          )
-                          : Focus(
-                            focusNode: _focoBuscarFuente,
-                            onKeyEvent: (node, event) {
-                              if (event is KeyDownEvent &&
-                                  (event.logicalKey == LogicalKeyboardKey.select ||
-                                      event.logicalKey == LogicalKeyboardKey.enter)) {
-                                _rebuscarFuenteEnFrio();
-                                return KeyEventResult.handled;
-                              }
-                              return KeyEventResult.ignored;
-                            },
-                            child: Builder(
-                              builder: (context) {
-                                final enfocado = Focus.of(context).hasFocus;
-                                return OutlinedButton.icon(
-                                  onPressed: _rebuscarFuenteEnFrio,
-                                  icon: const Icon(Icons.search_rounded, size: 18),
-                                  label: const Text('Buscar otra fuente'),
-                                  style: OutlinedButton.styleFrom(
-                                    foregroundColor: enfocado ? Colors.black : Colors.white,
-                                    backgroundColor:
-                                        enfocado ? Colors.white : Colors.white10,
-                                    side: BorderSide(
-                                      color: enfocado ? Colors.white : Colors.white24,
-                                    ),
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(8),
-                                    ),
-                                  ),
-                                );
-                              },
+                            Text(
+                              '$_contadorAviso',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
-                          ),
-                      const SizedBox(width: 8),
-                      IconButton(
-                        icon: const Icon(Icons.close, color: Colors.white54, size: 20),
-                        onPressed: () => setState(() => _avisoCalidadBaja = false),
+                          ],
+                        ),
                       ),
                     ],
                   ),

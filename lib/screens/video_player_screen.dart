@@ -127,6 +127,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   late List<M3UItem> _playlist;
   bool _showControls = false;
   bool _isLandscape = true;
+  bool _isTablet = false;
   final ValueNotifier<BoxFit> _videoFitNotifier = ValueNotifier(BoxFit.contain);
   bool _isScaling = false;
 
@@ -667,12 +668,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       curve: Curves.easeOut,
     );
 
+    final view = WidgetsBinding.instance.platformDispatcher.views.first;
+    final mqData = MediaQueryData.fromView(view);
+    _isTablet = mqData.size.shortestSide >= 600;
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-    _isLandscape =
-        MediaQueryData.fromView(
-          WidgetsBinding.instance.platformDispatcher.views.first,
-        ).orientation ==
-        Orientation.landscape;
+    _isLandscape = mqData.orientation == Orientation.landscape;
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     WakelockPlus.enable();
 
@@ -2900,7 +2900,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       if (mounted) {
         _serverFailoverTimer?.cancel();
         DynamicScraperService().invalidateCache();
-        if (_currentServerIndex == 0 && _serverItems.length > 1) {
+        final origenBajoErr = (_paginaScrapeada ?? '').toLowerCase();
+        final esPeelinkOPelisflix = origenBajoErr.contains('peelink') || origenBajoErr.contains('pelisflix');
+        if (_currentServerIndex == 0 && _serverItems.length > 1 && !esPeelinkOPelisflix) {
           debugPrint(
             'Xtream error: Server 1 failed ($e). Auto-switching to fast DB server (Server 2)...',
           );
@@ -3645,7 +3647,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                     : const BorderRadius.vertical(top: Radius.circular(20)),
             clipBehavior: Clip.antiAlias,
             child: Container(
-              width: _isLandscape ? 420 : double.infinity,
+              width: _isLandscape ? (_isTablet ? 520 : 420) : double.infinity,
               margin: _isLandscape ? const EdgeInsets.all(24) : EdgeInsets.zero,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -4082,6 +4084,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     if (_player == null || _isReloading || _isVideoLoading) return;
     if (_serverItems.length <= 1) return;
     if (_saltosPorCaudal > 0) return;
+
+    // Nunca cambiar servidor para contenidos de peelink o pelisflix.
+    final origenBajo = (_paginaScrapeada ?? '').toLowerCase();
+    if (origenBajo.contains('peelink') || origenBajo.contains('pelisflix')) return;
     if (!_hasPlaybackStarted) return;
     final pos = _player!.state.position;
     if (pos.inSeconds < 12) return;
@@ -4119,6 +4125,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
       final currentPos = _player!.state.position;
       if (_currentServerIndex == 0 && _serverItems.length > 1) {
+        // No cambiar si el alternativo trae otro idioma.
+        if (_elCambioTraeIngles(_serverItems[1])) return;
         _retryCount = 0;
         _currentServerIndex = 1;
         _stallTimer?.cancel();
@@ -4812,9 +4820,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         // pregunta. Si prefiere esperar, `puedeSaltar` queda en false y cae al
         // reintento normal del servidor actual, sin cambiarle el idioma a
         // mitad de pelicula.
+        final origenBajoStall = (_paginaScrapeada ?? '').toLowerCase();
+        final esPeelinkStall = origenBajoStall.contains('peelink') || origenBajoStall.contains('pelisflix');
         bool puedeSaltar =
             _currentServerIndex == 0 &&
             _serverItems.length > 1 &&
+            !esPeelinkStall &&
             (saltarABDPorCongelamiento || _retryCount >= 1);
 
         if (puedeSaltar && _elCambioTraeIngles(_serverItems[1])) {
@@ -5597,7 +5608,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _showVisualBottomSheet(
       builder:
           (context) => Container(
-            width: _isLandscape ? 400 : double.infinity,
+            width: _isLandscape ? (_isTablet ? 500 : 400) : double.infinity,
             margin: _isLandscape ? const EdgeInsets.all(24) : EdgeInsets.zero,
             constraints: BoxConstraints(
               maxHeight:
@@ -5773,7 +5784,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _showVisualBottomSheet(
       builder:
           (context) => Container(
-            width: _isLandscape ? 400 : double.infinity,
+            width: _isLandscape ? (_isTablet ? 500 : 400) : double.infinity,
             margin: _isLandscape ? const EdgeInsets.all(24) : EdgeInsets.zero,
             decoration: BoxDecoration(
               color: const Color.fromARGB(255, 27, 27, 27),
@@ -5894,7 +5905,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             // Mismo molde que "Audio / Idioma" y "Capitulos": Container con
             // BoxDecoration. Este era el unico que usaba Material, y por eso se
             // veia distinto — le faltaba el borde tenue del modo horizontal.
-            width: _isLandscape ? 400 : double.infinity,
+            width: _isLandscape ? (_isTablet ? 500 : 400) : double.infinity,
             margin: _isLandscape ? const EdgeInsets.all(24) : EdgeInsets.zero,
             decoration: BoxDecoration(
               color: const Color.fromARGB(255, 27, 27, 27),
@@ -6150,7 +6161,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _showVisualBottomSheet(
       builder:
           (context) => Container(
-            width: _isLandscape ? 500 : double.infinity,
+            width: _isLandscape ? (_isTablet ? 600 : 500) : double.infinity,
             margin: _isLandscape ? const EdgeInsets.all(24) : EdgeInsets.zero,
             constraints: BoxConstraints(
               maxHeight:
@@ -6382,7 +6393,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _showVisualBottomSheet(
       builder:
           (context) => Container(
-            width: _isLandscape ? 380 : double.infinity,
+            width: _isLandscape ? (_isTablet ? 480 : 380) : double.infinity,
             margin: _isLandscape ? const EdgeInsets.all(24) : EdgeInsets.zero,
             decoration: BoxDecoration(
               color: const Color.fromARGB(255, 27, 27, 27),
@@ -6486,7 +6497,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _showVisualBottomSheet(
       builder:
           (context) => Container(
-            width: _isLandscape ? 380 : double.infinity,
+            width: _isLandscape ? (_isTablet ? 480 : 380) : double.infinity,
             margin: _isLandscape ? const EdgeInsets.all(24) : EdgeInsets.zero,
             constraints: BoxConstraints(
               maxHeight:
@@ -6600,7 +6611,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       _showVisualBottomSheet(
         builder:
             (context) => Container(
-              width: _isLandscape ? 400 : double.infinity,
+              width: _isLandscape ? (_isTablet ? 500 : 400) : double.infinity,
               margin: _isLandscape ? const EdgeInsets.all(24) : EdgeInsets.zero,
               decoration: BoxDecoration(
                 color: const Color.fromARGB(255, 27, 27, 27),
@@ -7801,8 +7812,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                       right: 0,
                       child: Padding(
                         padding: EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: _isLandscape ? 0 : 8,
+                          horizontal: _isTablet ? 24 : 16,
+                          vertical: _isTablet ? 12 : (_isLandscape ? 0 : 8),
                         ),
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
@@ -7812,11 +7823,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                               children: [
                                 IconButton(
                                   padding:
-                                      _isLandscape
+                                      (_isLandscape && !_isTablet)
                                           ? EdgeInsets.zero
                                           : const EdgeInsets.all(8),
                                   constraints:
-                                      _isLandscape
+                                      (_isLandscape && !_isTablet)
                                           ? const BoxConstraints()
                                           : null,
                                   icon: const Icon(

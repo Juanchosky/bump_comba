@@ -28,6 +28,9 @@ import '../services/ad_service.dart';
 import '../utils/content_filters.dart';
 import '../utils/hero_pool.dart';
 import '../utils/top10.dart';
+import '../utils/device_utils.dart';
+import '../utils/titulo_tmdb.dart';
+import '../services/tmdb_service.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -151,6 +154,10 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
   // State
   M3UItem? _heroItem;
+
+  // Backdrop TMDB para tablets: imagen apaisada que llena mejor el banner.
+  final Map<String, String> _heroBackdrops = {};
+  final Set<String> _heroBackdropsPending = {};
 
   /// Si el hero de arriba es todavia el RESPALDO (el pool por año del titulo)
   /// y no el banner de tendencias de TMDB.
@@ -1134,6 +1141,38 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       _heroItem = elegido;
       _heroProvisional = provisional;
     });
+    _fetchHeroBackdrop(elegido);
+  }
+
+  String _heroKey(M3UItem item) =>
+      item.url.trim().isNotEmpty
+          ? item.url
+          : '${item.name.trim()}_${item.hashCode}';
+
+  Future<void> _fetchHeroBackdrop(M3UItem item) async {
+    final key = _heroKey(item);
+    if (_heroBackdrops.containsKey(key) ||
+        _heroBackdropsPending.contains(key)) {
+      return;
+    }
+    _heroBackdropsPending.add(key);
+    try {
+      final d = await TMDBService().searchAndGetDetails(
+        limpiarTituloParaTmdb(item.seriesName ?? item.name),
+        isSeries: item.isSeries || item.seriesName != null,
+      );
+      if (!mounted) return;
+      final backdrop = d['backdrop_url']?.toString();
+      if (backdrop != null && backdrop.isNotEmpty) {
+        final hdUrl = backdrop.replaceFirst('/w500/', '/original/');
+        if (mounted) {
+          setState(() => _heroBackdrops[key] = hdUrl);
+        }
+      }
+    } catch (_) {
+    } finally {
+      _heroBackdropsPending.remove(key);
+    }
   }
 
   List<String> _getDynamicSearchSuggestions() {
@@ -3273,6 +3312,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
       if (selected == null) return const SizedBox.shrink();
       _sectionHeroItems[section] = selected;
       hero = selected;
+      _fetchHeroBackdrop(hero);
     }
     return _buildHeroBanner(hero);
   }
@@ -3297,6 +3337,7 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
           _heroItem = destacado;
           _heroProvisional = false;
         });
+        _fetchHeroBackdrop(destacado);
       });
       return _buildHeroBanner(destacado);
     }
@@ -3932,27 +3973,23 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
             ? item.url
             : '${item.name.trim()}_${item.hashCode}';
     final heroTag = 'hero_$itemKey';
-    // Responsive height: scales with the screen instead of a fixed 500 so it
-    // never dominates small phones nor looks lost on tablets.
-    final heroHeight = (MediaQuery.of(context).size.height * 0.6).clamp(
-      380.0,
-      560.0,
-    );
+    final screenW = MediaQuery.of(context).size.width;
+    final screenH = MediaQuery.of(context).size.height;
+    final tablet = DeviceUtils.isTablet(context);
+    final isPortrait = screenH > screenW;
+    final heroHeight =
+        tablet
+            ? (screenH * (isPortrait ? 0.5 : 0.65)).clamp(380.0, 700.0)
+            : (screenH * 0.6).clamp(380.0, 560.0);
 
-    // ── Animación premium del banner principal al cambiar de pestaña ──
-    // Solo animamos cuando el cambio ocurre ENTRE las pestañas superiores
-    // (Inicio → Películas → Series → Telenovelas → Animación). Si volvemos a la
-    // misma pestaña (p. ej. desde la barra inferior) o es la carga inicial, el
-    // banner aparece ya asentado, sin animación. La entrada es siempre desde
-    // abajo, sin importar el sentido del cambio de pestaña.
     final int heroTabIndex = _fixedTabs.indexOf(_selectedTab);
     final bool heroShouldAnimate =
         heroTabIndex >= 0 && heroTabIndex != _lastHeroTabIndex;
     if (heroTabIndex >= 0) _lastHeroTabIndex = heroTabIndex;
 
-    const EdgeInsets heroMargin = EdgeInsets.symmetric(
-      horizontal: 24,
-      vertical: 22,
+    final EdgeInsets heroMargin = EdgeInsets.symmetric(
+      horizontal: tablet ? 32 : 24,
+      vertical: tablet ? 24 : 22,
     );
 
     return _HeroBannerReveal(
@@ -4036,17 +4073,28 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                             child: child,
                           );
                         },
-                        child: _heroPoster(
-                          heroTag,
-                          FastThumbnail(
-                            url: item.logo,
+                        child: _heroPoster(heroTag, () {
+                          final hasBackdrop =
+                              tablet && _heroBackdrops.containsKey(itemKey);
+                          final backdropPending =
+                              tablet &&
+                              !hasBackdrop &&
+                              _heroBackdropsPending.contains(itemKey);
+                          if (tablet && !hasBackdrop && backdropPending) {
+                            return Container(color: Colors.black);
+                          }
+                          return FastThumbnail(
+                            url:
+                                hasBackdrop
+                                    ? _heroBackdrops[itemKey]
+                                    : item.logo,
                             title: item.name,
                             width: double.infinity,
                             height: double.infinity,
                             fit: BoxFit.cover,
-                            cacheWidth:
-                                null, // resolución completa para el hero
+                            cacheWidth: null,
                             isHD: true,
+                            pantallaCompleta: hasBackdrop,
                             isSeries: item.isSeries,
                             useTMDBFallback: !item.isLive,
                             onError: () {
@@ -4054,8 +4102,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                                 _m3uService.reportFailedLogo(item.logo!);
                               }
                             },
-                          ),
-                        ),
+                          );
+                        }()),
                       ),
 
                       // Gradient Overlay (Bottom only for text legibility)
@@ -4076,9 +4124,9 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
 
                       // Content (Buttons at the bottom)
                       Positioned(
-                        bottom: 30,
-                        left: 16,
-                        right: 16,
+                        bottom: tablet ? 36 : 30,
+                        left: tablet ? 24 : 16,
+                        right: tablet ? 24 : 16,
                         child: Row(
                           children: [
                             // Play Button
@@ -4110,8 +4158,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: Colors.white,
                                   foregroundColor: AppColors.background,
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 12,
+                                  padding: EdgeInsets.symmetric(
+                                    vertical: tablet ? 14 : 12,
                                   ),
                                   shape: RoundedRectangleBorder(
                                     borderRadius: BorderRadius.circular(4),
@@ -4153,8 +4201,8 @@ class _StreamBrowserScreenState extends State<StreamBrowserScreen>
                                     255,
                                   ).withValues(alpha: 0.14),
                                   foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 12,
+                                  padding: EdgeInsets.symmetric(
+                                    vertical: tablet ? 14 : 12,
                                   ),
                                   shape: RoundedRectangleBorder(
                                     borderRadius: BorderRadius.circular(4),
@@ -4902,6 +4950,13 @@ class _HiddenMoviesShimmer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final tablet = DeviceUtils.isTablet(context);
+    final screenH = MediaQuery.of(context).size.height;
+    final heroH = tablet ? (screenH * 0.4).clamp(300.0, 550.0) : 480.0;
+    final hPad = tablet ? 32.0 : 16.0;
+    final rowH = tablet ? 260.0 : 216.0;
+    final itemCount = tablet ? 7 : 5;
+
     return SingleChildScrollView(
       physics: const NeverScrollableScrollPhysics(),
       child: Column(
@@ -4909,9 +4964,9 @@ class _HiddenMoviesShimmer extends StatelessWidget {
         children: [
           // Shimmer Hero
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 37, 16, 20),
+            padding: EdgeInsets.fromLTRB(hPad, 37, hPad, 20),
             child: _ShimmerBox(
-              height: 480,
+              height: heroH,
               width: double.infinity,
               borderRadius: BorderRadius.circular(12),
             ),
@@ -4919,7 +4974,7 @@ class _HiddenMoviesShimmer extends StatelessWidget {
           const SizedBox(height: 16),
           // Shimmer Category Title
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            padding: EdgeInsets.symmetric(horizontal: hPad, vertical: 8),
             child: Row(
               children: [
                 _ShimmerBox(
@@ -4938,12 +4993,12 @@ class _HiddenMoviesShimmer extends StatelessWidget {
           ),
           // Shimmer Category Row
           SizedBox(
-            height: 216,
+            height: rowH,
             child: ListView.builder(
               scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              itemCount: 5,
-              itemBuilder: (context, index) => const _ShimmerItem(),
+              padding: EdgeInsets.symmetric(horizontal: hPad - 4),
+              itemCount: itemCount,
+              itemBuilder: (context, index) => _ShimmerItem(tablet: tablet),
             ),
           ),
         ],
@@ -4953,12 +5008,13 @@ class _HiddenMoviesShimmer extends StatelessWidget {
 }
 
 class _ShimmerItem extends StatelessWidget {
-  const _ShimmerItem();
+  final bool tablet;
+  const _ShimmerItem({this.tablet = false});
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: 124,
+      width: tablet ? 148 : 124,
       margin: const EdgeInsets.symmetric(horizontal: 6),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -4972,7 +5028,7 @@ class _ShimmerItem extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           _ShimmerBox(
-            width: 80,
+            width: tablet ? 100 : 80,
             height: 12,
             borderRadius: BorderRadius.circular(4),
           ),
