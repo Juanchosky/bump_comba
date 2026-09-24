@@ -508,6 +508,11 @@ function showDashboard(user) {
     if (avatarEl) avatarEl.textContent = user.username.charAt(0).toUpperCase();
     if (usernameEl) usernameEl.textContent = user.username;
 
+    // Si aún no hay contenido cargado, mostrar de inmediato el estado de carga
+    if (!allContent || allContent.length === 0) {
+        showContentLoading('Cargando catálogo...', 'Sincronizando películas, series y episodios desde Supabase...');
+    }
+
     loginScreen.classList.add('fade-out');
     appContainer.classList.remove('hidden');
 }
@@ -696,6 +701,93 @@ function filterByProvider(prov) {
         applyFilters();
     }
 }
+const contentLoadingContainer = document.getElementById('content-loading-container');
+const globalLoaderBar = document.getElementById('global-loader-bar');
+let isContentLoading = false;
+
+function getLoadingStateHtml(title = 'Cargando catálogo...', subtitle = 'Conectando con Supabase y obteniendo contenidos...') {
+    return `
+        <div class="loading-state-header">
+            <div class="loading-pulse-ring">
+                <div class="loading-spinner-circle"></div>
+                <i data-lucide="clapperboard" class="loading-center-icon"></i>
+            </div>
+            <div class="loading-text-group">
+                <h3 id="loading-title">${title}</h3>
+                <p id="loading-subtitle">${subtitle}</p>
+            </div>
+        </div>
+        <div class="skeleton-table">
+            <div class="skeleton-row header-row">
+                <div class="skeleton-cell check"></div>
+                <div class="skeleton-cell title"></div>
+                <div class="skeleton-cell meta"></div>
+                <div class="skeleton-cell status"></div>
+                <div class="skeleton-cell actions"></div>
+            </div>
+            ${Array.from({ length: 4 }).map(() => `
+                <div class="skeleton-row">
+                    <div class="skeleton-cell check"></div>
+                    <div class="skeleton-cell info">
+                        <div class="skeleton-thumb"></div>
+                        <div class="skeleton-lines">
+                            <div class="skeleton-line full"></div>
+                            <div class="skeleton-line short"></div>
+                        </div>
+                    </div>
+                    <div class="skeleton-cell meta"></div>
+                    <div class="skeleton-cell status"></div>
+                    <div class="skeleton-cell actions"></div>
+                </div>
+            `).join('')}
+        </div>
+    `;
+}
+
+function showContentLoading(title = 'Cargando catálogo...', subtitle = 'Conectando con Supabase y obteniendo contenidos...') {
+    isContentLoading = true;
+    if (globalLoaderBar) globalLoaderBar.classList.remove('hidden');
+    if (contentLoadingContainer) {
+        contentLoadingContainer.innerHTML = getLoadingStateHtml(title, subtitle);
+        contentLoadingContainer.classList.remove('hidden');
+    }
+    if (dataTableContainer) dataTableContainer.classList.add('hidden');
+    if (seriesGrid) seriesGrid.classList.add('hidden');
+    lucide.createIcons();
+}
+
+function hideContentLoading() {
+    isContentLoading = false;
+    if (globalLoaderBar) globalLoaderBar.classList.add('hidden');
+    if (contentLoadingContainer) {
+        contentLoadingContainer.classList.add('hidden');
+    }
+}
+
+function showContentError(title = 'Error al cargar contenido', message = 'Hubo un error de conexión al cargar la información.') {
+    isContentLoading = false;
+    if (globalLoaderBar) globalLoaderBar.classList.add('hidden');
+    if (contentLoadingContainer) {
+        contentLoadingContainer.classList.remove('hidden');
+        contentLoadingContainer.innerHTML = `
+            <div style="text-align:center;padding:3.5rem 1.5rem;display:flex;flex-direction:column;align-items:center;gap:1rem;">
+                <div style="width:56px;height:56px;border-radius:50%;background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.3);display:flex;align-items:center;justify-content:center;color:#ef4444;">
+                    <i data-lucide="alert-triangle" style="width:28px;height:28px;"></i>
+                </div>
+                <div style="font-size:1.2rem;font-weight:600;color:var(--text-main);">${title}</div>
+                <p style="font-size:0.9rem;color:var(--text-muted);max-width:440px;line-height:1.5;">${message}</p>
+                <button type="button" class="btn btn-primary" onclick="fetchContent()" style="margin-top:0.5rem;gap:0.5rem;padding:0.6rem 1.25rem;">
+                    <i data-lucide="refresh-cw"></i>
+                    <span>Reintentar</span>
+                </button>
+            </div>
+        `;
+        lucide.createIcons();
+    }
+    if (dataTableContainer) dataTableContainer.classList.add('hidden');
+    if (seriesGrid) seriesGrid.classList.add('hidden');
+}
+
 const seriesGrid = document.getElementById('series-grid');
 const dataTableContainer = document.getElementById('data-table-container');
 const tabButtons = document.querySelectorAll('.tab-btn');
@@ -866,57 +958,67 @@ function populateCategoryFilter() {
 }
 
 // Carga películas y series en paralelo + conteos de episodios por serie
-async function fetchContent() {
-    const [movResult, serResult] = await Promise.all([
-        supabaseClient.from('custom_content').select('*').eq('type', 'movie').order('created_at', { ascending: false }),
-        supabaseClient.from('custom_content').select('*').eq('type', 'series').order('created_at', { ascending: false }),
-    ]);
+async function fetchContent(title = 'Cargando catálogo...', subtitle = 'Sincronizando películas, series y episodios desde Supabase...') {
+    showContentLoading(title, subtitle);
+    try {
+        const [movResult, serResult] = await Promise.all([
+            supabaseClient.from('custom_content').select('*').eq('type', 'movie').order('created_at', { ascending: false }),
+            supabaseClient.from('custom_content').select('*').eq('type', 'series').order('created_at', { ascending: false }),
+        ]);
 
-    const movies  = movResult.data || [];
-    const series  = serResult.data || [];
-    allContent = [...movies, ...series];
-    seriesList = series;
+        if (movResult.error) throw movResult.error;
+        if (serResult.error) throw serResult.error;
 
-    populateCategoryFilter();
+        const movies  = movResult.data || [];
+        const series  = serResult.data || [];
+        allContent = [...movies, ...series];
+        seriesList = series;
 
-    // Obtener conteos de episodios en paralelo (solo HEAD — cero datos transferidos)
-    const countResults = await Promise.all(
-        series.map(s =>
-            supabaseClient
-                .from('custom_content')
-                .select('*', { count: 'exact', head: true })
-                .eq('type', 'episode')
-                .eq('parent_id', s.id)
-                .then(({ count }) => ({ id: s.id, count: count || 0 }))
-        )
-    );
-    episodeCountMap = {};
-    countResults.forEach(({ id, count }) => { episodeCountMap[id] = count; });
+        populateCategoryFilter();
 
-    populateSeriesSelect();
-    applyFilters();
+        // Obtener conteos de episodios en paralelo (solo HEAD — cero datos transferidos)
+        const countResults = await Promise.all(
+            series.map(s =>
+                supabaseClient
+                    .from('custom_content')
+                    .select('*', { count: 'exact', head: true })
+                    .eq('type', 'episode')
+                    .eq('parent_id', s.id)
+                    .then(({ count }) => ({ id: s.id, count: count || 0 }))
+            )
+        );
+        episodeCountMap = {};
+        countResults.forEach(({ id, count }) => { episodeCountMap[id] = count; });
 
-    // Mapear qué series provienen de Pelisflix o Peelink según sus episodios
-    supabaseClient
-        .from('custom_content')
-        .select('parent_id, video_url')
-        .eq('type', 'episode')
-        .or('video_url.ilike.%pelisflix%,video_url.ilike.%peelink%')
-        .then(({ data }) => {
-            if (data && data.length > 0) {
-                data.forEach(ep => {
-                    if (ep.parent_id && !seriesProviderMap[ep.parent_id]) {
-                        const low = (ep.video_url || '').toLowerCase();
-                        if (low.includes('pelisflix')) seriesProviderMap[ep.parent_id] = 'pelisflix';
-                        else if (low.includes('peelink')) seriesProviderMap[ep.parent_id] = 'peelink';
-                    }
-                });
-                if (currentTab === 'series') applyFilters();
-            }
-        });
+        populateSeriesSelect();
+        hideContentLoading();
+        applyFilters();
 
-    fetchContentRequests();
-    fetchContentReports();
+        // Mapear qué series provienen de Pelisflix o Peelink según sus episodios (en segundo plano)
+        supabaseClient
+            .from('custom_content')
+            .select('parent_id, video_url')
+            .eq('type', 'episode')
+            .or('video_url.ilike.%pelisflix%,video_url.ilike.%peelink%')
+            .then(({ data }) => {
+                if (data && data.length > 0) {
+                    data.forEach(ep => {
+                        if (ep.parent_id && !seriesProviderMap[ep.parent_id]) {
+                            const low = (ep.video_url || '').toLowerCase();
+                            if (low.includes('pelisflix')) seriesProviderMap[ep.parent_id] = 'pelisflix';
+                            else if (low.includes('peelink')) seriesProviderMap[ep.parent_id] = 'peelink';
+                        }
+                    });
+                    if (currentTab === 'series') applyFilters();
+                }
+            });
+
+        fetchContentRequests();
+        fetchContentReports();
+    } catch (err) {
+        console.error('Error al cargar contenido:', err);
+        showContentError('Error al conectar con la base de datos', err.message || 'Verifica tu conexión a internet o intenta nuevamente.');
+    }
 }
 
 let contentRequests = [];
@@ -1426,6 +1528,25 @@ function renderContent(items) {
     const isEpisodeView = currentTab === 'series' && activeSeriesFilter;
     renderTableHead(isEpisodeView ? 'episodes' : 'movies');
 
+    if (!items || items.length === 0) {
+        contentTableBody.innerHTML = `
+            <tr>
+                <td colspan="5" style="text-align:center;padding:3.5rem 1.5rem;color:var(--text-muted);">
+                    <div style="display:flex;flex-direction:column;align-items:center;gap:0.75rem;">
+                        <div style="width:48px;height:48px;border-radius:50%;background:rgba(255,255,255,0.04);display:flex;align-items:center;justify-content:center;color:var(--text-muted);border:1px solid var(--border-color);">
+                            <i data-lucide="film" style="width:24px;height:24px;opacity:0.7;"></i>
+                        </div>
+                        <div style="font-size:1.1rem;font-weight:600;color:var(--text-main);">No se encontraron contenidos</div>
+                        <p style="font-size:0.88rem;max-width:380px;line-height:1.5;">No hay contenidos disponibles o ninguno coincide con los filtros y búsqueda aplicados.</p>
+                    </div>
+                </td>
+            </tr>
+        `;
+        lucide.createIcons();
+        updateSelectedCount();
+        return;
+    }
+
     // Actualizar estado del master switch de la cabecera
     const masterSwitch = document.getElementById('master-status-switch');
     if (masterSwitch) {
@@ -1487,6 +1608,23 @@ function renderGridView(items) {
     seriesGrid.classList.remove('hidden');
     dataTableContainer.classList.add('hidden');
     seriesGrid.innerHTML = '';
+
+    if (!items || items.length === 0) {
+        seriesGrid.innerHTML = `
+            <div style="grid-column:1/-1;text-align:center;padding:3.5rem 1.5rem;color:var(--text-muted);background:var(--bg-card);border:1px solid var(--border-color);border-radius:1.25rem;">
+                <div style="display:flex;flex-direction:column;align-items:center;gap:0.75rem;">
+                    <div style="width:48px;height:48px;border-radius:50%;background:rgba(255,255,255,0.04);display:flex;align-items:center;justify-content:center;color:var(--text-muted);border:1px solid var(--border-color);">
+                        <i data-lucide="tv" style="width:24px;height:24px;opacity:0.7;"></i>
+                    </div>
+                    <div style="font-size:1.1rem;font-weight:600;color:var(--text-main);">No se encontraron series</div>
+                    <p style="font-size:0.88rem;max-width:380px;line-height:1.5;">No hay series disponibles o ninguna coincide con los filtros y búsqueda aplicados.</p>
+                </div>
+            </div>
+        `;
+        lucide.createIcons();
+        return;
+    }
+
     items.forEach(item => {
         const card = document.createElement('div');
         card.className = 'series-card';
@@ -1529,7 +1667,8 @@ function populateSeriesSelect() {
 async function enterSeries(id) {
     activeSeriesFilter = id;
     const series = allContent.find(s => s.id === id);
-    pageTitle.textContent = `Capítulos de: ${series.title}`;
+    const seriesTitle = series ? series.title : 'Serie';
+    pageTitle.textContent = `Capítulos de: ${seriesTitle}`;
     backToSeriesBtn.classList.remove('hidden');
     filterCategory.classList.add('hidden');
     if (filterProvider) filterProvider.classList.remove('hidden');
@@ -1539,23 +1678,31 @@ async function enterSeries(id) {
     filterSeason.value = 'all';
     lucide.createIcons();
 
-    // Cargar episodios desde la BD solo ahora que el usuario entró a la serie
-    const episodes = await fetchEpisodesForSeries(id);
-    if (episodes && episodes.length > 0) {
-        for (const ep of episodes) {
-            const p = getContentProvider(ep);
-            if (p) {
-                seriesProviderMap[id] = p;
-                break;
+    showContentLoading('Cargando capítulos...', `Obteniendo los episodios de "${seriesTitle}"...`);
+
+    try {
+        // Cargar episodios desde la BD solo ahora que el usuario entró a la serie
+        const episodes = await fetchEpisodesForSeries(id);
+        if (episodes && episodes.length > 0) {
+            for (const ep of episodes) {
+                const p = getContentProvider(ep);
+                if (p) {
+                    seriesProviderMap[id] = p;
+                    break;
+                }
             }
         }
-    }
-    // Añadir/reemplazar episodios en allContent sin borrar movies/series
-    allContent = allContent.filter(it => !(it.type === 'episode' && it.parent_id === id));
-    allContent = allContent.concat(episodes);
+        // Añadir/reemplazar episodios en allContent sin borrar movies/series
+        allContent = allContent.filter(it => !(it.type === 'episode' && it.parent_id === id));
+        allContent = allContent.concat(episodes || []);
 
-    populateSeasonSelect(id);
-    applyFilters();
+        populateSeasonSelect(id);
+        hideContentLoading();
+        applyFilters();
+    } catch (err) {
+        console.error('Error al cargar episodios:', err);
+        showContentError('Error al cargar episodios', err.message || 'No se pudieron obtener los capítulos de la serie.');
+    }
 }
 
 
@@ -1946,6 +2093,7 @@ function setupEventListeners() {
             const viewToggleEl = document.querySelector('.view-toggle');
 
             if (currentTab === 'requests') {
+                if (contentLoadingContainer) contentLoadingContainer.classList.add('hidden');
                 if (viewToggleEl) viewToggleEl.classList.add('hidden');
                 if (reportsContainer) reportsContainer.classList.add('hidden');
                 if (filterReportReason) filterReportReason.classList.add('hidden');
@@ -1957,6 +2105,7 @@ function setupEventListeners() {
                 manageSeasonsBtn.classList.add('hidden');
                 renderRequests();
             } else if (currentTab === 'reports') {
+                if (contentLoadingContainer) contentLoadingContainer.classList.add('hidden');
                 if (viewToggleEl) viewToggleEl.classList.add('hidden');
                 if (requestsContainer) requestsContainer.classList.add('hidden');
                 if (seriesGrid) seriesGrid.classList.add('hidden');
@@ -1979,7 +2128,14 @@ function setupEventListeners() {
                 if (filterProvider) filterProvider.classList.remove('hidden');
                 pageTitle.textContent = currentTab === 'movies' ? 'Mis Películas' : 'Mis Series';
                 if (!localStorage.getItem('viewMode')) viewMode = currentTab === 'series' ? 'grid' : 'list';
-                applyFilters();
+                if (isContentLoading) {
+                    if (contentLoadingContainer) contentLoadingContainer.classList.remove('hidden');
+                    if (dataTableContainer) dataTableContainer.classList.add('hidden');
+                    if (seriesGrid) seriesGrid.classList.add('hidden');
+                } else {
+                    if (contentLoadingContainer) contentLoadingContainer.classList.add('hidden');
+                    applyFilters();
+                }
             }
         };
     });

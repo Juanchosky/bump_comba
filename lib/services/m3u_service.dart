@@ -1019,6 +1019,25 @@ class M3UService extends ChangeNotifier {
   }
 
   Future<String?> fetchRemoteConfiguration(String key) async {
+    // VPS primero: no depende de Supabase.
+    try {
+      _sysConfigVpsCache ??= await _fetchJsonDesdeVps(_urlVpsSysConfig);
+      if (_sysConfigVpsCache != null) {
+        final match = _sysConfigVpsCache!.cast<Map<String, dynamic>>().where(
+          (r) => r['key'] == key,
+        );
+        if (match.isNotEmpty) {
+          final row = match.first;
+          final isActive = row['is_active'] == true;
+          if (!isActive) return 'false';
+          return row['value'] as String?;
+        }
+      }
+    } catch (e) {
+      debugPrint('sys_config VPS error: $e');
+    }
+
+    // Fallback a Supabase.
     if (_supabase == null) return null;
     try {
       final data =
@@ -1042,23 +1061,11 @@ class M3UService extends ChangeNotifier {
     String key, {
     bool defaultValue = true,
   }) async {
-    if (_supabase == null) return defaultValue;
-    try {
-      final data =
-          await _supabase!
-              .from('sys_config')
-              .select('value, is_active')
-              .eq('key', key)
-              .maybeSingle();
-      if (data != null) {
-        final isActive = data['is_active'] == true;
-        final val = (data['value'] as String?)?.trim().toLowerCase();
-        return isActive && (val == 'true' || val == '1');
-      }
-    } catch (e) {
-      debugPrint('Error checking remote config $key: $e');
-    }
-    return defaultValue;
+    final val = await fetchRemoteConfiguration(key);
+    if (val == null) return defaultValue;
+    if (val == 'false') return false;
+    final lower = val.trim().toLowerCase();
+    return lower == 'true' || lower == '1';
   }
 
   /// ROBUST-4: resolveM3UInput validates constructed URLs before returning.
@@ -1139,16 +1146,34 @@ class M3UService extends ChangeNotifier {
       );
     }
 
-    // 1. Check Load Balancer first
+    // 1. Check Load Balancer first (VPS → Supabase)
     try {
-      if (_supabase != null) {
-        final List<dynamic> balancerData = await _supabase!
+      List<dynamic> balancerData = [];
+
+      // VPS primero
+      try {
+        _loadBalancerVpsCache ??=
+            await _fetchJsonDesdeVps(_urlVpsLoadBalancer);
+        if (_loadBalancerVpsCache != null) {
+          balancerData = _loadBalancerVpsCache!
+              .cast<Map<String, dynamic>>()
+              .where((r) => r['key'] == trimmed)
+              .toList();
+        }
+      } catch (e) {
+        debugPrint('load_balancer VPS error: $e');
+      }
+
+      // Fallback a Supabase si VPS no tenía datos
+      if (balancerData.isEmpty && _supabase != null) {
+        balancerData = await _supabase!
             .from('m3u_load_balancer')
             .select(
               'id, value, current_connections, max_connections, type, username, password',
             )
             .eq('key', trimmed)
             .eq('is_active', true);
+      }
 
         if (balancerData.isNotEmpty) {
           balancerData.sort((a, b) {
@@ -1214,7 +1239,6 @@ class M3UService extends ChangeNotifier {
             'Load Balancer: All available servers are blocked or failing.',
           );
         }
-      }
     } catch (e) {
       debugPrint('Error in load balancer: $e');
     }
@@ -1234,6 +1258,11 @@ class M3UService extends ChangeNotifier {
   /// desde `/var/www/catalogo/`. Mismo lugar y mismo mecanismo que
   /// `/catalogo/vod.json`, asi que no hizo falta tocar la config de nginx.
   static const String _urlVolcadoBd = 'http://217.216.80.212/catalogo/bd.json';
+
+  static const String _urlVpsSysConfig =
+      'http://217.216.80.212/catalogo/sys_config.json';
+  static const String _urlVpsLoadBalancer =
+      'http://217.216.80.212/catalogo/load_balancer.json';
 
   /// La huella del volcado publicado (~50 bytes). La escribe `vps/bd.sh`.
   static const String _urlVersionBd =
@@ -1307,6 +1336,25 @@ class M3UService extends ChangeNotifier {
       // como huella: mejor caer en la regla del plazo que guardar basura.
       if (version.isEmpty || version.length > 128) return null;
       return version;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  List<dynamic>? _sysConfigVpsCache;
+  List<dynamic>? _loadBalancerVpsCache;
+
+  Future<List<dynamic>?> _fetchJsonDesdeVps(String url) async {
+    if (_vpsDownUntil != null && DateTime.now().isBefore(_vpsDownUntil!)) {
+      return null;
+    }
+    try {
+      final res = await http
+          .get(Uri.parse(url))
+          .timeout(const Duration(seconds: 3));
+      if (res.statusCode != 200 || res.body.isEmpty) return null;
+      final decoded = json.decode(res.body);
+      return decoded is List ? decoded : null;
     } catch (_) {
       return null;
     }

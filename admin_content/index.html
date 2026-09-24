@@ -56,6 +56,9 @@
     </div>
 
     <div class="app-container">
+        <!-- Barra de progreso superior global -->
+        <div id="global-loader-bar" class="global-loader-bar hidden"></div>
+
         <!-- Sidebar -->
         <aside class="sidebar">
             <div class="logo">
@@ -176,11 +179,73 @@
                 </div>
 
                 <div id="main-display-container">
+                    <!-- Estado de Carga Inicial / Sincronización -->
+                    <div id="content-loading-container" class="content-loading-card">
+                        <div class="loading-state-header">
+                            <div class="loading-pulse-ring">
+                                <div class="loading-spinner-circle"></div>
+                                <i data-lucide="clapperboard" class="loading-center-icon"></i>
+                            </div>
+                            <div class="loading-text-group">
+                                <h3 id="loading-title">Cargando catálogo...</h3>
+                                <p id="loading-subtitle">Conectando con Supabase y obteniendo películas y series...</p>
+                            </div>
+                        </div>
+                        <div class="skeleton-table">
+                            <div class="skeleton-row header-row">
+                                <div class="skeleton-cell check"></div>
+                                <div class="skeleton-cell title"></div>
+                                <div class="skeleton-cell meta"></div>
+                                <div class="skeleton-cell status"></div>
+                                <div class="skeleton-cell actions"></div>
+                            </div>
+                            <div class="skeleton-row">
+                                <div class="skeleton-cell check"></div>
+                                <div class="skeleton-cell info">
+                                    <div class="skeleton-thumb"></div>
+                                    <div class="skeleton-lines">
+                                        <div class="skeleton-line full"></div>
+                                        <div class="skeleton-line short"></div>
+                                    </div>
+                                </div>
+                                <div class="skeleton-cell meta"></div>
+                                <div class="skeleton-cell status"></div>
+                                <div class="skeleton-cell actions"></div>
+                            </div>
+                            <div class="skeleton-row">
+                                <div class="skeleton-cell check"></div>
+                                <div class="skeleton-cell info">
+                                    <div class="skeleton-thumb"></div>
+                                    <div class="skeleton-lines">
+                                        <div class="skeleton-line full"></div>
+                                        <div class="skeleton-line short"></div>
+                                    </div>
+                                </div>
+                                <div class="skeleton-cell meta"></div>
+                                <div class="skeleton-cell status"></div>
+                                <div class="skeleton-cell actions"></div>
+                            </div>
+                            <div class="skeleton-row">
+                                <div class="skeleton-cell check"></div>
+                                <div class="skeleton-cell info">
+                                    <div class="skeleton-thumb"></div>
+                                    <div class="skeleton-lines">
+                                        <div class="skeleton-line full"></div>
+                                        <div class="skeleton-line short"></div>
+                                    </div>
+                                </div>
+                                <div class="skeleton-cell meta"></div>
+                                <div class="skeleton-cell status"></div>
+                                <div class="skeleton-cell actions"></div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Grid for Series (Cards) -->
                     <div id="series-grid" class="series-grid hidden"></div>
                     
                     <!-- Table for Movies / Episodes -->
-                    <div id="data-table-container" class="data-grid-container">
+                    <div id="data-table-container" class="data-grid-container hidden">
                         <table class="data-table">
                             <thead>
                                 <tr id="table-head-row">
