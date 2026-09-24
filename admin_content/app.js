@@ -648,8 +648,54 @@ const seriesFields = document.getElementById('series-fields');
 const parentIdSelect = document.getElementById('parent_id');
 const searchInput = document.getElementById('global-search');
 const filterCategory = document.getElementById('filter-category');
+const filterProvider = document.getElementById('filter-provider');
 const filterSeason = document.getElementById('filter-season');
 const filterReportReason = document.getElementById('filter-report-reason');
+
+// ── DETECCIÓN Y ETIQUETAS DE ORIGEN (PELISFLIX / PEELINK) ─────────────────────
+let seriesProviderMap = {};
+
+function getContentProvider(item) {
+    if (!item) return null;
+    const low = (item.video_url || '').toLowerCase();
+    if (low.includes('pelisflix')) return 'pelisflix';
+    if (low.includes('peelink')) return 'peelink';
+    if (item.type === 'series' && seriesProviderMap[item.id]) {
+        return seriesProviderMap[item.id];
+    }
+    if (item.parent_id && seriesProviderMap[item.parent_id]) {
+        return seriesProviderMap[item.parent_id];
+    }
+    return null;
+}
+
+function renderProviderBadge(item) {
+    const provider = getContentProvider(item);
+    if (!provider) return '';
+    if (provider === 'pelisflix') {
+        return `
+            <span class="badge-source badge-pelisflix" onclick="event.stopPropagation(); filterByProvider('pelisflix');" title="Contenido de Pelisflix (Click para filtrar)">
+                <i data-lucide="flame"></i>
+                <span>Pelisflix</span>
+            </span>
+        `;
+    } else if (provider === 'peelink') {
+        return `
+            <span class="badge-source badge-peelink" onclick="event.stopPropagation(); filterByProvider('peelink');" title="Contenido de Peelink (Click para filtrar)">
+                <i data-lucide="link"></i>
+                <span>Peelink</span>
+            </span>
+        `;
+    }
+    return '';
+}
+
+function filterByProvider(prov) {
+    if (filterProvider) {
+        filterProvider.value = filterProvider.value === prov ? 'all' : prov;
+        applyFilters();
+    }
+}
 const seriesGrid = document.getElementById('series-grid');
 const dataTableContainer = document.getElementById('data-table-container');
 const tabButtons = document.querySelectorAll('.tab-btn');
@@ -849,6 +895,26 @@ async function fetchContent() {
 
     populateSeriesSelect();
     applyFilters();
+
+    // Mapear qué series provienen de Pelisflix o Peelink según sus episodios
+    supabaseClient
+        .from('custom_content')
+        .select('parent_id, video_url')
+        .eq('type', 'episode')
+        .or('video_url.ilike.%pelisflix%,video_url.ilike.%peelink%')
+        .then(({ data }) => {
+            if (data && data.length > 0) {
+                data.forEach(ep => {
+                    if (ep.parent_id && !seriesProviderMap[ep.parent_id]) {
+                        const low = (ep.video_url || '').toLowerCase();
+                        if (low.includes('pelisflix')) seriesProviderMap[ep.parent_id] = 'pelisflix';
+                        else if (low.includes('peelink')) seriesProviderMap[ep.parent_id] = 'peelink';
+                    }
+                });
+                if (currentTab === 'series') applyFilters();
+            }
+        });
+
     fetchContentRequests();
     fetchContentReports();
 }
@@ -1370,16 +1436,30 @@ function renderContent(items) {
     items.forEach(item => {
         const tr = document.createElement('tr');
         const isChecked = selectedItemIds.has(item.id);
+        const providerBadge = renderProviderBadge(item);
+        let domainLabel = '';
+        if (item.video_url) {
+            try {
+                domainLabel = new URL(item.video_url).hostname.replace('www.', '');
+            } catch (_) {}
+        }
+
         tr.innerHTML = `
             <td style="text-align:center;">
                 <input type="checkbox" class="row-checkbox" value="${item.id}" ${isChecked ? 'checked' : ''} onchange="onRowCheckboxChange('${item.id}', this.checked)" style="width:16px;height:16px;cursor:pointer;">
             </td>
             <td>
                 <div style="display:flex;align-items:center;gap:1rem;">
-                    <img src="${item.thumbnail_url || 'https://via.placeholder.com/40x60'}" style="width:40px;height:60px;object-fit:cover;border-radius:4px;background:#000;">
-                    <div>
-                        <div style="font-weight:600;">${item.title}</div>
-                        <div style="font-size:.75rem;color:var(--text-muted);">${item.id.slice(0, 8)}...</div>
+                    <img src="${item.thumbnail_url || 'https://via.placeholder.com/40x60'}" style="width:40px;height:60px;object-fit:cover;border-radius:4px;background:#000;flex-shrink:0;">
+                    <div style="min-width:0;">
+                        <div style="font-weight:600;display:flex;align-items:center;gap:0.45rem;flex-wrap:wrap;">
+                            <span>${item.title}</span>
+                            ${providerBadge}
+                        </div>
+                        <div style="font-size:.75rem;color:var(--text-muted);display:flex;align-items:center;gap:0.45rem;margin-top:0.15rem;">
+                            <span>${item.id.slice(0, 8)}...</span>
+                            ${domainLabel ? `<span style="opacity:0.6;font-size:0.7rem;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">• ${domainLabel}</span>` : ''}
+                        </div>
                     </div>
                 </div>
             </td>
@@ -1413,16 +1493,19 @@ function renderGridView(items) {
         if (item.type === 'series') { card.onclick = () => enterSeries(item.id); } else { card.onclick = () => editItem(item.id); }
         // Usar el conteo pre-cargado (no requiere iterar allContent)
         const episodeCount = item.type === 'series' ? (episodeCountMap[item.id] ?? 0) : 0;
+        const providerBadge = renderProviderBadge(item);
+        const cardBadge = providerBadge ? `<div class="card-source-badge">${providerBadge}</div>` : '';
 
         card.innerHTML = `
             <div class="series-actions">
                 <button class="btn-icon btn-edit" onclick="event.stopPropagation();editItem('${item.id}')"><i data-lucide="edit-3"></i></button>
                 <button class="btn-icon btn-delete" onclick="event.stopPropagation();deleteItem('${item.id}')"><i data-lucide="trash-2"></i></button>
             </div>
+            ${cardBadge}
             <img class="series-poster" src="${item.thumbnail_url || 'https://via.placeholder.com/220x330'}" alt="${item.title}">
             <div class="series-info">
                 <div class="series-title">${item.title}</div>
-                <div class="series-meta">
+                <div class="series-meta" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.35rem;">
                     <span>${item.type === 'episode' ? `S${item.season} E${item.episode}` : item.category}</span>
                     ${item.type === 'series' ? `<span class="episode-count">${episodeCount} capítulos</span>` : ''}
                 </div>
@@ -1449,16 +1532,24 @@ async function enterSeries(id) {
     pageTitle.textContent = `Capítulos de: ${series.title}`;
     backToSeriesBtn.classList.remove('hidden');
     filterCategory.classList.add('hidden');
+    if (filterProvider) filterProvider.classList.remove('hidden');
     filterSeason.classList.remove('hidden');
     // manageSeasonsBtn siempre visible dentro de una serie
     manageSeasonsBtn.classList.remove('hidden');
     filterSeason.value = 'all';
     lucide.createIcons();
 
-
-
     // Cargar episodios desde la BD solo ahora que el usuario entró a la serie
     const episodes = await fetchEpisodesForSeries(id);
+    if (episodes && episodes.length > 0) {
+        for (const ep of episodes) {
+            const p = getContentProvider(ep);
+            if (p) {
+                seriesProviderMap[id] = p;
+                break;
+            }
+        }
+    }
     // Añadir/reemplazar episodios en allContent sin borrar movies/series
     allContent = allContent.filter(it => !(it.type === 'episode' && it.parent_id === id));
     allContent = allContent.concat(episodes);
@@ -1473,6 +1564,7 @@ function exitSeries() {
     pageTitle.textContent = 'Mis Series';
     backToSeriesBtn.classList.add('hidden');
     filterCategory.classList.remove('hidden');
+    if (filterProvider) filterProvider.classList.remove('hidden');
     filterSeason.classList.add('hidden');
     manageSeasonsBtn.classList.add('hidden');
     if (!localStorage.getItem('viewMode')) viewMode = 'grid';
@@ -1808,8 +1900,10 @@ function editItem(id) {
     document.getElementById('season').value = item.season || '';
     document.getElementById('episode').value = item.episode || '';
     handleTypeChange();
-    document.getElementById('modal-title').textContent = 'Editar Contenido';
+    const provBadge = renderProviderBadge(item);
+    document.getElementById('modal-title').innerHTML = `Editar Contenido ${provBadge}`;
     contentModal.style.display = 'block';
+    lucide.createIcons();
 }
 
 function setupEventListeners() {
@@ -1858,6 +1952,7 @@ function setupEventListeners() {
                 backToSeriesBtn.classList.add('hidden');
                 pageTitle.textContent = 'Solicitudes de Usuarios';
                 filterCategory.classList.add('hidden');
+                if (filterProvider) filterProvider.classList.add('hidden');
                 filterSeason.classList.add('hidden');
                 manageSeasonsBtn.classList.add('hidden');
                 renderRequests();
@@ -1871,6 +1966,7 @@ function setupEventListeners() {
                 backToSeriesBtn.classList.add('hidden');
                 pageTitle.textContent = 'Reportes de Contenido';
                 filterCategory.classList.add('hidden');
+                if (filterProvider) filterProvider.classList.add('hidden');
                 filterSeason.classList.add('hidden');
                 manageSeasonsBtn.classList.add('hidden');
                 renderReports();
@@ -1880,6 +1976,7 @@ function setupEventListeners() {
                 if (reportsContainer) reportsContainer.classList.add('hidden');
                 if (filterReportReason) filterReportReason.classList.add('hidden');
                 filterCategory.classList.remove('hidden');
+                if (filterProvider) filterProvider.classList.remove('hidden');
                 pageTitle.textContent = currentTab === 'movies' ? 'Mis Películas' : 'Mis Series';
                 if (!localStorage.getItem('viewMode')) viewMode = currentTab === 'series' ? 'grid' : 'list';
                 applyFilters();
@@ -1903,6 +2000,7 @@ function setupEventListeners() {
         }
     };
     filterCategory.onchange = applyFilters;
+    if (filterProvider) filterProvider.onchange = applyFilters;
     filterSeason.onchange = applyFilters;
     if (filterReportReason) {
         filterReportReason.onchange = () => {
@@ -2549,8 +2647,9 @@ function handleTypeChange() {
 }
 
 function applyFilters() {
-    const query = searchInput.value.toLowerCase();
+    const query = searchInput.value.toLowerCase().trim();
     const category = filterCategory.value;
+    const provider = filterProvider ? filterProvider.value : 'all';
     let filtered = [];
     if (currentTab === 'movies') {
         filtered = allContent.filter(item => item.type === 'movie');
@@ -2565,9 +2664,19 @@ function applyFilters() {
         }
     }
     filtered = filtered.filter(item => {
-        const matchesSearch = item.title.toLowerCase().includes(query);
+        const itemProv = getContentProvider(item);
+        const matchesProvider = provider === 'all' ||
+            (provider === 'pelisflix' && itemProv === 'pelisflix') ||
+            (provider === 'peelink' && itemProv === 'peelink') ||
+            (provider === 'other' && !itemProv);
+
+        const matchesSearch = item.title.toLowerCase().includes(query) ||
+            (itemProv && itemProv.includes(query)) ||
+            (item.video_url && item.video_url.toLowerCase().includes(query)) ||
+            (item.category && item.category.toLowerCase().includes(query));
+
         const matchesCategory = category === 'all' || item.category === category;
-        return matchesSearch && matchesCategory;
+        return matchesSearch && matchesCategory && matchesProvider;
     });
     renderContent(filtered);
 }

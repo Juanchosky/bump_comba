@@ -437,6 +437,78 @@ select option {
 .badge-rejected { background-color: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
 .badge-outdated { background-color: rgba(244, 114, 182, 0.2); color: #f472b6; border: 1px solid rgba(244, 114, 182, 0.3); }
 
+/* ── Etiquetas de Origen / Proveedor (Pelisflix, Peelink) ──────────────── */
+.badge-source {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 0.5rem;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.025em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    line-height: 1.2;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    vertical-align: middle;
+    cursor: pointer;
+    user-select: none;
+}
+
+.badge-source i,
+.badge-source svg {
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
+}
+
+/* Pelisflix: Rojo Neón / Carmesí sofisticado */
+.badge-source.badge-pelisflix {
+    background: linear-gradient(135deg, rgba(239, 68, 68, 0.2) 0%, rgba(220, 38, 38, 0.3) 100%);
+    color: #fca5a5;
+    border: 1px solid rgba(239, 68, 68, 0.45);
+    box-shadow: 0 2px 8px rgba(239, 68, 68, 0.15);
+}
+
+.badge-source.badge-pelisflix:hover {
+    background: linear-gradient(135deg, rgba(239, 68, 68, 0.32) 0%, rgba(220, 38, 38, 0.45) 100%);
+    border-color: rgba(239, 68, 68, 0.8);
+    color: #ffffff;
+    box-shadow: 0 4px 14px rgba(239, 68, 68, 0.4);
+    transform: translateY(-1px);
+}
+
+/* Peelink: Verde Esmeralda / Menta brillante */
+.badge-source.badge-peelink {
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.2) 0%, rgba(5, 150, 105, 0.3) 100%);
+    color: #6ee7b7;
+    border: 1px solid rgba(16, 185, 129, 0.45);
+    box-shadow: 0 2px 8px rgba(16, 185, 129, 0.15);
+}
+
+.badge-source.badge-peelink:hover {
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.32) 0%, rgba(5, 150, 105, 0.45) 100%);
+    border-color: rgba(16, 185, 129, 0.8);
+    color: #ffffff;
+    box-shadow: 0 4px 14px rgba(16, 185, 129, 0.4);
+    transform: translateY(-1px);
+}
+
+/* Badge en póster de tarjeta de serie/película */
+.card-source-badge {
+    position: absolute;
+    top: 0.75rem;
+    left: 0.75rem;
+    z-index: 5;
+    filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.8));
+}
+
+.card-source-badge .badge-source {
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+}
+
 /* Switches */
 .switch {
     display: flex;
