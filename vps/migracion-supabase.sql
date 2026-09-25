@@ -48,7 +48,7 @@ CREATE TABLE public.custom_content (
   video_url text,
   thumbnail_url text,
   type text NOT NULL CHECK (type = ANY (ARRAY['movie'::text, 'series'::text, 'episode'::text])),
-  parent_id uuid REFERENCES public.custom_content(id),
+  parent_id uuid REFERENCES public.custom_content(id) ON DELETE CASCADE,
   category text NOT NULL DEFAULT 'Recomendados'::text,
   season integer,
   episode integer,
@@ -238,20 +238,16 @@ CREATE POLICY "Admin update admin_users" ON public.admin_users FOR UPDATE TO pub
 CREATE POLICY "Admin delete admin_users" ON public.admin_users FOR DELETE TO public USING (true);
 
 ALTER TABLE public.sys_config ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "Allow public read access to sys_config" ON public.sys_config FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "Allow full access to sys_config" ON public.sys_config FOR ALL TO public USING (true) WITH CHECK (true);
 
 ALTER TABLE public.m3u_load_balancer ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "Enable read access for all users" ON public.m3u_load_balancer FOR SELECT TO public USING (true);
+CREATE POLICY "Allow full access to m3u_load_balancer" ON public.m3u_load_balancer FOR ALL TO public USING (true) WITH CHECK (true);
 
 ALTER TABLE public.custom_content ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "Allow public read access to custom content" ON public.custom_content FOR SELECT TO public USING (true);
-CREATE POLICY "Allow anon insert to custom_content" ON public.custom_content FOR INSERT TO anon WITH CHECK (true);
-CREATE POLICY "Allow anon update to custom_content" ON public.custom_content FOR UPDATE TO anon USING (true) WITH CHECK (true);
-CREATE POLICY "Allow anon delete to custom_content" ON public.custom_content FOR DELETE TO anon USING (true);
-CREATE POLICY "Allow authenticated users to manage custom content" ON public.custom_content FOR ALL TO public USING (auth.role() = 'authenticated'::text);
+CREATE POLICY "Allow full access to custom_content" ON public.custom_content FOR ALL TO public USING (true) WITH CHECK (true);
 
 ALTER TABLE public.home_banners ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "Public can read active banners" ON public.home_banners FOR SELECT TO anon, authenticated USING (is_active = true);
+CREATE POLICY "Allow full access to home_banners" ON public.home_banners FOR ALL TO public USING (true) WITH CHECK (true);
 
 ALTER TABLE public.content_likes ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Allow public select" ON public.content_likes FOR SELECT TO public USING (true);

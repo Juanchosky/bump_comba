@@ -119,6 +119,7 @@ supabase functions deploy tv-pairing
 ```
 
 4. Configura el secreto de RevenueCat:
+
 ```bash
 supabase secrets set REVENUECAT_SECRET_KEY=sk_XXXXXXXX
 ```
