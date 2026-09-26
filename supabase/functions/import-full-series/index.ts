@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
 
@@ -62,9 +63,10 @@ function sanitizeImageUrl(rawUrl: string | null | undefined): string | null {
 
 const TMDB_API_KEY = "4d1a1f42684a12a2fed02f05b35b4bb8"
 
-async function fetchTmdbTvYear(title: string): Promise<string | null> {
+async function fetchTmdbTvInfo(title: string): Promise<{ year: string | null; poster: string | null }> {
   try {
     const clean = title
+      .replace(/^Serie\s+/i, '')
       .replace(/\[[^\]]*\]/g, ' ')
       .replace(/\((?:HDTS|CAM|TS|HDRIP|BRRIP|WEBRIP|WEB-?DL|HD|SD|4K|FHD|UHD|LAT|CAST|SUB|VOSE|DUAL|REMUX|BLURAY|DVDRIP|SCREENER|LINE)[^)]*\)/gi, ' ')
       .replace(/\b(?:1080p|720p|480p|2160p|4k|uhd|hd|sd|web-?dl|webrip|bluray|brrip|latino|castellano|subtitulado|vose|remux)\b/gi, ' ')
@@ -74,14 +76,14 @@ async function fetchTmdbTvYear(title: string): Promise<string | null> {
       .replace(/\s+/g, ' ')
       .trim()
 
-    if (!clean) return null
+    if (!clean) return { year: null, poster: null }
 
     const url = `https://api.themoviedb.org/3/search/tv?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(clean)}&language=es-ES`
     const res = await fetch(url, { signal: AbortSignal.timeout(4500) })
-    if (!res.ok) return null
+    if (!res.ok) return { year: null, poster: null }
     const data = await res.json()
     const results = data?.results || []
-    if (results.length === 0) return null
+    if (results.length === 0) return { year: null, poster: null }
 
     const nClean = clean.toLowerCase()
     const exact = results.find((r: any) =>
@@ -89,15 +91,22 @@ async function fetchTmdbTvYear(title: string): Promise<string | null> {
       (r.original_name && r.original_name.toLowerCase() === nClean)
     )
     const best = exact || results[0]
+    let year: string | null = null
     const airDate = best.first_air_date || best.release_date
     if (airDate && typeof airDate === 'string') {
       const m = airDate.match(/\b(19\d\d|20\d\d)\b/)
-      if (m) return m[1]
+      if (m) year = m[1]
     }
-    return null
+    const poster = best.poster_path ? `https://image.tmdb.org/t/p/w500${best.poster_path}` : null
+    return { year, poster }
   } catch (_) {
-    return null
+    return { year: null, poster: null }
   }
+}
+
+async function fetchTmdbTvYear(title: string): Promise<string | null> {
+  const info = await fetchTmdbTvInfo(title)
+  return info.year
 }
 
 function extractReleaseYear(props: any, coverUrl: string | null, html: string): string | null {
@@ -211,7 +220,13 @@ function detectEpisodeCount(html: string): number {
   if (!html) return 0
   const nextM = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/)
   if (nextM) {
-    try { const n = searchForEpisodeCount(JSON.parse(nextM[1]), 0); if (n > 0) return n } catch (_) {}
+    try {
+      const parsed = JSON.parse(nextM[1])
+      const epVo = parsed?.props?.pageProps?.episodeVo
+      if (Array.isArray(epVo) && epVo.length > 0) return epVo.length
+      const n = searchForEpisodeCount(parsed, 0)
+      if (n > 0) return n
+    } catch (_) {}
   }
   const patterns = [
     /"episode_count"\s*:\s*(\d+)/,
@@ -241,7 +256,7 @@ function searchForEpisodeCount(obj: any, depth: number): number {
   for (const k of ["episode_count", "totalEpisodes", "total_episodes", "number_of_episodes", "episodeCount"]) {
     if (k in obj && typeof obj[k] === "number" && obj[k] > 0 && obj[k] <= 500) return obj[k]
   }
-  for (const k of ["episodes", "chapter_list", "chapters", "episodeList", "items", "list"]) {
+  for (const k of ["episodes", "chapter_list", "chapters", "episodeList", "episodeVo", "items", "list"]) {
     if (k in obj && Array.isArray(obj[k]) && obj[k].length > 0) { const r = searchForEpisodeCount(obj[k], depth + 1); if (r > 0) return r }
   }
   let best = 0; for (const k of Object.keys(obj)) { const r = searchForEpisodeCount(obj[k], depth + 1); if (r > best) best = r }; return best
@@ -314,18 +329,21 @@ serve(async (req: Request) => {
 
     if (!custom_title) {
       seriesTitle = seriesTitle
+        .replace(/^Serie\s+/i, "")
         .split(/[|\u2013\u2014]/)[0].trim()
         .replace(/\s*-?\s*(?:Season|Temporada)\s*\d+\s*$/i, "")
         .trim()
     }
     
-    const posterUrl = meta.coverUrl
+    let posterUrl = meta.coverUrl
 
     // Extract release year and append (YYYY) to title if not present
-    // Extract release year from props or consult TMDB
     let year = extractReleaseYear(meta.props, posterUrl, mainHtml)
-    if (!year && !seriesTitle.match(/\(\d{4}\)$/)) {
-      year = await fetchTmdbTvYear(seriesTitle)
+    let tmdbInfo = { year: null as string | null, poster: null as string | null }
+    if (!year || !posterUrl) {
+      tmdbInfo = await fetchTmdbTvInfo(seriesTitle)
+      if (!year && tmdbInfo.year) year = tmdbInfo.year
+      if (!posterUrl && tmdbInfo.poster) posterUrl = tmdbInfo.poster
     }
     if (year && seriesTitle && !seriesTitle.match(/\(\d{4}\)$/)) {
       seriesTitle = `${seriesTitle} (${year})`
@@ -449,13 +467,217 @@ serve(async (req: Request) => {
       }
     }
 
+    // Especial para Pelisflix / Toroplay (pelisflix1.tv, pelisflix.*, o sitios Toroplay con SeasonBx):
+    const isPelisflix = cleanUrl.includes("pelisflix") ||
+                        mainHtml.includes("SeasonBx") ||
+                        mainHtml.includes("toroplay") ||
+                        mainHtml.includes("torothemes")
+
+    if (isPelisflix) {
+      console.log(`[import] Detectado formato Pelisflix / Toroplay para: ${cleanUrl}`)
+
+      // Si no hay poster, buscar en data-src o imagenes de la serie
+      if (!finalPoster) {
+        const bgMatch = mainHtml.match(/<img[^>]*class=["'][^"']*imglazy[^"']*["'][^>]*data-src=["']([^"']+)["']/i)
+          || mainHtml.match(/<img[^>]*data-src=["']([^"']+)["']/i)
+          || mainHtml.match(/src=["']((?:https?:)?\/\/[^"'\s]*\/(?:gallery|series|posters|cover)\/[^"'\s]+)["']/i)
+        if (bgMatch) {
+          let p = bgMatch[1].trim()
+          if (p.startsWith("//")) p = "https:" + p
+          finalPoster = p
+        }
+      }
+
+      // Buscar temporadas
+      const seasonRegex = /<a[^>]*href=["']([^"']*\/(?:temporada|season)\/([^"'\/]+)-?(\d+)\/?)["'][^>]*>([\s\S]*?)<\/a>/gi
+      const pelisflixSeasons = new Map<number, string>()
+
+      let sM: RegExpExecArray | null
+      while ((sM = seasonRegex.exec(mainHtml)) !== null) {
+        let sUrl = sM[1]
+        if (!sUrl.startsWith("http")) sUrl = origin + (sUrl.startsWith('/') ? '' : '/') + sUrl
+        const sNum = parseInt(sM[3])
+        if (sNum && !pelisflixSeasons.has(sNum)) {
+          pelisflixSeasons.set(sNum, sUrl)
+        }
+      }
+
+      if (pelisflixSeasons.size === 0) {
+        const genSeasonRegex = /href=["']([^"']*\/(?:temporada|season)\/[^"']+)["']/gi
+        while ((sM = genSeasonRegex.exec(mainHtml)) !== null) {
+          let sUrl = sM[1]
+          if (!sUrl.startsWith("http")) sUrl = origin + (sUrl.startsWith('/') ? '' : '/') + sUrl
+          const numMatch = sUrl.match(/-(\d+)\/?$/)
+          const sNum = numMatch ? parseInt(numMatch[1]) : 1
+          if (!pelisflixSeasons.has(sNum)) {
+            pelisflixSeasons.set(sNum, sUrl)
+          }
+        }
+      }
+
+      if (pelisflixSeasons.size === 0) {
+        pelisflixSeasons.set(1, cleanUrl)
+      }
+
+      console.log(`[import] Pelisflix: ${pelisflixSeasons.size} temporadas detectadas`)
+
+      const sortedPelisSeasons = [...pelisflixSeasons.entries()].sort((a, b) => a[0] - b[0])
+      const seasonResults: { season: number; url: string; inserted: number; total: number }[] = []
+      let totalPelisInserted = 0
+
+      for (let si = 0; si < sortedPelisSeasons.length; si++) {
+        const [seasonNum, sUrl] = sortedPelisSeasons[si]
+        if (si > 0) await sleep(500)
+
+        let seasonHtml = sUrl === cleanUrl ? mainHtml : ""
+        if (!seasonHtml) {
+          const r = await fetchPage(sUrl)
+          if (!r.ok || r.blocked) {
+            console.log(`[import] Pelisflix T${seasonNum}: error al cargar ${sUrl}`)
+            continue
+          }
+          seasonHtml = r.html
+        }
+
+        const epCardRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi
+        const seasonEpisodes: { season: number; episode: number; title: string; url: string; thumb: string | null }[] = []
+        let trMatch: RegExpExecArray | null
+
+        while ((trMatch = epCardRegex.exec(seasonHtml)) !== null) {
+          const trHtml = trMatch[1]
+          const linkM = trHtml.match(/<a[^>]*href=["']([^"']*\/(?:episodio|episode|capitulo)\/[^"']+)["'][^>]*>([\s\S]*?)<\/a>/i)
+          if (!linkM) continue
+
+          let epUrl = linkM[1]
+          if (!epUrl.startsWith("http")) epUrl = origin + (epUrl.startsWith('/') ? '' : '/') + epUrl
+
+          const numSpan = trHtml.match(/<span[^>]*class=["']Num["'][^>]*>(\d+)/i)
+          let epNum = numSpan ? parseInt(numSpan[1]) : 0
+          if (!epNum) {
+            const xMatch = epUrl.match(/(\d+)x(\d+)/i)
+            epNum = xMatch ? parseInt(xMatch[2]) : (seasonEpisodes.length + 1)
+          }
+
+          const titleMatch = trHtml.match(/<td[^>]*class=["']MvTbTtl["'][^>]*>[\s\S]*?<a[^>]*>([^<]+)<\/a>/i) || linkM
+          let epTitle = titleMatch ? titleMatch[1].trim() : `Capítulo ${epNum}`
+
+          const thumbMatch = trHtml.match(/data-src=["']([^"']+)["']/i) || trHtml.match(/src=["']([^"']+)["']/i)
+          let epThumb = thumbMatch ? thumbMatch[1].trim() : null
+          if (epThumb && epThumb.startsWith("//")) epThumb = "https:" + epThumb
+          if (epThumb && epThumb.includes("none.jpg")) epThumb = null
+
+          if (!seasonEpisodes.some(e => e.url === epUrl)) {
+            seasonEpisodes.push({
+              season: seasonNum,
+              episode: epNum,
+              title: epTitle,
+              url: epUrl,
+              thumb: epThumb || finalPoster || null,
+            })
+          }
+        }
+
+        // Si no encontró con <tr>, buscar cualquier enlace a /episodio/
+        if (seasonEpisodes.length === 0) {
+          const directEpRegex = /<a[^>]*href=["']([^"']*\/(?:episodio|episode|capitulo)\/([^\/]+)-(\d+)x(\d+)\/?)["'][^>]*>([\s\S]*?)<\/a>/gi
+          let dMatch: RegExpExecArray | null
+          while ((dMatch = directEpRegex.exec(seasonHtml)) !== null) {
+            let epUrl = dMatch[1]
+            if (!epUrl.startsWith("http")) epUrl = origin + (epUrl.startsWith('/') ? '' : '/') + epUrl
+            const epNum = parseInt(dMatch[4])
+            const rawTitle = dMatch[5].replace(/<[^>]*>/g, '').trim()
+            const epTitle = rawTitle || `Capítulo ${epNum}`
+
+            if (!seasonEpisodes.some(e => e.url === epUrl)) {
+              seasonEpisodes.push({
+                season: seasonNum,
+                episode: epNum,
+                title: epTitle,
+                url: epUrl,
+                thumb: finalPoster || null,
+              })
+            }
+          }
+        }
+
+        if (seasonEpisodes.length === 0) {
+          console.log(`[import] Pelisflix T${seasonNum}: sin episodios encontrados`)
+          continue
+        }
+
+        seasonEpisodes.sort((a, b) => a.episode - b.episode)
+        console.log(`[import] Pelisflix T${seasonNum}: ${seasonEpisodes.length} episodios detectados`)
+
+        const { data: existing } = await supabase
+          .from("custom_content")
+          .select("season,episode")
+          .eq("parent_id", seriesId)
+          .eq("type", "episode")
+          .eq("season", seasonNum)
+        const existingSet = new Set((existing ?? []).map((e: any) => `${e.season}-${e.episode}`))
+
+        const toInsert = []
+        for (const ep of seasonEpisodes) {
+          if (!existingSet.has(`${ep.season}-${ep.episode}`)) {
+            toInsert.push({
+              title: ep.title,
+              type: "episode",
+              category: finalCategory,
+              parent_id: seriesId,
+              season: ep.season,
+              episode: ep.episode,
+              video_url: ep.url,
+              thumbnail_url: ep.thumb,
+              is_active: true,
+            })
+          }
+        }
+
+        let inserted = 0
+        for (let i = 0; i < toInsert.length; i += 50) {
+          const batch = toInsert.slice(i, i + 50)
+          const { error: e } = await supabase.from("custom_content").insert(batch)
+          if (!e) inserted += batch.length
+          else console.error(`[import] Error al insertar Pelisflix T${seasonNum}: ${e.message}`)
+        }
+
+        totalPelisInserted += inserted
+        seasonResults.push({ season: seasonNum, url: sUrl, inserted, total: seasonEpisodes.length })
+      }
+
+      const totalEpisodesFound = seasonResults.reduce((a, b) => a + b.total, 0)
+
+      if (totalEpisodesFound > 0) {
+        const msg = totalPelisInserted === 0
+          ? `La serie ya estaba registrada con todos sus capítulos (${totalEpisodesFound} encontrados).`
+          : `OK ${seasonResults.length} temporada(s), ${totalPelisInserted} capítulos importados de Pelisflix.`
+
+        return new Response(JSON.stringify({
+          success: true,
+          series_id: seriesId,
+          series_title: seriesTitle,
+          series: { id: seriesId, title: seriesTitle },
+          seasons_processed: seasonResults.length,
+          total_episodes: totalPelisInserted,
+          season_results: seasonResults,
+          message: msg,
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } })
+      } else {
+        console.log(`[import] Pelisflix parser detectó 0 episodios en ${cleanUrl}. Pasando al crawler general...`)
+      }
+    }
+
     const seasonMap = new Map<number, string>()
+
+    const dramaPrefix = cleanUrl.includes('/es/detail/drama/')
+      ? '/es/detail/drama/'
+      : (cleanUrl.includes('/detail/drama/') ? '/detail/drama/' : '/es/detail/drama/')
 
     // A. Check explicit seasons array in __NEXT_DATA__
     if (meta.seasonsList && meta.seasonsList.length > 0) {
       for (const s of meta.seasonsList) {
         if (s.websiteParam) {
-          seasonMap.set(s.number, `${origin}/es/detail/drama/${s.websiteParam}`)
+          seasonMap.set(s.number, `${origin}${dramaPrefix}${s.websiteParam}`)
         } else if (s.number === 1) {
           seasonMap.set(1, cleanUrl)
         }
@@ -519,7 +741,7 @@ serve(async (req: Request) => {
         if (seasonMeta.coverUrl) seasonPoster = seasonMeta.coverUrl
       }
 
-      let epCount = detectEpisodeCount(seasonHtml)
+      let epCount = (si === 0 && meta.episodeCount > 0) ? meta.episodeCount : detectEpisodeCount(seasonHtml)
       console.log(`[import] T${seasonNum} HTML count: ${epCount}, URL: ${seasonUrl}`)
 
       if (epCount === 0) {
@@ -567,8 +789,11 @@ serve(async (req: Request) => {
       console.log(`[import] T${seasonNum}: ${inserted}/${epCount} insertados`)
     }
 
+    const totalFound = seasonResults.reduce((a, b) => a + b.total, 0)
     const msg = totalInserted === 0
-      ? `La serie fue registrada pero no se detectaron capitulos. Verifica que el URL sea accesible.`
+      ? (totalFound > 0
+          ? `La serie ya estaba registrada con todos sus capítulos (${totalFound} encontrados).`
+          : `La serie fue registrada pero no se detectaron capitulos. Verifica que el URL sea accesible.`)
       : `OK ${seasonResults.length} temporada(s), ${totalInserted} capitulos importados.`
 
     return new Response(JSON.stringify({
